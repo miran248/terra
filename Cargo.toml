@@ -1,0 +1,11 @@
+cargo-features = ["codegen-backend"]
+
+[workspace]
+resolver = "3"
+members = [
+  "crates/*",
+]
+
+[profile.dev]
+debug = 0
+codegen-backend = "cranelift"
