@@ -1,16 +1,17 @@
+use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::Rng;
 use shared::items::{Material, WeaponKind};
-use shared::sphere::{random_point, SpherePos};
+use shared::sphere::{random_point, SpherePos, PLANET_RADIUS};
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
 use crate::constants::*;
 use crate::combat::ScrapCounter;
-use crate::map::{GroundOffset, Player};
+use crate::map::Player;
 use crate::ui::UpgradeLevels;
 
-const MAGNET_SPEED: f32 = 70.0; // m/s
-const COLLECT_RADIUS: f32 = 2.0; // m
+const MAGNET_SPEED: f32 = 70.0;
+const COLLECT_RADIUS: f32 = 2.0;
 const MATERIAL_COUNT: usize = 400;
 const WEAPON_COUNT: usize = 60;
 const ZOMBIE_DROP_CHANCE: f64 = 0.35;
@@ -22,7 +23,6 @@ pub struct LootMaterial(pub Material);
 #[derive(Component, Clone, Copy)]
 pub struct LootWeapon(pub WeaponKind);
 
-/// Cached meshes/materials for loot pickups (colors from `items`).
 #[derive(Resource)]
 pub struct LootAssets {
     material_mesh: Handle<Mesh>,
@@ -34,9 +34,7 @@ pub struct LootAssets {
 #[derive(Resource, Default)]
 pub struct LootState {
     pub materials: [u32; Material::ALL.len()],
-    /// Weapons the player has collected (excluding the equipped one when broken).
     pub weapons: Vec<WeaponKind>,
-    /// Currently equipped weapon and its remaining durability.
     pub equipped: Option<(WeaponKind, u32)>,
 }
 
@@ -70,7 +68,7 @@ impl Plugin for LootPlugin {
             .add_systems(OnEnter(AppState::Playing), (setup_loot_assets, scatter_loot).chain())
             .add_systems(
                 Update,
-                (magnet_loot, apply_magnet_upgrade, drain_durability, apply_weapon_fire_rate)
+                (magnet_loot, collect_loot, apply_magnet_upgrade, drain_durability, apply_weapon_fire_rate)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -86,9 +84,7 @@ impl Default for MagnetRadius {
 }
 
 fn apply_magnet_upgrade(levels: Res<UpgradeLevels>, mut magnet: ResMut<MagnetRadius>) {
-    if !levels.is_changed() {
-        return;
-    }
+    if !levels.is_changed() { return; }
     let idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::MagnetRange).unwrap();
     magnet.0 = Upgrade::MagnetRange.value(levels.levels[idx]);
 }
@@ -132,29 +128,44 @@ fn scatter_loot(mut commands: Commands, assets: Res<LootAssets>) {
 
 fn spawn_material(commands: &mut Commands, assets: &LootAssets, m: Material, pos: SpherePos) {
     let i = Material::ALL.iter().position(|x| *x == m).unwrap();
+    let r = PLANET_RADIUS + SCRAP_SIZE * 0.5 + 0.5;
     commands.spawn((
         Mesh3d(assets.material_mesh.clone()),
         MeshMaterial3d(assets.material_mats[i].clone()),
-        pos.surface_transform(0.0),
+        RigidBody::Dynamic,
+        ColliderConstructor::Sphere { radius: SCRAP_SIZE * 0.5 },
+        GravityScale(0.0),
+        LinearDamping(0.95),
+        AngularDamping(1.0),
+        LockedAxes::ROTATION_LOCKED,
+        Restitution::ZERO,
+        Friction::ZERO,
+        Transform::from_translation(pos.0 * r),
         pos,
-        GroundOffset(SCRAP_SIZE * 0.5),
         LootMaterial(m),
     ));
 }
 
 fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, pos: SpherePos) {
     let i = WeaponKind::ALL.iter().position(|x| *x == w).unwrap();
+    let r = PLANET_RADIUS + SCRAP_SIZE * 1.8 * 0.5 + 0.5;
     commands.spawn((
         Mesh3d(assets.weapon_mesh.clone()),
         MeshMaterial3d(assets.weapon_mats[i].clone()),
-        pos.surface_transform(0.0),
+        RigidBody::Dynamic,
+        ColliderConstructor::Sphere { radius: SCRAP_SIZE * 1.8 * 0.5 },
+        GravityScale(0.0),
+        LinearDamping(0.95),
+        AngularDamping(1.0),
+        LockedAxes::ROTATION_LOCKED,
+        Restitution::ZERO,
+        Friction::ZERO,
+        Transform::from_translation(pos.0 * r),
         pos,
-        GroundOffset(SCRAP_SIZE * 1.8 * 0.5),
         LootWeapon(w),
     ));
 }
 
-/// Roll random loot at a dead zombie's position.
 pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, pos: SpherePos) {
     let mut rng = rand::thread_rng();
     if rng.gen_bool(ZOMBIE_WEAPON_DROP_CHANCE) {
@@ -166,31 +177,57 @@ pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, pos: Spher
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Pull loot toward the player via Forces API.
 fn magnet_loot(
-    mut commands: Commands,
-    time: Res<Time>,
     magnet: Res<MagnetRadius>,
-    player_q: Query<&SpherePos, With<Player>>,
+    player_q: Query<(&SpherePos, &Transform), With<Player>>,
+    mut materials_q: Query<(Forces, &Transform), (With<LootMaterial>, Without<Player>)>,
+    mut weapons_q: Query<(Forces, &Transform), (With<LootWeapon>, Without<LootMaterial>, Without<Player>)>,
+) {
+    let Ok((_center, player_tf)) = player_q.single() else { return };
+    let radius = magnet.0;
+    let center_world = player_tf.translation;
+
+    for (mut forces, tf) in &mut materials_q {
+        magnet_accel(&mut forces, tf, center_world, radius);
+    }
+    for (mut forces, tf) in &mut weapons_q {
+        magnet_accel(&mut forces, tf, center_world, radius);
+    }
+}
+
+use avian3d::dynamics::rigid_body::forces::ForcesItem;
+
+fn magnet_accel(forces: &mut ForcesItem, tf: &Transform, center: Vec3, radius: f32) {
+    let dist = tf.translation.distance(center);
+    if dist <= radius && dist > 0.001 {
+        let dir = (center - tf.translation).normalize();
+        let speed = MAGNET_SPEED * (1.0 + (1.0 - (dist / radius)) * 2.0);
+        forces.apply_linear_acceleration(dir * speed * 2.0);
+    }
+}
+
+/// Collect loot when close enough to the player.
+fn collect_loot(
+    mut commands: Commands,
+    player_q: Query<(Entity, &Transform), With<Player>>,
+    materials_q: Query<(Entity, &Transform, &LootMaterial)>,
+    weapons_q: Query<(Entity, &Transform, &LootWeapon), Without<LootMaterial>>,
     mut loot: ResMut<LootState>,
     mut scrap: ResMut<ScrapCounter>,
-    mut materials_q: Query<(Entity, &mut SpherePos, &LootMaterial), Without<Player>>,
-    mut weapons_q: Query<(Entity, &mut SpherePos, &LootWeapon), (Without<Player>, Without<LootMaterial>)>,
 ) {
-    let Ok(&center) = player_q.single() else { return };
-    let dt = time.delta_secs();
-    let radius = magnet.0;
+    let Ok((player_entity, player_tf)) = player_q.single() else { return };
 
-    for (entity, mut pos, mat) in &mut materials_q {
-        if pull(&mut pos, center, radius, dt) {
+    for (entity, tf, mat) in &materials_q {
+        if tf.translation.distance(player_tf.translation) <= COLLECT_RADIUS {
             commands.entity(entity).despawn();
             loot.add(mat.0, 1);
             scrap.0 += 1;
         }
     }
 
-    for (entity, mut pos, w) in &mut weapons_q {
-        if pull(&mut pos, center, radius, dt) {
+    for (entity, tf, w) in &weapons_q {
+        if tf.translation.distance(player_tf.translation) <= COLLECT_RADIUS {
             commands.entity(entity).despawn();
             loot.weapons.push(w.0);
             if loot.equipped.is_none() {
@@ -200,15 +237,6 @@ fn magnet_loot(
     }
 }
 
-fn pull(pos: &mut SpherePos, center: SpherePos, radius: f32, dt: f32) -> bool {
-    let dist = pos.distance(center);
-    if dist <= radius && dist > 0.0 {
-        let speed = MAGNET_SPEED * (1.0 + (1.0 - (dist / radius)) * 2.0);
-        pos.step_toward(center, speed * dt);
-    }
-    pos.distance(center) <= COLLECT_RADIUS
-}
-
 fn drain_durability(
     mut fired: MessageReader<WeaponFired>,
     mut loot: ResMut<LootState>,
@@ -216,7 +244,6 @@ fn drain_durability(
     for _ in fired.read() {
         let Some((kind, dur)) = loot.equipped else { continue };
         if dur <= 1 {
-            // ponytail: broken weapon auto-swaps to next in inventory, else unarmed
             loot.weapons.retain(|w| *w != kind);
             loot.equipped = loot.weapons.first().map(|w| (*w, w.stats().durability));
         } else {
@@ -229,9 +256,7 @@ fn apply_weapon_fire_rate(
     loot: Res<LootState>,
     mut player_q: Query<&mut Player>,
 ) {
-    if !loot.is_changed() {
-        return;
-    }
+    if !loot.is_changed() { return; }
     let Ok(mut player) = player_q.single_mut() else { return };
     if let Some((kind, _)) = loot.equipped {
         let rate = kind.stats().fire_rate;

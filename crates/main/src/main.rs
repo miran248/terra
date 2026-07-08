@@ -3,18 +3,21 @@ mod constants;
 mod loot;
 mod map;
 mod minimap;
+mod physics;
 mod prestige;
 mod turret;
 mod ui;
 mod wave;
 mod zombie;
 
+use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::state::AppState;
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins,))
+        .add_plugins((DefaultPlugins, PhysicsPlugins::default().build().disable::<PhysicsInterpolationPlugin>()))
+        .insert_resource(SubstepCount(12))
         .init_state::<AppState>()
         .add_plugins((
             map::MapPlugin,
@@ -26,6 +29,7 @@ fn main() {
             ui::UiPlugin,
             minimap::MinimapPlugin,
             prestige::PrestigePlugin,
+            physics::PhysicsPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .run();
