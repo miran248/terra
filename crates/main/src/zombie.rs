@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use rand::Rng;
+use shared::sphere::{ring_point, SpherePos};
 use crate::constants::*;
-use crate::map::{Survivor, SurvivorHp};
+use crate::map::{GameAssets, Survivor, SurvivorHp};
 use crate::wave::WaveManager;
 use shared::state::AppState;
 
@@ -24,7 +25,8 @@ fn spawn_zombies(
     mut commands: Commands,
     time: Res<Time>,
     mut wave: ResMut<WaveManager>,
-    survivor_q: Query<&Transform, With<Survivor>>,
+    assets: Res<GameAssets>,
+    survivor_q: Query<&SpherePos, With<Survivor>>,
 ) {
     if wave.zombies_spawned_this_wave >= wave.zombies_per_wave {
         return;
@@ -35,17 +37,19 @@ fn spawn_zombies(
         return;
     }
 
-    let center = survivor_q.single().map(|t| t.translation.xy()).unwrap_or(Vec2::ZERO);
+    let center = survivor_q.single().copied().unwrap_or(SpherePos::new(Vec3::Y));
     let mut rng = rand::thread_rng();
     let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-    let spawn_pos = center + Vec2::from_angle(angle) * SPAWN_RADIUS;
+    let spawn_pos = ring_point(center, SPAWN_RADIUS, angle);
 
     wave.zombies_spawned_this_wave += 1;
 
     let w = wave.wave;
     commands.spawn((
-        Sprite::from_color(ZOMBIE_COLOR, Vec2::new(ZOMBIE_SIZE, ZOMBIE_SIZE)),
-        Transform::from_translation(spawn_pos.extend(0.0)),
+        Mesh3d(assets.zombie_mesh.clone()),
+        MeshMaterial3d(assets.zombie_mat.clone()),
+        spawn_pos.surface_transform(0.0),
+        spawn_pos,
         Zombie {
             hp: crate::wave::zombie_hp(w),
             speed: crate::wave::zombie_speed(w),
@@ -55,33 +59,30 @@ fn spawn_zombies(
 
 fn move_zombies(
     time: Res<Time>,
-    survivor_q: Query<&Transform, With<Survivor>>,
-    mut q: Query<(&mut Transform, &Zombie), Without<Survivor>>,
+    survivor_q: Query<&SpherePos, With<Survivor>>,
+    mut q: Query<(&mut SpherePos, &Zombie), Without<Survivor>>,
 ) {
-    let Ok(survivor_tf) = survivor_q.single() else { return };
-    let target = survivor_tf.translation.xy();
+    let Ok(target) = survivor_q.single() else { return };
+    let dt = time.delta_secs();
 
-    for (mut tf, zombie) in &mut q {
-        let dir = (target - tf.translation.xy()).normalize_or_zero();
-        tf.translation.x += dir.x * zombie.speed * time.delta_secs();
-        tf.translation.y += dir.y * zombie.speed * time.delta_secs();
+    for (mut pos, zombie) in &mut q {
+        pos.step_toward(*target, zombie.speed * dt);
     }
 }
 
 fn zombie_hit_survivor(
     mut commands: Commands,
     mut survivor_hp: ResMut<SurvivorHp>,
-    survivor_q: Query<(&Transform, &Survivor)>,
-    zombies: Query<(Entity, &Transform), With<Zombie>>,
+    survivor_q: Query<&SpherePos, With<Survivor>>,
+    zombies: Query<(Entity, &SpherePos), With<Zombie>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let Ok((s_tf, _s)) = survivor_q.single() else { return };
-    let s_pos = s_tf.translation.xy();
+    let Ok(s_pos) = survivor_q.single() else { return };
     const DAMAGE_PER_HIT: f32 = 50.0;
 
     let mut total_hp = survivor_hp.0;
-    for (z_entity, z_tf) in &zombies {
-        if z_tf.translation.xy().distance(s_pos) <= SURVIVOR_SIZE / 2.0 + ZOMBIE_SIZE / 2.0 {
+    for (z_entity, z_pos) in &zombies {
+        if s_pos.distance(*z_pos) <= SURVIVOR_SIZE / 2.0 + ZOMBIE_SIZE / 2.0 {
             commands.entity(z_entity).despawn();
             total_hp -= DAMAGE_PER_HIT;
         }

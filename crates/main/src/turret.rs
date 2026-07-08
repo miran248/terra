@@ -1,9 +1,9 @@
 use bevy::prelude::*;
+use shared::sphere::SpherePos;
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
-use crate::constants::*;
 use crate::loot::{LootState, WeaponFired};
-use crate::map::Survivor;
+use crate::map::{GameAssets, Survivor};
 use crate::zombie::Zombie;
 
 #[derive(Component)]
@@ -34,13 +34,12 @@ fn survivor_shoot(
     mut commands: Commands,
     time: Res<Time>,
     equipped: Res<LootState>,
+    assets: Res<GameAssets>,
     mut fired: MessageWriter<WeaponFired>,
-    mut survivor_q: Query<(Entity, &mut Survivor)>,
-    survivor_tf_q: Query<&Transform, With<Survivor>>,
-    zombies: Query<(Entity, &Transform), (With<Zombie>, Without<Survivor>)>,
+    mut survivor_q: Query<(&SpherePos, &mut Survivor)>,
+    zombies: Query<(Entity, &SpherePos), (With<Zombie>, Without<Survivor>)>,
 ) {
-    let Ok((_entity, mut survivor)) = survivor_q.single_mut() else { return };
-    let Ok(survivor_tf) = survivor_tf_q.single() else { return };
+    let Ok((pos, mut survivor)) = survivor_q.single_mut() else { return };
     survivor.fire_timer.tick(time.delta());
     if !survivor.fire_timer.just_finished() {
         return;
@@ -54,11 +53,9 @@ fn survivor_shoot(
         None => (survivor.damage, survivor.range, false),
     };
 
-    let pos = survivor_tf.translation.xy();
     let mut closest: Option<(Entity, f32)> = None;
-
-    for (entity, z_tf) in &zombies {
-        let dist = pos.distance(z_tf.translation.xy());
+    for (entity, z_pos) in &zombies {
+        let dist = pos.distance(*z_pos);
         if dist <= range {
             match closest {
                 None => closest = Some((entity, dist)),
@@ -70,12 +67,11 @@ fn survivor_shoot(
 
     if let Some((target, _)) = closest {
         commands.spawn((
-            Sprite::from_color(PROJECTILE_COLOR, Vec2::new(PROJECTILE_SIZE, PROJECTILE_SIZE)),
-            Transform::from_translation(pos.extend(0.2)),
-            Projectile {
-                damage,
-                target,
-            },
+            Mesh3d(assets.projectile_mesh.clone()),
+            MeshMaterial3d(assets.projectile_mat.clone()),
+            pos.surface_transform(0.0),
+            *pos,
+            Projectile { damage, target },
         ));
         if has_weapon {
             fired.write(WeaponFired);
@@ -87,17 +83,15 @@ fn move_projectiles(
     mut commands: Commands,
     time: Res<Time>,
     p_speed: Res<ProjectileSpeed>,
-    mut projectiles: Query<(Entity, &mut Transform, &Projectile)>,
-    zombies: Query<&Transform, (With<Zombie>, Without<Projectile>)>,
+    mut projectiles: Query<(Entity, &mut SpherePos, &Projectile)>,
+    zombies: Query<&SpherePos, (With<Zombie>, Without<Projectile>)>,
 ) {
     let dt = time.delta_secs();
     let speed = p_speed.0;
 
-    for (entity, mut tf, proj) in &mut projectiles {
-        if let Ok(target_tf) = zombies.get(proj.target) {
-            let dir = (target_tf.translation.xy() - tf.translation.xy()).normalize_or_zero();
-            tf.translation.x += dir.x * speed * dt;
-            tf.translation.y += dir.y * speed * dt;
+    for (entity, mut pos, proj) in &mut projectiles {
+        if let Ok(target) = zombies.get(proj.target) {
+            pos.step_toward(*target, speed * dt);
         } else {
             commands.entity(entity).despawn();
         }

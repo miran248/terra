@@ -1,8 +1,5 @@
 use bevy::prelude::*;
 
-pub const MAP_WIDTH: f32 = 4000.0;
-pub const MAP_HEIGHT: f32 = 3000.0;
-
 pub const SURVIVOR_SIZE: f32 = 24.0;
 pub const SURVIVOR_HP: f32 = 500.0;
 pub const SURVIVOR_COLOR: Color = Color::srgb(0.1, 0.3, 0.8);
@@ -12,6 +9,9 @@ pub const ZOMBIE_COLOR: Color = Color::srgb(0.8, 0.15, 0.15);
 pub const SPAWN_RADIUS: f32 = 750.0;
 
 pub const GROUND_COLOR: Color = Color::srgb(0.15, 0.35, 0.15);
+
+pub const CAMERA_HEIGHT: f32 = 260.0;
+pub const CAMERA_BACK: f32 = 120.0;
 
 pub const ATTACK_RANGE: f32 = 150.0;
 pub const ATTACK_INTERVAL: f32 = 0.8;
