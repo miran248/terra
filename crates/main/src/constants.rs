@@ -8,7 +8,7 @@ pub const ZOMBIE_SIZE: f32 = 16.0;
 pub const ZOMBIE_COLOR: Color = Color::srgb(0.8, 0.15, 0.15);
 pub const SPAWN_RADIUS: f32 = 750.0;
 
-pub const GROUND_COLOR: Color = Color::srgb(0.15, 0.35, 0.15);
+pub const PLANET_SEED: u32 = 1337;
 
 pub const CAMERA_HEIGHT: f32 = 260.0;
 pub const CAMERA_BACK: f32 = 120.0;

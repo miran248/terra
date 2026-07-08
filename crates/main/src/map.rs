@@ -1,6 +1,8 @@
 use bevy::prelude::*;
+use bevy::render::mesh::VertexAttributeValues;
 use shared::sphere::{SpherePos, PLANET_RADIUS};
 use shared::state::AppState;
+use shared::terrain::TerrainGen;
 use crate::constants::*;
 
 #[derive(Component)]
@@ -63,11 +65,11 @@ fn setup_map(
         }),
     });
 
-    // Planet
+    // Planet with per-vertex terrain colors.
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS).mesh().ico(32).unwrap())),
+        Mesh3d(meshes.add(build_planet_mesh())),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: GROUND_COLOR,
+            base_color: Color::WHITE,
             perceptual_roughness: 0.95,
             ..default()
         })),
@@ -97,6 +99,29 @@ fn setup_map(
             heading: start.tangent_basis().1,
         },
     ));
+}
+
+/// Icosphere with per-vertex terrain colors sampled from the terrain generator.
+fn build_planet_mesh() -> Mesh {
+    let mut mesh = Sphere::new(PLANET_RADIUS).mesh().ico(64).unwrap();
+    let terrain = TerrainGen::new(PLANET_SEED);
+
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return mesh;
+    };
+
+    let colors: Vec<[f32; 4]> = positions
+        .iter()
+        .map(|p| {
+            let pos = SpherePos::new(Vec3::from_array(*p));
+            terrain.color_at(pos).to_linear().to_f32_array()
+        })
+        .collect();
+
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh
 }
 
 fn move_survivor(
