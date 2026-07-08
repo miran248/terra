@@ -55,6 +55,34 @@ impl PlanetMesh {
         self.tris.len()
     }
 
+    /// Index of the surface triangle the ray from the planet centre through `dir` hits
+    /// (the nearest hit — a heightmapped ray can cross several triangles, we want the one
+    /// on the surface facing outward), or `None` if not found.
+    pub fn face_at(&self, dir: Vec3) -> Option<usize> {
+        let (li, oi) = bucket(dir);
+        let mut best: Option<(usize, f32)> = None;
+        for &idx in &self.grid[li * LON_BUCKETS + oi] {
+            if let Some(r) = ray_triangle_radius(dir, &self.tris[idx as usize]) {
+                if best.is_none_or(|(_, br)| r > br) {
+                    best = Some((idx as usize, r)); // outermost hit = the visible surface
+                }
+            }
+        }
+        if let Some((idx, _)) = best {
+            return Some(idx);
+        }
+        // Grid miss: full scan for the outermost hit.
+        let mut fallback: Option<(usize, f32)> = None;
+        for (idx, t) in self.tris.iter().enumerate() {
+            if let Some(r) = ray_triangle_radius(dir, t) {
+                if fallback.is_none_or(|(_, br)| r > br) {
+                    fallback = Some((idx, r));
+                }
+            }
+        }
+        fallback.map(|(idx, _)| idx)
+    }
+
     /// World radius of the rendered facet along direction `dir` (unit vector): intersect
     /// the ray `t*dir` with the triangle whose spherical cell contains `dir`. Uses the
     /// grid bucket so only a handful of candidate triangles are tested.

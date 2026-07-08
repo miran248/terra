@@ -1,4 +1,4 @@
-use bevy::prelude::{Color, Resource};
+use bevy::prelude::{Color, Resource, Vec3};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
 use crate::sphere::{SpherePos, METER, PLANET_RADIUS};
@@ -51,14 +51,17 @@ impl Terrain {
     }
 }
 
+/// Radius of the flattened corridor around roads/towns, meters. Mountains are fully
+/// suppressed on the road and ease back to full strength past this distance.
+pub const ROAD_CORRIDOR: f32 = 180.0;
+
 /// Samples biome type at any point on the planet. Seamless: driven by 3D noise
 /// evaluated at the unit-sphere direction, so there are no UV seams.
 ///
-/// Elevation is built in structured layers so terrain stays spatially coherent
-/// (no lone deep-ocean vertex inside a mountain range):
-///   1. `continents` — low frequency: where land vs sea is. Dominant amplitude.
-///   2. `mountains`   — ridged, only added *on* land and scaled by how far inland.
-///   3. `detail`      — small high-frequency bumps, amplitude too low to cross sea level.
+/// Generation is **roads-first**: the continent shape (land/sea) is decided by noise,
+/// settlements + roads are placed on that flat land (see `roads.rs`), then mountains and
+/// forests are grown *around* the roads — suppressed within `ROAD_CORRIDOR` of a road so
+/// routes sit in natural valleys/clearings instead of fighting the terrain.
 #[derive(Resource)]
 pub struct TerrainGen {
     continents: Fbm<Perlin>,
@@ -68,6 +71,51 @@ pub struct TerrainGen {
     rivers: Fbm<Perlin>,
     warp: Fbm<Perlin>,
     temp_noise: Fbm<Perlin>,
+    /// Spatial hash of road/town points; set after roads are generated. `None` before that
+    /// (during road generation itself, which only reads the flat continent layer).
+    roads: Option<RoadField>,
+}
+
+/// Spatial grid of road + settlement sample points, for a fast "distance to nearest road"
+/// query used to carve mountain-free corridors around roads.
+struct RoadField {
+    cells: std::collections::HashMap<(i32, i32), Vec<Vec3>>,
+}
+
+impl RoadField {
+    const CELL: f32 = ROAD_CORRIDOR; // one corridor-width per cell
+
+    fn key(dir: Vec3) -> (i32, i32) {
+        let c = Self::CELL / PLANET_RADIUS;
+        let lat = dir.y.clamp(-1.0, 1.0).acos();
+        let lon = dir.z.atan2(dir.x) + std::f32::consts::PI;
+        ((lat / c).floor() as i32, (lon / c).floor() as i32)
+    }
+
+    fn new(points: impl Iterator<Item = Vec3>) -> Self {
+        let mut cells: std::collections::HashMap<(i32, i32), Vec<Vec3>> = Default::default();
+        for p in points {
+            cells.entry(Self::key(p)).or_default().push(p);
+        }
+        Self { cells }
+    }
+
+    /// Arc-distance (meters) to the nearest road point, searching the 3×3 cell block.
+    fn nearest(&self, dir: Vec3) -> f32 {
+        let (li, oi) = Self::key(dir);
+        let mut best = f32::MAX;
+        for dl in -1..=1 {
+            for doo in -1..=1 {
+                if let Some(pts) = self.cells.get(&(li + dl, oi + doo)) {
+                    for q in pts {
+                        let d = dir.dot(*q).clamp(-1.0, 1.0).acos() * PLANET_RADIUS;
+                        best = best.min(d);
+                    }
+                }
+            }
+        }
+        best
+    }
 }
 
 impl TerrainGen {
@@ -80,7 +128,45 @@ impl TerrainGen {
             rivers: Fbm::<Perlin>::new(seed.wrapping_add(2)).set_octaves(3).set_frequency(3.0),
             warp: Fbm::<Perlin>::new(seed.wrapping_add(3)).set_octaves(3).set_frequency(2.8),
             temp_noise: Fbm::<Perlin>::new(seed.wrapping_add(4)).set_octaves(3).set_frequency(1.8),
+            roads: None,
         }
+    }
+
+    /// Attach the road network so terrain generation can carve corridors around paths
+    /// (mountains are suppressed near roads). Must be called after `Roads::generate`.
+    pub fn set_roads(&mut self, roads: &crate::roads::Roads) {
+        let mut pts: Vec<Vec3> = Vec::new();
+        for r in &roads.roads {
+            pts.extend(r.points.iter().map(|p| p.0));
+        }
+        for s in &roads.settlements {
+            pts.push(s.pos.0);
+        }
+        self.roads = Some(RoadField::new(pts.into_iter()));
+    }
+
+    /// Fraction (0..1) of how close `pos` is to a road: 0 = right on a road, 1 = far away.
+    /// Roads-first: prior to 25 m the land is fully flat (zero mountains); from there it
+    /// eases back to full terrain strength across `ROAD_CORRIDOR` meters so mountains grow
+    /// outside the road corridor without spikes near the path.
+    pub fn road_proximity(&self, pos: SpherePos) -> f32 {
+        self.roads
+            .as_ref()
+            .map(|rf| {
+                let d = rf.nearest(pos.0);
+                if d < 25.0 {
+                    0.0 // fully flat directly on a road
+                } else {
+                    ((d - 25.0) / (ROAD_CORRIDOR - 25.0)).clamp(0.0, 1.0)
+                }
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// The flat continent layer only (land vs sea, no mountains). Used during road
+    /// generation so roads don't have to fight terrain they'll later carve around.
+    pub fn continent_elevation(&self, pos: SpherePos) -> f32 {
+        self.continents.get(self.warped(pos)) as f32
     }
 
     /// Domain-warped sample point: shifts the lookup so biome edges are wavy and organic
@@ -105,15 +191,16 @@ impl TerrainGen {
         let continent = self.continents.get(w) as f32;
 
         // 2. How far "inland" we are: 0 at/below the coast, ramping up over land.
-        //    Mountains and detail are gated by this so relief only grows on solid land.
         let land = smoothstep(0.0, 0.35, continent);
 
-        // 3. Mountains: ridged (peaks along lines), only where land, biggest deep inland.
-        let ridged = 1.0 - (self.mountains.get(w) as f32).abs();
-        let mountains = ridged.powi(2) * 0.55 * land;
+        // 3. Road flatness: near roads the land is flat (mountains suppressed); far from
+        //    roads, mountains grow at full strength. 0 = completely flat, 1 = full relief.
+        let road_flatness = self.road_proximity(pos).powf(2.5);
 
-        // 4. Detail: small bumps, amplitude bounded so it can't cross sea level alone.
-        let detail = self.detail.get(w) as f32 * 0.06 * land;
+        let ridged = 1.0 - (self.mountains.get(w) as f32).abs();
+        let mountains = ridged.powi(2) * 0.55 * land * road_flatness;
+
+        let detail = self.detail.get(w) as f32 * 0.06 * land * road_flatness;
 
         (continent + mountains + detail).clamp(-1.0, 1.0)
     }
@@ -169,18 +256,6 @@ impl TerrainGen {
             worst = worst.max((self.altitude(n) - h).abs() / STEP);
         }
         worst
-    }
-
-    /// Cost multiplier for travelling road across `pos`: cheap on flat low land, expensive
-    /// on steep or high ground, impassable over water. Drives road routing (least resistance).
-    pub fn travel_cost(&self, pos: SpherePos) -> f32 {
-        // Keep roads just off the waterline so chords between path nodes don't clip sea.
-        if self.altitude(pos) < 0.5 * METER {
-            return f32::INFINITY;
-        }
-        let slope = self.slope(pos);
-        let alt = self.altitude(pos).max(0.0) / MAX_MOUNTAIN; // 0..1
-        1.0 + slope * 40.0 + alt * alt * 6.0
     }
 
     /// Whether a location is livable — the seed for future villages/roads/farms.

@@ -105,6 +105,10 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 top: Val::Px(0.0),
                 width: Val::Px(MINIMAP_SIZE - 6.0),
                 height: Val::Px(MINIMAP_SIZE - 6.0),
+                // Round the image itself into a circle (parent clip alone doesn't clip the
+                // texture to the border radius in this Bevy version).
+                border_radius: BorderRadius::all(Val::Percent(50.0)),
+                overflow: Overflow::clip(),
                 ..default()
             },
         ));

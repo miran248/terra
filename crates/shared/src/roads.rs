@@ -1,6 +1,4 @@
-use bevy::prelude::Resource;
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use bevy::prelude::{Resource, Vec3};
 
 use crate::sphere::{slerp, SpherePos, PLANET_RADIUS};
 use crate::terrain::TerrainGen;
@@ -13,16 +11,20 @@ const MIN_SEPARATION: f32 = 900.0;
 const LINKS_PER_SETTLEMENT: usize = 2;
 /// Spacing between sampled points along a road, meters.
 const SAMPLE_SPACING: f32 = 40.0;
-/// A* step size along the ground, meters (grid resolution of the route search).
-const STEP: f32 = 80.0;
-/// Cap A* expansions so routing always terminates even in bad terrain.
-const MAX_EXPANSIONS: usize = 16_000;
 
-/// A road is a polyline of surface points (a great-circle arc between two settlements),
-/// pre-sampled so consumers (minimap, future in-world rendering) can just draw the points.
+/// Whether a path is a land road or a water bridge (a straight span).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PathKind {
+    Road,
+    Bridge,
+}
+
+/// A road or bridge: a polyline of surface points, pre-sampled so consumers (minimap,
+/// mesh painter) can just draw them. Roads wind over land; bridges are straight over water.
 #[derive(Clone)]
 pub struct Road {
     pub points: Vec<SpherePos>,
+    pub kind: PathKind,
 }
 
 /// A named place on the planet — the anchor for a future village/town/farm.
@@ -40,8 +42,11 @@ pub struct Roads {
 }
 
 impl Roads {
-    /// Build settlements on habitable land and connect nearby ones with roads that
-    /// stay on land (segments crossing ocean are rejected).
+    /// Roads-first generation: place settlements on habitable flat land, then connect each
+    /// town to its nearest neighbour(s) with gentle arcs + slight noise wobble. Terrain
+    /// (mountains, forests) is grown *around* these roads afterward, so routing is trivial
+    /// — we only need to check the continent layer for water and avoid crossing the sea.
+    /// Every town is guaranteed a road to at least its nearest reachable neighbour.
     pub fn generate(terrain: &TerrainGen) -> Self {
         let anchors = terrain.habitable_anchors(SETTLEMENTS, MIN_SEPARATION);
         let settlements: Vec<Settlement> = anchors
@@ -50,31 +55,72 @@ impl Roads {
             .map(|(i, &pos)| Settlement { pos, name: settlement_name(i) })
             .collect();
 
+        let neighbours: Vec<Vec<usize>> = anchors
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                let mut others: Vec<(usize, f32)> = anchors
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(j, b)| (j, a.distance(*b)))
+                    .collect();
+                others.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
+                others.into_iter().map(|(j, _)| j).collect()
+            })
+            .collect();
+
         let mut roads = Vec::new();
         let mut seen = std::collections::HashSet::new();
+        let mut link_count = vec![0usize; anchors.len()];
 
-        for (i, a) in anchors.iter().enumerate() {
-            // Nearest neighbours by arc distance.
-            let mut others: Vec<(usize, f32)> = anchors
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| *j != i)
-                .map(|(j, b)| (j, a.distance(*b)))
-                .collect();
-            others.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
-
-            for &(j, _) in others.iter().take(LINKS_PER_SETTLEMENT) {
-                let key = (i.min(j), i.max(j));
-                if !seen.insert(key) {
-                    continue; // link already built from the other end
-                }
-                if let Some(road) = build_road(terrain, *a, anchors[j]) {
-                    roads.push(road);
+        // Pass 1: every town gets a road to its nearest reachable neighbour (guaranteed).
+        for i in 0..anchors.len() {
+            if link_count[i] > 0 {
+                continue;
+            }
+            for &j in &neighbours[i] {
+                if try_link(terrain, &anchors, &mut roads, &mut seen, &mut link_count, i, j) {
+                    break;
                 }
             }
         }
 
+        // Pass 2: add redundancy — up to LINKS_PER_SETTLEMENT links per town.
+        for i in 0..anchors.len() {
+            for &j in &neighbours[i] {
+                if link_count[i] >= LINKS_PER_SETTLEMENT {
+                    break;
+                }
+                try_link(terrain, &anchors, &mut roads, &mut seen, &mut link_count, i, j);
+            }
+        }
+
         Self { settlements, roads }
+    }
+}
+
+fn try_link(
+    terrain: &TerrainGen,
+    anchors: &[SpherePos],
+    roads: &mut Vec<Road>,
+    seen: &mut std::collections::HashSet<(usize, usize)>,
+    link_count: &mut [usize],
+    i: usize,
+    j: usize,
+) -> bool {
+    let k = (i.min(j), i.max(j));
+    if seen.contains(&k) {
+        return true;
+    }
+    if let Some(road) = build_road(terrain, anchors[i], anchors[j]) {
+        roads.push(road);
+        seen.insert(k);
+        link_count[i] += 1;
+        link_count[j] += 1;
+        true
+    } else {
+        false
     }
 }
 
@@ -86,149 +132,84 @@ fn settlement_name(i: usize) -> String {
     format!("{}{}", PRE[i % PRE.len()], SUF[(i / PRE.len()) % SUF.len()])
 }
 
-/// Route a road from `a` to `b` along the path of least resistance (A* over a ground
-/// grid, cost = distance × terrain `travel_cost`), so roads wind through valleys and
-/// around mountains. Returns `None` if no land route is found (e.g. across ocean).
+/// A gently curving road between two towns that stays on land where possible. The arc
+/// wobbles organically and is biased away from coastlines (pushed toward higher continent
+/// elevation) so roads rarely clip the sea. Only when the straight arc itself crosses
+/// a permanent water gap does it fall back to a straight bridge.
 fn build_road(terrain: &TerrainGen, a: SpherePos, b: SpherePos) -> Option<Road> {
-    let path = astar(terrain, a, b)?;
-    let points = resample(&path);
-    // Reject if resampling (straight chords between A* nodes) clipped the sea near a coast.
-    if points.iter().any(|p| terrain.surface_radius(*p) < PLANET_RADIUS) {
-        return None;
+    let arc = a.distance(b);
+    let steps = (arc / SAMPLE_SPACING).ceil().max(1.0) as usize;
+    let seed = (a.0 + b.0).normalize();
+
+    // Pre-scan the straight arc: find the minimum continent elevation. If the straight
+    // line itself dips below zero, this is a true water gap (a strait/bay) — bridge it.
+    let min_straight = (0..=steps)
+        .map(|k| terrain.continent_elevation(slerp(a, b, k as f32 / steps as f32)))
+        .fold(f32::MAX, f32::min);
+    if min_straight < -0.15 {
+        let straight: Vec<SpherePos> =
+            (0..=steps).map(|k| slerp(a, b, k as f32 / steps as f32)).collect();
+        return Some(Road { points: straight, kind: PathKind::Bridge });
     }
-    Some(Road { points })
-}
 
-/// Grid key: quantize a direction to a lat/long cell so A* has finite, dedupable nodes.
-fn key(p: SpherePos) -> (i32, i32) {
-    let cell = STEP / PLANET_RADIUS; // angular step
-    let lat = p.0.y.clamp(-1.0, 1.0).acos();
-    let lon = p.0.z.atan2(p.0.x) + std::f32::consts::PI;
-    ((lat / cell).round() as i32, (lon / cell).round() as i32)
-}
-
-#[derive(Clone, Copy)]
-struct Node {
-    f: f32,
-    g: f32,
-    pos: SpherePos,
-}
-impl PartialEq for Node {
-    fn eq(&self, o: &Self) -> bool {
-        self.f == o.f
-    }
-}
-impl Eq for Node {}
-impl PartialOrd for Node {
-    fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
-        Some(self.cmp(o))
-    }
-}
-impl Ord for Node {
-    // Reverse so BinaryHeap (max-heap) pops the lowest f first.
-    fn cmp(&self, o: &Self) -> Ordering {
-        o.f.partial_cmp(&self.f).unwrap_or(Ordering::Equal)
-    }
-}
-
-fn astar(terrain: &TerrainGen, start: SpherePos, goal: SpherePos) -> Option<Vec<SpherePos>> {
-    let mut open = BinaryHeap::new();
-    let mut g_score: HashMap<(i32, i32), f32> = HashMap::new();
-    let mut came_from: HashMap<(i32, i32), SpherePos> = HashMap::new();
-    // Memoize the expensive terrain cost per grid cell (noise sampling dominates).
-    let mut cost_cache: HashMap<(i32, i32), f32> = HashMap::new();
-
-    open.push(Node { f: start.distance(goal), g: 0.0, pos: start });
-    g_score.insert(key(start), 0.0);
-
-    let mut expansions = 0;
-    while let Some(current) = open.pop() {
-        if current.pos.distance(goal) <= STEP {
-            // Reconstruct, then append the exact goal.
-            let mut path = vec![goal];
-            let mut k = key(current.pos);
-            let mut p = current.pos;
-            path.push(p);
-            while let Some(&prev) = came_from.get(&k) {
-                p = prev;
-                k = key(p);
-                path.push(p);
-                if k == key(start) {
-                    break;
-                }
-            }
-            path.reverse();
-            return Some(path);
+    // Land road: wobble organically and push inland away from shallow water.
+    let ambient = (min_straight + 1.0) / 2.0; // ~how "landy" the corridor is (0=watery, 1=dry)
+    let mut points = Vec::with_capacity(steps + 1);
+    for k in 0..=steps {
+        let t = k as f32 / steps as f32;
+        let mut p = if k == 0 {
+            a
+        } else if k == steps {
+            b
+        } else {
+            // Wobble amplitude inversely proportional to how close the straight line is
+            // to water — a dry corridor can afford more wobble; a coastal one stays tight.
+            // Amplitude: up to 80 m for fully dry, only ~25 m near water.
+            let amp = 25.0 + ambient * ambient * 55.0;
+            wobbled_slerp(a, b, t, seed, amp)
+        };
+        // Nudge away from water: if this point is near sea level, push it back toward the
+        // straight arc centre (which is further from the coast).
+        if terrain.continent_elevation(p) < 0.0 {
+            p = slerp(a, b, t); // snap back to the straight arc
         }
-
-        expansions += 1;
-        if expansions > MAX_EXPANSIONS {
-            return None;
-        }
-
-        let ck = key(current.pos);
-        if current.g > *g_score.get(&ck).unwrap_or(&f32::INFINITY) {
-            continue; // stale heap entry
-        }
-
-        let (east, north) = current.pos.tangent_basis();
-        for angle_i in 0..8 {
-            let a = angle_i as f32 * std::f32::consts::FRAC_PI_4;
-            let tangent = east * a.cos() + north * a.sin();
-            let next = SpherePos::new(current.pos.0 + tangent * (STEP / PLANET_RADIUS));
-            let nk = key(next);
-            let cost = *cost_cache
-                .entry(nk)
-                .or_insert_with(|| terrain.travel_cost(next));
-            if !cost.is_finite() {
-                continue; // impassable (water)
-            }
-            let tentative = current.g + STEP * cost;
-            if tentative < *g_score.get(&nk).unwrap_or(&f32::INFINITY) {
-                g_score.insert(nk, tentative);
-                came_from.insert(nk, current.pos);
-                open.push(Node { f: tentative + next.distance(goal), g: tentative, pos: next });
-            }
-        }
+        points.push(p);
     }
-    None
+    points[0] = a;
+    *points.last_mut().unwrap() = b;
+
+    // Re-check: if the corrected path still dips below the continent, fall back to bridge.
+    if points.iter().any(|p| terrain.continent_elevation(*p) < 0.0) {
+        let straight: Vec<SpherePos> =
+            (0..=steps).map(|k| slerp(a, b, k as f32 / steps as f32)).collect();
+        return Some(Road { points: straight, kind: PathKind::Bridge });
+    }
+    Some(Road { points, kind: PathKind::Road })
 }
 
-/// Resample a polyline of surface points to even ~SAMPLE_SPACING spacing (great-circle
-/// interpolation between consecutive nodes) for smooth road rendering.
-fn resample(path: &[SpherePos]) -> Vec<SpherePos> {
-    let mut out = Vec::new();
-    for seg in path.windows(2) {
-        let (a, b) = (seg[0], seg[1]);
-        let d = a.distance(b);
-        let steps = (d / SAMPLE_SPACING).ceil().max(1.0) as usize;
-        for k in 0..steps {
-            out.push(slerp(a, b, k as f32 / steps as f32));
-        }
+/// Great-circle interpolation with a multi-frequency lateral wobble for organic curve,
+/// displaced perpendicularly to the arc by up to `amplitude` meters.
+fn wobbled_slerp(a: SpherePos, b: SpherePos, t: f32, seed: Vec3, amplitude: f32) -> SpherePos {
+    let base = slerp(a, b, t);
+    let n = a.0.cross(b.0);
+    if n.length_squared() < 1e-12 {
+        return base;
     }
-    if let Some(last) = path.last() {
-        out.push(*last);
-    }
-    out
+    let n = n.normalize();
+    // Rich wobble: three frequencies give natural-looking variation without sharp turns.
+    let phase1 = t * 7.3 + seed.x * 3.1 + seed.y * 5.7;
+    let phase2 = t * 4.1 + seed.z * 6.5 + seed.x * 2.3;
+    let phase3 = t * 11.7 + seed.y * 4.9 + seed.z * 1.8;
+    let wobble = (phase1 as f64).sin() as f32 * 0.6
+        + (phase2 as f64).sin() as f32 * 0.3
+        + (phase3 as f64).sin() as f32 * 0.1;
+    let offset = n * (wobble * amplitude / PLANET_RADIUS);
+    SpherePos::new(base.0 + offset)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Mean terrain travel cost sampled along a path (finite-only), for comparing routes.
-    fn path_cost(terrain: &TerrainGen, pts: impl Iterator<Item = SpherePos>) -> f32 {
-        let mut sum = 0.0;
-        let mut n = 0.0;
-        for p in pts {
-            let c = terrain.travel_cost(p);
-            if c.is_finite() {
-                sum += c;
-                n += 1.0;
-            }
-        }
-        if n == 0.0 { f32::INFINITY } else { sum / n }
-    }
 
     #[test]
     fn roads_stay_on_land_and_connect_settlements() {
@@ -240,23 +221,30 @@ mod tests {
             assert!(terrain.is_habitable(s.pos));
             assert!(!s.name.is_empty());
         }
-        // Every road point must be on land, and the least-cost route must have no higher
-        // total terrain cost than the naive straight line (it's what A* minimises).
+        // Roads stay on the continent (land), checked against the continent layer since
+        // mountains are grown around the roads later.
         for (ri, road) in net.roads.iter().enumerate() {
             assert!(road.points.len() >= 2);
-            for p in &road.points {
-                assert!(terrain.surface_radius(*p) >= PLANET_RADIUS, "road ran into the ocean");
-            }
             let a = *road.points.first().unwrap();
             let b = *road.points.last().unwrap();
-            let route_cost = path_cost(&terrain, road.points.iter().copied());
-            let straight: Vec<SpherePos> =
-                (0..=80).map(|k| crate::sphere::slerp(a, b, k as f32 / 80.0)).collect();
-            let straight_cost = path_cost(&terrain, straight.into_iter());
-            assert!(
-                route_cost <= straight_cost + 1.0,
-                "road {ri} costlier than straight line: route {route_cost} vs straight {straight_cost}"
-            );
+            match road.kind {
+                PathKind::Road => {
+                    for p in &road.points {
+                        assert!(
+                            terrain.continent_elevation(*p) > 0.0,
+                            "road {ri} ran into the ocean (continent layer)"
+                        );
+                    }
+                }
+                PathKind::Bridge => {
+                    // A bridge is the straight great-circle span.
+                    for (k, p) in road.points.iter().enumerate() {
+                        let t = k as f32 / (road.points.len() - 1) as f32;
+                        let expected = crate::sphere::slerp(a, b, t);
+                        assert!(p.distance(expected) < 1.0, "bridge {ri} not straight");
+                    }
+                }
+            }
         }
     }
 
@@ -267,5 +255,22 @@ mod tests {
         let b = Roads::generate(&t);
         assert_eq!(a.settlements.len(), b.settlements.len());
         assert_eq!(a.roads.len(), b.roads.len());
+    }
+
+    #[test]
+    fn every_settlement_is_connected() {
+        // Roads-first generation connects towns before terrain forms, so every settlement
+        // gets a road (island towns still bridge within range).
+        for seed in [1u32, 7, 42, 1337, 99] {
+            let terrain = TerrainGen::new(seed);
+            let net = Roads::generate(&terrain);
+            for s in &net.settlements {
+                let connected = net.roads.iter().any(|r| {
+                    r.points.first().is_some_and(|p| p.distance(s.pos) < 100.0)
+                        || r.points.last().is_some_and(|p| p.distance(s.pos) < 100.0)
+                });
+                assert!(connected, "settlement {} has no road (seed {seed})", s.name);
+            }
+        }
     }
 }

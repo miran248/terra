@@ -18,4 +18,7 @@ pub const SURFACE: Color = Color::srgb(0.09, 0.09, 0.09);
 /// Divider / subtle border color.
 pub const BORDER: Color = Color::srgb(0.502, 0.502, 0.502);
 
+/// Translucent water surface for the ocean sphere.
+pub const WATER_SURFACE: Color = Color::srgba(0.1, 0.35, 0.7, 0.55);
+
 pub const FONT_PATH: &str = "fonts/MonaspaceNeon-Regular.otf";
