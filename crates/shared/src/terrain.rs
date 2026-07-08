@@ -222,7 +222,7 @@ impl TerrainGen {
     /// is a flat surface at sea level. The ocean floor's true depth stays data-only (color,
     /// travel cost) rather than a sloped dent in the visible sea.
     pub fn render_radius(&self, pos: SpherePos) -> f32 {
-        self.surface_radius(pos).max(PLANET_RADIUS)
+        self.surface_radius(pos)
     }
 
     /// World-space point on the displaced terrain surface at `pos`.
@@ -416,6 +416,8 @@ impl TerrainGen {
         let e = self.elevation_at(pos);
         let m = self.moisture_at(pos);
         let t = self.temperature_at(pos);
+        // World-space radius of this point; used to suppress water colors on inland lakes.
+        let world_r = self.surface_radius(pos);
 
         // Water gradient (deep -> ocean -> shallow shore), valid across the whole range;
         // only shows where elevation is at/below sea level.
@@ -460,7 +462,14 @@ impl TerrainGen {
         };
 
         // Cross-fade water -> land across the shoreline band so there is no hard seam.
-        lerp_color(water, land, smoothstep(-0.04, 0.06, e))
+        // Suppress water colors on inland depressions (lakes above sea level) by using the
+        // world-space height: only render water where the surface is at or below sea level.
+        let shore_t = if world_r <= PLANET_RADIUS {
+            smoothstep(-0.04, 0.06, e)
+        } else {
+            1.0 // fully land
+        };
+        lerp_color(water, land, shore_t)
     }
 }
 

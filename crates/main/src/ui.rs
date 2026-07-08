@@ -5,7 +5,7 @@ use shared::theme;
 use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{Survivor, SurvivorHp};
+use crate::map::{Player, PlayerHp};
 use crate::wave::WaveManager;
 
 #[derive(Resource, Default)]
@@ -154,7 +154,7 @@ fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
 fn update_stats(
     scrap: Res<ScrapCounter>,
     wave: Res<WaveManager>,
-    hp: Res<SurvivorHp>,
+    hp: Res<PlayerHp>,
     levels: Res<UpgradeLevels>,
     mut q: Query<&mut Text, With<StatsText>>,
 ) {
@@ -303,7 +303,7 @@ fn handle_upgrade_clicks(
     mut text_q: Query<&mut Text>,
     mut scrap: ResMut<ScrapCounter>,
     mut levels: ResMut<UpgradeLevels>,
-    mut survivor_hp: ResMut<SurvivorHp>,
+    mut player_hp: ResMut<PlayerHp>,
 ) {
     for (interaction, button, children) in &interactions {
         if *interaction != Interaction::Pressed {
@@ -323,7 +323,7 @@ fn handle_upgrade_clicks(
 
         if button.upgrade == Upgrade::WallHp {
             let val = button.upgrade.value(new_level);
-            survivor_hp.0 = val;
+            player_hp.0 = val;
         }
 
         for &child in children {
@@ -393,7 +393,7 @@ fn reset_upgrade_buttons(
 
 fn apply_upgrades(
     levels: Res<UpgradeLevels>,
-    mut survivor_q: Query<&mut Survivor>,
+    mut player_q: Query<&mut Player>,
     mut p_speed: ResMut<crate::turret::ProjectileSpeed>,
 ) {
     if !levels.is_changed() {
@@ -410,9 +410,9 @@ fn apply_upgrades(
     let range = Upgrade::TurretRange.value(levels.levels[rng_idx]);
     p_speed.0 = Upgrade::ProjectileSpeed.value(levels.levels[proj_idx]);
 
-    for mut survivor in &mut survivor_q {
-        survivor.damage = damage;
-        survivor.range = range;
-        survivor.fire_timer = Timer::from_seconds(1.0 / speed, TimerMode::Repeating);
+    for mut player in &mut player_q {
+        player.damage = damage;
+        player.range = range;
+        player.fire_timer = Timer::from_seconds(1.0 / speed, TimerMode::Repeating);
     }
 }

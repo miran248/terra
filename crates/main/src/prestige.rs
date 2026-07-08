@@ -85,9 +85,9 @@ fn restart_game(
     game_entities: Query<Entity, (With<crate::zombie::Zombie>, Without<GameOverUi>)>,
     projectile_entities: Query<Entity, (With<crate::turret::Projectile>, Without<GameOverUi>)>,
     loot_entities: Query<Entity, (Or<(With<crate::loot::LootMaterial>, With<crate::loot::LootWeapon>)>, Without<GameOverUi>)>,
-    survivor_entities: Query<Entity, (With<crate::map::Survivor>, Without<GameOverUi>)>,
+    player_entities: Query<Entity, (With<crate::map::Player>, Without<GameOverUi>)>,
     ground_entities: Query<Entity, (With<crate::map::Ground>, Without<GameOverUi>)>,
-    mut survivor_hp: ResMut<crate::map::SurvivorHp>,
+    mut player_hp: ResMut<crate::map::PlayerHp>,
     mut scrap: ResMut<crate::combat::ScrapCounter>,
     mut loot: ResMut<crate::loot::LootState>,
     mut wave: ResMut<crate::wave::WaveManager>,
@@ -106,7 +106,7 @@ fn restart_game(
     for entity in &loot_entities {
         commands.entity(entity).despawn();
     }
-    for entity in &survivor_entities {
+    for entity in &player_entities {
         commands.entity(entity).despawn();
     }
     for entity in &ground_entities {
@@ -116,7 +116,7 @@ fn restart_game(
         commands.entity(entity).despawn();
     }
 
-    survivor_hp.0 = crate::constants::SURVIVOR_HP;
+    player_hp.0 = crate::constants::PLAYER_HP;
     scrap.0 = 0;
     *loot = crate::loot::LootState::default();
     *wave = WaveManager::default();

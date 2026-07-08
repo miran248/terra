@@ -9,7 +9,7 @@ use shared::sphere::{SpherePos, PLANET_RADIUS};
 use shared::state::AppState;
 use shared::theme;
 use crate::loot::{LootMaterial, LootWeapon};
-use crate::map::{Settlement, Survivor};
+use crate::map::{Settlement, Player};
 use crate::ui::UiFont;
 use crate::zombie::Zombie;
 
@@ -117,16 +117,16 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 /// Keep the minimap camera high above the player, looking straight down, rolled so the
 /// player's heading points up in the view (matches the compass).
 fn track_minimap_camera(
-    survivor_q: Query<(&SpherePos, &Survivor)>,
+    player_q: Query<(&SpherePos, &Player)>,
     mut cam_q: Query<&mut Transform, With<MinimapCamera>>,
 ) {
-    let Ok((pos, survivor)) = survivor_q.single() else { return };
+    let Ok((pos, player)) = player_q.single() else { return };
     let Ok(mut cam_tf) = cam_q.single_mut() else { return };
 
     let up = pos.0; // surface normal = "down" direction to look along
     let eye = up * (PLANET_RADIUS + CAM_HEIGHT);
     // Heading is the "up" of the minimap image; camera looks down the -up axis.
-    let heading = (survivor.heading - up * survivor.heading.dot(up)).normalize();
+    let heading = (player.heading - up * player.heading.dot(up)).normalize();
     cam_tf.translation = eye;
     cam_tf.look_at(up * PLANET_RADIUS, heading);
 }
@@ -138,7 +138,7 @@ fn draw_overlay(
     mut commands: Commands,
     minimap_q: Query<Entity, With<Minimap>>,
     stale: Query<Entity, Or<(With<CompassLabel>, With<MinimapDot>)>>,
-    survivor_q: Query<(&SpherePos, &Survivor)>,
+    player_q: Query<(&SpherePos, &Player)>,
     zombies: Query<&SpherePos, With<Zombie>>,
     materials: Query<&SpherePos, With<LootMaterial>>,
     weapons: Query<&SpherePos, With<LootWeapon>>,
@@ -146,7 +146,7 @@ fn draw_overlay(
     font: Res<UiFont>,
 ) {
     let Ok(map_entity) = minimap_q.single() else { return };
-    let Ok((center, survivor)) = survivor_q.single() else { return };
+    let Ok((center, player)) = player_q.single() else { return };
 
     for e in &stale {
         commands.entity(e).despawn();
@@ -154,7 +154,7 @@ fn draw_overlay(
 
     let radius = (MINIMAP_SIZE - 6.0) / 2.0;
     let up = center.0;
-    let north = (survivor.heading - up * survivor.heading.dot(up)).normalize();
+    let north = (player.heading - up * player.heading.dot(up)).normalize();
     let east = north.cross(up).normalize();
 
     // Project a world point onto the disc, matching the minimap camera's coverage.

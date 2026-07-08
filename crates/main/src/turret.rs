@@ -4,7 +4,7 @@ use shared::state::AppState;
 use shared::upgrades::Upgrade;
 use crate::constants::PROJECTILE_SIZE;
 use crate::loot::{LootState, WeaponFired};
-use crate::map::{GameAssets, GroundOffset, Survivor};
+use crate::map::{GameAssets, GroundOffset, Player};
 use crate::zombie::Zombie;
 
 #[derive(Component)]
@@ -27,22 +27,22 @@ pub struct TurretPlugin;
 impl Plugin for TurretPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ProjectileSpeed>()
-            .add_systems(Update, (survivor_shoot, move_projectiles).run_if(in_state(AppState::Playing)));
+            .add_systems(Update, (player_shoot, move_projectiles).run_if(in_state(AppState::Playing)));
     }
 }
 
-fn survivor_shoot(
+fn player_shoot(
     mut commands: Commands,
     time: Res<Time>,
     equipped: Res<LootState>,
     assets: Res<GameAssets>,
     mut fired: MessageWriter<WeaponFired>,
-    mut survivor_q: Query<(&SpherePos, &mut Survivor)>,
-    zombies: Query<(Entity, &SpherePos), (With<Zombie>, Without<Survivor>)>,
+    mut player_q: Query<(&SpherePos, &mut Player)>,
+    zombies: Query<(Entity, &SpherePos), (With<Zombie>, Without<Player>)>,
 ) {
-    let Ok((pos, mut survivor)) = survivor_q.single_mut() else { return };
-    survivor.fire_timer.tick(time.delta());
-    if !survivor.fire_timer.just_finished() {
+    let Ok((pos, mut player)) = player_q.single_mut() else { return };
+    player.fire_timer.tick(time.delta());
+    if !player.fire_timer.just_finished() {
         return;
     }
 
@@ -51,7 +51,7 @@ fn survivor_shoot(
             let s = kind.stats();
             (s.damage, s.range, true)
         }
-        None => (survivor.damage, survivor.range, false),
+        None => (player.damage, player.range, false),
     };
 
     let mut closest: Option<(Entity, f32)> = None;

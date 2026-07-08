@@ -6,7 +6,7 @@ use shared::state::AppState;
 use shared::upgrades::Upgrade;
 use crate::constants::*;
 use crate::combat::ScrapCounter;
-use crate::map::{GroundOffset, Survivor};
+use crate::map::{GroundOffset, Player};
 use crate::ui::UpgradeLevels;
 
 const MAGNET_SPEED: f32 = 70.0; // m/s
@@ -171,13 +171,13 @@ fn magnet_loot(
     mut commands: Commands,
     time: Res<Time>,
     magnet: Res<MagnetRadius>,
-    survivor_q: Query<&SpherePos, With<Survivor>>,
+    player_q: Query<&SpherePos, With<Player>>,
     mut loot: ResMut<LootState>,
     mut scrap: ResMut<ScrapCounter>,
-    mut materials_q: Query<(Entity, &mut SpherePos, &LootMaterial), Without<Survivor>>,
-    mut weapons_q: Query<(Entity, &mut SpherePos, &LootWeapon), (Without<Survivor>, Without<LootMaterial>)>,
+    mut materials_q: Query<(Entity, &mut SpherePos, &LootMaterial), Without<Player>>,
+    mut weapons_q: Query<(Entity, &mut SpherePos, &LootWeapon), (Without<Player>, Without<LootMaterial>)>,
 ) {
-    let Ok(&center) = survivor_q.single() else { return };
+    let Ok(&center) = player_q.single() else { return };
     let dt = time.delta_secs();
     let radius = magnet.0;
 
@@ -227,14 +227,14 @@ fn drain_durability(
 
 fn apply_weapon_fire_rate(
     loot: Res<LootState>,
-    mut survivor_q: Query<&mut Survivor>,
+    mut player_q: Query<&mut Player>,
 ) {
     if !loot.is_changed() {
         return;
     }
-    let Ok(mut survivor) = survivor_q.single_mut() else { return };
+    let Ok(mut player) = player_q.single_mut() else { return };
     if let Some((kind, _)) = loot.equipped {
         let rate = kind.stats().fire_rate;
-        survivor.fire_timer = Timer::from_seconds(1.0 / rate, TimerMode::Repeating);
+        player.fire_timer = Timer::from_seconds(1.0 / rate, TimerMode::Repeating);
     }
 }
