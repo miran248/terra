@@ -21,7 +21,7 @@ pub struct MapPlugin;
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::Playing), setup_map)
-            .add_systems(Update, move_survivor.run_if(in_state(AppState::Playing)));
+            .add_systems(Update, (move_survivor, camera_follow).run_if(in_state(AppState::Playing)));
     }
 }
 
@@ -63,4 +63,18 @@ fn move_survivor(
         tf.translation.x += dir.x * SPEED * dt;
         tf.translation.y += dir.y * SPEED * dt;
     }
+    let hw = (MAP_WIDTH - SURVIVOR_SIZE) / 2.0;
+    let hh = (MAP_HEIGHT - SURVIVOR_SIZE) / 2.0;
+    tf.translation.x = tf.translation.x.clamp(-hw, hw);
+    tf.translation.y = tf.translation.y.clamp(-hh, hh);
+}
+
+fn camera_follow(
+    survivor_q: Query<&Transform, With<Survivor>>,
+    mut camera_q: Query<&mut Transform, (With<Camera2d>, Without<Survivor>)>,
+) {
+    let Ok(survivor_tf) = survivor_q.single() else { return };
+    let Ok(mut cam_tf) = camera_q.single_mut() else { return };
+    cam_tf.translation.x = survivor_tf.translation.x;
+    cam_tf.translation.y = survivor_tf.translation.y;
 }

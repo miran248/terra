@@ -2,6 +2,7 @@ use bevy::prelude::*;
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
 use crate::constants::*;
+use crate::loot::{LootState, WeaponFired};
 use crate::map::Survivor;
 use crate::zombie::Zombie;
 
@@ -32,6 +33,8 @@ impl Plugin for TurretPlugin {
 fn survivor_shoot(
     mut commands: Commands,
     time: Res<Time>,
+    equipped: Res<LootState>,
+    mut fired: MessageWriter<WeaponFired>,
     mut survivor_q: Query<(Entity, &mut Survivor)>,
     survivor_tf_q: Query<&Transform, With<Survivor>>,
     zombies: Query<(Entity, &Transform), (With<Zombie>, Without<Survivor>)>,
@@ -43,12 +46,20 @@ fn survivor_shoot(
         return;
     }
 
+    let (damage, range, has_weapon) = match equipped.equipped {
+        Some((kind, _)) => {
+            let s = kind.stats();
+            (s.damage, s.range, true)
+        }
+        None => (survivor.damage, survivor.range, false),
+    };
+
     let pos = survivor_tf.translation.xy();
     let mut closest: Option<(Entity, f32)> = None;
 
     for (entity, z_tf) in &zombies {
         let dist = pos.distance(z_tf.translation.xy());
-        if dist <= survivor.range {
+        if dist <= range {
             match closest {
                 None => closest = Some((entity, dist)),
                 Some((_, d)) if dist < d => closest = Some((entity, dist)),
@@ -62,10 +73,13 @@ fn survivor_shoot(
             Sprite::from_color(PROJECTILE_COLOR, Vec2::new(PROJECTILE_SIZE, PROJECTILE_SIZE)),
             Transform::from_translation(pos.extend(0.2)),
             Projectile {
-                damage: survivor.damage,
+                damage,
                 target,
             },
         ));
+        if has_weapon {
+            fired.write(WeaponFired);
+        }
     }
 }
 

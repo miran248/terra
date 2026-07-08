@@ -1,7 +1,8 @@
 mod combat;
 mod constants;
+mod loot;
 mod map;
-mod pickup;
+mod minimap;
 mod prestige;
 mod turret;
 mod ui;
@@ -21,8 +22,9 @@ fn main() {
             zombie::ZombiePlugin,
             turret::TurretPlugin,
             combat::CombatPlugin,
-            pickup::PickupPlugin,
+            loot::LootPlugin,
             ui::UiPlugin,
+            minimap::MinimapPlugin,
             prestige::PrestigePlugin,
         ))
         .add_systems(Startup, setup_camera)

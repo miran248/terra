@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use rand::Rng;
-use crate::combat::Scrap;
 use crate::constants::*;
 use crate::map::{Survivor, SurvivorHp};
 use crate::wave::WaveManager;
@@ -25,6 +24,7 @@ fn spawn_zombies(
     mut commands: Commands,
     time: Res<Time>,
     mut wave: ResMut<WaveManager>,
+    survivor_q: Query<&Transform, With<Survivor>>,
 ) {
     if wave.zombies_spawned_this_wave >= wave.zombies_per_wave {
         return;
@@ -35,21 +35,10 @@ fn spawn_zombies(
         return;
     }
 
+    let center = survivor_q.single().map(|t| t.translation.xy()).unwrap_or(Vec2::ZERO);
     let mut rng = rand::thread_rng();
-    let at_baseline = rng.gen_bool(0.5);
-    let sign = if rng.gen_bool(0.5) { 1.0 } else { -1.0 };
-
-    let spawn_pos = if at_baseline {
-        Vec2::new(
-            rng.gen_range(-MAP_WIDTH / 2.0..MAP_WIDTH / 2.0),
-            sign * (MAP_HEIGHT / 2.0 + SPAWN_MARGIN),
-        )
-    } else {
-        Vec2::new(
-            sign * (MAP_WIDTH / 2.0 + SPAWN_MARGIN),
-            rng.gen_range(-MAP_HEIGHT / 2.0..MAP_HEIGHT / 2.0),
-        )
-    };
+    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+    let spawn_pos = center + Vec2::from_angle(angle) * SPAWN_RADIUS;
 
     wave.zombies_spawned_this_wave += 1;
 
@@ -95,17 +84,6 @@ fn zombie_hit_survivor(
         if z_tf.translation.xy().distance(s_pos) <= SURVIVOR_SIZE / 2.0 + ZOMBIE_SIZE / 2.0 {
             commands.entity(z_entity).despawn();
             total_hp -= DAMAGE_PER_HIT;
-
-            let mut rng = rand::thread_rng();
-            let offset = Vec2::new(
-                rng.gen_range(-10.0..10.0),
-                rng.gen_range(-10.0..10.0),
-            );
-            commands.spawn((
-                Sprite::from_color(SCRAP_COLOR, Vec2::new(SCRAP_SIZE, SCRAP_SIZE)),
-                Transform::from_translation((z_tf.translation.xy() + offset).extend(0.3)),
-                Scrap { value: 1 },
-            ));
         }
     }
 

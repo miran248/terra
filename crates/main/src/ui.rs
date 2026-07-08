@@ -1,7 +1,10 @@
 use bevy::prelude::*;
 use bevy::input::mouse::MouseWheel;
+use shared::items::Recipe;
+use shared::theme;
 use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
+use crate::loot::LootState;
 use crate::map::{Survivor, SurvivorHp};
 use crate::wave::WaveManager;
 
@@ -9,6 +12,9 @@ use crate::wave::WaveManager;
 pub struct UpgradeLevels {
     pub levels: [u32; Upgrade::ALL.len()],
 }
+
+#[derive(Resource)]
+pub struct UiFont(pub Handle<Font>);
 
 #[derive(Component)]
 struct Sidebar;
@@ -24,26 +30,41 @@ struct ShopButton {
     upgrade: Upgrade,
 }
 
+#[derive(Component)]
+struct CraftButton {
+    recipe: usize,
+}
+
+#[derive(Component)]
+struct CraftStatusText;
+
 pub struct UiPlugin;
 
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UpgradeLevels>()
-            .add_systems(Startup, setup_sidebar)
+            .add_systems(Startup, (load_font, setup_sidebar, setup_crafting).chain())
             .add_systems(OnEnter(shared::state::AppState::Playing), reset_upgrade_buttons)
             .add_systems(Update, (
                 update_stats,
                 handle_upgrade_clicks,
                 apply_upgrades,
                 scroll_upgrades,
+                handle_craft_clicks,
+                update_craft_status,
             ));
     }
 }
 
-fn setup_sidebar(mut commands: Commands) {
-    let font = FontSize::Px(14.0);
-    let small_font = FontSize::Px(11.0);
+fn load_font(mut commands: Commands, assets: Res<AssetServer>) {
+    commands.insert_resource(UiFont(assets.load(theme::FONT_PATH)));
+}
 
+fn text_font(font: &UiFont, size: f32) -> TextFont {
+    TextFont { font: font.0.clone().into(), font_size: FontSize::Px(size), ..default() }
+}
+
+fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
     commands
         .spawn((
             Node {
@@ -58,15 +79,15 @@ fn setup_sidebar(mut commands: Commands) {
                 row_gap: Val::Px(4.0),
                 ..default()
             },
-            BackgroundColor(Color::srgba(0.05, 0.05, 0.1, 0.9)),
+            BackgroundColor(theme::PANEL_BG),
             GlobalZIndex(10),
             Sidebar,
         ))
         .with_children(|parent| {
             parent.spawn((
                 Text::new("Scrap: 0\nWave: 1\nHP: 500\n\nDPS: 0.0\nAPS: 0.0"),
-                TextFont { font_size: font, ..default() },
-                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                text_font(&font, 14.0),
+                TextColor(theme::INK),
                 Node { flex_shrink: 0.0, ..default() },
                 StatsText,
             ));
@@ -78,7 +99,7 @@ fn setup_sidebar(mut commands: Commands) {
                     flex_shrink: 0.0,
                     ..default()
                 },
-                BackgroundColor(Color::srgb(0.3, 0.3, 0.3)),
+                BackgroundColor(theme::BORDER),
             ));
 
             parent
@@ -117,13 +138,13 @@ fn setup_sidebar(mut commands: Commands) {
                                 flex_shrink: 0.0,
                                 ..default()
                             },
-                            BorderColor::all(Color::srgb(0.3, 0.3, 0.4)),
-                            BackgroundColor(Color::srgb(0.08, 0.08, 0.13)),
+                            BorderColor::all(theme::PRIMARY),
+                            BackgroundColor(theme::SURFACE),
                             ShopButton { upgrade: *upgrade },
                         )).with_child((
                             Text::new(label),
-                            TextFont { font_size: small_font, ..default() },
-                            TextColor(Color::srgb(0.85, 0.85, 0.85)),
+                            text_font(&font, 11.0),
+                            TextColor(theme::INK),
                         ));
                     }
                 });
@@ -152,6 +173,128 @@ fn update_stats(
         hp.0,
         dps,
         aps,
+    );
+}
+
+fn setup_crafting(mut commands: Commands, font: Res<UiFont>) {
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Px(200.0),
+                height: Val::Percent(100.0),
+                display: Display::Flex,
+                flex_direction: FlexDirection::Column,
+                padding: UiRect::all(Val::Px(8.0)),
+                row_gap: Val::Px(4.0),
+                ..default()
+            },
+            BackgroundColor(theme::PANEL_BG),
+            GlobalZIndex(10),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("CRAFTING\nMetal 0  Wood 0\nRope 0  Cloth 0\nWeapon: none"),
+                text_font(&font, 12.0),
+                TextColor(theme::INK),
+                Node { flex_shrink: 0.0, ..default() },
+                CraftStatusText,
+            ));
+
+            parent.spawn((
+                Node {
+                    width: Val::Percent(100.0),
+                    height: Val::Px(1.0),
+                    flex_shrink: 0.0,
+                    ..default()
+                },
+                BackgroundColor(theme::BORDER),
+            ));
+
+            for (i, recipe) in Recipe::ALL.iter().enumerate() {
+                parent
+                    .spawn((
+                        Button,
+                        Node {
+                            padding: UiRect::all(Val::Px(6.0)),
+                            flex_shrink: 0.0,
+                            ..default()
+                        },
+                        BorderColor::all(theme::PRIMARY),
+                        BackgroundColor(theme::SURFACE),
+                        CraftButton { recipe: i },
+                    ))
+                    .with_child((
+                        Text::new(recipe_label(recipe)),
+                        text_font(&font, 11.0),
+                        TextColor(theme::INK),
+                    ));
+            }
+        });
+}
+
+fn recipe_label(recipe: &Recipe) -> String {
+    let s = recipe.output.stats();
+    let cost: Vec<String> = recipe
+        .cost
+        .iter()
+        .map(|(m, n)| format!("{}x{}", n, m.name()))
+        .collect();
+    format!(
+        "Craft {}\n{}\ndmg {:.0} rng {:.0} dur {}",
+        recipe.output.name(),
+        cost.join(" + "),
+        s.damage,
+        s.range,
+        s.durability,
+    )
+}
+
+fn handle_craft_clicks(
+    interactions: Query<(&Interaction, &CraftButton), Changed<Interaction>>,
+    mut loot: ResMut<LootState>,
+) {
+    for (interaction, button) in &interactions {
+        if *interaction != Interaction::Pressed {
+            continue;
+        }
+        let recipe = Recipe::ALL[button.recipe];
+        let affordable = recipe.cost.iter().all(|(m, n)| loot.count(*m) >= *n);
+        if !affordable {
+            continue;
+        }
+        for (m, n) in recipe.cost {
+            loot.try_spend(m, n);
+        }
+        loot.weapons.push(recipe.output);
+        if loot.equipped.is_none() {
+            loot.equipped = Some((recipe.output, recipe.output.stats().durability));
+        }
+    }
+}
+
+fn update_craft_status(
+    loot: Res<LootState>,
+    mut q: Query<&mut Text, With<CraftStatusText>>,
+) {
+    if !loot.is_changed() {
+        return;
+    }
+    let Ok(mut t) = q.single_mut() else { return };
+    use shared::items::Material::*;
+    let weapon = match loot.equipped {
+        Some((kind, dur)) => format!("{} (dur {})", kind.name(), dur),
+        None => "none".to_string(),
+    };
+    t.0 = format!(
+        "CRAFTING\nMetal {}  Wood {}\nRope {}  Cloth {}\nWeapon: {}",
+        loot.count(Metal),
+        loot.count(Wood),
+        loot.count(Rope),
+        loot.count(Cloth),
+        weapon,
     );
 }
 

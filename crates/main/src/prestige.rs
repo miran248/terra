@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 use shared::state::AppState;
+use shared::theme;
+use crate::ui::UiFont;
 use crate::wave::WaveManager;
 
 #[derive(Resource, Default)]
@@ -22,6 +24,7 @@ fn show_game_over(
     mut commands: Commands,
     wave: Res<WaveManager>,
     prestige: Res<PrestigeLevel>,
+    font: Res<UiFont>,
 ) {
     commands
         .spawn((
@@ -35,6 +38,7 @@ fn show_game_over(
                 row_gap: Val::Px(20.0),
                 ..default()
             },
+            BackgroundColor(theme::PANEL_BG),
             GlobalZIndex(20),
             GameOverUi,
         ))
@@ -42,10 +46,11 @@ fn show_game_over(
             parent.spawn((
                 Text::new("GAME OVER"),
                 TextFont {
+                    font: font.0.clone().into(),
                     font_size: FontSize::Px(64.0),
                     ..default()
                 },
-                TextColor(Color::srgb(0.9, 0.2, 0.2)),
+                TextColor(theme::PRIMARY),
             ));
             parent.spawn((
                 Text::new(format!(
@@ -53,18 +58,20 @@ fn show_game_over(
                     wave.wave, prestige.0
                 )),
                 TextFont {
+                    font: font.0.clone().into(),
                     font_size: FontSize::Px(28.0),
                     ..default()
                 },
-                TextColor(Color::srgb(0.9, 0.9, 0.9)),
+                TextColor(theme::INK),
             ));
             parent.spawn((
                 Text::new("Press SPACE to restart with prestige bonus"),
                 TextFont {
+                    font: font.0.clone().into(),
                     font_size: FontSize::Px(20.0),
                     ..default()
                 },
-                TextColor(Color::srgb(0.7, 0.7, 0.7)),
+                TextColor(theme::TEXT_WEAK),
             ));
         });
 }
@@ -77,11 +84,12 @@ fn restart_game(
     game_over_ui: Query<Entity, With<GameOverUi>>,
     game_entities: Query<Entity, (With<crate::zombie::Zombie>, Without<GameOverUi>)>,
     projectile_entities: Query<Entity, (With<crate::turret::Projectile>, Without<GameOverUi>)>,
-    scrap_entities: Query<Entity, (With<crate::combat::Scrap>, Without<GameOverUi>)>,
+    loot_entities: Query<Entity, (Or<(With<crate::loot::LootMaterial>, With<crate::loot::LootWeapon>)>, Without<GameOverUi>)>,
     survivor_entities: Query<Entity, (With<crate::map::Survivor>, Without<GameOverUi>)>,
     ground_entities: Query<Entity, (With<crate::map::Ground>, Without<GameOverUi>)>,
     mut survivor_hp: ResMut<crate::map::SurvivorHp>,
     mut scrap: ResMut<crate::combat::ScrapCounter>,
+    mut loot: ResMut<crate::loot::LootState>,
     mut wave: ResMut<crate::wave::WaveManager>,
     mut levels: ResMut<crate::ui::UpgradeLevels>,
 ) {
@@ -95,7 +103,7 @@ fn restart_game(
     for entity in &projectile_entities {
         commands.entity(entity).despawn();
     }
-    for entity in &scrap_entities {
+    for entity in &loot_entities {
         commands.entity(entity).despawn();
     }
     for entity in &survivor_entities {
@@ -110,6 +118,7 @@ fn restart_game(
 
     survivor_hp.0 = crate::constants::SURVIVOR_HP;
     scrap.0 = 0;
+    *loot = crate::loot::LootState::default();
     *wave = WaveManager::default();
     levels.levels = [0; 13];
     prestige.0 += 1;
