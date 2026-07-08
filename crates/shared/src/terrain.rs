@@ -11,7 +11,7 @@ pub const MAX_DEPTH: f32 = 500.0 * METER;
 /// Habitable altitude band (meters above sea level): livable lowlands where
 /// villages, towns, farms, roads and paths can later be placed.
 pub const HABITABLE_MIN_ALT: f32 = 1.0 * METER;
-pub const HABITABLE_MAX_ALT: f32 = 300.0 * METER;
+pub const HABITABLE_MAX_ALT: f32 = 150.0 * METER;
 /// Maximum ground steepness (altitude change per meter) still considered buildable.
 pub const HABITABLE_MAX_SLOPE: f32 = 0.6;
 /// Habitable temperature band, in degrees Celsius.
@@ -131,6 +131,13 @@ impl TerrainGen {
         }
     }
 
+    /// Radius the terrain *mesh* should render at: land follows `surface_radius`, but water
+    /// is a flat surface at sea level. The ocean floor's true depth stays data-only (color,
+    /// travel cost) rather than a sloped dent in the visible sea.
+    pub fn render_radius(&self, pos: SpherePos) -> f32 {
+        self.surface_radius(pos).max(PLANET_RADIUS)
+    }
+
     /// World-space point on the displaced terrain surface at `pos`.
     pub fn surface_world(&self, pos: SpherePos) -> bevy::prelude::Vec3 {
         pos.0 * self.surface_radius(pos)
@@ -162,6 +169,18 @@ impl TerrainGen {
             worst = worst.max((self.altitude(n) - h).abs() / STEP);
         }
         worst
+    }
+
+    /// Cost multiplier for travelling road across `pos`: cheap on flat low land, expensive
+    /// on steep or high ground, impassable over water. Drives road routing (least resistance).
+    pub fn travel_cost(&self, pos: SpherePos) -> f32 {
+        // Keep roads just off the waterline so chords between path nodes don't clip sea.
+        if self.altitude(pos) < 0.5 * METER {
+            return f32::INFINITY;
+        }
+        let slope = self.slope(pos);
+        let alt = self.altitude(pos).max(0.0) / MAX_MOUNTAIN; // 0..1
+        1.0 + slope * 40.0 + alt * alt * 6.0
     }
 
     /// Whether a location is livable — the seed for future villages/roads/farms.

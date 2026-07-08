@@ -1,4 +1,5 @@
 use bevy::prelude::*;
+use bevy::platform::collections::HashMap;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::planet::PlanetMesh;
 use shared::sphere::{SpherePos, PLANET_RADIUS};
@@ -72,6 +73,7 @@ fn setup_map(
     commands.insert_resource(SurvivorHp(SURVIVOR_HP));
 
     let terrain = TerrainGen::new(PLANET_SEED);
+    let roads = shared::roads::Roads::generate(&terrain);
 
     commands.insert_resource(GameAssets {
         zombie_mesh: meshes.add(Sphere::new(ZOMBIE_SIZE * 0.5)),
@@ -85,7 +87,7 @@ fn setup_map(
     });
 
     // Planet: displaced low-poly heightmap mesh; keep its triangles for actor grounding.
-    let (planet_mesh, planet_tris) = build_planet_mesh(&terrain);
+    let (planet_mesh, planet_tris) = build_planet_mesh(&terrain, &roads);
     commands.spawn((
         Mesh3d(meshes.add(planet_mesh)),
         MeshMaterial3d(materials.add(StandardMaterial {
@@ -123,76 +125,23 @@ fn setup_map(
         },
     ));
 
-    let roads = shared::roads::Roads::generate(&terrain);
-    spawn_road_geometry(&mut commands, &mut meshes, &mut materials, &planet, &roads);
+    // Settlements are baked into the planet mesh color; spawn only the data markers the
+    // minimap reads (position + name).
+    for s in &roads.settlements {
+        commands.spawn((s.pos, Settlement { name: s.name.clone() }));
+    }
     commands.insert_resource(planet);
     commands.insert_resource(roads);
     commands.insert_resource(terrain);
 }
 
-/// Spawn the road network and settlements as flat ground patches lying on the *faceted*
-/// terrain surface (matching the rendered mesh, so they aren't buried), facing up.
-fn spawn_road_geometry(
-    commands: &mut Commands,
-    meshes: &mut Assets<Mesh>,
-    materials: &mut Assets<StandardMaterial>,
-    planet: &PlanetMesh,
-    roads: &shared::roads::Roads,
-) {
-    let road_mat = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.5, 0.42, 0.3),
-        unlit: true,
-        ..default()
-    });
-    // Patches overlap the ~40 m point spacing so the road reads as a continuous ribbon.
-    let road_patch = meshes.add(Circle::new(26.0));
-    for road in &roads.roads {
-        for p in &road.points {
-            commands.spawn((
-                Mesh3d(road_patch.clone()),
-                MeshMaterial3d(road_mat.clone()),
-                ground_patch_transform(planet, *p),
-                Ground,
-            ));
-        }
-    }
-
-    let town_mat = materials.add(StandardMaterial {
-        base_color: theme::WARNING,
-        unlit: true,
-        ..default()
-    });
-    let town_patch = meshes.add(Circle::new(40.0)); // town footprint
-    for s in &roads.settlements {
-        // Visual ground patch (static transform; NOT a SpherePos so it isn't re-synced).
-        commands.spawn((
-            Mesh3d(town_patch.clone()),
-            MeshMaterial3d(town_mat.clone()),
-            ground_patch_transform(planet, s.pos),
-            Ground,
-        ));
-        // Data marker the minimap reads (position + name), no mesh.
-        commands.spawn((s.pos, Settlement { name: s.name.clone() }));
-    }
-}
-
-/// Transform for a flat disc lying on the faceted terrain at `pos`, facing outward
-/// (its local +Z aligned to the surface normal), lifted above the facet to avoid z-fighting.
-fn ground_patch_transform(planet: &PlanetMesh, pos: SpherePos) -> Transform {
-    let up = pos.0;
-    let r = planet.facet_radius(up, PLANET_RADIUS).max(PLANET_RADIUS);
-    Transform {
-        translation: up * (r + 1.5),
-        rotation: Quat::from_rotation_arc(Vec3::Z, up),
-        ..default()
-    }
-}
-
 /// Low-poly icosphere displaced by the terrain heightmap, flat-shaded with per-face
-/// terrain colors (chunky faceted planet, not a smooth blurry ball). Returns the mesh
+/// terrain colors — with roads and settlements painted directly into the mesh (so they
+/// drape over the real surface instead of floating as separate discs). Returns the mesh
 /// and its world-space triangles for actor grounding.
-fn build_planet_mesh(terrain: &TerrainGen) -> (Mesh, Vec<[Vec3; 3]>) {
+fn build_planet_mesh(terrain: &TerrainGen, roads: &shared::roads::Roads) -> (Mesh, Vec<[Vec3; 3]>) {
     let mut mesh = Sphere::new(PLANET_RADIUS).mesh().ico(40).unwrap();
+    let paint = RoadPaint::new(roads);
 
     // Displace each vertex to its terrain radius.
     if let Some(VertexAttributeValues::Float32x3(positions)) =
@@ -200,7 +149,7 @@ fn build_planet_mesh(terrain: &TerrainGen) -> (Mesh, Vec<[Vec3; 3]>) {
     {
         for p in positions.iter_mut() {
             let pos = SpherePos::new(Vec3::from_array(*p));
-            *p = (pos.0 * terrain.surface_radius(pos)).to_array();
+            *p = (pos.0 * terrain.render_radius(pos)).to_array();
         }
     }
 
@@ -208,7 +157,9 @@ fn build_planet_mesh(terrain: &TerrainGen) -> (Mesh, Vec<[Vec3; 3]>) {
     mesh.duplicate_vertices();
     mesh.compute_flat_normals();
 
-    // Capture triangles and color each face a single terrain color (at its centroid).
+    // Capture triangles and color each face: solid road/town color if a road actually
+    // crosses the triangle (so road faces connect only along the edge the road passes
+    // through — no blending, no vertex-fan spread), else the biome color.
     let mut tris = Vec::new();
     if let Some(VertexAttributeValues::Float32x3(positions)) =
         mesh.attribute(Mesh::ATTRIBUTE_POSITION)
@@ -220,10 +171,14 @@ fn build_planet_mesh(terrain: &TerrainGen) -> (Mesh, Vec<[Vec3; 3]>) {
             let b = Vec3::from_array(tri[1]);
             let c = Vec3::from_array(tri[2]);
             tris.push([a, b, c]);
-            let color = terrain
-                .color_at(SpherePos::new((a + b + c) / 3.0))
-                .to_linear()
-                .to_f32_array();
+            let centroid = SpherePos::new((a + b + c) / 3.0);
+            let color = match paint.face_kind(a, b, c, centroid) {
+                Some(FaceKind::Town) => theme::WARNING,
+                Some(FaceKind::Road) => Color::srgb(0.5, 0.42, 0.3),
+                None => terrain.color_at(centroid),
+            }
+            .to_linear()
+            .to_f32_array();
             colors.push(color);
             colors.push(color);
             colors.push(color);
@@ -232,6 +187,108 @@ fn build_planet_mesh(terrain: &TerrainGen) -> (Mesh, Vec<[Vec3; 3]>) {
     }
 
     (mesh, tris)
+}
+
+/// Spatial hash of road *segments* and settlements, so per-face mesh coloring can ask
+/// "does a road cross this triangle?" — giving crisp road faces connected only along the
+/// edge a road passes through (no blending, no vertex-fan spread).
+struct RoadPaint {
+    roads: HashMap<(i32, i32), Vec<[Vec3; 2]>>,
+    towns: HashMap<(i32, i32), Vec<Vec3>>,
+}
+
+const PAINT_CELL: f32 = 60.0; // grid cell size in meters (~ face scale)
+const TOWN_RADIUS: f32 = 55.0;
+
+enum FaceKind {
+    Road,
+    Town,
+}
+
+impl RoadPaint {
+    fn new(roads: &shared::roads::Roads) -> Self {
+        let mut r: HashMap<(i32, i32), Vec<[Vec3; 2]>> = HashMap::new();
+        for road in &roads.roads {
+            for seg in road.points.windows(2) {
+                let (a, b) = (seg[0].0, seg[1].0);
+                // Bucket the segment into every cell its endpoints/midpoint fall in.
+                let mut cells = vec![paint_key(a), paint_key(b), paint_key((a + b).normalize())];
+                cells.sort();
+                cells.dedup();
+                for c in cells {
+                    r.entry(c).or_default().push([a, b]);
+                }
+            }
+        }
+        let mut t: HashMap<(i32, i32), Vec<Vec3>> = HashMap::new();
+        for s in &roads.settlements {
+            t.entry(paint_key(s.pos.0)).or_default().push(s.pos.0);
+        }
+        Self { roads: r, towns: t }
+    }
+
+    /// Classify a face: `Town` if its centroid is within a town, `Road` if a road segment
+    /// passes through the triangle (so neighbouring road faces meet on the shared edge the
+    /// road crosses), else `None`.
+    fn face_kind(&self, a: Vec3, b: Vec3, c: Vec3, centroid: SpherePos) -> Option<FaceKind> {
+        let (li, oi) = paint_key(centroid.0);
+        // Town takes priority (centroid distance).
+        for dl in -1..=1 {
+            for doo in -1..=1 {
+                if let Some(pts) = self.towns.get(&(li + dl, oi + doo)) {
+                    if pts.iter().any(|q| arc(centroid.0, *q) <= TOWN_RADIUS) {
+                        return Some(FaceKind::Town);
+                    }
+                }
+            }
+        }
+        // Road if any segment (sampled) has a point inside this triangle's solid angle.
+        let tri = [a, b, c];
+        for dl in -1..=1 {
+            for doo in -1..=1 {
+                if let Some(segs) = self.roads.get(&(li + dl, oi + doo)) {
+                    for s in segs {
+                        if segment_crosses_triangle(s[0], s[1], &tri) {
+                            return Some(FaceKind::Road);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+}
+
+/// True if the great-circle segment `p0`→`p1` passes through the spherical triangle `tri`
+/// (sampled finely; road points are ~40 m so a handful of samples covers a face).
+fn segment_crosses_triangle(p0: Vec3, p1: Vec3, tri: &[Vec3; 3]) -> bool {
+    const SAMPLES: usize = 12;
+    for i in 0..=SAMPLES {
+        let t = i as f32 / SAMPLES as f32;
+        let p = p0.lerp(p1, t).normalize();
+        if dir_in_triangle(p, tri) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether unit direction `p` projects inside the spherical triangle `tri` (ray from the
+/// planet centre through `p` hits the triangle). Reuses the shared ray-triangle test.
+fn dir_in_triangle(p: Vec3, tri: &[Vec3; 3]) -> bool {
+    shared::planet::ray_triangle_radius(p, tri).is_some()
+}
+
+fn paint_key(dir: Vec3) -> (i32, i32) {
+    let cell = PAINT_CELL / PLANET_RADIUS;
+    let lat = dir.y.clamp(-1.0, 1.0).acos();
+    let lon = dir.z.atan2(dir.x) + std::f32::consts::PI;
+    ((lat / cell).floor() as i32, (lon / cell).floor() as i32)
+}
+
+/// Arc-length (meters) between two unit directions.
+fn arc(a: Vec3, b: Vec3) -> f32 {
+    a.dot(b).clamp(-1.0, 1.0).acos() * PLANET_RADIUS
 }
 
 fn move_survivor(
