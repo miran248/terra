@@ -1,7 +1,22 @@
-use bevy::prelude::Color;
+use bevy::prelude::{Color, Resource};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 
-use crate::sphere::SpherePos;
+use crate::sphere::{SpherePos, METER, PLANET_RADIUS};
+
+/// Peak mountain height above sea level, in meters.
+pub const MAX_MOUNTAIN: f32 = 500.0 * METER;
+/// Deepest ocean floor below sea level, in meters.
+pub const MAX_DEPTH: f32 = 500.0 * METER;
+
+/// Habitable altitude band (meters above sea level): livable lowlands where
+/// villages, towns, farms, roads and paths can later be placed.
+pub const HABITABLE_MIN_ALT: f32 = 1.0 * METER;
+pub const HABITABLE_MAX_ALT: f32 = 300.0 * METER;
+/// Maximum ground steepness (altitude change per meter) still considered buildable.
+pub const HABITABLE_MAX_SLOPE: f32 = 0.6;
+/// Habitable temperature band, in degrees Celsius.
+pub const HABITABLE_MIN_TEMP: f32 = -10.0;
+pub const HABITABLE_MAX_TEMP: f32 = 30.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Terrain {
@@ -44,6 +59,7 @@ impl Terrain {
 ///   1. `continents` — low frequency: where land vs sea is. Dominant amplitude.
 ///   2. `mountains`   — ridged, only added *on* land and scaled by how far inland.
 ///   3. `detail`      — small high-frequency bumps, amplitude too low to cross sea level.
+#[derive(Resource)]
 pub struct TerrainGen {
     continents: Fbm<Perlin>,
     mountains: Fbm<Perlin>,
@@ -102,6 +118,134 @@ impl TerrainGen {
         (continent + mountains + detail).clamp(-1.0, 1.0)
     }
 
+    /// World-space radius of the terrain surface at `pos`. Sea level is `PLANET_RADIUS`.
+    /// Land rises up to `MAX_MOUNTAIN`; the ocean floor sinks down to `MAX_DEPTH`.
+    pub fn surface_radius(&self, pos: SpherePos) -> f32 {
+        let e = self.elevation_at(pos);
+        if e > 0.0 {
+            // Ease the low end so coastlines rise gently, peaks get the full height.
+            PLANET_RADIUS + e.powf(1.3) * MAX_MOUNTAIN
+        } else {
+            // Ocean floor deepens with negative elevation (basins/trenches).
+            PLANET_RADIUS - (-e).powf(1.3) * MAX_DEPTH
+        }
+    }
+
+    /// World-space point on the displaced terrain surface at `pos`.
+    pub fn surface_world(&self, pos: SpherePos) -> bevy::prelude::Vec3 {
+        pos.0 * self.surface_radius(pos)
+    }
+
+    /// World-space point for an actor of the given `half_height` resting *on* the ground:
+    /// its mesh center is lifted so the bottom touches the surface, never sinking below it.
+    /// Over ocean the ground is clamped to sea level, so actors rest on the water surface
+    /// (they may be under water, but never below the seabed).
+    pub fn ground_world(&self, pos: SpherePos, half_height: f32) -> bevy::prelude::Vec3 {
+        let ground = self.surface_radius(pos).max(PLANET_RADIUS);
+        pos.0 * (ground + half_height)
+    }
+
+    /// Height of the surface above sea level, in meters (negative under the ocean).
+    pub fn altitude(&self, pos: SpherePos) -> f32 {
+        self.surface_radius(pos) - PLANET_RADIUS
+    }
+
+    /// Local terrain steepness in meters of altitude change per meter travelled,
+    /// sampled over a small tangent neighbourhood. 0 = flat, higher = steeper.
+    pub fn slope(&self, pos: SpherePos) -> f32 {
+        let (east, north) = pos.tangent_basis();
+        const STEP: f32 = 4.0 * METER;
+        let h = self.altitude(pos);
+        let mut worst = 0.0f32;
+        for dir in [east, -east, north, -north] {
+            let n = SpherePos::new(pos.0 + dir * (STEP / PLANET_RADIUS));
+            worst = worst.max((self.altitude(n) - h).abs() / STEP);
+        }
+        worst
+    }
+
+    /// Whether a location is livable — the seed for future villages/roads/farms.
+    /// Gentle low-altitude land in a temperate climate, away from cliffs and water.
+    pub fn is_habitable(&self, pos: SpherePos) -> bool {
+        let alt = self.altitude(pos);
+        let temp = self.temperature_at(pos);
+        alt >= HABITABLE_MIN_ALT
+            && alt <= HABITABLE_MAX_ALT
+            && temp >= HABITABLE_MIN_TEMP
+            && temp <= HABITABLE_MAX_TEMP
+            && self.slope(pos) < HABITABLE_MAX_SLOPE
+    }
+
+    /// A deterministic habitable spawn point for this planet's seed. Scans a fixed
+    /// golden-spiral set of surface points and returns the *best* habitable one —
+    /// mild climate, comfortably inland (dry land, not river/coast), gently sloped —
+    /// so a given seed always spawns the player in the same pleasant place.
+    pub fn habitable_spawn(&self) -> SpherePos {
+        const N: u32 = 4096;
+        const GOLDEN: f32 = 2.399_963_2; // 2*pi*(1 - 1/phi)
+        let mut best = SpherePos::new(bevy::prelude::Vec3::X);
+        let mut best_score = f32::MIN;
+        for i in 0..N {
+            let t = (i as f32 + 0.5) / N as f32;
+            let y = 1.0 - 2.0 * t; // -1..1
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            let a = GOLDEN * i as f32;
+            let p = SpherePos::new(bevy::prelude::Vec3::new(r * a.cos(), y, r * a.sin()));
+            if !self.is_habitable(p) {
+                continue;
+            }
+            let score = self.spawn_score(p);
+            if score > best_score {
+                best_score = score;
+                best = p;
+            }
+        }
+        best
+    }
+
+    /// Deterministic, well-separated habitable settlement anchors (villages/towns).
+    /// Greedily picks the best-scoring habitable points at least `min_sep` meters apart,
+    /// so settlements spread across the map instead of clustering.
+    pub fn habitable_anchors(&self, count: usize, min_sep: f32) -> Vec<SpherePos> {
+        const N: u32 = 8192;
+        const GOLDEN: f32 = 2.399_963_2;
+        let mut cands: Vec<(f32, SpherePos)> = Vec::new();
+        for i in 0..N {
+            let t = (i as f32 + 0.5) / N as f32;
+            let y = 1.0 - 2.0 * t;
+            let r = (1.0 - y * y).max(0.0).sqrt();
+            let a = GOLDEN * i as f32;
+            let p = SpherePos::new(bevy::prelude::Vec3::new(r * a.cos(), y, r * a.sin()));
+            if self.is_habitable(p) {
+                cands.push((self.spawn_score(p), p));
+            }
+        }
+        cands.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+
+        let mut anchors: Vec<SpherePos> = Vec::new();
+        for (_, p) in cands {
+            if anchors.len() >= count {
+                break;
+            }
+            if anchors.iter().all(|a| a.distance(p) >= min_sep) {
+                anchors.push(p);
+            }
+        }
+        anchors
+    }
+
+    /// Higher = a more pleasant place to start: mild ~18 °C climate, dry solid land
+    /// (penalise rivers/coast), gentle ground, comfortably above the waterline.
+    fn spawn_score(&self, pos: SpherePos) -> f32 {
+        let temp = self.temperature_at(pos);
+        let alt = self.altitude(pos);
+        let climate = 1.0 - (temp - 18.0).abs() / 20.0; // peak at a mild 18 °C
+        let altitude = smoothstep(1.0 * METER, 60.0 * METER, alt); // a bit inland/uphill
+        let flatness = 1.0 - self.slope(pos);
+        let dry = if matches!(self.classify(pos), Terrain::River | Terrain::Beach) { -1.0 } else { 0.0 };
+        climate + altitude + flatness + dry
+    }
+
     fn moisture_at(&self, pos: SpherePos) -> f32 {
         self.moisture.get(self.warped(pos)) as f32
     }
@@ -110,15 +254,16 @@ impl TerrainGen {
         1.0 - (self.rivers.get(self.warped(pos)) as f32).abs()
     }
 
-    /// Temperature in roughly [-1, 1]: hot (+1) at the equator, cold (-1) at the poles
-    /// (poles are ±Y), colder at high elevation (lapse rate), with mild noise variation.
+    /// Surface temperature in degrees Celsius (0 °C freezes, 100 °C boils).
+    /// Warm at the equator (~+40 °C at sea level), cold at the poles (~-40 °C),
+    /// cooled by altitude (lapse rate), with mild regional noise.
     pub fn temperature_at(&self, pos: SpherePos) -> f32 {
         let latitude = pos.0.y.abs(); // 0 at equator, 1 at poles
-        let base = 1.0 - 2.0 * latitude; // +1 equator .. -1 pole
-        let e = self.elevation_at(pos).max(0.0);
-        let lapse = e * 1.3; // higher ground is colder
-        let noise = self.temp_noise.get(self.warped(pos)) as f32 * 0.25;
-        (base - lapse + noise).clamp(-1.0, 1.0)
+        let base = 40.0 - 80.0 * latitude; // +40 °C equator .. -40 °C pole
+        let altitude = self.altitude(pos).max(0.0);
+        let lapse = altitude * 0.04; // ~ -20 °C on a 500 m peak (game-exaggerated)
+        let noise = self.temp_noise.get(self.warped(pos)) as f32 * 10.0; // ±10 °C
+        base - lapse + noise
     }
 
     /// Discrete biome, used for gameplay/logic. Rendering should prefer [`color_at`]
@@ -148,10 +293,10 @@ impl TerrainGen {
         }
 
         // Cold climate (poles / high peaks) overrides the moisture biomes.
-        if t < -0.55 {
+        if t < -15.0 {
             return Terrain::Snow;
         }
-        if t < -0.2 {
+        if t < 0.0 {
             return Terrain::Tundra;
         }
 
@@ -161,7 +306,7 @@ impl TerrainGen {
         }
 
         // Warm/temperate land chosen by moisture and temperature.
-        if t > 0.35 && m < -0.15 {
+        if t > 30.0 && m < -0.15 {
             Terrain::Desert
         } else if m > 0.25 {
             Terrain::Forest
@@ -199,22 +344,22 @@ impl TerrainGen {
             );
             let warm = lerp_color(dryland, Terrain::Forest.color(), smoothstep(0.05, 0.35, m));
 
-            // Cool it down by temperature: warm -> tundra -> snow (wide bands = soft edges).
-            let mut c = lerp_color(Terrain::Tundra.color(), warm, smoothstep(-0.55, -0.05, t));
-            c = lerp_color(Terrain::Snow.color(), c, smoothstep(-0.85, -0.45, t));
+            // Cool it down by temperature (°C): warm -> tundra -> snow (wide, soft bands).
+            let mut c = lerp_color(Terrain::Tundra.color(), warm, smoothstep(-15.0, 0.0, t));
+            c = lerp_color(Terrain::Snow.color(), c, smoothstep(-25.0, -12.0, t));
 
-            // Beach at the shoreline, rocky mountains at high elevation.
+            // Beach at the shoreline, rocky mountains at high elevation (only above freezing).
             c = lerp_color(Terrain::Beach.color(), c, smoothstep(0.02, 0.10, e));
-            c = lerp_color(c, Terrain::Mountain.color(), smoothstep(0.38, 0.52, e) * smoothstep(-0.2, 0.1, t));
+            c = lerp_color(c, Terrain::Mountain.color(), smoothstep(0.38, 0.52, e) * smoothstep(-8.0, 4.0, t));
             // High peaks get snow-capped.
             c = lerp_color(c, Terrain::Snow.color(), smoothstep(0.6, 0.78, e));
 
-            // River tint: fade in near the ridge on low/mid land. Frozen ground (cold t)
-            // hides open water, so rivers only show where it is warm enough.
+            // River tint: fade in near the ridge on low/mid land. Frozen ground hides open
+            // water, so rivers only show where it is above freezing.
             if e < 0.28 {
                 let r = smoothstep(0.80, 0.94, self.river_at(pos))
                     * smoothstep(0.28, 0.16, e)
-                    * smoothstep(-0.4, 0.0, t);
+                    * smoothstep(-12.0, 0.0, t);
                 c = lerp_color(c, Terrain::River.color(), r);
             }
             c
@@ -306,16 +451,91 @@ mod tests {
             eq += tg.temperature_at(SpherePos::new(Vec3::new(a.cos(), 0.0, a.sin())));
             pole += tg.temperature_at(SpherePos::new(Vec3::new(a.cos() * 0.1, 0.99, a.sin() * 0.1)));
         }
-        assert!(eq / n as f32 > pole / n as f32 + 0.5, "equator should be clearly warmer");
+        assert!(eq / n as f32 > pole / n as f32 + 30.0, "equator should be much warmer (°C)");
     }
 
     #[test]
     fn poles_are_frozen_equator_is_not() {
         let tg = TerrainGen::new(5);
-        // The exact poles must read as cold (Snow/Tundra) regardless of moisture noise.
+        // The exact poles must read as freezing (below 0 °C) regardless of moisture noise.
         for pole in [Vec3::Y, Vec3::NEG_Y] {
             let t = tg.temperature_at(SpherePos::new(pole));
-            assert!(t < -0.2, "pole should be cold, got t={t}");
+            assert!(t < 0.0, "pole should be below freezing, got t={t} °C");
+        }
+    }
+
+    #[test]
+    fn habitable_spawn_is_actually_habitable() {
+        for seed in [1u32, 7, 42, 1337, 99] {
+            let tg = TerrainGen::new(seed);
+            let s = tg.habitable_spawn();
+            assert_eq!(s.0, tg.habitable_spawn().0, "spawn must be deterministic per seed");
+            assert!(tg.is_habitable(s), "spawn not habitable (seed {seed})");
+            let t = tg.temperature_at(s);
+            assert!(
+                (HABITABLE_MIN_TEMP..=HABITABLE_MAX_TEMP).contains(&t),
+                "spawn temperature {t} °C outside habitable band (seed {seed})"
+            );
+        }
+    }
+
+    #[test]
+    fn temperature_is_celsius_ranged() {
+        let tg = TerrainGen::new(3);
+        // Sea-level equator should be hot (tens of °C), not the old [-1,1] scale.
+        let eq = tg.temperature_at(SpherePos::new(Vec3::new(1.0, 0.0, 0.0)));
+        assert!(eq > 15.0, "equatorial sea level should be warm, got {eq} °C");
+    }
+
+    #[test]
+    fn habitable_stays_in_band() {
+        let tg = TerrainGen::new(42);
+        for i in 0..3000 {
+            let u = (i as f32 * 0.6180339) % 1.0;
+            let v = (i as f32 * 0.7548776) % 1.0;
+            let p = random_point(u, v);
+            if tg.is_habitable(p) {
+                let alt = tg.altitude(p);
+                assert!(alt >= HABITABLE_MIN_ALT && alt <= HABITABLE_MAX_ALT,
+                    "habitable point outside altitude band: {alt}m");
+            }
+        }
+    }
+
+    #[test]
+    fn ground_world_never_below_surface() {
+        // Actors must rest on/above the terrain: on land above the ground, over ocean
+        // on the water surface (sea level) — never below the seabed.
+        let tg = TerrainGen::new(11);
+        let half = 1.0f32;
+        for i in 0..2000 {
+            let u = (i as f32 * 0.6180339) % 1.0;
+            let v = (i as f32 * 0.7548776) % 1.0;
+            let p = random_point(u, v);
+            let r = tg.ground_world(p, half).length();
+            let ground = tg.surface_radius(p).max(PLANET_RADIUS);
+            assert!(r >= ground - 1e-2, "actor sank below ground");
+            assert!((r - (ground + half)).abs() < 1e-2, "actor not resting exactly on ground");
+        }
+    }
+
+    #[test]
+    fn heightmap_lifts_land_and_sinks_ocean() {
+        let tg = TerrainGen::new(11);
+        for i in 0..2000 {
+            let u = (i as f32 * 0.6180339) % 1.0;
+            let v = (i as f32 * 0.7548776) % 1.0;
+            let p = random_point(u, v);
+            let e = tg.elevation_at(p);
+            let r = tg.surface_radius(p);
+            if e > 0.05 {
+                assert!(r > PLANET_RADIUS, "land should rise above sea level");
+            } else if e < -0.05 {
+                assert!(r < PLANET_RADIUS, "ocean floor should sink below sea level");
+            }
+            // Relief stays within the configured budget (no runaway spikes/trenches).
+            assert!(r <= PLANET_RADIUS + MAX_MOUNTAIN + 1e-3);
+            assert!(r >= PLANET_RADIUS - MAX_DEPTH - 1e-3);
         }
     }
 }

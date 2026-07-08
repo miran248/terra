@@ -1,7 +1,11 @@
 use bevy::prelude::*;
 
-/// Planet radius in world units. Surface arc-length ~= angle * RADIUS.
-pub const PLANET_RADIUS: f32 = 600.0;
+/// World units are meters: 1.0 == 1 m. Kept explicit so dimensions read physically.
+pub const METER: f32 = 1.0;
+
+/// Planet radius. A small "game planet" (~12.6 km circumference) — big enough to explore,
+/// small enough that terrain relief is visible and f32 precision stays comfortable.
+pub const PLANET_RADIUS: f32 = 2000.0 * METER;
 
 /// An actor's position on the planet: a unit vector from the sphere center.
 #[derive(Component, Clone, Copy, Debug)]
@@ -80,6 +84,19 @@ pub fn random_point(u: f32, v: f32) -> SpherePos {
     SpherePos(Vec3::new(r * theta.cos(), z, r * theta.sin()))
 }
 
+/// Spherical interpolation between two points along the great circle. `t` in [0,1].
+pub fn slerp(a: SpherePos, b: SpherePos, t: f32) -> SpherePos {
+    let dot = a.0.dot(b.0).clamp(-1.0, 1.0);
+    let omega = dot.acos();
+    if omega < 1e-5 {
+        return a;
+    }
+    let s = omega.sin();
+    let wa = ((1.0 - t) * omega).sin() / s;
+    let wb = (t * omega).sin() / s;
+    SpherePos((a.0 * wa + b.0 * wb).normalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -88,8 +105,10 @@ mod tests {
     fn stays_on_sphere() {
         let mut p = SpherePos::new(Vec3::X);
         let target = SpherePos::new(Vec3::new(0.0, 1.0, 0.2));
+        // Step a fixed fraction of the radius each iteration so this is radius-independent.
+        let step = PLANET_RADIUS * 0.05;
         for _ in 0..100 {
-            p.step_toward(target, 20.0);
+            p.step_toward(target, step);
             assert!((p.0.length() - 1.0).abs() < 1e-4, "drifted off unit sphere");
         }
         assert!(p.distance(target) < 1.0, "did not converge to target");

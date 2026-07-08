@@ -2,8 +2,9 @@ use bevy::prelude::*;
 use shared::sphere::SpherePos;
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
+use crate::constants::PROJECTILE_SIZE;
 use crate::loot::{LootState, WeaponFired};
-use crate::map::{GameAssets, Survivor};
+use crate::map::{GameAssets, GroundOffset, Survivor};
 use crate::zombie::Zombie;
 
 #[derive(Component)]
@@ -71,6 +72,7 @@ fn survivor_shoot(
             MeshMaterial3d(assets.projectile_mat.clone()),
             pos.surface_transform(0.0),
             *pos,
+            GroundOffset(PROJECTILE_SIZE),
             Projectile { damage, target },
         ));
         if has_weapon {

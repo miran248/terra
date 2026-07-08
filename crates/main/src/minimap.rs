@@ -1,13 +1,25 @@
+use bevy::asset::RenderAssetUsages;
+use bevy::camera::RenderTarget;
+use bevy::image::Image;
 use bevy::prelude::*;
-use shared::sphere::SpherePos;
+use bevy::render::render_resource::{
+    Extent3d, TextureDimension, TextureFormat, TextureUsages,
+};
+use shared::sphere::{SpherePos, PLANET_RADIUS};
 use shared::state::AppState;
 use shared::theme;
 use crate::loot::{LootMaterial, LootWeapon};
-use crate::map::Survivor;
+use crate::map::{Settlement, Survivor};
 use crate::ui::UiFont;
 use crate::zombie::Zombie;
 
 const MINIMAP_SIZE: f32 = 160.0;
+/// Render-target resolution (square, downscaled into the circular UI node).
+const TEX: u32 = 256;
+/// How high above the player the minimap camera sits, meters.
+const CAM_HEIGHT: f32 = 1400.0;
+/// Ground radius the minimap view covers, meters (≈ CAM_HEIGHT * tan(fov/2)).
+const VIEW_RADIUS: f32 = 430.0;
 const DOT: f32 = 3.0;
 /// World reference direction treated as "North" (the +Y pole of the planet).
 const WORLD_NORTH: Vec3 = Vec3::Y;
@@ -16,75 +28,142 @@ const WORLD_NORTH: Vec3 = Vec3::Y;
 struct Minimap;
 
 #[derive(Component)]
-struct MinimapDot;
+struct CompassLabel;
 
 #[derive(Component)]
-struct CompassLabel;
+struct MinimapDot;
+
+/// Marks the second camera that renders the top-down world view into the minimap texture.
+#[derive(Component)]
+struct MinimapCamera;
 
 pub struct MinimapPlugin;
 
 impl Plugin for MinimapPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, setup_minimap)
-            .add_systems(Update, update_minimap.run_if(in_state(AppState::Playing)));
+            .add_systems(
+                Update,
+                (track_minimap_camera, draw_overlay).run_if(in_state(AppState::Playing)),
+            );
     }
 }
 
-fn setup_minimap(mut commands: Commands) {
+fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    // Render target the minimap camera draws into.
+    let mut image = Image::new_fill(
+        Extent3d { width: TEX, height: TEX, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[0, 0, 0, 0],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+    let handle = images.add(image);
+
+    // Second camera: renders the 3D world top-down into the texture (before the main pass).
     commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(8.0),
-            right: Val::Px(208.0),
-            width: Val::Px(MINIMAP_SIZE),
-            height: Val::Px(MINIMAP_SIZE),
-            border: UiRect::all(Val::Px(3.0)),
-            border_radius: BorderRadius::all(Val::Percent(50.0)),
-            overflow: Overflow::clip(),
+        Camera3d::default(),
+        Camera {
+            order: -1,
+            clear_color: ClearColorConfig::Custom(theme::PANEL_BG),
             ..default()
         },
-        BackgroundColor(theme::PANEL_BG),
-        BorderColor::all(theme::TEXT_WEAK),
-        GlobalZIndex(10),
-        Minimap,
+        RenderTarget::from(handle.clone()),
+        // Render target is single-sampled; matching MSAA avoids a blank/gray main view.
+        Msaa::Off,
+        Projection::from(PerspectiveProjection { fov: 0.6, ..default() }),
+        Transform::from_xyz(0.0, PLANET_RADIUS + CAM_HEIGHT, 0.0).looking_at(Vec3::ZERO, Vec3::Z),
+        MinimapCamera,
     ));
+
+    // Minimap UI: circular node showing the render texture, plus the compass overlay.
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(8.0),
+                right: Val::Px(208.0),
+                width: Val::Px(MINIMAP_SIZE),
+                height: Val::Px(MINIMAP_SIZE),
+                border: UiRect::all(Val::Px(3.0)),
+                border_radius: BorderRadius::all(Val::Percent(50.0)),
+                overflow: Overflow::clip(),
+                ..default()
+            },
+            BorderColor::all(theme::TEXT_WEAK),
+            BackgroundColor(theme::PANEL_BG),
+            GlobalZIndex(10),
+            Minimap,
+        ))
+        .with_child((
+            ImageNode::new(handle),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Px(MINIMAP_SIZE - 6.0),
+                height: Val::Px(MINIMAP_SIZE - 6.0),
+                ..default()
+            },
+        ));
 }
 
-fn update_minimap(
+/// Keep the minimap camera high above the player, looking straight down, rolled so the
+/// player's heading points up in the view (matches the compass).
+fn track_minimap_camera(
+    survivor_q: Query<(&SpherePos, &Survivor)>,
+    mut cam_q: Query<&mut Transform, With<MinimapCamera>>,
+) {
+    let Ok((pos, survivor)) = survivor_q.single() else { return };
+    let Ok(mut cam_tf) = cam_q.single_mut() else { return };
+
+    let up = pos.0; // surface normal = "down" direction to look along
+    let eye = up * (PLANET_RADIUS + CAM_HEIGHT);
+    // Heading is the "up" of the minimap image; camera looks down the -up axis.
+    let heading = (survivor.heading - up * survivor.heading.dot(up)).normalize();
+    cam_tf.translation = eye;
+    cam_tf.look_at(up * PLANET_RADIUS, heading);
+}
+
+/// Rotating N/E/S/W labels around the ring, plus entity blips over the rendered terrain.
+/// The render-to-texture camera shows terrain/roads/settlements, but actors are too small
+/// to see from that height — so player/zombies/loot are drawn as UI dots here.
+fn draw_overlay(
     mut commands: Commands,
     minimap_q: Query<Entity, With<Minimap>>,
-    dots: Query<Entity, Or<(With<MinimapDot>, With<CompassLabel>)>>,
+    stale: Query<Entity, Or<(With<CompassLabel>, With<MinimapDot>)>>,
     survivor_q: Query<(&SpherePos, &Survivor)>,
     zombies: Query<&SpherePos, With<Zombie>>,
     materials: Query<&SpherePos, With<LootMaterial>>,
     weapons: Query<&SpherePos, With<LootWeapon>>,
+    settlements: Query<(&SpherePos, &Settlement)>,
     font: Res<UiFont>,
 ) {
     let Ok(map_entity) = minimap_q.single() else { return };
     let Ok((center, survivor)) = survivor_q.single() else { return };
 
-    for dot in &dots {
-        commands.entity(dot).despawn();
+    for e in &stale {
+        commands.entity(e).despawn();
     }
 
     let radius = (MINIMAP_SIZE - 6.0) / 2.0;
-    // Build the basis from the survivor's stable heading (not `tangent_basis`, whose
-    // reference axis flips across latitude bands). Player faces "up" on the minimap.
     let up = center.0;
     let north = (survivor.heading - up * survivor.heading.dot(up)).normalize();
     let east = north.cross(up).normalize();
 
-    // Orthographic projection of the hemisphere facing the player onto the disc.
+    // Project a world point onto the disc, matching the minimap camera's coverage.
     let place = |p: &SpherePos| -> Option<Vec2> {
-        if center.0.dot(p.0) < 0.0 {
-            return None; // on the far side of the planet
+        if center.distance(*p) > VIEW_RADIUS {
+            return None;
         }
-        let x = p.0.dot(east);
-        let y = p.0.dot(north);
+        let x = p.0.dot(east) * PLANET_RADIUS / VIEW_RADIUS;
+        let y = p.0.dot(north) * PLANET_RADIUS / VIEW_RADIUS;
         Some(Vec2::new(radius + x * radius, radius - y * radius))
     };
 
-    let spawn_dot = |commands: &mut Commands, p: &SpherePos, color: Color, s: f32| {
+    let dot = |commands: &mut Commands, p: &SpherePos, color: Color, s: f32| {
         let Some(pt) = place(p) else { return };
         commands.spawn((
             Node {
@@ -101,42 +180,55 @@ fn update_minimap(
         ));
     };
 
-    for p in &materials {
-        spawn_dot(&mut commands, p, theme::TEXT_WEAK, DOT);
-    }
-    for p in &weapons {
-        spawn_dot(&mut commands, p, theme::SUCCESS, DOT);
-    }
-    for p in &zombies {
-        spawn_dot(&mut commands, p, theme::ERROR, DOT);
-    }
-    spawn_dot(&mut commands, center, theme::ACCENT, DOT * 2.0);
+    for p in &materials { dot(&mut commands, p, theme::TEXT_WEAK, DOT); }
+    for p in &weapons { dot(&mut commands, p, theme::SUCCESS, DOT); }
+    for p in &zombies { dot(&mut commands, p, theme::ERROR, DOT); }
 
-    draw_compass(&mut commands, map_entity, &font, radius, up, north, east);
-}
+    // Settlements: distinct square marker + name label.
+    for (pos, settlement) in &settlements {
+        let Some(pt) = place(pos) else { continue };
+        let s = 6.0;
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(pt.x - s / 2.0),
+                top: Val::Px(pt.y - s / 2.0),
+                width: Val::Px(s),
+                height: Val::Px(s),
+                border: UiRect::all(Val::Px(1.0)),
+                ..default()
+            },
+            BackgroundColor(theme::WARNING),
+            BorderColor::all(theme::INK),
+            MinimapDot,
+            ChildOf(map_entity),
+        ));
+        commands.spawn((
+            Text::new(settlement.name.clone()),
+            TextFont { font: font.0.clone().into(), font_size: FontSize::Px(9.0), ..default() },
+            TextColor(theme::INK),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(pt.x + 5.0),
+                top: Val::Px(pt.y - 5.0),
+                ..default()
+            },
+            MinimapDot,
+            ChildOf(map_entity),
+        ));
+    }
 
-/// Cardinal letters placed on the ring at their world bearing relative to the player's
-/// heading, so they rotate as the player turns (a real compass).
-fn draw_compass(
-    commands: &mut Commands,
-    map_entity: Entity,
-    font: &UiFont,
-    radius: f32,
-    up: Vec3,
-    north: Vec3,
-    east: Vec3,
-) {
-    // World-north projected into the player's tangent plane, expressed in (east, north) axes.
+    dot(&mut commands, center, theme::ACCENT, DOT * 2.0);
+
+    // Compass ring labels.
     let wn = (WORLD_NORTH - up * WORLD_NORTH.dot(up)).normalize_or_zero();
     if wn == Vec3::ZERO {
-        return; // player is at a pole; bearing undefined
+        return; // at a pole, bearing undefined
     }
-    let base = wn.dot(north).atan2(wn.dot(east)); // angle of world-north on the minimap
+    let base = wn.dot(north).atan2(wn.dot(east));
     let ring = radius - 10.0;
-
     for (i, letter) in ["N", "W", "S", "E"].iter().enumerate() {
         let a = base + i as f32 * std::f32::consts::FRAC_PI_2;
-        // Screen: +x right, +y down; map angle measured from east (x) toward north (up = -screen y).
         let sx = radius + a.cos() * ring;
         let sy = radius - a.sin() * ring;
         let color = if i == 0 { theme::PRIMARY } else { theme::TEXT_WEAK };
@@ -155,4 +247,3 @@ fn draw_compass(
         ));
     }
 }
-

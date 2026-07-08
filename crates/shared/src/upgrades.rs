@@ -73,8 +73,8 @@ impl Upgrade {
         match self {
             Upgrade::TurretDamage => 10.0 * (1.0 + 0.5 * level as f32),
             Upgrade::TurretSpeed => 1.25 * (1.0 + 0.5 * level as f32),
-            Upgrade::TurretRange => 150.0 * (1.0 + 0.5 * level as f32),
-            Upgrade::ProjectileSpeed => 400.0 * (1.0 + 0.5 * level as f32),
+            Upgrade::TurretRange => 50.0 * (1.0 + 0.5 * level as f32),
+            Upgrade::ProjectileSpeed => 130.0 * (1.0 + 0.5 * level as f32),
             Upgrade::Multishot => (1.0 + level as f32).min(5.0),
             Upgrade::Piercing => (0.0 + level as f32).min(5.0),
             Upgrade::Bounces => (0.0 + level as f32).min(5.0),
@@ -83,7 +83,7 @@ impl Upgrade {
             Upgrade::RareScrap => (0.0 + level as f32 * 0.05).min(0.5),
             Upgrade::SpawnRate => 0.667 * (1.0 + 0.5 * level as f32),
             Upgrade::WallHp => 500.0 * (1.0 + 0.5 * level as f32),
-            Upgrade::MagnetRange => 150.0 * (1.0 + 0.5 * level as f32),
+            Upgrade::MagnetRange => 40.0 * (1.0 + 0.5 * level as f32),
         }
     }
 
@@ -91,8 +91,8 @@ impl Upgrade {
         match self {
             Upgrade::TurretDamage => format!("{:.0}", val),
             Upgrade::TurretSpeed => format!("{:.2}/s", val),
-            Upgrade::TurretRange => format!("{:.0}px", val),
-            Upgrade::ProjectileSpeed => format!("{:.0}px/s", val),
+            Upgrade::TurretRange => format!("{:.0}m", val),
+            Upgrade::ProjectileSpeed => format!("{:.0}m/s", val),
             Upgrade::Multishot => format!("x{:.0}", val),
             Upgrade::Piercing => format!("+{:.0}", val),
             Upgrade::Bounces => format!("+{:.0}", val),
@@ -101,7 +101,7 @@ impl Upgrade {
             Upgrade::RareScrap => format!("{:.0}%", val * 100.0),
             Upgrade::SpawnRate => format!("{:.2}/s", val),
             Upgrade::WallHp => format!("{:.0}", val),
-            Upgrade::MagnetRange => format!("{:.0}px", val),
+            Upgrade::MagnetRange => format!("{:.0}m", val),
         }
     }
 }

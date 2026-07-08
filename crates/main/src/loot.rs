@@ -6,11 +6,11 @@ use shared::state::AppState;
 use shared::upgrades::Upgrade;
 use crate::constants::*;
 use crate::combat::ScrapCounter;
-use crate::map::Survivor;
+use crate::map::{GroundOffset, Survivor};
 use crate::ui::UpgradeLevels;
 
-const MAGNET_SPEED: f32 = 200.0;
-const COLLECT_RADIUS: f32 = 6.0;
+const MAGNET_SPEED: f32 = 70.0; // m/s
+const COLLECT_RADIUS: f32 = 2.0; // m
 const MATERIAL_COUNT: usize = 400;
 const WEAPON_COUNT: usize = 60;
 const ZOMBIE_DROP_CHANCE: f64 = 0.35;
@@ -137,6 +137,7 @@ fn spawn_material(commands: &mut Commands, assets: &LootAssets, m: Material, pos
         MeshMaterial3d(assets.material_mats[i].clone()),
         pos.surface_transform(0.0),
         pos,
+        GroundOffset(SCRAP_SIZE * 0.5),
         LootMaterial(m),
     ));
 }
@@ -148,6 +149,7 @@ fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, pos
         MeshMaterial3d(assets.weapon_mats[i].clone()),
         pos.surface_transform(0.0),
         pos,
+        GroundOffset(SCRAP_SIZE * 1.8 * 0.5),
         LootWeapon(w),
     ));
 }

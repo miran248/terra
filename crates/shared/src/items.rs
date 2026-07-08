@@ -69,11 +69,11 @@ impl WeaponKind {
     /// damage, range, shots per second, max durability (shots before breaking)
     pub fn stats(&self) -> WeaponStats {
         match self {
-            WeaponKind::Knife => WeaponStats { damage: 15.0, range: 60.0, fire_rate: 2.0, durability: 40 },
-            WeaponKind::Spear => WeaponStats { damage: 30.0, range: 90.0, fire_rate: 1.5, durability: 60 },
-            WeaponKind::Pistol => WeaponStats { damage: 20.0, range: 200.0, fire_rate: 2.5, durability: 80 },
-            WeaponKind::Sling => WeaponStats { damage: 12.0, range: 160.0, fire_rate: 1.8, durability: 50 },
-            WeaponKind::Rifle => WeaponStats { damage: 40.0, range: 320.0, fire_rate: 3.0, durability: 120 },
+            WeaponKind::Knife => WeaponStats { damage: 15.0, range: 20.0, fire_rate: 2.0, durability: 40 },
+            WeaponKind::Spear => WeaponStats { damage: 30.0, range: 30.0, fire_rate: 1.5, durability: 60 },
+            WeaponKind::Pistol => WeaponStats { damage: 20.0, range: 65.0, fire_rate: 2.5, durability: 80 },
+            WeaponKind::Sling => WeaponStats { damage: 12.0, range: 50.0, fire_rate: 1.8, durability: 50 },
+            WeaponKind::Rifle => WeaponStats { damage: 40.0, range: 100.0, fire_rate: 3.0, durability: 120 },
         }
     }
 }

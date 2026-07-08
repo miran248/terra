@@ -71,7 +71,7 @@ pub fn zombie_hp(wave: u32) -> f32 {
 }
 
 pub fn zombie_speed(wave: u32) -> f32 {
-    40.0 * (1.0 + 0.08 * (wave as f32 - 1.0))
+    18.0 * (1.0 + 0.08 * (wave as f32 - 1.0))
 }
 
 pub fn zombie_count(wave: u32) -> u32 {

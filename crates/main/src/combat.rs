@@ -52,7 +52,7 @@ fn projectiles_hit_zombies(
 
     for (p_entity, p_pos, proj) in &projectiles {
         if let Ok((z_entity, z_pos, mut zombie)) = zombies.get_mut(proj.target) {
-            if p_pos.distance(*z_pos) <= ZOMBIE_SIZE {
+            if p_pos.distance(*z_pos) <= ZOMBIE_SIZE * 2.5 {
                 zombie.hp -= proj.damage;
                 commands.entity(p_entity).despawn();
 
@@ -72,19 +72,19 @@ fn projectiles_hit_zombies(
 
     for (last_target, last_pos, behavior, damage) in hits_this_frame {
         if behavior.piercing > 0 {
-            let closest = find_closest_zombie(&zombies, last_target, last_pos, 100.0);
+            let closest = find_closest_zombie(&zombies, last_target, last_pos, 30.0);
             if let Some((e, _)) = closest {
                 handle_pierce(&mut commands, &loot_assets, &mut zombies, e, damage);
             }
         }
         if behavior.bounces > 0 {
-            let closest = find_closest_zombie(&zombies, last_target, last_pos, 200.0);
+            let closest = find_closest_zombie(&zombies, last_target, last_pos, 60.0);
             if let Some((e, _)) = closest {
                 handle_pierce(&mut commands, &loot_assets, &mut zombies, e, damage);
             }
         }
         if behavior.splits > 0 {
-            for (e, _) in find_n_closest_zombies(&zombies, last_target, last_pos, 150.0, behavior.splits) {
+            for (e, _) in find_n_closest_zombies(&zombies, last_target, last_pos, 45.0, behavior.splits) {
                 handle_pierce(&mut commands, &loot_assets, &mut zombies, e, damage * 0.5);
             }
         }

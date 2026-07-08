@@ -2,7 +2,7 @@ use bevy::prelude::*;
 use rand::Rng;
 use shared::sphere::{ring_point, SpherePos};
 use crate::constants::*;
-use crate::map::{GameAssets, Survivor, SurvivorHp};
+use crate::map::{GameAssets, GroundOffset, Survivor, SurvivorHp};
 use crate::wave::WaveManager;
 use shared::state::AppState;
 
@@ -45,11 +45,13 @@ fn spawn_zombies(
     wave.zombies_spawned_this_wave += 1;
 
     let w = wave.wave;
+    let half = ZOMBIE_SIZE * 0.5; // sphere radius
     commands.spawn((
         Mesh3d(assets.zombie_mesh.clone()),
         MeshMaterial3d(assets.zombie_mat.clone()),
         spawn_pos.surface_transform(0.0),
         spawn_pos,
+        GroundOffset(half),
         Zombie {
             hp: crate::wave::zombie_hp(w),
             speed: crate::wave::zombie_speed(w),
