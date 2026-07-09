@@ -55,6 +55,10 @@ impl PlanetMesh {
         self.tris.len()
     }
 
+    pub fn tris(&self) -> &Vec<[Vec3; 3]> {
+        &self.tris
+    }
+
     /// Index of the surface triangle the ray from the planet centre through `dir` hits
     /// (the nearest hit — a heightmapped ray can cross several triangles, we want the one
     /// on the surface facing outward), or `None` if not found.

@@ -1,7 +1,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::Rng;
-use shared::sphere::{ring_point, SpherePos, PLANET_RADIUS};
+use shared::sphere::PLANET_RADIUS;
 use crate::constants::*;
 use crate::physics::RadialGravity;
 use crate::map::{GameAssets, Player, PlayerHp};
@@ -29,17 +29,20 @@ fn spawn_zombies(
     time: Res<Time>,
     mut wave: ResMut<WaveManager>,
     assets: Res<GameAssets>,
-    player_q: Query<&SpherePos, With<Player>>,
+    player_q: Query<&Transform, With<Player>>,
 ) {
     if wave.zombies_spawned_this_wave >= wave.zombies_per_wave { return; }
 
     wave.spawn_timer.tick(time.delta());
     if !wave.spawn_timer.just_finished() { return; }
 
-    let center = player_q.single().copied().unwrap_or(SpherePos::new(Vec3::Y));
+    let center_pos = player_q.single().map(|t| t.translation.normalize()).unwrap_or(Vec3::Y);
     let mut rng = rand::thread_rng();
     let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-    let spawn_pos = ring_point(center, SPAWN_RADIUS, angle);
+    let perp = Vec3::new(center_pos.z, 0.0, -center_pos.x).normalize_or(Vec3::X);
+    let step = SPAWN_RADIUS / PLANET_RADIUS;
+    let spawn_dir =
+        Quat::from_axis_angle(center_pos, angle) * perp * step.sin() + center_pos * step.cos();
 
     wave.zombies_spawned_this_wave += 1;
 
@@ -51,12 +54,11 @@ fn spawn_zombies(
         MeshMaterial3d(assets.zombie_mat.clone()),
         RigidBody::Dynamic,
         RadialGravity,
-        ColliderConstructor::Sphere { radius: ZOMBIE_SIZE * 0.5 },
+        Collider::sphere(ZOMBIE_SIZE * 0.5),
         LockedAxes::ROTATION_LOCKED,
         Restitution::ZERO,
         Friction::ZERO,
-        Transform::from_translation(spawn_pos.0 * spawn_r),
-        spawn_pos,
+        Transform::from_translation(spawn_dir * spawn_r),
         Zombie {
             hp: crate::wave::zombie_hp(w),
             speed: crate::wave::zombie_speed(w),
@@ -66,26 +68,14 @@ fn spawn_zombies(
 
 fn move_zombies(
     time: Res<Time>,
-    player_q: Query<(&SpherePos, &Transform), With<Player>>,
-    mut q: Query<(&mut SpherePos, &Zombie, &Transform, Forces), Without<Player>>,
+    player_q: Query<&Transform, With<Player>>,
+    mut q: Query<(&Zombie, &Transform, Forces), Without<Player>>,
 ) {
-    let Ok((target, player_tf)) = player_q.single() else { return };
-    let dt = time.delta_secs();
+    let Ok(player_tf) = player_q.single() else { return };
 
-    for (mut pos, zombie, tf, mut forces) in &mut q {
-        pos.step_toward(*target, zombie.speed * dt);
-        let r = tf.translation.length().max(PLANET_RADIUS);
-        let desired = pos.0 * r;
-        let delta = desired - tf.translation;
-        let target_vel = delta / 0.2;
-        let max_vel = zombie.speed * 1.5;
-        let target_vel = if target_vel.length() > max_vel {
-            target_vel.normalize_or_zero() * max_vel
-        } else {
-            target_vel
-        };
-        let current_vel = forces.linear_velocity();
-        forces.apply_linear_acceleration((target_vel - current_vel) / dt.clamp(0.001, 1.0));
+    for (zombie, tf, mut forces) in &mut q {
+        let dir = (player_tf.translation - tf.translation).normalize_or_zero();
+        forces.apply_force(dir * zombie.speed * 100.0);
     }
 }
 

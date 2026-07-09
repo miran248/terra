@@ -1,6 +1,5 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use shared::sphere::SpherePos;
 use shared::upgrades::Upgrade;
 use crate::constants::*;
 use crate::turret::Projectile;
@@ -57,9 +56,9 @@ fn projectiles_hit_zombies(
                 commands.entity(p_entity).despawn();
 
                 if zombie.hp <= 0.0 {
-                    let pos = SpherePos::new(z_tf.translation.normalize());
+                    let dir = z_tf.translation.normalize();
                     commands.entity(z_entity).despawn();
-                    crate::loot::drop_zombie_loot(&mut commands, &loot_assets, pos);
+                    crate::loot::drop_zombie_loot(&mut commands, &loot_assets, dir);
                 }
 
                 if behavior.piercing > 0 {
@@ -102,9 +101,9 @@ fn handle_pierce(
     if let Ok((_, z_tf, mut zombie)) = zombies.get_mut(target) {
         zombie.hp -= damage;
         if zombie.hp <= 0.0 {
-            let pos = SpherePos::new(z_tf.translation.normalize());
+            let dir = z_tf.translation.normalize();
             commands.entity(target).despawn();
-            crate::loot::drop_zombie_loot(commands, loot_assets, pos);
+            crate::loot::drop_zombie_loot(commands, loot_assets, dir);
         }
     }
 }

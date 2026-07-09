@@ -198,9 +198,9 @@ impl TerrainGen {
         let road_flatness = self.road_proximity(pos).powf(2.5);
 
         let ridged = 1.0 - (self.mountains.get(w) as f32).abs();
-        let mountains = ridged.powi(2) * 0.55 * land * road_flatness;
+        let mountains = ridged.powi(2) * 0.55 * land;
 
-        let detail = self.detail.get(w) as f32 * 0.06 * land * road_flatness;
+        let detail = self.detail.get(w) as f32 * 0.06 * land;
 
         (continent + mountains + detail).clamp(-1.0, 1.0)
     }
@@ -373,12 +373,12 @@ impl TerrainGen {
             if e < -0.30 {
                 return Terrain::DeepOcean;
             }
-            return if e > -0.06 && m > 0.2 { Terrain::Lake } else { Terrain::Ocean };
+            return if e > -0.04 && m > 0.2 { Terrain::Lake } else { Terrain::Ocean };
         }
 
         // ponytail: fake rivers = ridged noise band near sea level on land, no hydrology.
         // Upgrade path: trace downhill flow from mountains for real river networks.
-        if e < 0.25 && self.river_at(pos) > 0.86 {
+        if e < 0.08 && self.river_at(pos) > 0.86 {
             return Terrain::River;
         }
 

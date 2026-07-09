@@ -5,7 +5,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureUsages,
 };
-use shared::sphere::{SpherePos, PLANET_RADIUS};
+use shared::sphere::PLANET_RADIUS;
 use shared::state::AppState;
 use shared::theme;
 use crate::loot::{LootMaterial, LootWeapon};
@@ -35,7 +35,7 @@ struct MinimapDot;
 
 /// Marks the second camera that renders the top-down world view into the minimap texture.
 #[derive(Component)]
-struct MinimapCamera;
+pub struct MinimapCamera;
 
 pub struct MinimapPlugin;
 
@@ -117,15 +117,14 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 /// Keep the minimap camera high above the player, looking straight down, rolled so the
 /// player's heading points up in the view (matches the compass).
 fn track_minimap_camera(
-    player_q: Query<(&SpherePos, &Player)>,
+    player_q: Query<(&Transform, &Player), (With<Player>, Without<MinimapCamera>)>,
     mut cam_q: Query<&mut Transform, With<MinimapCamera>>,
 ) {
-    let Ok((pos, player)) = player_q.single() else { return };
+    let Ok((player_tf, player)) = player_q.single() else { return };
     let Ok(mut cam_tf) = cam_q.single_mut() else { return };
 
-    let up = pos.0; // surface normal = "down" direction to look along
+    let up = player_tf.translation.normalize();
     let eye = up * (PLANET_RADIUS + CAM_HEIGHT);
-    // Heading is the "up" of the minimap image; camera looks down the -up axis.
     let heading = (player.heading - up * player.heading.dot(up)).normalize();
     cam_tf.translation = eye;
     cam_tf.look_at(up * PLANET_RADIUS, heading);
@@ -138,36 +137,39 @@ fn draw_overlay(
     mut commands: Commands,
     minimap_q: Query<Entity, With<Minimap>>,
     stale: Query<Entity, Or<(With<CompassLabel>, With<MinimapDot>)>>,
-    player_q: Query<(&SpherePos, &Player)>,
-    zombies: Query<&SpherePos, With<Zombie>>,
-    materials: Query<&SpherePos, With<LootMaterial>>,
-    weapons: Query<&SpherePos, With<LootWeapon>>,
-    settlements: Query<(&SpherePos, &Settlement)>,
+    player_q: Query<(&Transform, &Player)>,
+    zombies: Query<&Transform, With<Zombie>>,
+    materials: Query<&Transform, With<LootMaterial>>,
+    weapons: Query<&Transform, With<LootWeapon>>,
+    settlements: Query<(&Transform, &Settlement)>,
     font: Res<UiFont>,
 ) {
     let Ok(map_entity) = minimap_q.single() else { return };
-    let Ok((center, player)) = player_q.single() else { return };
+    let Ok((player_tf, player)) = player_q.single() else { return };
 
     for e in &stale {
         commands.entity(e).despawn();
     }
 
     let radius = (MINIMAP_SIZE - 6.0) / 2.0;
-    let up = center.0;
+    let player_pos = player_tf.translation;
+    let up = player_pos.normalize();
     let north = (player.heading - up * player.heading.dot(up)).normalize();
     let east = north.cross(up).normalize();
 
     // Project a world point onto the disc, matching the minimap camera's coverage.
-    let place = |p: &SpherePos| -> Option<Vec2> {
-        if center.distance(*p) > VIEW_RADIUS {
+    let place = |world_pos: Vec3| -> Option<Vec2> {
+        let dir = world_pos.normalize();
+        let dist = player_pos.distance(world_pos);
+        if dist > VIEW_RADIUS {
             return None;
         }
-        let x = p.0.dot(east) * PLANET_RADIUS / VIEW_RADIUS;
-        let y = p.0.dot(north) * PLANET_RADIUS / VIEW_RADIUS;
+        let x = dir.dot(east) * PLANET_RADIUS / VIEW_RADIUS;
+        let y = dir.dot(north) * PLANET_RADIUS / VIEW_RADIUS;
         Some(Vec2::new(radius + x * radius, radius - y * radius))
     };
 
-    let dot = |commands: &mut Commands, p: &SpherePos, color: Color, s: f32| {
+    let dot = |commands: &mut Commands, p: Vec3, color: Color, s: f32| {
         let Some(pt) = place(p) else { return };
         commands.spawn((
             Node {
@@ -184,13 +186,12 @@ fn draw_overlay(
         ));
     };
 
-    for p in &materials { dot(&mut commands, p, theme::TEXT_WEAK, DOT); }
-    for p in &weapons { dot(&mut commands, p, theme::SUCCESS, DOT); }
-    for p in &zombies { dot(&mut commands, p, theme::ERROR, DOT); }
+    for tf in &materials { dot(&mut commands, tf.translation, theme::TEXT_WEAK, DOT); }
+    for tf in &weapons { dot(&mut commands, tf.translation, theme::SUCCESS, DOT); }
+    for tf in &zombies { dot(&mut commands, tf.translation, theme::ERROR, DOT); }
 
-    // Settlements: distinct square marker + name label.
-    for (pos, settlement) in &settlements {
-        let Some(pt) = place(pos) else { continue };
+    for (tf, settlement) in &settlements {
+        let Some(pt) = place(tf.translation) else { continue };
         let s = 6.0;
         commands.spawn((
             Node {
@@ -222,7 +223,7 @@ fn draw_overlay(
         ));
     }
 
-    dot(&mut commands, center, theme::ACCENT, DOT * 2.0);
+    dot(&mut commands, player_pos, theme::ACCENT, DOT * 2.0);
 
     // Compass ring labels.
     let wn = (WORLD_NORTH - up * WORLD_NORTH.dot(up)).normalize_or_zero();

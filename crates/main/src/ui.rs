@@ -5,7 +5,8 @@ use shared::theme;
 use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{Player, PlayerHp};
+use crate::map::{LevelFeatures, Player, PlayerHp};
+use shared::planet::PlanetMesh;
 use crate::wave::WaveManager;
 
 #[derive(Resource, Default)]
@@ -36,6 +37,9 @@ struct CraftButton {
 }
 
 #[derive(Component)]
+struct TerrainHud;
+
+#[derive(Component)]
 struct CraftStatusText;
 
 pub struct UiPlugin;
@@ -43,10 +47,12 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UpgradeLevels>()
-            .add_systems(Startup, (load_font, setup_sidebar, setup_crafting).chain())
+            .add_systems(Startup, (load_font, spawn_terrain_hud).chain())
+            // .add_systems(Startup, (setup_sidebar, setup_crafting).chain())
             .add_systems(OnEnter(shared::state::AppState::Playing), reset_upgrade_buttons)
             .add_systems(Update, (
                 update_stats,
+                update_terrain_hud,
                 handle_upgrade_clicks,
                 apply_upgrades,
                 scroll_upgrades,
@@ -414,5 +420,81 @@ fn apply_upgrades(
         player.damage = damage;
         player.range = range;
         player.fire_timer = Timer::from_seconds(1.0 / speed, TimerMode::Repeating);
+    }
+}
+
+// ---- terrain HUD ----
+
+fn spawn_terrain_hud(mut commands: Commands, font: Res<UiFont>) {
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            right: Val::Px(8.0),
+            top: Val::Px(8.0),
+            padding: UiRect::all(Val::Px(6.0)),
+            ..default()
+        },
+        BackgroundColor(theme::PANEL_BG),
+        GlobalZIndex(10),
+        TerrainHud,
+    )).with_child((
+        Text::new(""),
+        text_font(&font, 12.0),
+        TextColor(theme::INK),
+    ));
+}
+
+fn update_terrain_hud(
+    player_q: Query<&Transform, With<Player>>,
+    terrain: Option<Res<shared::terrain::TerrainGen>>,
+    planet: Option<Res<PlanetMesh>>,
+    features: Option<Res<LevelFeatures>>,
+    hud_q: Query<&Children, With<TerrainHud>>,
+    mut text_q: Query<(&mut Text, &mut TextColor)>,
+) {
+    let Ok(children) = hud_q.single() else { return };
+    let Some(child) = children.first() else { return };
+    let Ok((mut text, mut color)) = text_q.get_mut(*child) else { return };
+    let Some(terrain) = terrain else { text.0.clear(); return; };
+    let Ok(tf) = player_q.single() else { text.0.clear(); return; };
+    let pos = shared::sphere::SpherePos::new(tf.translation);
+    let altitude = terrain.altitude(pos);
+    let tile = terrain.classify(pos);
+    let temp = terrain.temperature_at(pos);
+    let slope = terrain.slope(pos);
+    let hab = terrain.is_habitable(pos);
+
+    let mut built = String::new();
+    if let (Some(planet), Some(feats)) = (planet, features) {
+        if let Some(fi) = planet.face_at(tf.translation.normalize()) {
+            let f = feats.0[fi];
+            if f & 1 != 0 { built.push_str(" Road"); }
+            if f & 2 != 0 { built.push_str(" Town"); }
+            if f & 4 != 0 { built.push_str(" Bridge"); }
+        }
+    }
+
+    *text = Text::new(format!(
+        "{:?}{}\nAlt: {:.0}m  Slope: {:.1}\nTemp: {:.0}°C{}",
+        tile,
+        if hab { " Habitable" } else { "" },
+        altitude, slope, temp, built,
+    ));
+    *color = TextColor(hud_tile_color(tile));
+}
+
+fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
+    match tile {
+        shared::terrain::Terrain::DeepOcean |
+        shared::terrain::Terrain::Ocean |
+        shared::terrain::Terrain::Lake |
+        shared::terrain::Terrain::River => Color::srgb(0.2, 0.5, 1.0),
+        shared::terrain::Terrain::Beach => Color::srgb(0.9, 0.85, 0.6),
+        shared::terrain::Terrain::Desert => Color::srgb(0.85, 0.75, 0.5),
+        shared::terrain::Terrain::Plains |
+        shared::terrain::Terrain::Forest => Color::srgb(0.3, 0.7, 0.3),
+        shared::terrain::Terrain::Tundra => Color::srgb(0.6, 0.65, 0.6),
+        shared::terrain::Terrain::Mountain => Color::srgb(0.5, 0.45, 0.4),
+        shared::terrain::Terrain::Snow => Color::srgb(0.95, 0.97, 1.0),
     }
 }

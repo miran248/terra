@@ -1,4 +1,5 @@
 pub mod items;
+pub mod level;
 pub mod planet;
 pub mod roads;
 pub mod sphere;

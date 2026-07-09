@@ -19,7 +19,7 @@ fn apply_radial_gravity(
     for (mut forces, pos) in &mut bodies {
         let dir = pos.0.normalize_or_zero();
         if dir.length_squared() > 0.0 {
-            forces.apply_linear_acceleration(-dir * 200.0);
+            forces.apply_force(-dir * 10000.0); // continuous downward
         }
     }
 }

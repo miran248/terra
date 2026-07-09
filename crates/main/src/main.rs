@@ -11,13 +11,22 @@ mod wave;
 mod zombie;
 
 use avian3d::prelude::*;
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::prelude::*;
 use shared::state::AppState;
 
 fn main() {
     App::new()
-        .add_plugins((DefaultPlugins, PhysicsPlugins::default().build().disable::<PhysicsInterpolationPlugin>()))
+        .add_plugins((
+            DefaultPlugins,
+            PhysicsPlugins::default().build().disable::<PhysicsInterpolationPlugin>(),
+            PhysicsDiagnosticsPlugin,
+            PhysicsDiagnosticsUiPlugin,
+            FrameTimeDiagnosticsPlugin::default(),
+            PhysicsDebugPlugin,
+        ))
         .insert_resource(SubstepCount(12))
+        .insert_resource(PhysicsDiagnosticsUiSettings { enabled: true, ..default() })
         .init_state::<AppState>()
         .add_plugins((
             map::MapPlugin,

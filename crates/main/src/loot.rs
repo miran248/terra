@@ -2,7 +2,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::Rng;
 use shared::items::{Material, WeaponKind};
-use shared::sphere::{random_point, SpherePos, PLANET_RADIUS};
+use shared::sphere::{random_point, PLANET_RADIUS};
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
 use crate::constants::*;
@@ -68,9 +68,10 @@ impl Plugin for LootPlugin {
             .add_systems(OnEnter(AppState::Playing), (setup_loot_assets, scatter_loot).chain())
             .add_systems(
                 Update,
-                (magnet_loot, collect_loot, apply_magnet_upgrade, drain_durability, apply_weapon_fire_rate)
+                (collect_loot, apply_magnet_upgrade, drain_durability, apply_weapon_fire_rate)
                     .run_if(in_state(AppState::Playing)),
-            );
+            )
+            .add_systems(FixedUpdate, magnet_loot.run_if(in_state(AppState::Playing)));
     }
 }
 
@@ -116,75 +117,73 @@ fn scatter_loot(mut commands: Commands, assets: Res<LootAssets>) {
     for _ in 0..MATERIAL_COUNT {
         let m = Material::ALL[rng.gen_range(0..Material::ALL.len())];
         let pos = random_point(rng.r#gen(), rng.r#gen());
-        spawn_material(&mut commands, &assets, m, pos);
+        spawn_material(&mut commands, &assets, m, pos.0);
     }
 
     for _ in 0..WEAPON_COUNT {
         let w = WeaponKind::ALL[rng.gen_range(0..WeaponKind::ALL.len())];
         let pos = random_point(rng.r#gen(), rng.r#gen());
-        spawn_weapon(&mut commands, &assets, w, pos);
+        spawn_weapon(&mut commands, &assets, w, pos.0);
     }
 }
 
-fn spawn_material(commands: &mut Commands, assets: &LootAssets, m: Material, pos: SpherePos) {
+fn spawn_material(commands: &mut Commands, assets: &LootAssets, m: Material, dir: Vec3) {
     let i = Material::ALL.iter().position(|x| *x == m).unwrap();
     let r = PLANET_RADIUS + SCRAP_SIZE * 0.5 + 0.5;
     commands.spawn((
         Mesh3d(assets.material_mesh.clone()),
         MeshMaterial3d(assets.material_mats[i].clone()),
         RigidBody::Dynamic,
-        ColliderConstructor::Sphere { radius: SCRAP_SIZE * 0.5 },
+        Collider::sphere(SCRAP_SIZE * 0.5),
         GravityScale(0.0),
         LinearDamping(0.95),
         AngularDamping(1.0),
         LockedAxes::ROTATION_LOCKED,
         Restitution::ZERO,
         Friction::ZERO,
-        Transform::from_translation(pos.0 * r),
-        pos,
+        Transform::from_translation(dir * r),
         LootMaterial(m),
     ));
 }
 
-fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, pos: SpherePos) {
+fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, dir: Vec3) {
     let i = WeaponKind::ALL.iter().position(|x| *x == w).unwrap();
     let r = PLANET_RADIUS + SCRAP_SIZE * 1.8 * 0.5 + 0.5;
     commands.spawn((
         Mesh3d(assets.weapon_mesh.clone()),
         MeshMaterial3d(assets.weapon_mats[i].clone()),
         RigidBody::Dynamic,
-        ColliderConstructor::Sphere { radius: SCRAP_SIZE * 1.8 * 0.5 },
+        Collider::sphere(SCRAP_SIZE * 1.8 * 0.5),
         GravityScale(0.0),
         LinearDamping(0.95),
         AngularDamping(1.0),
         LockedAxes::ROTATION_LOCKED,
         Restitution::ZERO,
         Friction::ZERO,
-        Transform::from_translation(pos.0 * r),
-        pos,
+        Transform::from_translation(dir * r),
         LootWeapon(w),
     ));
 }
 
-pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, pos: SpherePos) {
+pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, dir: Vec3) {
     let mut rng = rand::thread_rng();
     if rng.gen_bool(ZOMBIE_WEAPON_DROP_CHANCE) {
         let w = WeaponKind::ALL[rng.gen_range(0..WeaponKind::ALL.len())];
-        spawn_weapon(commands, assets, w, pos);
+        spawn_weapon(commands, assets, w, dir);
     } else if rng.gen_bool(ZOMBIE_DROP_CHANCE) {
         let m = Material::ALL[rng.gen_range(0..Material::ALL.len())];
-        spawn_material(commands, assets, m, pos);
+        spawn_material(commands, assets, m, dir);
     }
 }
 
 /// Pull loot toward the player via Forces API.
 fn magnet_loot(
     magnet: Res<MagnetRadius>,
-    player_q: Query<(&SpherePos, &Transform), With<Player>>,
+    player_q: Query<&Transform, With<Player>>,
     mut materials_q: Query<(Forces, &Transform), (With<LootMaterial>, Without<Player>)>,
     mut weapons_q: Query<(Forces, &Transform), (With<LootWeapon>, Without<LootMaterial>, Without<Player>)>,
 ) {
-    let Ok((_center, player_tf)) = player_q.single() else { return };
+    let Ok(player_tf) = player_q.single() else { return };
     let radius = magnet.0;
     let center_world = player_tf.translation;
 
@@ -203,7 +202,7 @@ fn magnet_accel(forces: &mut ForcesItem, tf: &Transform, center: Vec3, radius: f
     if dist <= radius && dist > 0.001 {
         let dir = (center - tf.translation).normalize();
         let speed = MAGNET_SPEED * (1.0 + (1.0 - (dist / radius)) * 2.0);
-        forces.apply_linear_acceleration(dir * speed * 2.0);
+        forces.apply_force(dir * speed * 10.0);
     }
 }
 
