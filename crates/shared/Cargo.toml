@@ -16,3 +16,7 @@ criterion = { version = "0.8.2", default-features = false }
 [[bench]]
 name = "facet_radius"
 harness = false
+
+[[bench]]
+name = "terrain_gen"
+harness = false

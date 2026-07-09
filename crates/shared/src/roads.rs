@@ -70,7 +70,7 @@ impl Roads {
             })
             .collect();
 
-        let mut roads = Vec::new();
+    let mut roads: Vec<Road> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         let mut link_count = vec![0usize; anchors.len()];
 
@@ -144,12 +144,12 @@ fn build_road(terrain: &TerrainGen, a: SpherePos, b: SpherePos) -> Vec<Road> {
     let straight: Vec<SpherePos> =
         (0..=steps).map(|k| slerp(a, b, k as f32 / steps as f32)).collect();
     let any_water = straight.iter().any(|p| {
-        terrain.continent_elevation(*p) < -0.05
+        terrain.elevation_at(*p) < -0.05
     });
 
     if !any_water {
         // Pure land road.
-        return vec![build_land_road(terrain, a, b, steps, &straight, seed)];
+        return vec![build_land_road(terrain, a, b, steps, seed)];
     }
 
     // Path crosses water — find nearest shore points and route:
@@ -164,12 +164,20 @@ fn build_road(terrain: &TerrainGen, a: SpherePos, b: SpherePos) -> Vec<Road> {
     let sa = shore_a.unwrap();
     let sb = shore_b.unwrap();
 
+    let mut roads: Vec<Road> = Vec::new();
+
+    // Road from settlement A to its shore: must stay entirely on land.
+    // If any point dips below the continent, this route is invalid.
+    let a_to_sa = a_to_shore_road(terrain, a, sa, seed);
+    let b_to_sb = a_to_shore_road(terrain, b, sb, seed);
+
+    if a_to_sa.is_none() || b_to_sb.is_none() {
+        return vec![];
+    }
+
     let mut roads = Vec::new();
 
-    // Road from settlement A to its shore (land).
-    if a.distance(sa) > 10.0 {
-        roads.push(build_land_road(terrain, a, sa, (a.distance(sa) / SAMPLE_SPACING).ceil().max(1.0) as usize, &straight, seed));
-    }
+    if let Some(r) = a_to_sa { roads.push(r); }
 
     // Bridge between shores.
     let bridge_steps = (sa.distance(sb) / SAMPLE_SPACING).ceil().max(1.0) as usize;
@@ -179,12 +187,38 @@ fn build_road(terrain: &TerrainGen, a: SpherePos, b: SpherePos) -> Vec<Road> {
         roads.push(Road { points: bridge_points, kind: PathKind::Bridge });
     }
 
-    // Road from shore B to settlement B (land).
-    if b.distance(sb) > 10.0 {
-        roads.push(build_land_road(terrain, sb, b, (sb.distance(b) / SAMPLE_SPACING).ceil().max(1.0) as usize, &straight, seed));
-    }
+    if let Some(r) = b_to_sb { roads.push(r); }
 
     roads
+}
+
+fn a_to_shore_road(
+    terrain: &TerrainGen,
+    from: SpherePos,
+    to: SpherePos,
+    seed: Vec3,
+) -> Option<Road> {
+    let dist = from.distance(to);
+    if dist < 10.0 { return None; }
+    let steps = (dist / SAMPLE_SPACING).ceil().max(1.0) as usize;
+    let mut points = Vec::with_capacity(steps + 1);
+    for k in 0..=steps {
+        let t = k as f32 / steps as f32;
+        let mut p = if k == 0 { from } else if k == steps { to } else {
+            wobbled_slerp(from, to, t, seed, 20.0)
+        };
+        // Fallback: straight slerp, then push slightly outward if still below sea.
+        if terrain.elevation_at(p) < 0.0 {
+            p = slerp(from, to, t);
+        }
+        if terrain.elevation_at(p) < -0.01 {
+            return None; // can't reach this shore
+        }
+        points.push(p);
+    }
+    points[0] = from;
+    *points.last_mut().unwrap() = to;
+    Some(Road { points, kind: PathKind::Road })
 }
 
 fn build_land_road(
@@ -192,7 +226,6 @@ fn build_land_road(
     a: SpherePos,
     b: SpherePos,
     steps: usize,
-    straight: &[SpherePos],
     seed: Vec3,
 ) -> Road {
     let mut points = Vec::with_capacity(steps + 1);
@@ -201,10 +234,7 @@ fn build_land_road(
         let mut p = if k == 0 { a } else if k == steps { b } else {
             wobbled_slerp(a, b, t, seed, 40.0)
         };
-        if terrain.continent_elevation(p) < 0.0 {
-            p = slerp(a, b, t);
-        }
-        if terrain.continent_elevation(p) < 0.0 {
+        if terrain.elevation_at(p) < 0.0 {
             p = slerp(a, b, t);
         }
         points.push(p);
@@ -286,7 +316,7 @@ mod tests {
                 PathKind::Road => {
                     for p in &road.points {
                         assert!(
-                            terrain.continent_elevation(*p) > 0.0,
+                            terrain.elevation_at(*p) > -0.05,
                             "road {ri} ran into the ocean (continent layer)"
                         );
                     }

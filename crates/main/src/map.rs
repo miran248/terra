@@ -133,6 +133,8 @@ fn setup_map(
         Ground,
     ));
 
+
+
     // Features layer
     if !level.feature_tris.is_empty() {
         let feat_mesh = build_visual_mesh(&level.feature_tris, &level.feature_colors);
@@ -178,14 +180,15 @@ fn setup_map(
         Ground,
     ));
 
-    // Player: spawn at the first settlement.
+    // Player: spawn at the first settlement, above the feature disc.
     let s = level.settlements.first().expect("no settlements");
     let start = shared::sphere::SpherePos::new(Vec3::from_array(s.pos));
     let up = start.0;
     let capsule_radius = PLAYER_SIZE * 0.4;
     let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
-    let spawn_r = terrain.surface_radius(start).max(PLANET_RADIUS) + capsule_half + 2.0;
-    let spawn_pos = up * spawn_r;
+    // Settlement disc is at terrain surface + 0.5.
+    let disc_r = terrain.surface_radius(start) + 0.5 + capsule_half + 2.0;
+    let spawn_pos = up * disc_r;
     commands.spawn((
         Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
         MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
