@@ -489,7 +489,10 @@ fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
         shared::terrain::Terrain::Ocean |
         shared::terrain::Terrain::Lake |
         shared::terrain::Terrain::River => Color::srgb(0.2, 0.5, 1.0),
-        shared::terrain::Terrain::Beach => Color::srgb(0.9, 0.85, 0.6),
+        shared::terrain::Terrain::Beach |
+        shared::terrain::Terrain::Cliff |
+        shared::terrain::Terrain::Lakeshore |
+        shared::terrain::Terrain::Riverbank => Color::srgb(0.9, 0.85, 0.6),
         shared::terrain::Terrain::Desert => Color::srgb(0.85, 0.75, 0.5),
         shared::terrain::Terrain::Plains |
         shared::terrain::Terrain::Forest => Color::srgb(0.3, 0.7, 0.3),
