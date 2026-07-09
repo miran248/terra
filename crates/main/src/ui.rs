@@ -39,6 +39,13 @@ struct CraftButton {
 #[derive(Component)]
 struct TerrainHud;
 
+#[derive(Resource)]
+struct TerrainHudTimer(Timer);
+
+impl Default for TerrainHudTimer {
+    fn default() -> Self { Self(Timer::from_seconds(0.5, TimerMode::Repeating)) }
+}
+
 #[derive(Component)]
 struct CraftStatusText;
 
@@ -47,6 +54,7 @@ pub struct UiPlugin;
 impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UpgradeLevels>()
+            .init_resource::<TerrainHudTimer>()
             .add_systems(Startup, (load_font, spawn_terrain_hud).chain())
             // .add_systems(Startup, (setup_sidebar, setup_crafting).chain())
             .add_systems(OnEnter(shared::state::AppState::Playing), reset_upgrade_buttons)
@@ -451,12 +459,16 @@ fn update_terrain_hud(
     features: Option<Res<LevelFeatures>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
+    time: Res<Time>,
+    mut timer: ResMut<TerrainHudTimer>,
 ) {
     let Ok(children) = hud_q.single() else { return };
     let Some(child) = children.first() else { return };
     let Ok((mut text, mut color)) = text_q.get_mut(*child) else { return };
     let Some(terrain) = terrain else { text.0.clear(); return; };
     let Ok(tf) = player_q.single() else { text.0.clear(); return; };
+
+    if !timer.0.tick(time.delta()).just_finished() { return; }
     let pos = shared::sphere::SpherePos::new(tf.translation);
     let altitude = terrain.altitude(pos);
     let tile = terrain.classify(pos);

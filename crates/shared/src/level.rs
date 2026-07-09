@@ -2,22 +2,37 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct LevelData {
-    /// Pure terrain trimesh (visual + physics). No feature raises.
     pub terrain_tris: Vec<[[f32; 3]; 3]>,
-    /// Per-terrain-triangle color (linear RGB, includes road/town paint).
     pub terrain_colors: Vec<[f32; 4]>,
-    /// Per-terrain-triangle feature flags: bit 0=road, bit 1=town, bit 2=bridge.
     pub terrain_features: Vec<u8>,
-    /// Undisplaced unit icosphere tris for face-at-position lookup.
     pub unit_tris: Vec<[[f32; 3]; 3]>,
-    /// Features trimesh: bridge decks, settlement flat discs. Separate collider layer.
     pub feature_tris: Vec<[[f32; 3]; 3]>,
-    /// Per-feature-triangle color.
     pub feature_colors: Vec<[f32; 4]>,
-    /// Settlement names and unit-vector positions.
     pub settlements: Vec<SettlementData>,
-    /// Road/bridge paths: sampled unit-vector points + kind.
     pub roads: Vec<RoadData>,
+    /// Baked TerrainGen vertex data: avoids reconstructing noise at startup.
+    pub baked_verts: BakedTerrain,
+}
+
+/// Precomputed vertex-level terrain data — eliminates runtime noise generation.
+#[derive(Serialize, Deserialize)]
+pub struct BakedTerrain {
+    /// Icosphere vertices on unit sphere (sub=5, ~10k).
+    pub verts: Vec<[f32; 3]>,
+    /// Columnar adjacency: adj_off[i]..adj_off[i+1] slices into adj_data.
+    pub vert_adj_off: Vec<usize>,
+    pub vert_adj_data: Vec<usize>,
+    /// Spatial grid for nearest-vert lookup: 32×64 lat/lon buckets of vertex indices.
+    pub vert_grid: Vec<Vec<usize>>,
+    /// Per-vertex precomputed values.
+    pub vert_elev: Vec<f32>,
+    pub vert_moist: Vec<f32>,
+    pub vert_temp: Vec<f32>,
+    /// Flow + erosion data.
+    pub flow_accum: Vec<f32>,
+    pub river_depth: Vec<f32>,
+    /// Road proximity spatial hash: (lat_cell, lon_cell) → list of road/settlement points.
+    pub road_cells: Vec<(i32, i32, Vec<[f32; 3]>)>,
 }
 
 #[derive(Serialize, Deserialize)]

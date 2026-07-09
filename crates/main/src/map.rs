@@ -88,20 +88,9 @@ fn setup_map(
     let level: LevelData = postcard::from_bytes(level_bytes).expect("deserialize level");
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
-    let mut terrain = TerrainGen::new(PLANET_SEED);
-    // Reconstruct roads from level data and attach to terrain so spawn
-    // and surface_radius queries see the road-flattened corridor.
-    let roads_res = shared::roads::Roads {
-        settlements: level.settlements.iter().map(|s| shared::roads::Settlement {
-            pos: shared::sphere::SpherePos::new(Vec3::from_array(s.pos)),
-            name: s.name.clone(),
-        }).collect(),
-        roads: level.roads.iter().map(|r| shared::roads::Road {
-            points: r.points.iter().map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p))).collect(),
-            kind: if r.is_bridge { shared::roads::PathKind::Bridge } else { shared::roads::PathKind::Road },
-        }).collect(),
-    };
-    terrain.set_roads(&roads_res);
+    // Use prebaked vertex data — skips ~100ms of noise generation at startup.
+    let mut terrain = TerrainGen::from_baked(&level.baked_verts);
+    terrain.set_roads_from_baked(&level.baked_verts.road_cells);
 
     commands.insert_resource(GameAssets {
         zombie_mesh: meshes.add(Sphere::new(ZOMBIE_SIZE * 0.5)),

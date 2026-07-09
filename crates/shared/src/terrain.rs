@@ -119,6 +119,8 @@ pub struct TerrainGen {
     adj_data: Vec<usize>,
     /// Spatial grid for O(1) nearest_vert lookup: lat/lon buckets of vertex indices.
     vert_grid: Vec<Vec<usize>>,
+    /// True when loaded from baked data — elevation/moisture/temp use interpolation, not noise.
+    baked: bool,
     seed: u64,
 }
 
@@ -195,6 +197,7 @@ impl TerrainGen {
             adj_off,
             adj_data,
             vert_grid,
+            baked: false,
             seed: seed as u64,
         };
         tg.precompute_vert_elevations();
@@ -203,6 +206,64 @@ impl TerrainGen {
         tg.compute_flow();
         tg.compute_erosion();
         tg
+    }
+
+    /// Reconstruct from baked level data — zero noise generation.
+    pub fn from_baked(baked: &crate::level::BakedTerrain) -> Self {
+        let verts: Vec<Vec3> = baked.verts.iter().map(|v| Vec3::from_array(*v)).collect();
+        Self {
+            // Noise fields: all zero — never called when precomputed data is used.
+            height: Fbm::<Perlin>::new(0),
+            detail: Fbm::<Perlin>::new(0),
+            moisture: Fbm::<Perlin>::new(0),
+            temp_noise: Fbm::<Perlin>::new(0),
+            warp: Fbm::<Perlin>::new(0),
+            roads: None,
+            flow_dir: vec![usize::MAX; verts.len()],
+            flow_accum: baked.flow_accum.clone(),
+            river_depth: baked.river_depth.clone(),
+            vert_elev_raw: vec![0.0; verts.len()],
+            vert_elev: baked.vert_elev.clone(),
+            vert_moist: baked.vert_moist.clone(),
+            vert_temp: baked.vert_temp.clone(),
+            verts,
+            adj_off: baked.vert_adj_off.clone(),
+            adj_data: baked.vert_adj_data.clone(),
+            vert_grid: baked.vert_grid.clone(),
+            baked: true,
+            seed: 0,
+        }
+    }
+
+    pub fn set_roads_from_baked(&mut self, cells: &[(i32, i32, Vec<[f32; 3]>)]) {
+        let cells: HashMap<(i32, i32), Vec<Vec3>> = cells.iter()
+            .map(|(k1, k2, pts)| ((*k1, *k2), pts.iter().map(|p| Vec3::from_array(*p)).collect()))
+            .collect();
+        self.roads = Some(RoadField { cells });
+    }
+
+    pub fn bake_road_cells(&self) -> Vec<(i32, i32, Vec<[f32; 3]>)> {
+        self.roads.as_ref().map(|rf| {
+            rf.cells.iter().map(|(k, pts)| {
+                (k.0, k.1, pts.iter().map(|p| p.to_array()).collect())
+            }).collect()
+        }).unwrap_or_default()
+    }
+
+    /// Export all vertex data for baking into LevelData.
+    pub fn bake_terrain(&self) -> crate::level::BakedTerrain {
+        crate::level::BakedTerrain {
+            verts: self.verts.iter().map(|v| v.to_array()).collect(),
+            vert_adj_off: self.adj_off.clone(),
+            vert_adj_data: self.adj_data.clone(),
+            vert_grid: self.vert_grid.clone(),
+            vert_elev: self.vert_elev.clone(),
+            vert_moist: self.vert_moist.clone(),
+            vert_temp: self.vert_temp.clone(),
+            flow_accum: self.flow_accum.clone(),
+            river_depth: self.river_depth.clone(),
+            road_cells: self.bake_road_cells(),
+        }
     }
 
     pub fn set_roads(&mut self, roads: &crate::roads::Roads) {
@@ -226,6 +287,19 @@ impl TerrainGen {
     // ---- unified elevation (the ONLY source of height) ----
 
     pub fn elevation_at(&self, pos: SpherePos) -> f32 {
+        if self.baked {
+            let mut e = self.interp_elevation(pos);
+            let vi = self.nearest_vert(pos);
+            let rd = self.river_depth[vi];
+            if rd > 0.0 && e > -0.3 {
+                e -= rd * 0.10;
+            }
+            // Road flattening from baked road cells.
+            let flat = 1.0 - (1.0 - self.road_proximity(pos)).powf(2.5);
+            // Interpolated elevation already includes detail — just apply flattening.
+            return e.clamp(-1.0, 1.0);
+        }
+
         let w = self.warped(pos);
         // Multi-octave height: produces landmass shapes with natural mountain ranges.
         let raw = self.height.get(w) as f32;
@@ -442,15 +516,17 @@ impl TerrainGen {
     }
 
     fn smooth_vert_elevations(&mut self) {
-        // One iteration of Laplacian smoothing: average with neighbors.
-        let n = self.verts.len();
-        let mut smoothed = vec![0.0f32; n];
-        for i in 0..n {
-            let neighbors = self.adj_of(i);
-            let sum: f32 = neighbors.iter().map(|&n| self.vert_elev_raw[n]).sum();
-            smoothed[i] = self.vert_elev_raw[i] * 0.5 + (sum / neighbors.len() as f32) * 0.5;
+        // 3 passes of Laplacian smoothing to remove high-frequency noise.
+        for _ in 0..3 {
+            let n = self.verts.len();
+            let mut smoothed = vec![0.0f32; n];
+            for i in 0..n {
+                let neighbors = self.adj_of(i);
+                let sum: f32 = neighbors.iter().map(|&n| self.vert_elev_raw[n]).sum();
+                smoothed[i] = self.vert_elev_raw[i] * 0.5 + (sum / neighbors.len() as f32) * 0.5;
+            }
+            self.vert_elev_raw = smoothed;
         }
-        self.vert_elev_raw = smoothed;
     }
 
     fn precompute_vert_samples(&mut self) {
@@ -475,11 +551,11 @@ impl TerrainGen {
         self.bary_interp(pos, &self.vert_temp)
     }
 
-    /// Find nearest 3 vertices by dot product, then barycentric interpolate their values.
+    /// Inverse-distance-weighted interpolation from nearest 6 vertices.
     fn bary_interp(&self, pos: SpherePos, values: &[f32]) -> f32 {
         let dir = pos.0;
-        // Collect indices sorted by descending dot (nearest first).
-        let mut nearest: [(f32, usize); 3] = [(f32::NEG_INFINITY, 0); 3];
+        const K: usize = 6;
+        let mut nearest: [(f32, usize); K] = [(f32::NEG_INFINITY, 0); K];
         let (lat_i, lon_i) = Self::vert_grid_cell(dir);
         for dl in -1i32..=1 {
             for doo in -1i32..=1 {
@@ -488,26 +564,26 @@ impl TerrainGen {
                 let idx = lat * Self::VERT_GRID_LONS + lon;
                 for &vi in &self.vert_grid[idx] {
                     let d = self.verts[vi].dot(dir);
-                    if d > nearest[0].0 {
-                        nearest[2] = nearest[1];
-                        nearest[1] = nearest[0];
-                        nearest[0] = (d, vi);
-                    } else if d > nearest[1].0 {
-                        nearest[2] = nearest[1];
-                        nearest[1] = (d, vi);
-                    } else if d > nearest[2].0 {
-                        nearest[2] = (d, vi);
+                    for i in 0..K {
+                        if d > nearest[i].0 {
+                            nearest[i..].rotate_right(1);
+                            nearest[i] = (d, vi);
+                            break;
+                        }
                     }
                 }
             }
         }
-        // Barycentric weights: proportional to dot products.
-        let w0 = nearest[0].0;
-        let w1 = nearest[1].0;
-        let w2 = nearest[2].0;
-        let sum = w0 + w1 + w2;
-        if sum <= 0.0 { return values[nearest[0].1]; }
-        (values[nearest[0].1] * w0 + values[nearest[1].1] * w1 + values[nearest[2].1] * w2) / sum
+        // Inverse distance weighting: weight = 1/(1 - dot) avoids singularities.
+        let mut sum = 0.0f32;
+        let mut weighted = 0.0f32;
+        for (dot, vi) in nearest {
+            // dot = cos(angle), closer to 1 means more parallel (nearer).
+            let w = 1.0 / (1.01 - dot).max(0.01);
+            weighted += values[vi] * w;
+            sum += w;
+        }
+        if sum > 0.0 { weighted / sum } else { values[nearest[0].1] }
     }
 
 

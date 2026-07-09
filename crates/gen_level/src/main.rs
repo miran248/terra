@@ -35,11 +35,18 @@ fn main() {
     let out = PathBuf::from(
         std::env::args()
             .nth(1)
-            .unwrap_or_else(|| format!("../main/assets/level_{seed}.bin")),
+            .unwrap_or_else(|| {
+                // Default: write next to the source (canonical, not CWD-dependent).
+                let dir = std::env!("CARGO_MANIFEST_DIR");
+                format!("{dir}/../main/assets/level_{seed}.bin")
+            }),
     );
 
-    let terrain = TerrainGen::new(seed);
+    let mut terrain = TerrainGen::new(seed);
     let roads = Roads::generate(&terrain);
+    terrain.set_roads(&roads);
+
+    let baked = terrain.bake_terrain();
 
     let sub = 6;
     let unit_tris = unit_icosphere_tris(sub);
@@ -150,6 +157,7 @@ fn main() {
                 is_bridge: matches!(r.kind, shared::roads::PathKind::Bridge),
             })
             .collect(),
+        baked_verts: baked,
     };
 
     let bytes = postcard::to_allocvec(&data).expect("serialize level");
@@ -188,13 +196,21 @@ fn build_features(
         );
     }
 
-    // Settlement flat discs at terrain surface, not sea level.
+    // Settlement flat discs: uniform radius per settlement.
     let town_color = shared::theme::WARNING.to_linear().to_f32_array();
+    // Precompute disc radii per settlement.
+    let settlement_radii: Vec<f32> = roads.settlements.iter()
+        .map(|s| terrain.surface_radius(s.pos) + 0.5)
+        .collect();
 
     for fi in town_faces.iter() {
         let [a, b, c] = planet.tris()[fi];
         let cent = SpherePos::new(((a + b + c) / 3.0).normalize());
-        let r = terrain.surface_radius(cent) + 0.5;
+        // Match face to nearest settlement for uniform disc radius.
+        let r = roads.settlements.iter().zip(&settlement_radii)
+            .min_by(|(a, _), (b, _)| a.pos.distance(cent).partial_cmp(&b.pos.distance(cent)).unwrap())
+            .map(|(_, &r)| r)
+            .unwrap_or(shared::sphere::PLANET_RADIUS + 0.5);
         tris.push([
             (a.normalize() * r).to_array(),
             (b.normalize() * r).to_array(),
