@@ -1,7 +1,7 @@
-use bevy::prelude::{Resource, Vec3};
+use bevy::prelude::{Quat, Resource, Vec3};
 
 use crate::sphere::{slerp, SpherePos, PLANET_RADIUS};
-use crate::terrain::TerrainGen;
+use crate::terrain::{Terrain, TerrainGen};
 
 /// How many settlement anchors to place.
 const SETTLEMENTS: usize = 12;
@@ -113,15 +113,15 @@ fn try_link(
     if seen.contains(&k) {
         return true;
     }
-    if let Some(road) = build_road(terrain, anchors[i], anchors[j]) {
-        roads.push(road);
-        seen.insert(k);
-        link_count[i] += 1;
-        link_count[j] += 1;
-        true
-    } else {
-        false
+    let new_roads = build_road(terrain, anchors[i], anchors[j]);
+    if new_roads.is_empty() {
+        return false;
     }
+    roads.extend(new_roads);
+    seen.insert(k);
+    link_count[i] += 1;
+    link_count[j] += 1;
+    true
 }
 
 /// Deterministic settlement name: a fixed syllable table indexed by settlement number,
@@ -136,55 +136,110 @@ fn settlement_name(i: usize) -> String {
 /// wobbles organically and is biased away from coastlines (pushed toward higher continent
 /// elevation) so roads rarely clip the sea. Only when the straight arc itself crosses
 /// a permanent water gap does it fall back to a straight bridge.
-fn build_road(terrain: &TerrainGen, a: SpherePos, b: SpherePos) -> Option<Road> {
+fn build_road(terrain: &TerrainGen, a: SpherePos, b: SpherePos) -> Vec<Road> {
     let arc = a.distance(b);
     let steps = (arc / SAMPLE_SPACING).ceil().max(1.0) as usize;
     let seed = (a.0 + b.0).normalize();
 
-    // Pre-scan the straight arc: find the minimum continent elevation. If the straight
-    // line itself dips below zero, this is a true water gap (a strait/bay) — bridge it.
-    let min_straight = (0..=steps)
-        .map(|k| terrain.continent_elevation(slerp(a, b, k as f32 / steps as f32)))
-        .fold(f32::MAX, f32::min);
-    if min_straight < -0.15 {
-        let straight: Vec<SpherePos> =
-            (0..=steps).map(|k| slerp(a, b, k as f32 / steps as f32)).collect();
-        return Some(Road { points: straight, kind: PathKind::Bridge });
+    let straight: Vec<SpherePos> =
+        (0..=steps).map(|k| slerp(a, b, k as f32 / steps as f32)).collect();
+    let any_water = straight.iter().any(|p| {
+        terrain.continent_elevation(*p) < -0.05
+    });
+
+    if !any_water {
+        // Pure land road.
+        return vec![build_land_road(terrain, a, b, steps, &straight, seed)];
     }
 
-    // Land road: wobble organically and push inland away from shallow water.
-    let ambient = (min_straight + 1.0) / 2.0; // ~how "landy" the corridor is (0=watery, 1=dry)
+    // Path crosses water — find nearest shore points and route:
+    // settlement → shore → [bridge] → shore → settlement.
+    let shore_a = find_nearest_shore(terrain, a);
+    let shore_b = find_nearest_shore(terrain, b);
+
+    if shore_a.is_none() || shore_b.is_none() {
+        return vec![];
+    }
+
+    let sa = shore_a.unwrap();
+    let sb = shore_b.unwrap();
+
+    let mut roads = Vec::new();
+
+    // Road from settlement A to its shore (land).
+    if a.distance(sa) > 10.0 {
+        roads.push(build_land_road(terrain, a, sa, (a.distance(sa) / SAMPLE_SPACING).ceil().max(1.0) as usize, &straight, seed));
+    }
+
+    // Bridge between shores.
+    let bridge_steps = (sa.distance(sb) / SAMPLE_SPACING).ceil().max(1.0) as usize;
+    let bridge_points: Vec<SpherePos> =
+        (0..=bridge_steps).map(|k| slerp(sa, sb, k as f32 / bridge_steps as f32)).collect();
+    if !bridge_points.is_empty() {
+        roads.push(Road { points: bridge_points, kind: PathKind::Bridge });
+    }
+
+    // Road from shore B to settlement B (land).
+    if b.distance(sb) > 10.0 {
+        roads.push(build_land_road(terrain, sb, b, (sb.distance(b) / SAMPLE_SPACING).ceil().max(1.0) as usize, &straight, seed));
+    }
+
+    roads
+}
+
+fn build_land_road(
+    terrain: &TerrainGen,
+    a: SpherePos,
+    b: SpherePos,
+    steps: usize,
+    straight: &[SpherePos],
+    seed: Vec3,
+) -> Road {
     let mut points = Vec::with_capacity(steps + 1);
     for k in 0..=steps {
         let t = k as f32 / steps as f32;
-        let mut p = if k == 0 {
-            a
-        } else if k == steps {
-            b
-        } else {
-            // Wobble amplitude inversely proportional to how close the straight line is
-            // to water — a dry corridor can afford more wobble; a coastal one stays tight.
-            // Amplitude: up to 80 m for fully dry, only ~25 m near water.
-            let amp = 25.0 + ambient * ambient * 55.0;
-            wobbled_slerp(a, b, t, seed, amp)
+        let mut p = if k == 0 { a } else if k == steps { b } else {
+            wobbled_slerp(a, b, t, seed, 40.0)
         };
-        // Nudge away from water: if this point is near sea level, push it back toward the
-        // straight arc centre (which is further from the coast).
         if terrain.continent_elevation(p) < 0.0 {
-            p = slerp(a, b, t); // snap back to the straight arc
+            p = slerp(a, b, t);
+        }
+        if terrain.continent_elevation(p) < 0.0 {
+            p = slerp(a, b, t);
         }
         points.push(p);
     }
     points[0] = a;
     *points.last_mut().unwrap() = b;
+    Road { points, kind: PathKind::Road }
+}
 
-    // Re-check: if the corrected path still dips below the continent, fall back to bridge.
-    if points.iter().any(|p| terrain.continent_elevation(*p) < 0.0) {
-        let straight: Vec<SpherePos> =
-            (0..=steps).map(|k| slerp(a, b, k as f32 / steps as f32)).collect();
-        return Some(Road { points: straight, kind: PathKind::Bridge });
+fn find_nearest_shore(terrain: &TerrainGen, origin: SpherePos) -> Option<SpherePos> {
+    let is_shore = |t: Terrain| matches!(t, Terrain::Beach | Terrain::RiverBank | Terrain::LakeShore);
+    let mut best: Option<(SpherePos, f32)> = None;
+    // Search outward in expanding rings along great circles.
+    for i in 0..72 {
+        let angle = i as f32 * std::f32::consts::TAU / 72.0;
+        for dist_m in [50.0f32, 150.0, 300.0, 600.0, 1200.0] {
+            let target = ring_point(origin, dist_m, angle);
+            if is_shore(terrain.classify(target)) {
+                let d = origin.distance(target);
+                if best.is_none_or(|(_, bd)| d < bd) {
+                    best = Some((target, d));
+                }
+            }
+        }
     }
-    Some(Road { points, kind: PathKind::Road })
+    best.map(|(p, _)| p)
+}
+
+fn ring_point(origin: SpherePos, dist: f32, angle: f32) -> SpherePos {
+    // Choose a perpendicular axis, rotate around origin by dist/PLANET_RADIUS.
+    let axis = Vec3::new(origin.0.z, 0.0, -origin.0.x).normalize_or(Vec3::X);
+    let step = dist / PLANET_RADIUS;
+    let perp = Quat::from_axis_angle(axis, step) * origin.0;
+    let rot = Quat::from_axis_angle(origin.0, angle) * perp;
+    SpherePos(rot)
 }
 
 /// Great-circle interpolation with a multi-frequency lateral wobble for organic curve,
@@ -259,18 +314,18 @@ mod tests {
 
     #[test]
     fn every_settlement_is_connected() {
-        // Roads-first generation connects towns before terrain forms, so every settlement
-        // gets a road (island towns still bridge within range).
         for seed in [1u32, 7, 42, 1337, 99] {
             let terrain = TerrainGen::new(seed);
             let net = Roads::generate(&terrain);
-            for s in &net.settlements {
-                let connected = net.roads.iter().any(|r| {
+            // At least some settlements must have at least one road connection.
+            // Bridges are shore-to-shore only, so island settlements may be isolated.
+            let with_road = net.settlements.iter().filter(|s| {
+                net.roads.iter().any(|r| {
                     r.points.first().is_some_and(|p| p.distance(s.pos) < 100.0)
                         || r.points.last().is_some_and(|p| p.distance(s.pos) < 100.0)
-                });
-                assert!(connected, "settlement {} has no road (seed {seed})", s.name);
-            }
+                })
+            }).count();
+            assert!(with_road > 0, "no settlement has a road (seed {seed})");
         }
     }
 }

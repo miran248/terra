@@ -2,25 +2,27 @@ use bevy::prelude::{Color, Resource, Vec3};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 use std::collections::HashMap;
 
-use crate::sphere::{SpherePos, METER, PLANET_RADIUS};
+use crate::sphere::{SpherePos, PLANET_RADIUS};
 
-pub const MAX_MOUNTAIN: f32 = 500.0 * METER;
-pub const MAX_DEPTH: f32 = 500.0 * METER;
+pub const MAX_MOUNTAIN: f32 = 500.0;
+pub const MAX_DEPTH: f32 = 500.0;
 
-pub const HABITABLE_MIN_ALT: f32 = 1.0 * METER;
-pub const HABITABLE_MAX_ALT: f32 = 150.0 * METER;
+pub const HABITABLE_MIN_ALT: f32 = 1.0;
+pub const HABITABLE_MAX_ALT: f32 = 150.0;
 pub const HABITABLE_MAX_SLOPE: f32 = 0.6;
 pub const HABITABLE_MIN_TEMP: f32 = -10.0;
 pub const HABITABLE_MAX_TEMP: f32 = 30.0;
+
+// ---- biome types ----
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Terrain {
     DeepOcean,
     Ocean,
     Lake,
-    Lakeshore,
+    LakeShore,
     River,
-    Riverbank,
+    RiverBank,
     Beach,
     Cliff,
     Desert,
@@ -32,14 +34,31 @@ pub enum Terrain {
 }
 
 impl Terrain {
+    pub const ALL: [Terrain; 14] = [
+        Terrain::DeepOcean,
+        Terrain::Ocean,
+        Terrain::Lake,
+        Terrain::LakeShore,
+        Terrain::River,
+        Terrain::RiverBank,
+        Terrain::Beach,
+        Terrain::Cliff,
+        Terrain::Desert,
+        Terrain::Plains,
+        Terrain::Forest,
+        Terrain::Tundra,
+        Terrain::Mountain,
+        Terrain::Snow,
+    ];
+
     pub fn color(&self) -> Color {
         match self {
             Terrain::DeepOcean => Color::srgb(0.05, 0.12, 0.35),
             Terrain::Ocean => Color::srgb(0.10, 0.25, 0.55),
             Terrain::Lake => Color::srgb(0.15, 0.35, 0.65),
-            Terrain::Lakeshore => Color::srgb(0.20, 0.48, 0.55),
+            Terrain::LakeShore => Color::srgb(0.20, 0.48, 0.55),
             Terrain::River => Color::srgb(0.20, 0.45, 0.75),
-            Terrain::Riverbank => Color::srgb(0.25, 0.50, 0.55),
+            Terrain::RiverBank => Color::srgb(0.25, 0.50, 0.55),
             Terrain::Beach => Color::srgb(0.85, 0.78, 0.55),
             Terrain::Cliff => Color::srgb(0.50, 0.40, 0.35),
             Terrain::Desert => Color::srgb(0.80, 0.70, 0.40),
@@ -50,9 +69,59 @@ impl Terrain {
             Terrain::Snow => Color::srgb(0.92, 0.94, 0.97),
         }
     }
+
+    pub fn is_water(&self) -> bool {
+        matches!(self, Terrain::DeepOcean | Terrain::Ocean | Terrain::Lake | Terrain::River)
+    }
+
+    pub fn is_land(&self) -> bool {
+        !self.is_water()
+    }
 }
 
-/// Radius of the flattened corridor around roads/towns, meters.
+// ---- transition matrix ----
+
+/// Which terrain type replaces this one when it borders a neighbor of a different type.
+/// Only defined for pairs that need a transition; otherwise returns `*self` (no change).
+fn transition(self_type: Terrain, neighbor: Terrain) -> Terrain {
+    use Terrain::*;
+    match (self_type, neighbor) {
+        // Ocean → land: Beach at low slope, Cliff at high.
+        (Ocean, Plains | Forest | Desert | Tundra) => Beach,
+        (Ocean, Mountain | Snow) => Cliff,
+        (DeepOcean, _) => DeepOcean, // deep ocean doesn't transition
+
+        // Land → ocean: Cliffs (steep edge).
+        (Plains | Forest | Desert | Tundra | Mountain | Snow, Ocean) => Cliff,
+        (Plains | Forest | Desert | Tundra, DeepOcean) => Cliff,
+
+        // Lake → land: LakeShore
+        (Lake, Plains | Forest | Desert | Tundra | Mountain | Snow) => LakeShore,
+        (LakeShore, Lake) => LakeShore,
+        // Land → lake
+        (Plains | Forest | Desert | Tundra | Mountain | Snow, Lake) => LakeShore,
+
+        // River → land: RiverBank
+        (River, Plains | Forest | Desert | Tundra | Mountain | Snow | Beach) => RiverBank,
+        (RiverBank, River) => RiverBank,
+        // Land → river
+        (Plains | Forest | Desert | Tundra | Mountain | Snow | Beach, River) => RiverBank,
+
+        // Beach/Cliff next to water stays
+        (Beach, Ocean | Lake | River) => Beach,
+        (Cliff, Ocean | Lake | River) => Cliff,
+
+        // Beach/Cliff touching land — beach softens into plains
+        (Beach, Plains | Forest | Desert | Tundra) => Beach,
+        (Cliff, Plains | Forest) => Cliff,
+
+        // Internal — no transition
+        _ => self_type,
+    }
+}
+
+// ---- terrain generation resource ----
+
 pub const ROAD_CORRIDOR: f32 = 180.0;
 
 #[derive(Resource)]
@@ -64,15 +133,11 @@ pub struct TerrainGen {
     temp_noise: Fbm<Perlin>,
     warp: Fbm<Perlin>,
     roads: Option<RoadField>,
-    /// Precomputed drainage grid: for each icosphere vertex index, the index it flows to
-    /// (or usize::MAX if ocean sink).
     flow_dir: Vec<usize>,
-    /// Flow accumulation: how many upstream cells drain through this cell.
     flow_accum: Vec<f32>,
-    /// Icosphere vertex positions on the unit sphere (used for flow grid).
     verts: Vec<Vec3>,
-    /// Adjacency: indices of neighbor vertices for each vertex.
     vert_adj: Vec<Vec<usize>>,
+    seed: u64,
 }
 
 struct RoadField {
@@ -116,7 +181,7 @@ impl RoadField {
 
 impl TerrainGen {
     pub fn new(seed: u32) -> Self {
-        let sub = 5; // icosphere subdivision for drainage grid (~10k verts)
+        let sub = 5;
         let (verts, vert_adj) = build_ico_grid(sub);
 
         let mut tg = Self {
@@ -131,6 +196,7 @@ impl TerrainGen {
             flow_accum: vec![0.0; verts.len()],
             verts,
             vert_adj,
+            seed: seed as u64,
         };
         tg.compute_flow();
         tg
@@ -165,12 +231,11 @@ impl TerrainGen {
         let w = self.warped(pos);
         let continent = self.continents.get(w) as f32;
         let land = smoothstep(0.0, 0.35, continent);
-        let road_flatness = self.road_proximity(pos).powf(2.5);
+        let road_flatness = 1.0 - (1.0 - self.road_proximity(pos)).powf(2.5);
 
         let ridged = 1.0 - (self.mountains.get(w) as f32).abs();
-        let mountains = ridged.powi(2) * 0.55 * land;
-
-        let detail = self.detail.get(w) as f32 * 0.06 * land;
+        let mountains = ridged.powi(2) * 0.55 * land * road_flatness;
+        let detail = self.detail.get(w) as f32 * 0.06 * land * road_flatness;
 
         (continent + mountains + detail).clamp(-1.0, 1.0)
     }
@@ -185,7 +250,7 @@ impl TerrainGen {
     }
 
     pub fn render_radius(&self, pos: SpherePos) -> f32 {
-        self.surface_radius(pos)
+        self.surface_radius(pos).max(PLANET_RADIUS)
     }
 
     pub fn surface_world(&self, pos: SpherePos) -> bevy::prelude::Vec3 {
@@ -220,6 +285,7 @@ impl TerrainGen {
     }
 
     pub fn habitable_spawn(&self) -> SpherePos {
+        fastrand::seed(self.seed);
         let mut best = SpherePos::new(Vec3::X);
         let mut best_score = f32::NEG_INFINITY;
         for _ in 0..2000 {
@@ -237,6 +303,7 @@ impl TerrainGen {
     }
 
     pub fn habitable_anchors(&self, count: usize, min_sep: f32) -> Vec<SpherePos> {
+        fastrand::seed(self.seed);
         let mut cands: Vec<(f32, SpherePos)> = Vec::new();
         for _ in 0..6000 {
             let a = fastrand::f32() * std::f32::consts::TAU;
@@ -270,94 +337,67 @@ impl TerrainGen {
     }
 
     pub fn temperature_at(&self, pos: SpherePos) -> f32 {
-        let base = 40.0; // equatorial sea-level temp
+        let base = 40.0;
         let lat = pos.0.y.clamp(-1.0, 1.0).asin().abs().to_degrees();
         let e = self.elevation_at(pos);
         let alt_m = if e > 0.0 { e * MAX_MOUNTAIN } else { e * MAX_DEPTH };
-        let lapse = alt_m * 0.0065; // °C per meter
+        let lapse = alt_m * 0.0065;
         let noise = self.temp_noise.get(self.warped(pos)) as f32 * 10.0;
-        let lat_cool = (lat - 90.0).powi(2) / 90.0 * 60.0;
+        let lat_cool = lat * 0.9;
         base - lat_cool - lapse + noise
     }
 
-    pub fn classify(&self, pos: SpherePos) -> Terrain {
+    // ---- classification using transition matrix ----
+
+    /// Base biome before edge transitions.
+    fn base_classify(&self, pos: SpherePos) -> Terrain {
         let e = self.elevation_at(pos);
         let m = self.moisture_at(pos);
         let t = self.temperature_at(pos);
 
-        // --- Edge detection: find nearest icosphere vertex for flow data ---
-        let vi = self.nearest_vert(pos);
-        let is_water = e < 0.0;
-        let has_land_neighbor = !is_water && self.vert_adj[vi].iter()
-            .any(|&n| self.vert_elevation(n) < 0.0);
-        let has_water_neighbor = is_water && self.vert_adj[vi].iter()
-            .any(|&n| self.vert_elevation(n) >= 0.0);
-
-        // --- Coastline: Beach vs Cliff ---
-        if !is_water && has_land_neighbor {
-            // At water-land boundary on the land side
-            let edge_slope = self.slope(pos);
-            if edge_slope >= 0.3 {
-                return Terrain::Cliff;
-            } else {
-                return Terrain::Beach;
-            }
-        }
-
-        // --- Water ---
-        if is_water {
-            // Lakes: small water bodies on land (shallow depression, not ocean)
-            if e > -0.04 && m > 0.2 && self.vert_adj[vi].iter()
-                .all(|&n| self.vert_elevation(n) < 0.30)
-            {
-                return Terrain::Lake;
-            }
-            if e < -0.30 { return Terrain::DeepOcean; }
+        if e < -0.30 { return Terrain::DeepOcean; }
+        if e < 0.0 {
+            if m > 0.2 && e > -0.04 { return Terrain::Lake; }
             return Terrain::Ocean;
         }
 
-        // --- Flow-based rivers (in valleys) ---
+        let vi = self.nearest_vert(pos);
         let accum = self.flow_accum[vi];
-        let is_valley = self.is_valley(vi);
-        if e < 0.08 && accum > 3.0 && is_valley {
+        if e < 0.03 && accum > 3.0 && self.is_valley(vi) {
             return Terrain::River;
         }
 
-        // --- Riverbanks (adjacent to river) ---
-        if e < 0.12 {
-            if self.vert_adj[vi].iter().any(|&n| {
-                let ne = self.vert_elevation(n);
-                ne < 0.08 && self.flow_accum[n] > 3.0 && self.is_valley(n)
-            }) {
-                return Terrain::Riverbank;
-            }
-        }
-
-        // --- Lakeshore (adjacent to lake) ---
-        if self.vert_adj[vi].iter().any(|&n| {
-            let ne = self.vert_elevation(n);
-            ne > -0.04 && ne < 0.0 && self.moisture_at(pos) > 0.1
-        }) {
-            return Terrain::Lakeshore;
-        }
-
-        if e < 0.02 { return Terrain::Beach; }
-
-        if has_water_neighbor {
-            return Terrain::Beach;
-        }
-
-        // --- Cold ---
         if t < -15.0 { return Terrain::Snow; }
         if t < 0.0 { return Terrain::Tundra; }
-
-        // --- Elevation ---
         if e > 0.45 { return Terrain::Mountain; }
-
-        // --- Moisture ---
         if t > 30.0 && m < -0.15 { Terrain::Desert }
         else if m > 0.25 { Terrain::Forest }
         else { Terrain::Plains }
+    }
+
+    /// Full classification with transition-matrix-based edge blending.
+    /// Samples neighboring faces: if any neighbor differs and the matrix defines
+    /// a transition, returns the transition type instead.
+    pub fn classify(&self, pos: SpherePos) -> Terrain {
+        let base = self.base_classify(pos);
+        let step = 25.0 / PLANET_RADIUS;
+        let (east, north) = pos.tangent_basis();
+        let dirs = [
+            SpherePos::new((pos.0 + east * step).normalize()),
+            SpherePos::new((pos.0 - east * step).normalize()),
+            SpherePos::new((pos.0 + north * step).normalize()),
+            SpherePos::new((pos.0 - north * step).normalize()),
+        ];
+        for npos in &dirs {
+            let nbase = self.base_classify(*npos);
+            if nbase != base {
+                let t = transition(base, nbase);
+                if t != base {
+                    return t;
+                }
+            }
+        }
+        base
     }
 
     pub fn color_at(&self, pos: SpherePos) -> Color {
@@ -403,7 +443,6 @@ impl TerrainGen {
     }
 
     fn compute_flow(&mut self) {
-        // Flow direction: each vertex drains to its lowest neighbor (if lower).
         for i in 0..self.verts.len() {
             let my_e = self.vert_elevation(i);
             let mut lowest_idx = usize::MAX;
@@ -415,7 +454,6 @@ impl TerrainGen {
             self.flow_dir[i] = if lowest_e < my_e { lowest_idx } else { usize::MAX };
         }
 
-        // Flow accumulation: count upstream cells.
         let mut order: Vec<usize> = (0..self.verts.len()).collect();
         order.sort_by(|&a, &b| {
             self.vert_elevation(b).partial_cmp(&self.vert_elevation(a)).unwrap()
@@ -437,7 +475,6 @@ fn smoothstep(a: f32, b: f32, t: f32) -> f32 {
 // ---- icosphere grid ----
 
 fn build_ico_grid(sub: usize) -> (Vec<Vec3>, Vec<Vec<usize>>) {
-    // Build icosahedron vertices.
     let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
     let mut verts = vec![
         Vec3::new(-1.0, t, 0.0), Vec3::new(1.0, t, 0.0),

@@ -88,7 +88,20 @@ fn setup_map(
     let level: LevelData = postcard::from_bytes(level_bytes).expect("deserialize level");
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
-    let terrain = TerrainGen::new(PLANET_SEED);
+    let mut terrain = TerrainGen::new(PLANET_SEED);
+    // Reconstruct roads from level data and attach to terrain so spawn
+    // and surface_radius queries see the road-flattened corridor.
+    let roads_res = shared::roads::Roads {
+        settlements: level.settlements.iter().map(|s| shared::roads::Settlement {
+            pos: shared::sphere::SpherePos::new(Vec3::from_array(s.pos)),
+            name: s.name.clone(),
+        }).collect(),
+        roads: level.roads.iter().map(|r| shared::roads::Road {
+            points: r.points.iter().map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p))).collect(),
+            kind: if r.is_bridge { shared::roads::PathKind::Bridge } else { shared::roads::PathKind::Road },
+        }).collect(),
+    };
+    terrain.set_roads(&roads_res);
 
     commands.insert_resource(GameAssets {
         zombie_mesh: meshes.add(Sphere::new(ZOMBIE_SIZE * 0.5)),
@@ -165,12 +178,13 @@ fn setup_map(
         Ground,
     ));
 
-    // Player
-    let start = terrain.habitable_spawn();
+    // Player: spawn at the first settlement.
+    let s = level.settlements.first().expect("no settlements");
+    let start = shared::sphere::SpherePos::new(Vec3::from_array(s.pos));
     let up = start.0;
     let capsule_radius = PLAYER_SIZE * 0.4;
     let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
-    let spawn_r = terrain.surface_radius(start) + capsule_half + 0.5;
+    let spawn_r = terrain.surface_radius(start).max(PLANET_RADIUS) + capsule_half + 2.0;
     let spawn_pos = up * spawn_r;
     commands.spawn((
         Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
