@@ -28,7 +28,7 @@ fn serialize(state: &GenState, out: &PathBuf) {
     let settlements = terrain.settlement_anchors.iter().enumerate()
         .map(|(i, a)| SettlementData { name: shared::roads::settlement_name(i), pos: a.0.to_array() })
         .collect();
-    let mut roads: Vec<RoadData> = terrain.road_paths.iter()
+    let mut roads: Vec<RoadData> = state.roads.iter()
         .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: false })
         .collect();
     roads.extend(state.bridges.iter()

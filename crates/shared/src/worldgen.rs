@@ -75,6 +75,9 @@ pub struct GenState {
     pub tiles: Vec<Terrain>,
     pub painted: Painted,
     pub bridges: Vec<Vec<SpherePos>>,
+    /// Road polylines that survived water checks — the single source of truth
+    /// for serialization (NOT terrain.road_paths, which is the L2 plan).
+    pub roads: Vec<Vec<SpherePos>>,
     /// Inland biome-boundary faces and the kind pair they link.
     pub blends: Vec<(u32, u8, u8)>,
     pub regions: Vec<RegionData>,
@@ -100,6 +103,7 @@ impl GenState {
                 bridge_entries: BitSet::new(n),
             },
             bridges: Vec::new(),
+            roads: Vec::new(),
             blends: Vec::new(),
             regions: Vec::new(),
             face_region: Vec::new(),
@@ -153,7 +157,7 @@ pub enum Event {
     TilesClassified(Vec<Terrain>),
     RiversPainted(Vec<Terrain>),
     WaterNormalized(Vec<Terrain>),
-    FeaturesPainted(Painted),
+    FeaturesPainted(Painted, Vec<Vec<SpherePos>>),
     TransitionsResolved(Vec<Terrain>),
     BlendsMarked(Vec<(u32, u8, u8)>),
     ElevationSolved { field: Vec<f32>, iters: usize, residual: f32 },
@@ -174,7 +178,7 @@ impl Event {
             Event::TilesClassified(t) => format!("tiles classified: {}", t.len()),
             Event::RiversPainted(_) => "rivers painted".into(),
             Event::WaterNormalized(_) => "water bodies normalized".into(),
-            Event::FeaturesPainted(_) => "roads + towns painted".into(),
+            Event::FeaturesPainted(_, roads) => format!("roads + towns painted: {} roads kept", roads.len()),
             Event::TransitionsResolved(_) => "transitions resolved".into(),
             Event::BlendsMarked(b) => format!("blends marked: {}", b.len()),
             Event::ElevationSolved { iters, residual, .. } => {
@@ -213,7 +217,8 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::WaterNormalized(tiles)]
         }
         Command::PaintFeatures => {
-            vec![Event::FeaturesPainted(paint_features(&state.grid, state.terrain()))]
+            let (painted, roads) = paint_features(&state.grid, state.terrain(), &state.tiles);
+            vec![Event::FeaturesPainted(painted, roads)]
         }
         Command::ResolveTransitions => {
             let vadj = build_vertex_adjacency(&state.grid);
@@ -224,8 +229,9 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::BlendsMarked(mark_blends(&state.grid, &state.tiles))]
         }
         Command::SolveElevation => {
-            let (field, iters, residual) =
-                solve_elevation(&state.grid, state.terrain(), &state.tiles, &state.painted);
+            let (field, iters, residual) = solve_elevation(
+                &state.grid, state.terrain(), &state.tiles, &state.painted, &state.blends,
+            );
             vec![Event::ElevationSolved { field, iters, residual }]
         }
         Command::BuildRegions => {
@@ -259,7 +265,10 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
         | Event::RiversPainted(t)
         | Event::WaterNormalized(t)
         | Event::TransitionsResolved(t) => state.tiles = t,
-        Event::FeaturesPainted(p) => state.painted = p,
+        Event::FeaturesPainted(p, roads) => {
+            state.painted = p;
+            state.roads = roads;
+        }
         Event::BlendsMarked(b) => state.blends = b,
         Event::ElevationSolved { field, .. } => {
             state.terrain.as_mut().expect("terrain exists").set_vert_elevations(field);
@@ -290,7 +299,7 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::TilesClassified(_) => vec![Command::PaintRivers],
         Event::RiversPainted(_) => vec![Command::NormalizeWater],
         Event::WaterNormalized(_) => vec![Command::PaintFeatures],
-        Event::FeaturesPainted(_) => vec![Command::ResolveTransitions],
+        Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
         Event::TransitionsResolved(_) => vec![Command::MarkBlends],
         Event::BlendsMarked(_) => vec![Command::SolveElevation],
         Event::ElevationSolved { .. } => vec![Command::BuildRegions],
@@ -391,12 +400,24 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, face_types: &mut [T
 /// "lake" beside the ocean makes no sense.
 const MIN_WATER_BODY_FACES: usize = 30;
 
-fn paint_features(grid: &Grid, terrain: &TerrainGen) -> Painted {
+/// Roads may not cross water: a planned path whose face chain touches a water
+/// tile is dropped entirely (crossing there needs a bridge, not a road).
+fn paint_features(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    tiles: &[Terrain],
+) -> (Painted, Vec<Vec<SpherePos>>) {
     let mut roads = BitSet::new(grid.n);
+    let mut kept: Vec<Vec<SpherePos>> = Vec::new();
     for path in &terrain.road_paths {
-        for fi in face_chain(grid, path) {
+        let chain = face_chain(grid, path);
+        if chain.iter().any(|&fi| tiles[fi].is_water()) {
+            continue;
+        }
+        for fi in chain {
             roads.insert(fi);
         }
+        kept.push(path.clone());
     }
     // Bridges are painted later, once regions exist to validate their endpoints.
     let bridges = BitSet::new(grid.n);
@@ -407,7 +428,7 @@ fn paint_features(grid: &Grid, terrain: &TerrainGen) -> Painted {
             towns.insert(fi);
         }
     }
-    Painted { roads, towns, bridges, bridge_entries: BitSet::new(grid.n) }
+    (Painted { roads, towns, bridges, bridge_entries: BitSet::new(grid.n) }, kept)
 }
 
 /// Gaps up to this bridge freely.
@@ -569,6 +590,38 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
     // The band widens onto the second ring where the coast is flat, and a land
     // face wedged between two shore faces joins the band (no plains notches).
     let mut out = base.to_vec();
+    // DeepOcean may never surface: not even a corner of a deep face may rise
+    // above the waterline. The interpolated surface reaches ~2 faces past any
+    // land vertex, so deep water keeps a 2-face shallow (Ocean) margin.
+    {
+        let mut land_dist = vec![u8::MAX; grid.n];
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for fi in 0..grid.n {
+            if out[fi].is_land() {
+                land_dist[fi] = 0;
+                q.push_back(fi);
+            }
+        }
+        while let Some(cur) = q.pop_front() {
+            if land_dist[cur] >= 2 {
+                continue;
+            }
+            for &nb in &grid.adj[cur] {
+                let nb = nb as usize;
+                if land_dist[nb] == u8::MAX {
+                    land_dist[nb] = land_dist[cur] + 1;
+                    q.push_back(nb);
+                }
+            }
+        }
+        for fi in 0..grid.n {
+            if out[fi] == Terrain::DeepOcean
+                && (land_dist[fi] <= 2 || vadj[fi].iter().any(|&nb| out[nb as usize].is_land()))
+            {
+                out[fi] = Terrain::Ocean;
+            }
+        }
+    }
     let (water_dist, water_kind) = water_distance(grid, base, 2);
     let shore = |fi: usize, kind: Terrain| -> Terrain {
         match kind {
@@ -664,10 +717,9 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
 /// carries the pair it links so rendering can transition between the two.
 /// Shore tiles already ARE transitions and water never blends.
 fn mark_blends(grid: &Grid, tiles: &[Terrain]) -> Vec<(u32, u8, u8)> {
-    let plain = |t: Terrain| {
-        t.is_land()
-            && !matches!(t, Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank)
-    };
+    // Any two differing LAND kinds blend — including shore-band boundaries
+    // like Beach|Cliff, which need the altitude ramp most.
+    let plain = |t: Terrain| t.is_land();
     let mut out = Vec::new();
     for fi in 0..grid.n {
         if !plain(tiles[fi]) {
@@ -1132,8 +1184,9 @@ fn elev_range(t: Terrain) -> (f32, f32) {
         River => (-1.0, 0.60),
         RiverBank => (0.0, 0.65),
         Beach => (0.0, 0.05),
-        // Cliff relief lives in the field itself (no mesh lift).
-        Cliff => (0.12, 0.40),
+        // Cliff relief lives in the field itself (no mesh lift): a hard floor
+        // well above the beach makes the escarpment.
+        Cliff => (0.18, 0.45),
         Desert | Plains | Forest | Tundra => (0.02, 0.50),
         Mountain => (0.45, 1.0),
         Snow => (0.50, 1.0),
@@ -1190,8 +1243,13 @@ fn solve_elevation(
     terrain: &TerrainGen,
     tiles: &[Terrain],
     painted: &Painted,
+    blends: &[(u32, u8, u8)],
 ) -> (Vec<f32>, usize, f32) {
     let nv = terrain.vert_count();
+    let mut blend_of: BTreeMap<u32, (u8, u8)> = BTreeMap::new();
+    for &(fi, a, b) in blends {
+        blend_of.insert(fi, (a, b));
+    }
 
     // Per-vertex interval and kind: each vertex takes the range of the tile
     // directly under it — the same mapping the gradient caps use, so the
@@ -1204,11 +1262,23 @@ fn solve_elevation(
                 .unwrap_or(Terrain::Plains)
         })
         .collect();
+    let owner_face: Vec<Option<usize>> = (0..nv)
+        .map(|vi| grid.planet.face_at(terrain.vert_dir(vi)))
+        .collect();
     let mut lo = vec![-1.0f32; nv];
     let mut hi = vec![1.0f32; nv];
     let mut is_road_vert = vec![false; nv];
     for vi in 0..nv {
-        let (rlo, rhi) = elev_range(owner[vi]);
+        // Blend faces are the altitude ramp between two kinds: their vertices
+        // get the HULL of both ranges so the solver can transition through.
+        let (rlo, rhi) = match owner_face[vi].and_then(|fi| blend_of.get(&(fi as u32))) {
+            Some(&(a, b)) => {
+                let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
+                let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
+                (alo.min(blo), ahi.max(bhi))
+            }
+            None => elev_range(owner[vi]),
+        };
         lo[vi] = rlo;
         hi[vi] = rhi;
     }
@@ -1443,12 +1513,22 @@ mod tests {
             }
         }
         let e = terrain.vert_elevations();
+        let blend_of: std::collections::BTreeMap<u32, (u8, u8)> =
+            state.blends.iter().map(|&(fi, a, b)| (fi, (a, b))).collect();
         for vi in 0..terrain.vert_count() {
             if canyon[vi] {
                 continue;
             }
             let Some(fi) = state.grid.planet.face_at(terrain.vert_dir(vi)) else { continue };
-            let (rlo, rhi) = elev_range(state.tiles[fi]);
+            // Blend faces ramp between both kinds' ranges (mirror the solver).
+            let (rlo, rhi) = match blend_of.get(&(fi as u32)) {
+                Some(&(a, b)) => {
+                    let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
+                    let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
+                    (alo.min(blo), ahi.max(bhi))
+                }
+                None => elev_range(state.tiles[fi]),
+            };
             assert!(
                 e[vi] >= rlo - 1e-4 && e[vi] <= rhi + 1e-4,
                 "vert {vi} ({:?}) out of range: {} not in [{rlo}, {rhi}]",
@@ -1532,6 +1612,29 @@ mod tests {
                 .filter(|&&nb| state.tiles[nb as usize] == state.tiles[fi])
                 .count();
             assert!(same >= 2, "orphan tile {fi} ({:?}) with {same} same-kind edges", state.tiles[fi]);
+        }
+
+        // Every corner of every DeepOcean face renders below the waterline
+        // (the mesh displaces corners by the interpolated field).
+        for fi in 0..state.grid.n {
+            if state.tiles[fi] != Terrain::DeepOcean {
+                continue;
+            }
+            for v in &state.grid.unit_tris[fi] {
+                let corner = crate::sphere::SpherePos::new(v.normalize());
+                let elev = terrain.elevation_at(corner);
+                assert!(
+                    elev < 0.0,
+                    "DeepOcean face {fi} corner renders above water: {elev}"
+                );
+            }
+        }
+
+        // Roads never sit on water tiles.
+        for fi in 0..state.grid.n {
+            if state.painted.roads.contains(fi) {
+                assert!(state.tiles[fi].is_land(), "road painted on water tile {fi}");
+            }
         }
 
         // Blend marks link two differing plain kinds actually adjacent there.
