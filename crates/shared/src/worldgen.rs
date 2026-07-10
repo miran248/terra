@@ -127,6 +127,9 @@ pub enum Command {
     InitTerrain,
     /// The proposed elevation field (classification hint, pre-solver).
     ProposeElevation,
+    /// Moisture/temperature tables from noise + the current elevation field.
+    /// Re-run after every field change (temperature lapses with altitude).
+    ComputeClimate,
     /// L2: river waypoint paths (coarse routing).
     PlanRivers,
     /// L2: settlement anchors (flattest dry spot per settlement zone).
@@ -163,6 +166,7 @@ pub enum Command {
 pub enum Event {
     TerrainInitialized(Box<TerrainGen>),
     ElevationProposed(Vec<f32>),
+    ClimateComputed(Vec<f32>, Vec<f32>),
     RiversPlanned(Vec<Vec<SpherePos>>),
     SettlementsPlaced(Vec<SpherePos>),
     RoadsPlanned(Vec<Vec<SpherePos>>),
@@ -188,6 +192,7 @@ impl Event {
                 t.zones().zones.len(), t.zones().face_count()
             ),
             Event::ElevationProposed(e) => format!("elevation proposed: {} verts", e.len()),
+            Event::ClimateComputed(m, _) => format!("climate computed: {} verts", m.len()),
             Event::RiversPlanned(r) => format!("rivers planned: {}", r.len()),
             Event::SettlementsPlaced(a) => format!("settlements placed: {}", a.len()),
             Event::RoadsPlanned(r) => format!("roads planned: {}", r.len()),
@@ -217,6 +222,10 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::ProposeElevation => {
             vec![Event::ElevationProposed(state.terrain().propose_elevation())]
+        }
+        Command::ComputeClimate => {
+            let (moist, temp) = state.terrain().compute_climate();
+            vec![Event::ClimateComputed(moist, temp)]
         }
         Command::PlanRivers => {
             vec![Event::RiversPlanned(state.terrain().plan_river_paths())]
@@ -292,6 +301,9 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
         Event::ElevationProposed(e) => {
             state.terrain.as_mut().expect("terrain exists").set_vert_elevations(e);
         }
+        Event::ClimateComputed(moist, temp) => {
+            state.terrain.as_mut().expect("terrain exists").set_climate(moist, temp);
+        }
         Event::RiversPlanned(r) => {
             state.terrain.as_mut().expect("terrain exists").river_paths = r;
         }
@@ -336,7 +348,9 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
 pub fn react(event: &Event) -> Vec<Command> {
     match event {
         Event::TerrainInitialized(_) => vec![Command::ProposeElevation],
-        Event::ElevationProposed(_) => vec![Command::PlanRivers],
+        // Climate follows every field change; FIFO runs it before the next step.
+        Event::ElevationProposed(_) => vec![Command::ComputeClimate, Command::PlanRivers],
+        Event::ClimateComputed(..) => vec![],
         Event::RiversPlanned(_) => vec![Command::PlaceSettlements],
         Event::SettlementsPlaced(_) => vec![Command::PlanRoads],
         Event::RoadsPlanned(_) => vec![Command::ClassifyTiles],
@@ -346,7 +360,7 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
         Event::TransitionsResolved(_) => vec![Command::MarkBlends],
         Event::BlendsMarked(_) => vec![Command::SolveElevation],
-        Event::ElevationSolved { .. } => vec![Command::BuildRegions],
+        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
         Event::BridgesSelected(..) => vec![Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],

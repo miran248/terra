@@ -114,6 +114,8 @@ impl TerrainGen {
     pub fn new(seed: u32) -> Self {
         let mut tg = Self::init(seed);
         tg.set_vert_elevations(tg.propose_elevation());
+        let (moist, temp) = tg.compute_climate();
+        tg.set_climate(moist, temp);
         tg.river_paths = tg.plan_river_paths();
         tg.settlement_anchors = tg.plan_settlement_anchors();
         tg.road_paths = tg.plan_road_paths();
@@ -126,7 +128,8 @@ impl TerrainGen {
         let mut tg = Self::init(seed);
         assert_eq!(vert_elev.len(), tg.verts.len(), "baked field size mismatch");
         tg.vert_elev = vert_elev;
-        tg.precompute_climate();
+        let (moist, temp) = tg.compute_climate();
+        tg.set_climate(moist, temp);
         tg
     }
 
@@ -174,11 +177,18 @@ impl TerrainGen {
     pub fn vert_count(&self) -> usize { self.verts.len() }
     pub fn vert_dir(&self, vi: usize) -> Vec3 { self.verts[vi] }
     pub fn vert_elevations(&self) -> &[f32] { &self.vert_elev }
+    /// Plain setter — temperature depends on altitude, so the orchestrator
+    /// must follow any field change with ComputeClimate → set_climate.
     pub fn set_vert_elevations(&mut self, v: Vec<f32>) {
         assert_eq!(v.len(), self.verts.len());
         self.vert_elev = v;
-        // Temperature depends on altitude; refresh the climate tables.
-        self.precompute_climate();
+    }
+
+    pub fn set_climate(&mut self, moist: Vec<f32>, temp: Vec<f32>) {
+        assert_eq!(moist.len(), self.verts.len());
+        assert_eq!(temp.len(), self.verts.len());
+        self.vert_moist = moist;
+        self.vert_temp = temp;
     }
     /// The 6-vertex interpolation kernel at a position (indices + cos-distance).
     pub fn kernel(&self, pos: SpherePos) -> [(usize, f32); 6] { self.bary_kernel(pos) }
@@ -539,12 +549,17 @@ impl TerrainGen {
         paths
     }
 
-    fn precompute_climate(&mut self) {
+    /// Moisture/temperature tables derived from noise + the CURRENT elevation
+    /// field (temperature lapses with altitude).
+    pub fn compute_climate(&self) -> (Vec<f32>, Vec<f32>) {
+        let mut moist = vec![0.0f32; self.verts.len()];
+        let mut temp = vec![0.0f32; self.verts.len()];
         for i in 0..self.verts.len() {
             let pos = SpherePos::new(self.verts[i]);
-            self.vert_moist[i] = self.moisture_at(pos);
-            self.vert_temp[i] = self.temperature_at(pos);
+            moist[i] = self.moisture_at(pos);
+            temp[i] = self.temperature_at(pos);
         }
+        (moist, temp)
     }
 
     // ---- internals ----
