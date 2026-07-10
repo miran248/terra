@@ -109,15 +109,17 @@ pub struct ZoneConfig {
 impl Default for ZoneConfig {
     fn default() -> Self {
         Self {
+            // Three smaller continents beat one big one + empty ocean: more
+            // coastline, more bridges, more distinct places to travel between.
             land: vec![
-                FeatureSpec { kind: ZoneKind::Continent, count: 2, target_area_m2: 7.5e6, min_area_m2: 3.0e6, min_distance_m: 2500.0 },
+                FeatureSpec { kind: ZoneKind::Continent, count: 3, target_area_m2: 5.5e6, min_area_m2: 2.5e6, min_distance_m: 2200.0 },
                 FeatureSpec { kind: ZoneKind::Island, count: 3, target_area_m2: 3.2e5, min_area_m2: 5.0e4, min_distance_m: 800.0 },
             ],
             // Settlements first: 12 seeds at 900m spacing is the tightest packing
             // problem, so it gets the pristine continents to choose from.
             interior: vec![
                 FeatureSpec { kind: ZoneKind::Settlement, count: 12, target_area_m2: 8.0e4, min_area_m2: 4.0e4, min_distance_m: 900.0 },
-                FeatureSpec { kind: ZoneKind::MountainRange, count: 2, target_area_m2: 8.0e5, min_area_m2: 2.0e5, min_distance_m: 1200.0 },
+                FeatureSpec { kind: ZoneKind::MountainRange, count: 3, target_area_m2: 8.0e5, min_area_m2: 2.0e5, min_distance_m: 1200.0 },
                 FeatureSpec { kind: ZoneKind::Lake, count: 3, target_area_m2: 2.5e5, min_area_m2: 1.0e5, min_distance_m: 600.0 },
             ],
             rivers: 4,
@@ -585,7 +587,7 @@ mod tests {
     fn feature_counts_and_containment() {
         let cfg = ZoneConfig::default();
         let z = make(42);
-        assert_eq!(z.zones_of_kind(ZoneKind::Continent).count(), 2);
+        assert_eq!(z.zones_of_kind(ZoneKind::Continent).count(), 3);
         assert_eq!(z.zones_of_kind(ZoneKind::Island).count(), 3);
         assert_eq!(z.zones_of_kind(ZoneKind::Lake).count(), 3);
         assert_eq!(z.zones_of_kind(ZoneKind::Settlement).count(), 12);

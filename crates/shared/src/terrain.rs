@@ -351,8 +351,16 @@ impl TerrainGen {
         let mut wsum = 0.0f32;
         let consider = |fi: usize, dir: Vec3, min: &mut f32, max: &mut f32, curve: &mut f32, wsum: &mut f32| {
             let angle = self.zones.centroids[fi].dot(dir).clamp(-1.0, 1.0).acos();
-            let w = 1.0 / (0.08 + angle);
-            let p = self.zones.kind_of_face(fi).elevation_profile();
+            let kind = self.zones.kind_of_face(fi);
+            // Small features (lakes, ranges, settlement pads) blend sharper so
+            // wide smoothing can't dilute them out of existence.
+            let sharp = match kind {
+                ZoneKind::Lake => 3.0,
+                ZoneKind::MountainRange | ZoneKind::Settlement => 2.0,
+                _ => 1.0,
+            };
+            let w = sharp / (0.08 + angle);
+            let p = kind.elevation_profile();
             *min += p.min * w;
             *max += p.max * w;
             *curve += p.curve * w;
@@ -399,20 +407,46 @@ impl TerrainGen {
     /// clamped to that identity's sign — islands can't sink, lakes can't dry,
     /// and no inland dip reads as ocean. River carving (after this) is the one
     /// deliberate exception.
+    /// L1 zone identity is authoritative. Per-vertex sign rules:
+    ///   • Lake zones are water, period — small enough that blending would
+    ///     erase them, and guaranteed inland, so every lake vertex is wet.
+    ///   • Land zones stay dry except along the OCEAN coastline — adjacency to
+    ///     a lake does not unlock dipping (that crossing belongs to the lake's
+    ///     own edge, otherwise every lake drains to the sea through a chain of
+    ///     boundary dips and becomes an ocean inlet).
+    ///   • Ocean zones stay wet except along that same coastline.
     fn clamp_zone_identity(&self, e: &mut [f32]) {
         let n = self.zones.centroids.len();
-        let interior: Vec<Option<bool>> = (0..n).map(|fi| {
-            let w = self.zones.kind_of_face(fi).is_water();
-            let uniform = self.zones.adj[fi].iter()
-                .all(|&nb| self.zones.kind_of_face(nb as usize).is_water() == w);
-            uniform.then_some(w)
+        #[derive(Clone, Copy)]
+        enum Rule { Wet, Dry, Coast }
+        let rules: Vec<Rule> = (0..n).map(|fi| {
+            let kind = self.zones.kind_of_face(fi);
+            let ring_has = |pred: &dyn Fn(ZoneKind) -> bool| {
+                self.zones.adj[fi].iter().any(|&nb| pred(self.zones.kind_of_face(nb as usize)))
+            };
+            match kind {
+                ZoneKind::Lake => Rule::Wet,
+                ZoneKind::Ocean => {
+                    if ring_has(&|k| !k.is_water()) { Rule::Coast } else { Rule::Wet }
+                }
+                _ => {
+                    // Ocean-adjacent land is coastline and may dip — UNLESS it
+                    // also borders a lake: a face wedged between lake and sea
+                    // must stay dry or the lake drains into an ocean inlet.
+                    if ring_has(&|k| k == ZoneKind::Ocean) && !ring_has(&|k| k == ZoneKind::Lake) {
+                        Rule::Coast
+                    } else {
+                        Rule::Dry
+                    }
+                }
+            }
         }).collect();
         for vi in 0..self.verts.len() {
             let Some(fi) = self.coarse_mesh.face_at(self.verts[vi]) else { continue };
-            match interior[fi] {
-                Some(true) => e[vi] = e[vi].min(-0.02),
-                Some(false) => e[vi] = e[vi].max(0.02),
-                None => {}
+            match rules[fi] {
+                Rule::Wet => e[vi] = e[vi].min(-0.02),
+                Rule::Dry => e[vi] = e[vi].max(0.02),
+                Rule::Coast => {}
             }
         }
     }
@@ -586,9 +620,12 @@ impl TerrainGen {
         let (li, oi) = Self::vert_grid_cell(pos.0);
         let mut best = 0;
         let mut best_dot = f32::NEG_INFINITY;
-        // Check 3x3 neighborhood for wrapping longitude.
+        // Longitude cells narrow toward the poles (width ∝ cos lat); widen the
+        // search window so it always covers roughly one cell-height of arc,
+        // otherwise "nearest" returns far verts from a thin longitude band.
+        let lon_span = Self::lon_search_span(pos.0);
         for dl in -1i32..=1 {
-            for doo in -1i32..=1 {
+            for doo in -lon_span..=lon_span {
                 let lat = (li as i32 + dl).clamp(0, Self::VERT_GRID_LATS as i32 - 1) as usize;
                 let lon = ((oi as i32 + doo).rem_euclid(Self::VERT_GRID_LONS as i32)) as usize;
                 let idx = lat * Self::VERT_GRID_LONS + lon;
@@ -606,6 +643,13 @@ impl TerrainGen {
             }
         }
         best
+    }
+
+    /// How many longitude cells each side of the query cover one cell-height
+    /// of arc at this latitude (1 at the equator, growing toward the poles).
+    fn lon_search_span(dir: Vec3) -> i32 {
+        let coslat = (1.0 - dir.y * dir.y).max(1e-4).sqrt();
+        ((1.0 / coslat).ceil() as i32).clamp(1, Self::VERT_GRID_LONS as i32 / 2)
     }
 
     fn vert_grid_cell(dir: Vec3) -> (usize, usize) {
@@ -634,8 +678,10 @@ impl TerrainGen {
         const K: usize = 6;
         let mut nearest: [(f32, usize); K] = [(f32::NEG_INFINITY, 0); K];
         let (lat_i, lon_i) = Self::vert_grid_cell(dir);
+        // See nearest_vert: widen the longitude window toward the poles.
+        let lon_span = Self::lon_search_span(dir);
         for dl in -1i32..=1 {
-            for doo in -1i32..=1 {
+            for doo in -lon_span..=lon_span {
                 let lat = (lat_i as i32 + dl).clamp(0, Self::VERT_GRID_LATS as i32 - 1) as usize;
                 let lon = ((lon_i as i32 + doo).rem_euclid(Self::VERT_GRID_LONS as i32)) as usize;
                 let idx = lat * Self::VERT_GRID_LONS + lon;

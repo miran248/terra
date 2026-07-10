@@ -459,6 +459,7 @@ fn update_terrain_hud(
     planet: Option<Res<PlanetMesh>>,
     tags: Option<Res<LevelTags>>,
     regions: Option<Res<LevelRegions>>,
+    blends: Option<Res<crate::map::LevelBlends>>,
     face_types: Option<Res<LevelFaceTypes>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
@@ -486,14 +487,22 @@ fn update_terrain_hud(
     let slope = terrain.slope(pos);
     let hab = terrain.is_habitable(pos);
 
-    let mut built = String::new();
+    // Tile line: everything about the ground under the player, in one place —
+    // type (both types when the face is a blend), built tags, habitability.
+    let mut tile_line = format!("{tile:?}");
     let mut region_name = String::new();
     if let Some(planet) = planet {
         if let Some(fi) = planet.face_at(tf.translation.normalize()) {
+            if let Some(blends) = blends {
+                if let Some(&(a, b)) = blends.0.get(&(fi as u32)) {
+                    let other = if a == tile as u8 { b } else { a };
+                    tile_line = format!("{tile:?} + {:?}", Terrain::ALL[other as usize]);
+                }
+            }
             if let Some(tags) = tags {
                 for &tag in tags.0.of(fi) {
-                    built.push(' ');
-                    built.push_str(shared::level::tag_name(tag));
+                    tile_line.push_str("  ");
+                    tile_line.push_str(shared::level::tag_name(tag));
                 }
             }
             if let Some(regions) = regions {
@@ -503,13 +512,12 @@ fn update_terrain_hud(
             }
         }
     }
+    if hab {
+        tile_line.push_str("  Habitable");
+    }
 
     *text = Text::new(format!(
-        "{:?}{}{}\nAlt: {:.0}m  Slope: {:.1}\nTemp: {:.0}°C{}",
-        tile,
-        if hab { " Habitable" } else { "" },
-        region_name,
-        altitude, slope, temp, built,
+        "{tile_line}{region_name}\nAlt: {altitude:.0}m  Slope: {slope:.1}  Temp: {temp:.0}°C",
     ));
     *color = TextColor(hud_tile_color(tile));
 }

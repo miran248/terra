@@ -56,7 +56,9 @@ pub struct BitSet(pub Vec<u64>);
 impl BitSet {
     pub fn new(n: usize) -> Self { Self(vec![0; n.div_ceil(64)]) }
     pub fn insert(&mut self, i: usize) { self.0[i >> 6] |= 1u64 << (i & 63); }
-    pub fn contains(&self, i: usize) -> bool { self.0[i >> 6] & (1u64 << (i & 63)) != 0 }
+    pub fn contains(&self, i: usize) -> bool {
+        self.0.get(i >> 6).is_some_and(|w| w & (1u64 << (i & 63)) != 0)
+    }
 }
 
 #[derive(Clone)]
@@ -267,7 +269,8 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::SolveElevation => {
             let (field, iters, residual) = solve_elevation(
-                &state.grid, state.terrain(), &state.tiles, &state.painted, &state.blends,
+                &state.grid, state.terrain(), &state.tiles, &state.painted,
+                &state.blends, &state.bridges,
             );
             vec![Event::ElevationSolved { field, iters, residual }]
         }
@@ -359,10 +362,12 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::WaterNormalized(_) => vec![Command::PaintFeatures],
         Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
         Event::TransitionsResolved(_) => vec![Command::MarkBlends],
-        Event::BlendsMarked(_) => vec![Command::SolveElevation],
-        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildRegions],
+        // Regions and bridge selection read only tiles/geometry, so they run
+        // BEFORE the solver — which then knows the bridge-entry pads to flatten.
+        Event::BlendsMarked(_) => vec![Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
-        Event::BridgesSelected(..) => vec![Command::BuildMesh],
+        Event::BridgesSelected(..) => vec![Command::SolveElevation],
+        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
         Event::TagsBuilt(..) => vec![],
     }
@@ -401,6 +406,26 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, face_types: &mut [Terrain]) {
 /// Lake, whatever its faces individually classified as. Rivers (painted channel
 /// faces) are their own linear feature and never merge into either.
 fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, face_types: &mut [Terrain]) {
+    // Dam every lake rim first: a land-zone face that classified as water and
+    // touches lake-zone water is the start of a drain channel to the sea (they
+    // sneak along coarse-face edges past the vertex clamps). Turn it into
+    // LakeShore — a one-face dam that encloses the lake by construction; the
+    // elevation solver then lifts it above sea level (LakeShore range).
+    let lake_zone = |fi: usize| terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Lake;
+    let dams: Vec<usize> = (0..grid.n)
+        .filter(|&fi| {
+            face_types[fi].is_water()
+                && !lake_zone(fi)
+                && grid.adj[fi].iter().any(|&nb| {
+                    let nb = nb as usize;
+                    face_types[nb].is_water() && lake_zone(nb)
+                })
+        })
+        .collect();
+    for fi in dams {
+        face_types[fi] = Terrain::LakeShore;
+    }
+
     let mut visited = vec![false; grid.n];
     for start in 0..grid.n {
         if !face_types[start].is_water() || face_types[start] == Terrain::River || visited[start] {
@@ -649,8 +674,9 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
     // face wedged between two shore faces joins the band (no plains notches).
     let mut out = base.to_vec();
     // DeepOcean may never surface: not even a corner of a deep face may rise
-    // above the waterline. The interpolated surface reaches ~2 faces past any
-    // land vertex, so deep water keeps a 2-face shallow (Ocean) margin.
+    // above the waterline. The interpolated surface reaches ~150m past any
+    // land vertex and fine faces are ~35m — deep water keeps a 5-face
+    // shallow (Ocean) margin so no land vertex can leak into a deep corner.
     {
         let mut land_dist = vec![u8::MAX; grid.n];
         let mut q: VecDeque<usize> = VecDeque::new();
@@ -661,7 +687,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
             }
         }
         while let Some(cur) = q.pop_front() {
-            if land_dist[cur] >= 2 {
+            if land_dist[cur] >= 9 {
                 continue;
             }
             for &nb in &grid.adj[cur] {
@@ -673,9 +699,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
             }
         }
         for fi in 0..grid.n {
-            if out[fi] == Terrain::DeepOcean
-                && (land_dist[fi] <= 2 || vadj[fi].iter().any(|&nb| out[nb as usize].is_land()))
-            {
+            if out[fi] == Terrain::DeepOcean && land_dist[fi] <= 9 {
                 out[fi] = Terrain::Ocean;
             }
         }
@@ -1042,6 +1066,24 @@ fn build_regions(
 ) -> (Vec<RegionData>, Vec<u32>) {
     let class: Vec<Option<RegionKind>> =
         (0..grid.n).map(|fi| region_class(face_types, painted, fi)).collect();
+    // Terrain-derived class ignoring the road/town overlay: a road slicing
+    // through a desert must not split it into two regions, so terrain clusters
+    // may flow THROUGH overlay faces whose underlying terrain matches (without
+    // claiming them — those faces belong to their Road/Town region).
+    let terrain_class: Vec<Option<RegionKind>> = (0..grid.n)
+        .map(|fi| {
+            region_class(
+                face_types,
+                &Painted {
+                    roads: BitSet::new(0),
+                    towns: BitSet::new(0),
+                    bridges: BitSet::new(0),
+                    bridge_entries: BitSet::new(0),
+                },
+                fi,
+            )
+        })
+        .collect();
 
     let mut face_region = vec![NO_REGION; grid.n];
     let mut regions: Vec<RegionData> = Vec::new();
@@ -1052,11 +1094,13 @@ fn build_regions(
         if face_region[start] != NO_REGION {
             continue;
         }
+        let overlay_kind = matches!(kind, RegionKind::Road | RegionKind::Town);
         // Collect the edge-connected cluster. Stored refs are region id + 1
         // (0 = no region, see level::region_index).
         let re = regions.len() as u32 + 1;
         let mut faces = vec![start];
         let mut q = VecDeque::from([start]);
+        let mut visited_connector = BitSet::new(grid.n);
         face_region[start] = re;
         while let Some(cur) = q.pop_front() {
             for &nb in &grid.adj[cur] {
@@ -1064,6 +1108,14 @@ fn build_regions(
                 if class[nb] == Some(kind) && face_region[nb] == NO_REGION {
                     face_region[nb] = re;
                     faces.push(nb);
+                    q.push_back(nb);
+                } else if !overlay_kind
+                    && class[nb] != Some(kind)
+                    && terrain_class[nb] == Some(kind)
+                    && !visited_connector.contains(nb)
+                {
+                    // Overlay face with matching ground: pass through it.
+                    visited_connector.insert(nb);
                     q.push_back(nb);
                 }
             }
@@ -1179,7 +1231,15 @@ fn build_mesh(
         } else if painted.bridge_entries.contains(fi) {
             entry_color
         } else if painted.roads.contains(fi) {
-            road_color
+            // Roads blend with the ground they run over instead of painting a
+            // solid strip.
+            let ground = face_types[fi].color().to_linear().to_f32_array();
+            [
+                (road_color[0] + ground[0]) / 2.0,
+                (road_color[1] + ground[1]) / 2.0,
+                (road_color[2] + ground[2]) / 2.0,
+                (road_color[3] + ground[3]) / 2.0,
+            ]
         } else if let Some(&(ka, kb)) = blend_of.get(&(fi as u32)) {
             // Boundary face: blend the two linked kinds 50/50.
             let ca = Terrain::ALL[ka as usize].color().to_linear().to_f32_array();
@@ -1302,6 +1362,7 @@ fn solve_elevation(
     tiles: &[Terrain],
     painted: &Painted,
     blends: &[(u32, u8, u8)],
+    bridges: &[Vec<SpherePos>],
 ) -> (Vec<f32>, usize, f32) {
     let nv = terrain.vert_count();
     let mut blend_of: BTreeMap<u32, (u8, u8)> = BTreeMap::new();
@@ -1407,6 +1468,35 @@ fn solve_elevation(
         .map(|vi| if is_canyon_vert[vi] { Terrain::River } else { owner[vi] })
         .collect();
 
+    // Bridge-entry pads: the vertices under each deck end are driven to one
+    // common height (slope 0) so the deck meets the ground seamlessly.
+    let pad_verts_at = |end: &SpherePos| -> Vec<usize> {
+        // The pad covers the end plus a ~30m ring around it, so height probes
+        // anywhere near the footing read only pad vertices (slope ≈ 0).
+        let (east, north) = end.tangent_basis();
+        let step = 30.0 / crate::sphere::PLANET_RADIUS;
+        let mut verts: Vec<usize> = Vec::new();
+        for dir in [
+            end.0,
+            (end.0 + east * step).normalize(),
+            (end.0 - east * step).normalize(),
+            (end.0 + north * step).normalize(),
+            (end.0 - north * step).normalize(),
+        ] {
+            for (vi, _) in terrain.kernel(SpherePos::new(dir)) {
+                if !verts.contains(&vi) {
+                    verts.push(vi);
+                }
+            }
+        }
+        verts
+    };
+    let pads: Vec<Vec<usize>> = bridges.iter()
+        .flat_map(|span| [span.first(), span.last()])
+        .flatten()
+        .map(pad_verts_at)
+        .collect();
+
     let mut e: Vec<f32> = terrain.vert_elevations().to_vec();
     let mut iters = 0;
     let mut residual = f32::MAX;
@@ -1453,7 +1543,7 @@ fn solve_elevation(
                 }
             }
         }
-        // 3) tile ranges LAST — they are hard constraints and always get the
+        // 3) tile ranges — hard constraints and always get the
         // final word each iteration, so the finished field satisfies every
         // tile's elevation range exactly (caps are best-effort where the tile
         // map demands steeper chains than they allow).
@@ -1461,6 +1551,17 @@ fn solve_elevation(
             let c = e[vi].clamp(lo[vi], hi[vi]);
             residual += (c - e[vi]).abs();
             e[vi] = c;
+        }
+        // 4) bridge-entry pads LAST: the deck is a built structure — its
+        // footing is dead flat even where tile ranges disagree slightly.
+        for pad in &pads {
+            let mean: f32 = pad.iter().map(|&vi| e[vi]).sum::<f32>() / pad.len() as f32;
+            // A footing sits at shore level regardless of what it averaged.
+            let footing = mean.clamp(0.01, 0.08);
+            for &vi in pad {
+                residual += (e[vi] - footing).abs();
+                e[vi] = footing;
+            }
         }
         iters = it + 1;
         if residual < SOLVER_EPS {
@@ -1573,8 +1674,28 @@ mod tests {
         let e = terrain.vert_elevations();
         let blend_of: std::collections::BTreeMap<u32, (u8, u8)> =
             state.blends.iter().map(|&(fi, a, b)| (fi, (a, b))).collect();
+        // Bridge-entry pad verts are a built-structure exception (like canyons):
+        // the footing is flattened to shore level regardless of tile ranges.
+        let mut pad_vert = vec![false; terrain.vert_count()];
+        for span in &state.bridges {
+            for end in [span.first(), span.last()].into_iter().flatten() {
+                let (east, north) = end.tangent_basis();
+                let step = 30.0 / crate::sphere::PLANET_RADIUS;
+                for dir in [
+                    end.0,
+                    (end.0 + east * step).normalize(),
+                    (end.0 - east * step).normalize(),
+                    (end.0 + north * step).normalize(),
+                    (end.0 - north * step).normalize(),
+                ] {
+                    for (vi, _) in terrain.kernel(crate::sphere::SpherePos::new(dir)) {
+                        pad_vert[vi] = true;
+                    }
+                }
+            }
+        }
         for vi in 0..terrain.vert_count() {
-            if canyon[vi] {
+            if canyon[vi] || pad_vert[vi] {
                 continue;
             }
             let Some(fi) = state.grid.planet.face_at(terrain.vert_dir(vi)) else { continue };
@@ -1681,10 +1802,16 @@ mod tests {
             for v in &state.grid.unit_tris[fi] {
                 let corner = crate::sphere::SpherePos::new(v.normalize());
                 let elev = terrain.elevation_at(corner);
-                assert!(
-                    elev < 0.0,
-                    "DeepOcean face {fi} corner renders above water: {elev}"
-                );
+                if elev >= 0.0 {
+                    let detail: Vec<String> = terrain.kernel(corner).iter().map(|&(vi, _)| {
+                        let owner = state.grid.planet.face_at(terrain.vert_dir(vi))
+                            .map(|of| format!("{:?}", state.tiles[of]))
+                            .unwrap_or("?".into());
+                        let d = corner.distance(crate::sphere::SpherePos::new(terrain.vert_dir(vi)));
+                        format!("v{vi}={:.2}({owner},{d:.0}m)", e[vi])
+                    }).collect();
+                    panic!("DeepOcean face {fi} corner renders above water: {elev} kernel: {}", detail.join(" "));
+                }
             }
         }
 
@@ -1692,6 +1819,14 @@ mod tests {
         for fi in 0..state.grid.n {
             if state.painted.roads.contains(fi) {
                 assert!(state.tiles[fi].is_land(), "road painted on water tile {fi}");
+            }
+        }
+
+        // Bridge-entry pads are flat: the deck meets the ground seamlessly.
+        for span in &state.bridges {
+            for end in [span.first(), span.last()].into_iter().flatten() {
+                let slope = terrain.slope(*end);
+                assert!(slope < 0.15, "bridge entry not flat: slope {slope}");
             }
         }
 

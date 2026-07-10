@@ -65,6 +65,10 @@ pub struct LevelRegions {
     pub face_region: Vec<u32>,
 }
 
+/// Blend-marked boundary faces: the pair of terrain kinds each links.
+#[derive(Resource)]
+pub struct LevelBlends(pub std::collections::BTreeMap<u32, (u8, u8)>);
+
 #[derive(Resource, Default)]
 struct PlayerInput {
     fwd: i8,
@@ -270,6 +274,9 @@ fn setup_map(
         regions: level.regions.clone(),
         face_region: level.face_region.clone(),
     });
+    commands.insert_resource(LevelBlends(
+        level.face_blend.iter().map(|&(fi, a, b)| (fi, (a, b))).collect(),
+    ));
 }
 
 fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[f32; 4]]) -> Mesh {
