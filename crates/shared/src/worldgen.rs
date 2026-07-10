@@ -123,8 +123,16 @@ impl GenState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
-    /// L0–L3: zones, topology, elevation field (inside TerrainGen).
-    GenTerrain,
+    /// L0/L1: grid, noise, coarse zones — the deterministic environment.
+    InitTerrain,
+    /// The proposed elevation field (classification hint, pre-solver).
+    ProposeElevation,
+    /// L2: river waypoint paths (coarse routing).
+    PlanRivers,
+    /// L2: settlement anchors (flattest dry spot per settlement zone).
+    PlaceSettlements,
+    /// L2: road polylines between same-continent settlements.
+    PlanRoads,
     /// Zone-aware base classification per fine face.
     ClassifyTiles,
     /// Snap river polylines to fine faces.
@@ -153,7 +161,11 @@ pub enum Command {
 }
 
 pub enum Event {
-    TerrainReady(Box<TerrainGen>),
+    TerrainInitialized(Box<TerrainGen>),
+    ElevationProposed(Vec<f32>),
+    RiversPlanned(Vec<Vec<SpherePos>>),
+    SettlementsPlaced(Vec<SpherePos>),
+    RoadsPlanned(Vec<Vec<SpherePos>>),
     TilesClassified(Vec<Terrain>),
     RiversPainted(Vec<Terrain>),
     WaterNormalized(Vec<Terrain>),
@@ -171,10 +183,14 @@ impl Event {
     /// Short line for the audit log.
     pub fn label(&self) -> String {
         match self {
-            Event::TerrainReady(t) => format!(
-                "terrain ready: {} settlements, {} roads, {} rivers",
-                t.settlement_anchors.len(), t.road_paths.len(), t.river_paths.len()
+            Event::TerrainInitialized(t) => format!(
+                "terrain initialized: {} zones on {} coarse faces",
+                t.zones().zones.len(), t.zones().face_count()
             ),
+            Event::ElevationProposed(e) => format!("elevation proposed: {} verts", e.len()),
+            Event::RiversPlanned(r) => format!("rivers planned: {}", r.len()),
+            Event::SettlementsPlaced(a) => format!("settlements placed: {}", a.len()),
+            Event::RoadsPlanned(r) => format!("roads planned: {}", r.len()),
             Event::TilesClassified(t) => format!("tiles classified: {}", t.len()),
             Event::RiversPainted(_) => "rivers painted".into(),
             Event::WaterNormalized(_) => "water bodies normalized".into(),
@@ -196,8 +212,20 @@ impl Event {
 
 pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
     match cmd {
-        Command::GenTerrain => {
-            vec![Event::TerrainReady(Box::new(TerrainGen::new(state.grid.seed)))]
+        Command::InitTerrain => {
+            vec![Event::TerrainInitialized(Box::new(TerrainGen::init(state.grid.seed)))]
+        }
+        Command::ProposeElevation => {
+            vec![Event::ElevationProposed(state.terrain().propose_elevation())]
+        }
+        Command::PlanRivers => {
+            vec![Event::RiversPlanned(state.terrain().plan_river_paths())]
+        }
+        Command::PlaceSettlements => {
+            vec![Event::SettlementsPlaced(state.terrain().plan_settlement_anchors())]
+        }
+        Command::PlanRoads => {
+            vec![Event::RoadsPlanned(state.terrain().plan_road_paths())]
         }
         Command::ClassifyTiles => {
             let terrain = state.terrain();
@@ -260,7 +288,19 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
 
 pub fn evolve(mut state: GenState, event: Event) -> GenState {
     match event {
-        Event::TerrainReady(t) => state.terrain = Some(*t),
+        Event::TerrainInitialized(t) => state.terrain = Some(*t),
+        Event::ElevationProposed(e) => {
+            state.terrain.as_mut().expect("terrain exists").set_vert_elevations(e);
+        }
+        Event::RiversPlanned(r) => {
+            state.terrain.as_mut().expect("terrain exists").river_paths = r;
+        }
+        Event::SettlementsPlaced(a) => {
+            state.terrain.as_mut().expect("terrain exists").settlement_anchors = a;
+        }
+        Event::RoadsPlanned(r) => {
+            state.terrain.as_mut().expect("terrain exists").road_paths = r;
+        }
         Event::TilesClassified(t)
         | Event::RiversPainted(t)
         | Event::WaterNormalized(t)
@@ -295,7 +335,11 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
 
 pub fn react(event: &Event) -> Vec<Command> {
     match event {
-        Event::TerrainReady(_) => vec![Command::ClassifyTiles],
+        Event::TerrainInitialized(_) => vec![Command::ProposeElevation],
+        Event::ElevationProposed(_) => vec![Command::PlanRivers],
+        Event::RiversPlanned(_) => vec![Command::PlaceSettlements],
+        Event::SettlementsPlaced(_) => vec![Command::PlanRoads],
+        Event::RoadsPlanned(_) => vec![Command::ClassifyTiles],
         Event::TilesClassified(_) => vec![Command::PaintRivers],
         Event::RiversPainted(_) => vec![Command::NormalizeWater],
         Event::WaterNormalized(_) => vec![Command::PaintFeatures],
@@ -313,7 +357,7 @@ pub fn react(event: &Event) -> Vec<Command> {
 /// Run the full pipeline for a seed. `log` receives one line per event.
 pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
     let mut state = GenState::new(seed);
-    let mut queue = VecDeque::from([Command::GenTerrain]);
+    let mut queue = VecDeque::from([Command::InitTerrain]);
     while let Some(cmd) = queue.pop_front() {
         for event in decide(&state, &cmd) {
             log(&event.label());

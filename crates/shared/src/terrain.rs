@@ -107,33 +107,32 @@ pub struct TerrainGen {
 }
 
 impl TerrainGen {
+    /// Convenience composition of the planning API in orchestrator order —
+    /// the worldgen state machine runs the same steps as separate commands
+    /// (InitTerrain → ProposeElevation → PlanRivers → PlaceSettlements →
+    /// PlanRoads) so each shows up in the event trace.
     pub fn new(seed: u32) -> Self {
-        let mut tg = Self::grid_only(seed);
-        // The PROPOSED field: zone-remapped noise, smoothed, identity-clamped.
-        // It is a classification hint only — the final elevation is synthesized
-        // by the constraint solver (worldgen::SolveElevation) from the finished
-        // tile map, so no topology stage ever edits elevation here.
-        tg.compute_base_elevations();
-        tg.smooth_vert_elevations(2);
-        tg.clamp_zone_identity();
-        tg.plan_rivers();
-        tg.place_settlement_anchors();
-        tg.build_roads();
-        tg.precompute_climate();
+        let mut tg = Self::init(seed);
+        tg.set_vert_elevations(tg.propose_elevation());
+        tg.river_paths = tg.plan_river_paths();
+        tg.settlement_anchors = tg.plan_settlement_anchors();
+        tg.road_paths = tg.plan_road_paths();
         tg
     }
 
     /// Rebuild from a solved, baked elevation field (runtime path). Skips all
     /// topology planning — the level binary already carries its results.
     pub fn from_field(seed: u32, vert_elev: Vec<f32>) -> Self {
-        let mut tg = Self::grid_only(seed);
+        let mut tg = Self::init(seed);
         assert_eq!(vert_elev.len(), tg.verts.len(), "baked field size mismatch");
         tg.vert_elev = vert_elev;
         tg.precompute_climate();
         tg
     }
 
-    fn grid_only(seed: u32) -> Self {
+    /// Grid, noise generators, and coarse zones — the deterministic
+    /// environment every later planning step reads. No elevation yet.
+    pub fn init(seed: u32) -> Self {
         let sub = 5;
         let (verts, adj_off, adj_data) = build_ico_grid(sub);
         let vert_grid = build_vert_grid(&verts, Self::VERT_GRID_LATS, Self::VERT_GRID_LONS);
@@ -300,7 +299,18 @@ impl TerrainGen {
 
     // ---- L3 stage 1: zone-remapped base elevation ----
 
-    fn compute_base_elevations(&mut self) {
+    /// The PROPOSED field: zone-remapped noise, smoothed, identity-clamped.
+    /// It is a classification hint only — the final elevation is synthesized by
+    /// the constraint solver (worldgen::SolveElevation) from the tile map.
+    pub fn propose_elevation(&self) -> Vec<f32> {
+        let mut e = self.compute_base_elevations();
+        self.smooth_vert_elevations(&mut e, 2);
+        self.clamp_zone_identity(&mut e);
+        e
+    }
+
+    fn compute_base_elevations(&self) -> Vec<f32> {
+        let mut out = vec![0.0f32; self.verts.len()];
         for i in 0..self.verts.len() {
             let pos = SpherePos::new(self.verts[i]);
             let w = self.warped(pos);
@@ -308,8 +318,9 @@ impl TerrainGen {
             let (min, max, curve, land) = self.blended_profile(pos.0);
             let detail = if land { self.detail.get(w) as f32 * 0.06 } else { 0.0 };
             let t = ((raw + detail + 1.0) / 2.0).clamp(0.0, 1.0);
-            self.vert_elev[i] = (min + (max - min) * t.powf(curve)).clamp(-1.0, 1.0);
+            out[i] = (min + (max - min) * t.powf(curve)).clamp(-1.0, 1.0);
         }
+        out
     }
 
     /// Elevation profile blended across the vertex's coarse face and its ring,
@@ -359,16 +370,16 @@ impl TerrainGen {
         (min / wsum, max / wsum, curve / wsum, land)
     }
 
-    fn smooth_vert_elevations(&mut self, passes: usize) {
+    fn smooth_vert_elevations(&self, e: &mut Vec<f32>, passes: usize) {
         for _ in 0..passes {
             let n = self.verts.len();
             let mut smoothed = vec![0.0f32; n];
             for i in 0..n {
                 let neighbors = self.adj_of(i);
-                let sum: f32 = neighbors.iter().map(|&n| self.vert_elev[n]).sum();
-                smoothed[i] = self.vert_elev[i] * 0.5 + (sum / neighbors.len() as f32) * 0.5;
+                let sum: f32 = neighbors.iter().map(|&n| e[n]).sum();
+                smoothed[i] = e[i] * 0.5 + (sum / neighbors.len() as f32) * 0.5;
             }
-            self.vert_elev = smoothed;
+            *e = smoothed;
         }
     }
 
@@ -378,7 +389,7 @@ impl TerrainGen {
     /// clamped to that identity's sign — islands can't sink, lakes can't dry,
     /// and no inland dip reads as ocean. River carving (after this) is the one
     /// deliberate exception.
-    fn clamp_zone_identity(&mut self) {
+    fn clamp_zone_identity(&self, e: &mut [f32]) {
         let n = self.zones.centroids.len();
         let interior: Vec<Option<bool>> = (0..n).map(|fi| {
             let w = self.zones.kind_of_face(fi).is_water();
@@ -389,8 +400,8 @@ impl TerrainGen {
         for vi in 0..self.verts.len() {
             let Some(fi) = self.coarse_mesh.face_at(self.verts[vi]) else { continue };
             match interior[fi] {
-                Some(true) => self.vert_elev[vi] = self.vert_elev[vi].min(-0.02),
-                Some(false) => self.vert_elev[vi] = self.vert_elev[vi].max(0.02),
+                Some(true) => e[vi] = e[vi].min(-0.02),
+                Some(false) => e[vi] = e[vi].max(0.02),
                 None => {}
             }
         }
@@ -398,7 +409,7 @@ impl TerrainGen {
 
     // ---- L2: river path planning (channels are dug by the elevation solver) ----
 
-    fn plan_rivers(&mut self) {
+    pub fn plan_river_paths(&self) -> Vec<Vec<SpherePos>> {
         let mountain_zones: Vec<u16> =
             self.zones.zones_of_kind(ZoneKind::MountainRange).map(|(id, _)| id).collect();
         let river_count = ZoneConfig::default().rivers;
@@ -428,7 +439,7 @@ impl TerrainGen {
                 }
             }
         }
-        self.river_paths = paths;
+        paths
     }
 
     /// BFS over coarse faces from `src` to the nearest water-zone face, routing
@@ -470,7 +481,7 @@ impl TerrainGen {
 
     // ---- L3 stage 3: settlement anchors (read-only refinement of L1 zones) ----
 
-    fn place_settlement_anchors(&mut self) {
+    pub fn plan_settlement_anchors(&self) -> Vec<SpherePos> {
         let mut anchors = Vec::new();
         for (_, zone) in self.zones.zones_of_kind(ZoneKind::Settlement) {
             let cands: Vec<SpherePos> = zone.faces.iter()
@@ -492,12 +503,13 @@ impl TerrainGen {
                 });
             anchors.push(best);
         }
-        self.settlement_anchors = anchors;
+        anchors
     }
 
     // ---- L3 stage 4: roads (corridor smoothing on the shared vertices) ----
 
-    fn build_roads(&mut self) {
+    /// Reads `settlement_anchors` — evolve must fold SettlementsPlaced first.
+    pub fn plan_road_paths(&self) -> Vec<Vec<SpherePos>> {
         let hosts: Vec<u16> = self.zones.zones_of_kind(ZoneKind::Settlement)
             .map(|(_, z)| z.host.expect("settlement zone has host"))
             .collect();
@@ -524,7 +536,7 @@ impl TerrainGen {
                 }
             }
         }
-        self.road_paths = paths;
+        paths
     }
 
     fn precompute_climate(&mut self) {
