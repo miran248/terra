@@ -11,8 +11,13 @@ A decide/evolve/react command-event state machine (FIFO, deterministic,
 single-responsibility commands, event log as audit trail):
 
 ```
-GenTerrain          L0–L2 + PROPOSED field (TerrainGen: zones, anchors,
-                    river/road paths; noise field is a classification hint only)
+InitTerrain         L0/L1: grid, noise, coarse zones (deterministic environment)
+ProposeElevation    the PROPOSED field — a classification hint, pre-solver
+ComputeClimate      moisture/temperature from noise + current field
+                    (re-run after every field change, incl. post-solve)
+PlanRivers          L2: coarse river waypoint paths
+PlaceSettlements    L2: flattest dry anchor per settlement zone
+PlanRoads           L2: road polylines between same-continent settlements
 ClassifyTiles       zone-aware base class per fine face (sub=6, 82k)
 PaintRivers         river polylines → River faces
 NormalizeWater      connectivity identity: body is Ocean iff it reaches
