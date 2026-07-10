@@ -496,11 +496,10 @@ fn update_terrain_hud(
             if let Some(blends) = blends {
                 if let Some(&(a, b)) = blends.0.get(&(fi as u32)) {
                     let other = if a == tile as u8 { b } else { a };
-                    if other == shared::level::BLEND_ROAD {
-                        tile_line = format!("{tile:?} + Road");
-                    } else {
-                        tile_line = format!("{tile:?} + {:?}", Terrain::ALL[other as usize]);
-                    }
+                    tile_line = match shared::level::blend_feature_name(other) {
+                        Some(name) => format!("{tile:?} + {name}"),
+                        None => format!("{tile:?} + {:?}", Terrain::ALL[other as usize]),
+                    };
                 }
             }
             if let Some(tags) = tags {

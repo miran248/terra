@@ -9,9 +9,23 @@ pub const TAG_TOWN: u8 = 1;
 pub const TAG_BRIDGE: u8 = 2;
 pub const TAG_BRIDGE_ENTRY: u8 = 3;
 
-/// Sentinel in `face_blend` pairs: the face blends toward the road running
-/// beside it (roads are tags, not Terrain kinds).
+/// Sentinels in `face_blend` pairs: the face blends toward a built feature
+/// beside it (features are tags, not Terrain kinds). Codes count down from 255;
+/// anything ≥ BLEND_FEATURE_MIN is a feature, below is a Terrain discriminant.
 pub const BLEND_ROAD: u8 = 255;
+pub const BLEND_TOWN: u8 = 254;
+pub const BLEND_BRIDGE_ENTRY: u8 = 253;
+pub const BLEND_FEATURE_MIN: u8 = 250;
+
+/// Display name for a feature blend code, if it is one.
+pub fn blend_feature_name(code: u8) -> Option<&'static str> {
+    match code {
+        BLEND_ROAD => Some("Road"),
+        BLEND_TOWN => Some("Town"),
+        BLEND_BRIDGE_ENTRY => Some("Bridge Entry"),
+        _ => None,
+    }
+}
 
 pub fn tag_name(tag: u8) -> &'static str {
     match tag {

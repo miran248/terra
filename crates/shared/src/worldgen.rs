@@ -361,12 +361,13 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::RiversPainted(_) => vec![Command::NormalizeWater],
         Event::WaterNormalized(_) => vec![Command::PaintFeatures],
         Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
-        Event::TransitionsResolved(_) => vec![Command::MarkBlends],
         // Regions and bridge selection read only tiles/geometry, so they run
         // BEFORE the solver — which then knows the bridge-entry pads to flatten.
-        Event::BlendsMarked(_) => vec![Command::BuildRegions],
+        // Blends come after bridges so entry flanks can blend toward the pads.
+        Event::TransitionsResolved(_) => vec![Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
-        Event::BridgesSelected(..) => vec![Command::SolveElevation],
+        Event::BridgesSelected(..) => vec![Command::MarkBlends],
+        Event::BlendsMarked(_) => vec![Command::SolveElevation],
         Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
         Event::TagsBuilt(..) => vec![],
@@ -803,13 +804,27 @@ fn mark_blends(grid: &Grid, tiles: &[Terrain], painted: &Painted) -> Vec<(u32, u
     // like Beach|Cliff, which need the altitude ramp most. Faces flanking a
     // road blend toward it (the road itself stays solid): BLEND_ROAD pair.
     let plain = |t: Terrain| t.is_land();
+    let overlay = |fi: usize| {
+        painted.roads.contains(fi) || painted.towns.contains(fi) || painted.bridge_entries.contains(fi)
+    };
     let mut out = Vec::new();
     for fi in 0..grid.n {
-        if !plain(tiles[fi]) || painted.roads.contains(fi) {
+        if !plain(tiles[fi]) || overlay(fi) {
             continue;
         }
-        if grid.adj[fi].iter().any(|&nb| painted.roads.contains(nb as usize)) {
-            out.push((fi as u32, tiles[fi] as u8, crate::level::BLEND_ROAD));
+        // Feature flanks blend toward the feature; most specific wins
+        // (entry pad < town blob < road network by footprint).
+        let feature = if grid.adj[fi].iter().any(|&nb| painted.bridge_entries.contains(nb as usize)) {
+            Some(crate::level::BLEND_BRIDGE_ENTRY)
+        } else if grid.adj[fi].iter().any(|&nb| painted.towns.contains(nb as usize)) {
+            Some(crate::level::BLEND_TOWN)
+        } else if grid.adj[fi].iter().any(|&nb| painted.roads.contains(nb as usize)) {
+            Some(crate::level::BLEND_ROAD)
+        } else {
+            None
+        };
+        if let Some(code) = feature {
+            out.push((fi as u32, tiles[fi] as u8, code));
             continue;
         }
         // Most common differing plain neighbor kind (deterministic tie-break).
@@ -1241,10 +1256,11 @@ fn build_mesh(
             // Boundary face: blend the two linked kinds 50/50 (roads count as
             // a kind here — the flanking tile carries the transition).
             let ca = Terrain::ALL[ka as usize].color().to_linear().to_f32_array();
-            let cb = if kb == crate::level::BLEND_ROAD {
-                road_color
-            } else {
-                Terrain::ALL[kb as usize].color().to_linear().to_f32_array()
+            let cb = match kb {
+                crate::level::BLEND_ROAD => road_color,
+                crate::level::BLEND_TOWN => town_color,
+                crate::level::BLEND_BRIDGE_ENTRY => entry_color,
+                _ => Terrain::ALL[kb as usize].color().to_linear().to_f32_array(),
             };
             [
                 (ca[0] + cb[0]) / 2.0,
@@ -1393,8 +1409,8 @@ fn solve_elevation(
         // Blend faces are the altitude ramp between two kinds: their vertices
         // get the HULL of both ranges so the solver can transition through.
         let (rlo, rhi) = match owner_face[vi].and_then(|fi| blend_of.get(&(fi as u32))) {
-            // Road blends are visual only — roads follow the ground.
-            Some(&(_, b)) if b == crate::level::BLEND_ROAD => elev_range(owner[vi]),
+            // Feature blends are visual only — features follow the ground.
+            Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owner[vi]),
             Some(&(a, b)) => {
                 let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
                 let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
@@ -1705,7 +1721,7 @@ mod tests {
             let Some(fi) = state.grid.planet.face_at(terrain.vert_dir(vi)) else { continue };
             // Blend faces ramp between both kinds' ranges (mirror the solver).
             let (rlo, rhi) = match blend_of.get(&(fi as u32)) {
-                Some(&(_, b)) if b == crate::level::BLEND_ROAD => elev_range(state.tiles[fi]),
+                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(state.tiles[fi]),
                 Some(&(a, b)) => {
                     let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
                     let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
