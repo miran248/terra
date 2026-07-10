@@ -9,6 +9,10 @@ pub const TAG_TOWN: u8 = 1;
 pub const TAG_BRIDGE: u8 = 2;
 pub const TAG_BRIDGE_ENTRY: u8 = 3;
 
+/// Sentinel in `face_blend` pairs: the face blends toward the road running
+/// beside it (roads are tags, not Terrain kinds).
+pub const BLEND_ROAD: u8 = 255;
+
 pub fn tag_name(tag: u8) -> &'static str {
     match tag {
         TAG_ROAD => "Road",
