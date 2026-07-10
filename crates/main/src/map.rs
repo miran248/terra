@@ -4,7 +4,7 @@ use bevy::render::mesh::VertexAttributeValues;
 use crate::physics::RadialGravity;
 use shared::level::LevelData;
 use shared::sphere::PLANET_RADIUS;
-use shared::terrain::TerrainGen;
+use shared::terrain::{TerrainGen, MAX_MOUNTAIN};
 use shared::theme;
 use shared::planet::PlanetMesh;
 use crate::minimap::MinimapCamera;
@@ -22,6 +22,12 @@ pub struct MainCamera;
 #[derive(Component)]
 pub struct Settlement {
     pub name: String,
+}
+
+#[derive(Component)]
+pub struct WaterBody {
+    pub name: String,
+    pub kind: String,
 }
 
 #[derive(Component)]
@@ -48,6 +54,9 @@ pub struct MapPlugin;
 
 #[derive(Resource)]
 pub struct LevelFeatures(pub Vec<u8>);
+
+#[derive(Resource)]
+pub struct LevelFaceTypes(pub Vec<shared::terrain::Terrain>);
 
 #[derive(Resource, Default)]
 struct PlayerInput {
@@ -148,7 +157,7 @@ fn setup_map(
 
     // Water
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS))),
+        Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS - 0.5))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: theme::WATER_SURFACE,
             alpha_mode: AlphaMode::Blend,
@@ -169,15 +178,15 @@ fn setup_map(
         Ground,
     ));
 
-    // Player: spawn at the first settlement, above the feature disc.
+    // Player: spawn at the first settlement, well above the mesh.
     let s = level.settlements.first().expect("no settlements");
     let start = shared::sphere::SpherePos::new(Vec3::from_array(s.pos));
     let up = start.0;
     let capsule_radius = PLAYER_SIZE * 0.4;
     let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
-    // Settlement disc is at terrain surface + 0.5.
-    let disc_r = terrain.surface_radius(start) + 0.5 + capsule_half + 2.0;
-    let spawn_pos = up * disc_r;
+    // Spawn high above terrain — gravity settles onto the collider.
+    let spawn_r = PLANET_RADIUS + MAX_MOUNTAIN + 50.0;
+    let spawn_pos = up * spawn_r;
     commands.spawn((
         Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
         MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
@@ -206,14 +215,27 @@ fn setup_map(
             Settlement { name: s.name.clone() },
         ));
     }
+
+    // Water body markers
+    for wb in &level.water_bodies {
+        let pos = Vec3::from_array(wb.pos) * PLANET_RADIUS;
+        commands.spawn((
+            Transform::from_translation(pos),
+            WaterBody { name: wb.name.clone(), kind: format!("{:?}", wb.kind) },
+        ));
+    }
     let tris: Vec<[Vec3; 3]> = level.unit_tris.iter()
         .map(|t| [Vec3::from_array(t[0]), Vec3::from_array(t[1]), Vec3::from_array(t[2])])
         .collect();
     let planet_mesh = PlanetMesh::new(tris);
     let features = level.terrain_features.clone();
+    let face_types: Vec<shared::terrain::Terrain> = level.face_types.iter()
+        .map(|&b| unsafe { std::mem::transmute(b) })
+        .collect();
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);
     commands.insert_resource(LevelFeatures(features));
+    commands.insert_resource(LevelFaceTypes(face_types));
 }
 
 fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[f32; 4]]) -> Mesh {

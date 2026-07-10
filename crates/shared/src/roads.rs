@@ -10,7 +10,7 @@ const MIN_SEPARATION: f32 = 900.0;
 /// Each settlement links to its nearest neighbours, up to this many.
 const LINKS_PER_SETTLEMENT: usize = 2;
 /// Spacing between sampled points along a road, meters.
-const SAMPLE_SPACING: f32 = 40.0;
+pub const SAMPLE_SPACING: f32 = 40.0;
 
 /// Whether a path is a land road or a water bridge (a straight span).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,6 +46,13 @@ impl Roads {
     /// town to its nearest neighbour(s) with gentle arcs + slight noise wobble. Terrain
     /// (mountains, forests) is grown *around* these roads afterward, so routing is trivial
     /// — we only need to check the continent layer for water and avoid crossing the sea.
+    pub fn place_settlements(terrain: &TerrainGen) -> Vec<Settlement> {
+        let anchors = terrain.habitable_anchors(SETTLEMENTS, MIN_SEPARATION);
+        anchors.iter().enumerate()
+            .map(|(i, &pos)| Settlement { pos, name: settlement_name(i) })
+            .collect()
+    }
+
     /// Every town is guaranteed a road to at least its nearest reachable neighbour.
     pub fn generate(terrain: &TerrainGen) -> Self {
         let anchors = terrain.habitable_anchors(SETTLEMENTS, MIN_SEPARATION);
@@ -221,7 +228,7 @@ fn a_to_shore_road(
     Some(Road { points, kind: PathKind::Road })
 }
 
-fn build_land_road(
+pub fn build_land_road(
     terrain: &TerrainGen,
     a: SpherePos,
     b: SpherePos,
@@ -242,6 +249,13 @@ fn build_land_road(
     points[0] = a;
     *points.last_mut().unwrap() = b;
     Road { points, kind: PathKind::Road }
+}
+
+pub fn build_land_road_path(a: SpherePos, b: SpherePos, steps: usize, seed: Vec3) -> Vec<SpherePos> {
+    (0..=steps).map(|k| {
+        let t = k as f32 / steps as f32;
+        if k == 0 { a } else if k == steps { b } else { wobbled_slerp(a, b, t, seed, 40.0) }
+    }).collect()
 }
 
 fn find_nearest_shore(terrain: &TerrainGen, origin: SpherePos) -> Option<SpherePos> {

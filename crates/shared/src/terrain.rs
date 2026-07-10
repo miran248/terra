@@ -1,6 +1,6 @@
 use bevy::prelude::{Color, Resource, Vec3};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::sphere::{SpherePos, PLANET_RADIUS};
 
@@ -125,7 +125,7 @@ pub struct TerrainGen {
 }
 
 struct RoadField {
-    cells: HashMap<(i32, i32), Vec<Vec3>>,
+    cells: BTreeMap<(i32, i32), Vec<Vec3>>,
 }
 
 impl RoadField {
@@ -139,7 +139,7 @@ impl RoadField {
     }
 
     fn new(points: impl Iterator<Item = Vec3>) -> Self {
-        let mut cells: HashMap<(i32, i32), Vec<Vec3>> = Default::default();
+        let mut cells: BTreeMap<(i32, i32), Vec<Vec3>> = Default::default();
         for p in points {
             cells.entry(Self::key(p)).or_default().push(p);
         }
@@ -236,7 +236,7 @@ impl TerrainGen {
     }
 
     pub fn set_roads_from_baked(&mut self, cells: &[(i32, i32, Vec<[f32; 3]>)]) {
-        let cells: HashMap<(i32, i32), Vec<Vec3>> = cells.iter()
+        let cells: BTreeMap<(i32, i32), Vec<Vec3>> = cells.iter()
             .map(|(k1, k2, pts)| ((*k1, *k2), pts.iter().map(|p| Vec3::from_array(*p)).collect()))
             .collect();
         self.roads = Some(RoadField { cells });
@@ -262,6 +262,7 @@ impl TerrainGen {
             vert_temp: self.vert_temp.clone(),
             flow_accum: self.flow_accum.clone(),
             river_depth: self.river_depth.clone(),
+            flow_dir: self.flow_dir.clone(),
             road_cells: self.bake_road_cells(),
         }
     }
@@ -415,15 +416,7 @@ impl TerrainGen {
         let t = self.interp_temperature(pos);
 
         if e < -0.30 { return Terrain::DeepOcean; }
-        if e < 0.0 {
-            if m > 0.2 && e > -0.04 { return Terrain::Lake; }
-            return Terrain::Ocean;
-        }
-
-        let vi = self.nearest_vert(pos);
-        if e < 0.04 && self.river_depth[vi] > 0.2 && self.flow_accum[vi] > 2.0 {
-            return Terrain::River;
-        }
+        if e < 0.0 { return Terrain::Ocean; }
 
         if t < -15.0 { return Terrain::Snow; }
         if t < 0.0 { return Terrain::Tundra; }
@@ -532,7 +525,8 @@ impl TerrainGen {
     fn precompute_vert_samples(&mut self) {
         for i in 0..self.verts.len() {
             let pos = SpherePos::new(self.verts[i]);
-            self.vert_elev[i] = self.elevation_at(pos);
+            // Pre-erosion elevation for classification (erosion applied in elevation_at).
+            self.vert_elev[i] = self.elevation_at_no_erosion(pos);
             self.vert_moist[i] = self.moisture_at(pos);
             self.vert_temp[i] = self.temperature_at(pos);
         }
@@ -673,7 +667,7 @@ fn build_ico_grid(sub: usize) -> (Vec<Vec3>, Vec<usize>, Vec<usize>) {
 
     for _ in 0..sub {
         let mut next_tris = Vec::with_capacity(tris.len() * 4);
-        let mut mid_map: HashMap<(usize, usize), usize> = HashMap::new();
+        let mut mid_map: BTreeMap<(usize, usize), usize> = BTreeMap::new();
         for &[a, b, c] in &tris {
             let ab = mid_edge(&mut verts, &mut mid_map, a, b);
             let bc = mid_edge(&mut verts, &mut mid_map, b, c);
@@ -690,7 +684,7 @@ fn build_ico_grid(sub: usize) -> (Vec<Vec3>, Vec<usize>, Vec<usize>) {
     (verts, adj_off, adj_data)
 }
 
-fn mid_edge(verts: &mut Vec<Vec3>, map: &mut HashMap<(usize, usize), usize>, a: usize, b: usize) -> usize {
+fn mid_edge(verts: &mut Vec<Vec3>, map: &mut BTreeMap<(usize, usize), usize>, a: usize, b: usize) -> usize {
     let key = (a.min(b), a.max(b));
     if let Some(&idx) = map.get(&key) { return idx; }
     let idx = verts.len();

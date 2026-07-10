@@ -5,7 +5,8 @@ use shared::theme;
 use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{LevelFeatures, Player, PlayerHp};
+use crate::map::{LevelFeatures, LevelFaceTypes, Player, PlayerHp};
+use shared::terrain::Terrain;
 use shared::planet::PlanetMesh;
 use crate::wave::WaveManager;
 
@@ -457,6 +458,7 @@ fn update_terrain_hud(
     terrain: Option<Res<shared::terrain::TerrainGen>>,
     planet: Option<Res<PlanetMesh>>,
     features: Option<Res<LevelFeatures>>,
+    face_types: Option<Res<LevelFaceTypes>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
@@ -470,8 +472,15 @@ fn update_terrain_hud(
 
     if !timer.0.tick(time.delta()).just_finished() { return; }
     let pos = shared::sphere::SpherePos::new(tf.translation);
+    // Read precomputed face type from level data — guaranteed to match terrain colors.
+    let tile = if let (Some(planet), Some(ft)) = (planet.as_ref(), face_types.as_ref()) {
+        planet.face_at(tf.translation.normalize())
+            .map(|fi| ft.0.get(fi).copied().unwrap_or(Terrain::Plains))
+            .unwrap_or(Terrain::Plains)
+    } else {
+        terrain.classify(pos)
+    };
     let altitude = terrain.altitude(pos);
-    let tile = terrain.classify(pos);
     let temp = terrain.temperature_at(pos);
     let slope = terrain.slope(pos);
     let hab = terrain.is_habitable(pos);
