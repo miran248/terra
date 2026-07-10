@@ -1839,6 +1839,63 @@ mod tests {
     }
 
     #[test]
+    fn kernel_is_local() {
+        // The interpolation kernel must return genuinely nearby vertices.
+        // Guards the polar search bug: the fixed 3x3 grid window returned
+        // verts up to 335m away near the poles (longitude cells shrink).
+        let terrain = TerrainGen::init(1);
+        for i in 0..2000 {
+            let u = (i as f32 * 0.6180339) % 1.0;
+            let v = (i as f32 * 0.7548776) % 1.0;
+            let p = crate::sphere::random_point(u, v);
+            for (vi, _) in terrain.kernel(p) {
+                let d = p.distance(crate::sphere::SpherePos::new(terrain.vert_dir(vi)));
+                assert!(d < 200.0, "kernel vert {d:.0}m away at lat {:.0}", p.0.y.asin().to_degrees());
+            }
+        }
+    }
+
+    #[test]
+    fn lakes_stay_enclosed() {
+        // No lake-zone water may connect to the ocean — the rim dam guarantees
+        // every lake is its own body (guards the drain-channel bug where lakes
+        // leaked to the sea along coarse-face edges and became ocean inlets).
+        let state = run(1337, |_| {});
+        let terrain = state.terrain.as_ref().unwrap();
+        let mut lake_faces = 0;
+        let mut visited = vec![false; state.grid.n];
+        for start in 0..state.grid.n {
+            if !state.tiles[start].is_water() || state.tiles[start] == Terrain::River || visited[start] {
+                continue;
+            }
+            let mut body = vec![start];
+            let mut q = VecDeque::from([start]);
+            visited[start] = true;
+            while let Some(cur) = q.pop_front() {
+                for &nb in &state.grid.adj[cur] {
+                    let nb = nb as usize;
+                    if state.tiles[nb].is_water() && state.tiles[nb] != Terrain::River && !visited[nb] {
+                        visited[nb] = true;
+                        body.push(nb);
+                        q.push_back(nb);
+                    }
+                }
+            }
+            let has_lake_zone = body.iter().any(|&fi| {
+                terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Lake
+            });
+            let has_ocean_zone = body.iter().any(|&fi| {
+                terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Ocean
+            });
+            if has_lake_zone {
+                lake_faces += body.len();
+                assert!(!has_ocean_zone, "lake body of {} faces connects to the ocean", body.len());
+            }
+        }
+        assert!(lake_faces > 100, "lakes nearly vanished: {lake_faces} faces");
+    }
+
+    #[test]
     fn deterministic_pipeline() {
         let a = run(42, |_| {});
         let b = run(42, |_| {});
