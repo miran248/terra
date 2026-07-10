@@ -1,3 +1,4 @@
+pub mod worldgen;
 pub mod items;
 pub mod level;
 pub mod planet;

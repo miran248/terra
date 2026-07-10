@@ -1,32 +1,75 @@
-mod bitset;
-mod pass;
+use shared::worldgen::{run, GenState};
+use shared::level::{LevelData, RoadData, SettlementData, LEVEL_FORMAT_VERSION};
+use shared::terrain::Terrain;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
 
-use pass::GenCtx;
-
-/// Strictly coarse → fine; each layer only reads what earlier layers wrote.
-///   L0–L3  terrain      — zones, topology (settlements/rivers/roads/bridges),
-///                         constrained vertex elevation (all inside TerrainGen)
-///   L5a    classify     — zone-aware base type per fine face
-///   L4     paint        — snap river/road/bridge polylines + towns to fine faces
-///   L5b    transitions  — micro WFC resolves Beach/Cliff/LakeShore/RiverBank
-///   —      water names  — flood-fill components, assign names
-///   L6     mesh + pack  — displaced trimesh from the L3 verts, tags, postcard
+/// The pipeline itself lives in `shared::gen` as a command/event state machine;
+/// this binary just runs it for a seed, prints the event log + stats, and packs
+/// the result into the level binary.
 fn main() {
-    let ctx = GenCtx::from_env();
-    let terrain = pass::gen_terrain(ctx.seed);
-    let mut face_types = pass::classify_base(&ctx, &terrain);
-    pass::paint_rivers(&ctx, &terrain, &mut face_types);
-    pass::normalize_water_bodies(&ctx, &terrain, &mut face_types);
-    let mut painted = pass::paint_faces(&ctx, &terrain);
-    let vadj = pass::build_vertex_adjacency(&ctx);
-    let face_types = pass::resolve_transitions(&ctx, &terrain, &vadj, &face_types);
-    let (regions, face_region) = pass::build_regions(&ctx, &terrain, &face_types, &painted);
-    let bridges = pass::build_bridges(&ctx, &face_types, &face_region, &mut painted);
+    let seed: u32 = std::env::var("PLANET_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1337);
+    let out = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| {
+        let dir = std::env!("CARGO_MANIFEST_DIR");
+        format!("{dir}/../main/assets/level_{seed}.bin")
+    }));
 
-    let (terrain_tris, terrain_colors) = pass::build_mesh(&ctx, &terrain, &face_types, &painted);
-    let (face_tag_off, face_tag_data) = pass::build_face_tags(&ctx, &painted);
-    pass::print_stats(&ctx, &terrain, &face_types);
-    println!("regions: {}  bridges: {}", regions.len(), bridges.len());
-    pass::serialize(&ctx, &terrain, &face_types, &bridges, regions, face_region,
-        terrain_tris, terrain_colors, face_tag_off, face_tag_data);
+    let state = run(seed, |line| println!("• {line}"));
+    print_stats(&state);
+    serialize(&state, &out);
+}
+
+fn serialize(state: &GenState, out: &PathBuf) {
+    let terrain = state.terrain.as_ref().expect("pipeline finished");
+    let unit_tris_arr: Vec<[[f32; 3]; 3]> = state.grid.unit_tris.iter()
+        .map(|[a, b, c]| [a.to_array(), b.to_array(), c.to_array()])
+        .collect();
+    let settlements = terrain.settlement_anchors.iter().enumerate()
+        .map(|(i, a)| SettlementData { name: shared::roads::settlement_name(i), pos: a.0.to_array() })
+        .collect();
+    let mut roads: Vec<RoadData> = terrain.road_paths.iter()
+        .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: false })
+        .collect();
+    roads.extend(state.bridges.iter()
+        .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: true }));
+
+    let data = LevelData {
+        version: LEVEL_FORMAT_VERSION,
+        seed: state.grid.seed,
+        vert_elev: terrain.vert_elevations().to_vec(),
+        terrain_tris: state.mesh_tris.clone(),
+        terrain_colors: state.mesh_colors.clone(),
+        unit_tris: unit_tris_arr,
+        face_types: state.tiles.iter().map(|t| *t as u8).collect(),
+        face_blend: state.blends.clone(),
+        face_tag_off: state.tag_off.clone(),
+        face_tag_data: state.tag_data.clone(),
+        settlements,
+        roads,
+        regions: state.regions.clone(),
+        face_region: state.face_region.clone(),
+    };
+    let bytes = postcard::to_allocvec(&data).expect("serialize");
+    let _ = fs::create_dir_all(out.parent().unwrap());
+    fs::write(out, &bytes).expect("write");
+    println!("Wrote {} faces → {}", state.grid.n, out.display());
+}
+
+fn print_stats(state: &GenState) {
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for t in &state.tiles {
+        *counts.entry(match t {
+            Terrain::DeepOcean => "DeepOcean", Terrain::Ocean => "Ocean",
+            Terrain::Lake => "Lake", Terrain::LakeShore => "LakeShore",
+            Terrain::River => "River", Terrain::RiverBank => "RiverBank",
+            Terrain::Beach => "Beach", Terrain::Cliff => "Cliff",
+            Terrain::Desert => "Desert", Terrain::Plains => "Plains",
+            Terrain::Forest => "Forest", Terrain::Tundra => "Tundra",
+            Terrain::Mountain => "Mountain", Terrain::Snow => "Snow",
+        }).or_default() += 1;
+    }
+    let water: usize = state.tiles.iter().filter(|t| t.is_water()).count();
+    println!("water: {:.1}%  breakdown: {:?}", water as f32 / state.grid.n as f32 * 100.0, counts);
+    println!("regions: {}  bridges: {}", state.regions.len(), state.bridges.len());
 }

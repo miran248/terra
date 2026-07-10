@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 4;
+pub const LEVEL_FORMAT_VERSION: u32 = 6;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -22,8 +22,12 @@ pub fn tag_name(tag: u8) -> &'static str {
 #[derive(Serialize, Deserialize)]
 pub struct LevelData {
     pub version: u32,
-    /// TerrainGen seed — the runtime reconstructs the full terrain from this.
+    /// TerrainGen seed — grid, zones, and climate are rebuilt from this.
     pub seed: u32,
+    /// The SOLVED per-vertex elevation field (sub=5, ~10k). The tile map shapes
+    /// this via the constraint solver at gen time; the runtime loads it directly
+    /// (`TerrainGen::from_field`) so mesh, physics, and HUD agree exactly.
+    pub vert_elev: Vec<f32>,
     pub terrain_tris: Vec<[[f32; 3]; 3]>,
     pub terrain_colors: Vec<[f32; 4]>,
     pub unit_tris: Vec<[[f32; 3]; 3]>,
@@ -33,6 +37,10 @@ pub struct LevelData {
     /// `face_tag_data[face_tag_off[fi] as usize..face_tag_off[fi + 1] as usize]`.
     pub face_tag_off: Vec<u32>,
     pub face_tag_data: Vec<u8>,
+    /// Inland transition marks: faces on a biome/biome boundary, with the pair
+    /// of Terrain kinds they link (as u8 discriminants). The face keeps its own
+    /// terrain type; renderers blend colors/textures between the pair.
+    pub face_blend: Vec<(u32, u8, u8)>,
     pub settlements: Vec<SettlementData>,
     pub roads: Vec<RoadData>,
     /// Named contiguous feature clusters: oceans, lakes, rivers, beaches,

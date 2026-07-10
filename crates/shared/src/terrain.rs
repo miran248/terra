@@ -71,14 +71,6 @@ impl Terrain {
 
 // ---- terrain generation ----
 
-/// Verts within this arc distance of a road polyline get corridor smoothing.
-const ROAD_CORRIDOR_R: f32 = 70.0;
-/// Verts within this arc distance of a river polyline get channel carving.
-/// Must exceed the ~100m reach of the 6-vertex interpolation kernel, otherwise
-/// uncarved verts leak uphill elevation into sampled points on the river.
-const RIVER_CHANNEL_R: f32 = 140.0;
-/// Channel depth in elevation units at the river center line.
-const RIVER_DEPTH: f32 = 0.06;
 /// Road links per settlement.
 const ROAD_LINKS: usize = 2;
 
@@ -111,14 +103,37 @@ pub struct TerrainGen {
     pub river_paths: Vec<Vec<SpherePos>>,
     pub settlement_anchors: Vec<SpherePos>,
     pub road_paths: Vec<Vec<SpherePos>>,
-    /// Vertices belonging to river channels — off-limits to road smoothing, so
-    /// roads can never push a river back uphill.
-    river_verts: std::collections::BTreeSet<usize>,
     seed: u32,
 }
 
 impl TerrainGen {
     pub fn new(seed: u32) -> Self {
+        let mut tg = Self::grid_only(seed);
+        // The PROPOSED field: zone-remapped noise, smoothed, identity-clamped.
+        // It is a classification hint only — the final elevation is synthesized
+        // by the constraint solver (worldgen::SolveElevation) from the finished
+        // tile map, so no topology stage ever edits elevation here.
+        tg.compute_base_elevations();
+        tg.smooth_vert_elevations(2);
+        tg.clamp_zone_identity();
+        tg.plan_rivers();
+        tg.place_settlement_anchors();
+        tg.build_roads();
+        tg.precompute_climate();
+        tg
+    }
+
+    /// Rebuild from a solved, baked elevation field (runtime path). Skips all
+    /// topology planning — the level binary already carries its results.
+    pub fn from_field(seed: u32, vert_elev: Vec<f32>) -> Self {
+        let mut tg = Self::grid_only(seed);
+        assert_eq!(vert_elev.len(), tg.verts.len(), "baked field size mismatch");
+        tg.vert_elev = vert_elev;
+        tg.precompute_climate();
+        tg
+    }
+
+    fn grid_only(seed: u32) -> Self {
         let sub = 5;
         let (verts, adj_off, adj_data) = build_ico_grid(sub);
         let vert_grid = build_vert_grid(&verts, Self::VERT_GRID_LATS, Self::VERT_GRID_LONS);
@@ -133,7 +148,7 @@ impl TerrainGen {
         let zones = Zones::generate(seed, &ZoneConfig::default());
         let coarse_mesh = PlanetMesh::new(unit_icosphere_tris(COARSE_SUB));
 
-        let mut tg = Self {
+        Self {
             height,
             detail: Fbm::<Perlin>::new(sub_seed(1)).set_octaves(3).set_frequency(7.0),
             moisture: Fbm::<Perlin>::new(sub_seed(2)).set_octaves(4).set_frequency(2.5),
@@ -151,21 +166,23 @@ impl TerrainGen {
             river_paths: Vec::new(),
             settlement_anchors: Vec::new(),
             road_paths: Vec::new(),
-            river_verts: Default::default(),
             seed,
-        };
-        // L3: base field, then the topology constraints that shape it — in order,
-        // each stage only reading what earlier stages wrote.
-        tg.compute_base_elevations();
-        tg.smooth_vert_elevations(2);
-        tg.clamp_zone_identity();
-        tg.carve_rivers();
-        tg.enforce_river_descent();
-        tg.place_settlement_anchors();
-        tg.build_roads();
-        tg.precompute_climate();
-        tg
+        }
     }
+
+    // ---- solver access (worldgen::SolveElevation) ----
+
+    pub fn vert_count(&self) -> usize { self.verts.len() }
+    pub fn vert_dir(&self, vi: usize) -> Vec3 { self.verts[vi] }
+    pub fn vert_elevations(&self) -> &[f32] { &self.vert_elev }
+    pub fn set_vert_elevations(&mut self, v: Vec<f32>) {
+        assert_eq!(v.len(), self.verts.len());
+        self.vert_elev = v;
+        // Temperature depends on altitude; refresh the climate tables.
+        self.precompute_climate();
+    }
+    /// The 6-vertex interpolation kernel at a position (indices + cos-distance).
+    pub fn kernel(&self, pos: SpherePos) -> [(usize, f32); 6] { self.bary_kernel(pos) }
 
     pub fn seed(&self) -> u32 { self.seed }
     pub fn zones(&self) -> &Zones { &self.zones }
@@ -379,9 +396,9 @@ impl TerrainGen {
         }
     }
 
-    // ---- L3 stage 2: river channels (monotone descent by construction) ----
+    // ---- L2: river path planning (channels are dug by the elevation solver) ----
 
-    fn carve_rivers(&mut self) {
+    fn plan_rivers(&mut self) {
         let mountain_zones: Vec<u16> =
             self.zones.zones_of_kind(ZoneKind::MountainRange).map(|(id, _)| id).collect();
         let river_count = ZoneConfig::default().rivers;
@@ -401,9 +418,6 @@ impl TerrainGen {
             if let Some((way, path_faces)) = self.coarse_path_to_water(src, &river_faces) {
                 let samples = densify(&way, 25.0);
                 if samples.len() >= 3 {
-                    // Carve immediately so the next river's descent chain sees this
-                    // channel and can join it at a consistent height.
-                    self.carve_channel(&samples);
                     paths.push(samples);
                     for f in path_faces {
                         river_faces.insert(f);
@@ -452,76 +466,6 @@ impl TerrainGen {
             }
         }
         None
-    }
-
-    /// Lower vertices along the path so elevation never rises downstream.
-    fn carve_channel(&mut self, samples: &[SpherePos]) {
-        let mut target = self.interp_elevation(samples[0]);
-        for s in samples {
-            target = target.min(self.interp_elevation(*s)) - 0.0005;
-            for (vi, d) in self.verts_near(s.0, RIVER_CHANNEL_R) {
-                let falloff = 1.0 - d / RIVER_CHANNEL_R;
-                let carved = target - RIVER_DEPTH * falloff;
-                if self.vert_elev[vi] > carved {
-                    self.vert_elev[vi] = carved;
-                }
-            }
-        }
-    }
-
-    /// Final guarantee that sampled elevation never rises downstream. The carve
-    /// digs the channel, but the interpolation kernel mixes in steep valley walls;
-    /// here we lower exactly the kernel vertices wherever a sample still rises,
-    /// which shifts the interpolated value by exactly the deficit. Lower-only, so
-    /// iterating converges.
-    fn enforce_river_descent(&mut self) {
-        let paths = std::mem::take(&mut self.river_paths);
-        for path in &paths {
-            let mut floor = f32::MAX;
-            for s in path {
-                floor = floor.min(self.interp_elevation(*s));
-                for (vi, _) in self.bary_kernel(*s) {
-                    self.vert_elev[vi] = self.vert_elev[vi].min(floor);
-                    self.river_verts.insert(vi);
-                }
-            }
-            let channel: Vec<usize> = path.iter()
-                .flat_map(|s| self.verts_near(s.0, RIVER_CHANNEL_R))
-                .map(|(vi, _)| vi)
-                .collect();
-            self.river_verts.extend(channel);
-        }
-        self.river_paths = paths;
-    }
-
-    /// Vertices within arc `radius` (meters) of `dir`: the nearest vertex plus its
-    /// 2-ring, distance-filtered.
-    fn verts_near(&self, dir: Vec3, radius: f32) -> Vec<(usize, f32)> {
-        let center = self.nearest_vert(SpherePos::new(dir));
-        let mut out = Vec::new();
-        let mut seen = vec![center];
-        let mut ring = vec![center];
-        // Vertex spacing is ~70m; expand enough rings to cover the radius.
-        let rings = (radius / 60.0).ceil() as usize;
-        for _ in 0..rings {
-            let mut next = Vec::new();
-            for &vi in &ring {
-                for &nb in self.adj_of(vi) {
-                    if !seen.contains(&nb) {
-                        seen.push(nb);
-                        next.push(nb);
-                    }
-                }
-            }
-            ring = next;
-        }
-        for vi in seen {
-            let d = self.verts[vi].dot(dir).clamp(-1.0, 1.0).acos() * PLANET_RADIUS;
-            if d <= radius {
-                out.push((vi, d));
-            }
-        }
-        out
     }
 
     // ---- L3 stage 3: settlement anchors (read-only refinement of L1 zones) ----
@@ -580,38 +524,7 @@ impl TerrainGen {
                 }
             }
         }
-        for path in &paths {
-            self.smooth_corridor(path);
-        }
-        // Overlapping corridors near the coast can drag a previously dry road's
-        // interpolated height below sea level; drop those after all smoothing.
-        paths.retain(|path| path.iter().all(|p| self.interp_elevation(*p) > 0.0));
         self.road_paths = paths;
-    }
-
-    /// Local Laplacian smoothing restricted to the road corridor — flattens the
-    /// ground roads run over by editing the shared vertex field, so the rendered
-    /// mesh and runtime height queries agree on road surfaces automatically.
-    fn smooth_corridor(&mut self, path: &[SpherePos]) {
-        let mut corridor = std::collections::BTreeSet::new();
-        for s in path {
-            for (vi, _) in self.verts_near(s.0, ROAD_CORRIDOR_R) {
-                if !self.river_verts.contains(&vi) {
-                    corridor.insert(vi);
-                }
-            }
-        }
-        for _ in 0..2 {
-            let snapshot = self.vert_elev.clone();
-            for &vi in &corridor {
-                let nbs = self.adj_of(vi);
-                let avg: f32 = nbs.iter().map(|&n| snapshot[n]).sum::<f32>() / nbs.len() as f32;
-                // Cut-only (never fill dips), and never sink a land vert below sea —
-                // a coastal road must not smooth its own ground underwater.
-                let smoothed = (snapshot[vi] * 0.4 + avg * 0.6).min(snapshot[vi]);
-                self.vert_elev[vi] = if snapshot[vi] > 0.0 { smoothed.max(0.01_f32.min(snapshot[vi])) } else { smoothed };
-            }
-        }
     }
 
     fn precompute_climate(&mut self) {
@@ -842,22 +755,8 @@ mod tests {
         assert_eq!(a.road_paths.len(), b.road_paths.len());
     }
 
-    #[test]
-    fn rivers_descend_monotonically() {
-        let tg = TerrainGen::new(1337);
-        assert!(!tg.river_paths.is_empty(), "no rivers generated");
-        for (ri, path) in tg.river_paths.iter().enumerate() {
-            let mut prev = f32::MAX;
-            for p in path {
-                let e = tg.elevation_at(*p);
-                assert!(
-                    e <= prev + 0.02,
-                    "river {ri} flows uphill: {e} after {prev}"
-                );
-                prev = prev.min(e);
-            }
-        }
-    }
+    // River descent is enforced by the elevation solver on the FINAL field —
+    // see worldgen::tests::solved_field_invariants.
 
     #[test]
     fn settlements_sit_on_land() {

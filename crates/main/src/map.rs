@@ -109,9 +109,10 @@ fn setup_map(
     );
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
-    // The seed deterministically reproduces the exact terrain gen_level baked the
-    // mesh from, so height queries and the rendered surface agree.
-    let terrain = TerrainGen::new(level.seed);
+    // The level carries the SOLVED elevation field the mesh was baked from, so
+    // height queries and the rendered surface agree exactly (and startup skips
+    // all topology planning).
+    let terrain = TerrainGen::from_field(level.seed, level.vert_elev.clone());
 
     commands.insert_resource(GameAssets {
         zombie_mesh: meshes.add(Sphere::new(ZOMBIE_SIZE * 0.5)),
