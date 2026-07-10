@@ -1,17 +1,20 @@
 use bevy_color::ColorToComponents;
 use bevy_math::Vec3;
-use shared::level::{LevelData, RoadData, SettlementData, WaterBodyData, WaterKind};
-use shared::planet::{PlanetMesh, unit_icosphere_tris};
-use shared::roads::{Roads, Settlement};
+use shared::level::{LevelData, RegionData, RegionKind, RoadData, SettlementData, LEVEL_FORMAT_VERSION, NO_REGION, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use shared::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use shared::sphere::SpherePos;
 use shared::terrain::{Terrain, TerrainGen};
+use shared::wfc;
+use shared::zones::FINE_SUB;
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
 use std::path::PathBuf;
 
-use crate::bitset::{BitSet, FACE_FLAG_ROAD, FACE_FLAG_TOWN, FACE_FLAG_BRIDGE};
+use crate::bitset::BitSet;
 
 const TOWN_RADIUS: f32 = 55.0;
+/// Vertical relief added to cliff-top vertices at mesh time, meters.
+const CLIFF_LIFT: f32 = 20.0;
 
 pub struct GenCtx {
     pub seed: u32,
@@ -29,574 +32,841 @@ impl GenCtx {
             let dir = std::env!("CARGO_MANIFEST_DIR");
             format!("{dir}/../main/assets/level_{seed}.bin")
         }));
-        let sub = 6;
-        let unit_tris = unit_icosphere_tris(sub);
+        let unit_tris = unit_icosphere_tris(FINE_SUB);
         let planet = PlanetMesh::new(unit_tris.clone());
         let adj = build_face_adjacency(&planet.tris()[..], unit_tris.len());
         let n = unit_tris.len();
         debug_assert!(adj.iter().all(|a| !a.contains(&u32::MAX)), "face adjacency incomplete");
         Self { seed, out, unit_tris, planet, adj, n }
     }
+
+    fn centroid(&self, fi: usize) -> SpherePos {
+        let [a, b, c] = self.unit_tris[fi];
+        SpherePos::new(((a + b + c) / 3.0).normalize())
+    }
 }
 
-// ---- pass 1: terrain generation ----
-pub fn gen_terrain(seed: u32) -> TerrainGen { TerrainGen::new(seed) }
+// ---- L0–L3: zones, topology, elevation (all inside TerrainGen) ----
 
-// ---- pass 2: settlement placement ----
-pub fn place_settlements(terrain: &TerrainGen) -> Vec<Settlement> {
-    Roads::place_settlements(terrain)
+pub fn gen_terrain(seed: u32) -> TerrainGen {
+    TerrainGen::new(seed)
 }
+
+// ---- L5a: zone-aware base classification per fine face ----
 
 pub fn classify_base(ctx: &GenCtx, terrain: &TerrainGen) -> Vec<Terrain> {
-    let types: Vec<Terrain> = (0..ctx.n).map(|fi| {
-        let [a, b, c] = ctx.unit_tris[fi];
-        let cent = SpherePos::new(((a + b + c) / 3.0).normalize());
-        terrain.base_classify(cent)
-    }).collect();
-    types
+    (0..ctx.n).map(|fi| terrain.base_classify_fine(fi, ctx.centroid(fi))).collect()
 }
 
-pub fn detect_lakes(ctx: &GenCtx, terrain: &TerrainGen, base_types: &[Terrain]) -> Vec<Terrain> {
-    let mut face_types = base_types.to_vec();
-    // Find basin faces.
-    for fi in 0..ctx.n {
-        if face_types[fi].is_water() { continue; }
-        let [a, b, c] = ctx.unit_tris[fi];
-        let cent = SpherePos::new(((a + b + c) / 3.0).normalize());
-        let my_e = terrain.elevation_at(cent);
-        if my_e >= 0.0 { continue; }
-        if my_e <= -0.1 { continue; }
-        let is_basin = ctx.adj[fi].iter().all(|&nb| {
-            let nb = nb as usize;
-            if nb == u32::MAX as usize { return true; }
-            if base_types[nb].is_water() { return true; }
-            let [na, nb2, nc] = ctx.unit_tris[nb];
-            let nb_cent = SpherePos::new(((na + nb2 + nc) / 3.0).normalize());
-            terrain.elevation_at(nb_cent) > my_e
-        });
-        if is_basin { face_types[fi] = Terrain::Lake; }
-    }
-    // Merge tiny lakes (<10 faces) into Ocean.
-    let mut seen = vec![false; ctx.n];
-    for fi in 0..ctx.n {
-        if face_types[fi] != Terrain::Lake || seen[fi] { continue; }
-        let mut comp = Vec::new();
-        let mut q = VecDeque::from([fi]);
-        seen[fi] = true;
-        while let Some(cur) = q.pop_front() {
-            comp.push(cur);
-            for &nb in &ctx.adj[cur] {
-                let nb = nb as usize;
-                if nb == u32::MAX as usize || seen[nb] { continue; }
-                if face_types[nb] == Terrain::Lake { seen[nb] = true; q.push_back(nb); }
-            }
-        }
-        if comp.len() < 10 { for f in comp { face_types[f] = Terrain::Ocean; } }
-    }
-    face_types
-}
+// ---- L4: snap topology polylines to fine faces ----
 
-// ---- pass 5: river tracing ----
-pub fn trace_rivers(ctx: &GenCtx, terrain: &TerrainGen, mut face_types: Vec<Terrain>) -> Vec<Terrain> {
-    let bake = terrain.bake_terrain();
-    for vi in 0..bake.verts.len() {
-        if bake.flow_accum.get(vi).copied().unwrap_or(0.0) < 5.0 { continue; }
-        if bake.vert_elev.get(vi).copied().unwrap_or(0.0) <= 0.0 { continue; }
-        let dir = Vec3::from_array(bake.verts[vi]);
-        let Some(start_fi) = ctx.planet.face_at(dir) else { continue; };
-        if face_types[start_fi].is_water() { continue; }
-        let mut cur = vi;
-        for _ in 0..200 {
-            let Some(&fd) = bake.flow_dir.get(cur) else { break; };
-            if fd == usize::MAX || fd >= bake.verts.len() { break; }
-            let next_dir = Vec3::from_array(bake.verts[fd]);
-            if let Some(fi) = ctx.planet.face_at(next_dir) {
-                if face_types[fi].is_water() { break; }
+/// River polylines → River faces (land only; the mouth is already water).
+pub fn paint_rivers(ctx: &GenCtx, terrain: &TerrainGen, face_types: &mut [Terrain]) {
+    for path in &terrain.river_paths {
+        for fi in face_chain(ctx, path) {
+            if face_types[fi].is_land() {
                 face_types[fi] = Terrain::River;
             }
-            cur = fd;
         }
     }
-    // Drop isolated river faces.
-    for fi in 0..ctx.n {
-        if face_types[fi] != Terrain::River { continue; }
-        let has_nbr = ctx.adj[fi].iter().any(|&nb| {
-            let nb = nb as usize;
-            nb != u32::MAX as usize && face_types[nb] == Terrain::River
-        });
-        if !has_nbr { face_types[fi] = Terrain::Ocean; }
-    }
-    face_types
 }
 
-// ---- pass 6: water cleanup (min sizes, names) ----
-pub fn cleanup_water(ctx: &GenCtx, mut face_types: Vec<Terrain>) -> (Vec<Terrain>, Vec<WaterBodyData>) {
-    let n = ctx.n;
-    let mut water_body = vec![usize::MAX; n];
-    let mut body_count = 0usize;
-    for fi in 0..n {
-        if !face_types[fi].is_water() || water_body[fi] != usize::MAX { continue; }
-        let mut q = VecDeque::from([fi]);
-        water_body[fi] = body_count;
+/// Water-body identity comes from connectivity, not per-face depth: any face can
+/// dip below sea level (blending, river carving), but a connected water body is
+/// an Ocean only if it reaches ocean-zone faces — otherwise it's an enclosed
+/// Lake, whatever its faces individually classified as. Rivers (painted channel
+/// faces) are their own linear feature and never merge into either.
+pub fn normalize_water_bodies(ctx: &GenCtx, terrain: &TerrainGen, face_types: &mut [Terrain]) {
+    let mut visited = vec![false; ctx.n];
+    for start in 0..ctx.n {
+        if !face_types[start].is_water() || face_types[start] == Terrain::River || visited[start] {
+            continue;
+        }
+        let mut body = vec![start];
+        let mut q = VecDeque::from([start]);
+        visited[start] = true;
         while let Some(cur) = q.pop_front() {
             for &nb in &ctx.adj[cur] {
                 let nb = nb as usize;
-                if nb == u32::MAX as usize { continue; }
-                if face_types[nb].is_water() && water_body[nb] == usize::MAX {
-                    water_body[nb] = body_count;
+                if face_types[nb].is_water() && face_types[nb] != Terrain::River && !visited[nb] {
+                    visited[nb] = true;
+                    body.push(nb);
                     q.push_back(nb);
                 }
             }
         }
-        body_count += 1;
-    }
-
-    let mut body_counts = vec![0usize; body_count];
-    let mut body_centroids = vec![Vec3::ZERO; body_count];
-    for fi in 0..n {
-        let wb = water_body[fi];
-        if wb == usize::MAX { continue; }
-        body_counts[wb] += 1;
-        body_centroids[wb] += (ctx.unit_tris[fi][0] + ctx.unit_tris[fi][1] + ctx.unit_tris[fi][2]) / 3.0;
-    }
-    for i in 0..body_count {
-        if body_counts[i] > 0 { body_centroids[i] /= body_counts[i] as f32; }
-    }
-
-    // Merge tiny oceans.
-    for fi in 0..n {
-        if face_types[fi] != Terrain::Ocean || water_body[fi] == usize::MAX { continue; }
-        if body_counts[water_body[fi]] >= 100 { continue; }
-        if let Some(&nb) = ctx.adj[fi].iter().find(|&&nb| {
-            let nb = nb as usize;
-            nb != u32::MAX as usize && water_body[nb] == usize::MAX
-        }) {
-            face_types[fi] = face_types[nb as usize];
-        }
-    }
-
-    let ocean_names = ["Azure", "Cobalt", "Cerulean", "Sapphire", "Indigo", "Teal",
-        "Aquamarine", "Turquoise", "Navy", "Sky", "Marine", "Coral", "Lagoon", "Reef",
-        "Abyss", "Trench", "Gulf", "Bay", "Strait", "Channel"];
-    let lake_names = ["Mirror", "Crystal", "Emerald", "Silver", "Misty", "Clear",
-        "Loch", "Mere", "Tarn", "Pond", "Basin", "Hollow"];
-    let river_names = ["Serpent", "Winding", "Rushing", "Silver", "Mossy", "Deep",
-        "Brook", "Stream", "Creek", "Fork", "Bend", "Rapids"];
-
-    let mut water_bodies = Vec::with_capacity(body_count);
-    for i in 0..body_count {
-        let (lake_v, river_v): (usize, usize) = (0..n)
-            .filter(|&fi| water_body[fi] == i)
-            .fold((0, 0), |(l, r), fi| {
-                (l + (face_types[fi] == Terrain::Lake) as usize,
-                 r + (face_types[fi] == Terrain::River) as usize)
-            });
-        let total = body_counts[i];
-        let kind = if lake_v > total / 3 { WaterKind::Lake }
-        else if river_v > total / 3 { WaterKind::River }
-        else { WaterKind::Ocean };
-        let names: &[&str] = match kind { WaterKind::Lake => &lake_names, WaterKind::River => &river_names, WaterKind::Ocean => &ocean_names };
-        let suffix = match kind { WaterKind::Ocean => "Ocean", WaterKind::Lake => "Lake", WaterKind::River => "River" };
-        water_bodies.push(WaterBodyData {
-            name: format!("{} {}", names[i % names.len()], suffix),
-            pos: body_centroids[i].normalize().to_array(),
-            kind,
-        });
-    }
-    (face_types, water_bodies)
-}
-
-// ---- pass 7: shoreline ----
-pub fn paint_shoreline(ctx: &GenCtx, mut face_types: Vec<Terrain>, base_types: &[Terrain]) -> Vec<Terrain> {
-    // Ocean-adjoining faces → Beach or Cliff.
-    for fi in 0..ctx.n {
-        if !base_types[fi].is_water() { continue; }
-        for &nb in &ctx.adj[fi] {
-            let nb = nb as usize;
-            if nb == u32::MAX as usize || base_types[nb].is_water() { continue; }
-            if face_types[nb] != base_types[nb] { continue; }
-            face_types[nb] = match base_types[nb] {
-                Terrain::Mountain | Terrain::Snow | Terrain::Tundra => Terrain::Cliff,
-                _ => Terrain::Beach,
+        let is_ocean = body.iter()
+            .any(|&fi| terrain.zones().kind_at_fine(fi) == shared::zones::ZoneKind::Ocean);
+        for &fi in &body {
+            face_types[fi] = if !is_ocean {
+                Terrain::Lake
+            } else if face_types[fi] == Terrain::Lake {
+                // A lake tile swallowed by the ocean body is just shallow ocean.
+                Terrain::Ocean
+            } else {
+                face_types[fi]
             };
         }
     }
-    // Lake → LakeShore, River → RiverBank.
-    for fi in 0..ctx.n {
-        match face_types[fi] {
-            Terrain::Lake => {
-                for &nb in &ctx.adj[fi] {
-                    let nb = nb as usize;
-                    if nb == u32::MAX as usize || face_types[nb].is_water() { continue; }
-                    face_types[nb] = Terrain::LakeShore;
-                }
-            }
-            Terrain::River => {
-                for &nb in &ctx.adj[fi] {
-                    let nb = nb as usize;
-                    if nb == u32::MAX as usize || face_types[nb].is_water() { continue; }
-                    face_types[nb] = Terrain::RiverBank;
-                }
-            }
-            _ => {}
-        }
-    }
-    face_types
 }
 
-// ---- pass 8: land bodies ----
-pub fn build_land_bodies(ctx: &GenCtx, face_types: &[Terrain], settlements: &[Settlement]) -> (Vec<usize>, Vec<usize>) {
-    let n = ctx.n;
-    let mut land_body = vec![usize::MAX; n];
-    let mut land_count = 0usize;
-    for fi in 0..n {
-        if face_types[fi].is_water() || land_body[fi] != usize::MAX { continue; }
+pub struct PaintedFaces {
+    pub roads: BitSet,
+    pub towns: BitSet,
+    pub bridges: BitSet,
+    pub bridge_entries: BitSet,
+}
+
+pub fn paint_faces(ctx: &GenCtx, terrain: &TerrainGen) -> PaintedFaces {
+    let mut roads = BitSet::new(ctx.n);
+    for path in &terrain.road_paths {
+        for fi in face_chain(ctx, path) {
+            roads.insert(fi);
+        }
+    }
+    // Bridges are painted later, once regions exist to validate their endpoints.
+    let bridges = BitSet::new(ctx.n);
+    let mut towns = BitSet::new(ctx.n);
+    for fi in 0..ctx.n {
+        let cent = ctx.centroid(fi);
+        if terrain.settlement_anchors.iter().any(|a| a.distance(cent) <= TOWN_RADIUS) {
+            towns.insert(fi);
+        }
+    }
+    PaintedFaces { roads, towns, bridges, bridge_entries: BitSet::new(ctx.n) }
+}
+
+/// Gaps up to this bridge freely.
+const BRIDGE_MAX_SPAN: f32 = 250.0;
+/// Longer gaps (up to this) are bridged only to connect an otherwise
+/// unreachable landmass — every island gets at least one way in.
+const BRIDGE_CONNECT_SPAN: f32 = 500.0;
+const BRIDGE_MAX_COUNT: usize = 6;
+
+/// Pick bridges from the fine map, where true water separation is known: each
+/// bridge runs from a shore-band face of one named region to a shore-band face
+/// of a *different* region on a different landmass, crossing open water.
+/// (Coarse-level candidates proved unreliable — shoreline blending can fill a
+/// coarse "gap" with land.)
+pub fn build_bridges(
+    ctx: &GenCtx,
+    face_types: &[Terrain],
+    face_region: &[u32],
+    painted: &mut PaintedFaces,
+) -> Vec<Vec<SpherePos>> {
+    // Landmasses: edge-connected components of land faces.
+    let mut comp = vec![u32::MAX; ctx.n];
+    let mut count = 0u32;
+    for fi in 0..ctx.n {
+        if face_types[fi].is_water() || comp[fi] != u32::MAX {
+            continue;
+        }
         let mut q = VecDeque::from([fi]);
-        land_body[fi] = land_count;
+        comp[fi] = count;
         while let Some(cur) = q.pop_front() {
             for &nb in &ctx.adj[cur] {
                 let nb = nb as usize;
-                if nb == u32::MAX as usize { continue; }
-                if !face_types[nb].is_water() && land_body[nb] == usize::MAX {
-                    land_body[nb] = land_count;
+                if !face_types[nb].is_water() && comp[nb] == u32::MAX {
+                    comp[nb] = count;
                     q.push_back(nb);
                 }
             }
         }
-        land_count += 1;
+        count += 1;
     }
-    let settle_land: Vec<usize> = settlements.iter().map(|s| {
-        ctx.planet.face_at(s.pos.0).map(|fi| land_body[fi]).unwrap_or(usize::MAX)
-    }).collect();
-    (land_body, settle_land)
-}
-
-// ---- pass 9: roads (within same land body) ----
-pub fn build_roads(ctx: &GenCtx, settlements: &[Settlement], settle_land: &[usize], face_types: &[Terrain]) -> Roads {
-    let mut roads = Roads::default();
-    roads.settlements = settlements.to_vec();
-    let mut linked = BitSet::new(settlements.len() * settlements.len());
-
-    for (ai, a) in settlements.iter().enumerate() {
-        let la = settle_land[ai];
-        if la == usize::MAX { continue; }
-        let mut nbrs: Vec<(usize, f32)> = settlements.iter().enumerate()
-            .filter(|(bi, _)| *bi != ai && settle_land[*bi] == la)
-            .map(|(bi, b)| (bi, a.pos.distance(b.pos)))
-            .collect();
-        nbrs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-        for (bi, _) in nbrs.iter().take(2) {
-            let key = ai.min(*bi) * settlements.len() + ai.max(*bi);
-            if linked.contains(key) { continue; }
-            linked.insert(key);
-            let b = &settlements[*bi];
-            let dist = a.pos.distance(b.pos);
-            let steps = (dist / shared::roads::SAMPLE_SPACING).ceil().max(1.0) as usize;
-            let crosses = (0..=steps).any(|k| {
-                let p = shared::sphere::slerp(a.pos, b.pos, k as f32 / steps as f32);
-                ctx.planet.face_at(p.0).map(|fi| face_types[fi].is_water()).unwrap_or(false)
-            });
-            if crosses { continue; }
-            let r = shared::roads::build_land_road_path(a.pos, b.pos, steps, (a.pos.0 + b.pos.0).normalize());
-            roads.roads.push(shared::roads::Road { points: r, kind: shared::roads::PathKind::Road });
-        }
-    }
-    roads
-}
-
-// ---- pass 10: bridges (between land bodies) ----
-pub fn build_bridges(ctx: &GenCtx, face_types: &[Terrain], land_body: &[usize], mut roads: Roads) -> Roads {
-    let land_count = land_body.iter().copied().filter(|&l| l != usize::MAX).max().map(|m| m + 1).unwrap_or(0);
-    let mut shores: Vec<Vec<SpherePos>> = vec![Vec::new(); land_count];
+    // Bridgeheads: shore-band faces that belong to a named region. Beaches only —
+    // cliff tops get a mesh lift, and a deck ending on one becomes a wall.
+    let mut heads: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
     for fi in 0..ctx.n {
-        let lb = land_body[fi];
-        if lb == usize::MAX { continue; }
-        if matches!(face_types[fi], Terrain::Beach | Terrain::RiverBank | Terrain::LakeShore) {
-            let [a, b, c] = ctx.unit_tris[fi];
-            let cent = SpherePos::new(((a + b + c) / 3.0).normalize());
-            shores[lb].push(cent);
+        if face_types[fi] == Terrain::Beach
+            && shared::level::region_index(face_region[fi]).is_some()
+        {
+            heads.entry(comp[fi]).or_default().push(fi);
         }
     }
-    let mut count = 0usize;
-    for a_body in 0..land_count {
-        for b_body in (a_body + 1)..land_count {
-            if count >= 6 { break; }
-            let mut best: Option<(SpherePos, SpherePos, f32)> = None;
-            for sa in &shores[a_body] {
-                for sb in &shores[b_body] {
-                    let d = sa.distance(*sb);
-                    if d <= 100.0 && best.is_none_or(|(_, _, bd)| d < bd) {
-                        best = Some((*sa, *sb, d));
+    let comps: Vec<u32> = heads.keys().copied().collect();
+    let mut candidates: Vec<(f32, usize, usize, usize, usize)> = Vec::new();
+    for i in 0..comps.len() {
+        for j in (i + 1)..comps.len() {
+            let mut best: Option<(f32, usize, usize)> = None;
+            for &fa in &heads[&comps[i]] {
+                for &fb in &heads[&comps[j]] {
+                    let d = ctx.centroid(fa).distance(ctx.centroid(fb));
+                    if best.is_none_or(|(bd, _, _)| d < bd) {
+                        best = Some((d, fa, fb));
                     }
                 }
             }
-            if let Some((sa, sb, _)) = best {
-                let steps = (sa.distance(sb) / 10.0_f32).ceil().max(1.0) as usize;
-                let pts: Vec<SpherePos> = (0..=steps).map(|k| shared::sphere::slerp(sa, sb, k as f32 / steps as f32)).collect();
-                roads.roads.push(shared::roads::Road { points: pts, kind: shared::roads::PathKind::Bridge });
-                count += 1;
+            if let Some((d, fa, fb)) = best {
+                if d <= BRIDGE_CONNECT_SPAN {
+                    candidates.push((d, fa, fb, i, j));
+                }
             }
         }
     }
-    roads
+    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    // Union-find over landmasses: long spans only earn a bridge by connecting.
+    let mut parent: Vec<usize> = (0..comps.len()).collect();
+    fn root(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut spans = Vec::new();
+    for &(d, fa, fb, ci, cj) in &candidates {
+        if spans.len() >= BRIDGE_MAX_COUNT {
+            break;
+        }
+        let (ri, rj) = (root(&mut parent, ci), root(&mut parent, cj));
+        if d > BRIDGE_MAX_SPAN && ri == rj {
+            continue;
+        }
+        parent[ri] = rj;
+        let (a, b) = (ctx.centroid(fa), ctx.centroid(fb));
+        // Extend past both shore faces so the deck grounds on solid land instead
+        // of ending exactly at the waterline face centroid.
+        let ext = BRIDGE_ENTRY_OVERLAP / d;
+        let steps = (d * (1.0 + 2.0 * ext) / 10.0).ceil().max(2.0) as usize;
+        let span: Vec<SpherePos> = (0..=steps)
+            .map(|k| shared::sphere::slerp(a, b, -ext + (1.0 + 2.0 * ext) * k as f32 / steps as f32))
+            .collect();
+        let crosses_water = span.iter().any(|p| {
+            ctx.planet.face_at(p.0).is_some_and(|fi| face_types[fi].is_water())
+        });
+        if !crosses_water {
+            continue;
+        }
+        for fi in face_chain(ctx, &span) {
+            painted.bridges.insert(fi);
+        }
+        // Bridge entries: the land faces around each deck end.
+        for end in [span.first(), span.last()] {
+            let Some(fi) = end.and_then(|p| ctx.planet.face_at(p.0)) else { continue };
+            if face_types[fi].is_land() {
+                painted.bridge_entries.insert(fi);
+            }
+            for &nb in &ctx.adj[fi] {
+                let nb = nb as usize;
+                if face_types[nb].is_land() {
+                    painted.bridge_entries.insert(nb);
+                }
+            }
+        }
+        spans.push(span);
+    }
+    spans
 }
 
-// ---- pass 11: apply roads to terrain ----
-pub fn apply_roads(mut terrain: TerrainGen, roads: &Roads) -> TerrainGen {
-    terrain.set_roads(roads);
-    terrain
-}
+/// How far a bridge deck reaches inland past its shore face, meters.
+const BRIDGE_ENTRY_OVERLAP: f32 = 25.0;
 
-// ---- pass 12: face painting ----
-pub fn paint_faces(ctx: &GenCtx, roads: &Roads) -> (BitSet, BitSet, BitSet, BitSet) {
-    let n = ctx.n;
-    let mut road_fs = BitSet::new(n);
-    let mut bridge_fs = BitSet::new(n);
-    for road in &roads.roads {
-        let chain = face_chain(&ctx.planet, &road.points);
-        if matches!(road.kind, shared::roads::PathKind::Bridge) {
-            paint_chain(&mut bridge_fs, &ctx.adj, &chain);
-        } else {
-            paint_chain(&mut road_fs, &ctx.adj, &chain);
+// ---- L5b: micro WFC resolves transition tiles at classification boundaries ----
+
+/// Faces sharing at least one vertex with each face (up to ~12). Used only to
+/// detect water contact (a corner-touching inlet still makes a face coastal) —
+/// tile LINKING is always edge-based.
+pub fn build_vertex_adjacency(ctx: &GenCtx) -> Vec<Vec<u32>> {
+    let mut by_vert: BTreeMap<u64, Vec<u32>> = BTreeMap::new();
+    for (fi, tri) in ctx.unit_tris.iter().enumerate() {
+        for v in tri {
+            by_vert.entry(vkey(*v)).or_default().push(fi as u32);
         }
     }
-    let town_fs = paint_town_faces(&ctx.planet, roads, n);
-    let be_fs = bridge_approach_faces(&ctx.planet, &ctx.adj, roads, &bridge_fs, n);
-    (road_fs, town_fs, bridge_fs, be_fs)
+    let mut adj: Vec<Vec<u32>> = vec![Vec::new(); ctx.n];
+    for faces in by_vert.values() {
+        for &a in faces {
+            for &b in faces {
+                if a != b && !adj[a as usize].contains(&b) {
+                    adj[a as usize].push(b);
+                }
+            }
+        }
+    }
+    adj
 }
 
-// ---- pass 12: vertex-first mesh construction ----
+fn vkey(v: Vec3) -> u64 {
+    let a = v.to_array();
+    a[0].to_bits() as u64
+        ^ (a[1].to_bits() as u64).wrapping_mul(6364136223846793005)
+        ^ (a[2].to_bits() as u64).wrapping_mul(1442695040888963407)
+}
+
+pub fn resolve_transitions(ctx: &GenCtx, terrain: &TerrainGen, vadj: &[Vec<u32>], base: &[Terrain]) -> Vec<Terrain> {
+    // Shorelines are deterministic bands, not WFC cells: every land face touching
+    // water gets its shore tile, so the waterline is never zigzagged by chance.
+    // The band widens onto the second ring where the coast is flat, and a land
+    // face wedged between two shore faces joins the band (no plains notches).
+    let mut out = base.to_vec();
+    let (water_dist, water_kind) = water_distance(ctx, base, 2);
+    let shore = |fi: usize, kind: Terrain| -> Terrain {
+        match kind {
+            Terrain::Lake => Terrain::LakeShore,
+            Terrain::River => Terrain::RiverBank,
+            _ => {
+                let steep = matches!(base[fi], Terrain::Mountain | Terrain::Snow)
+                    || terrain.elevation_at(ctx.centroid(fi)) > 0.15;
+                if steep { Terrain::Cliff } else { Terrain::Beach }
+            }
+        }
+    };
+    for fi in 0..ctx.n {
+        if base[fi].is_water() {
+            continue;
+        }
+        // Vertex adjacency, not edge adjacency: a one-tile inlet touches most of
+        // its surrounding land only at corners — those faces are still coastline.
+        let touching_water = vadj[fi].iter()
+            .map(|&nb| base[nb as usize])
+            .find(|t| t.is_water());
+        if let Some(kind) = touching_water {
+            out[fi] = shore(fi, kind);
+        } else if water_dist[fi] <= 2 && terrain.elevation_at(ctx.centroid(fi)) < 0.08 {
+            // Low, flat coast: the band is more than one tile wide.
+            out[fi] = shore(fi, water_kind[fi].unwrap_or(Terrain::Ocean));
+        }
+    }
+    // Fill notches: a land face with ≥2 edge neighbors in the shore band belongs
+    // to the band too.
+    let banded: Vec<bool> = (0..ctx.n)
+        .map(|fi| matches!(out[fi], Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank))
+        .collect();
+    for fi in 0..ctx.n {
+        if base[fi].is_water() || banded[fi] {
+            continue;
+        }
+        if ctx.adj[fi].iter().filter(|&&nb| banded[nb as usize]).count() >= 2 {
+            out[fi] = shore(fi, water_kind[fi].unwrap_or(Terrain::Ocean));
+        }
+    }
+
+    // Cells for WFC: remaining land faces bordering a different classification —
+    // inland biome edges. Water and the shore band enter as fixed neighbors.
+    let in_band: Vec<bool> = (0..ctx.n).map(|fi| out[fi] != base[fi]).collect();
+    let base = &out;
+    let mut cell_of = vec![usize::MAX; ctx.n];
+    let mut cells: Vec<usize> = Vec::new();
+    for fi in 0..ctx.n {
+        if base[fi].is_water() || in_band[fi] {
+            continue;
+        }
+        if ctx.adj[fi].iter().any(|&nb| base[nb as usize] != base[fi]) {
+            cell_of[fi] = cells.len();
+            cells.push(fi);
+        }
+    }
+
+    let transition_tiles = [Terrain::Beach, Terrain::Cliff, Terrain::LakeShore, Terrain::RiverBank];
+    let domains: Vec<Vec<(Terrain, f32)>> = cells.iter().map(|&fi| {
+        let mut d = vec![(base[fi], 1.0)];
+        for t in transition_tiles {
+            if t != base[fi] {
+                d.push((t, 0.3));
+            }
+        }
+        d
+    }).collect();
+    let neighbors: Vec<Vec<wfc::Neighbor>> = cells.iter().map(|&fi| {
+        ctx.adj[fi].iter().map(|&nb| {
+            let nb = nb as usize;
+            match cell_of[nb] {
+                usize::MAX => wfc::Neighbor::Fixed(base[nb]),
+                ci => wfc::Neighbor::Cell(ci),
+            }
+        }).collect()
+    }).collect();
+    let fallback: Vec<Terrain> = cells.iter().map(|&fi| base[fi]).collect();
+
+    let solved = wfc::solve(&wfc::Compat::default(), &domains, &neighbors, &fallback, ctx.seed as u64);
+
+    let mut resolved = base.clone();
+    for (ci, &fi) in cells.iter().enumerate() {
+        resolved[fi] = solved[ci];
+    }
+    segment_coastline(ctx, terrain, &mut resolved);
+    absorb_small_forests(ctx, &mut resolved);
+    resolved
+}
+
+/// A forest smaller than this many faces is just some trees in a field.
+const MIN_FOREST_FACES: usize = 10;
+
+fn absorb_small_forests(ctx: &GenCtx, out: &mut [Terrain]) {
+    let mut visited = vec![false; ctx.n];
+    for start in 0..ctx.n {
+        if out[start] != Terrain::Forest || visited[start] {
+            continue;
+        }
+        let mut cluster = vec![start];
+        let mut q = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(cur) = q.pop_front() {
+            for &nb in &ctx.adj[cur] {
+                let nb = nb as usize;
+                if out[nb] == Terrain::Forest && !visited[nb] {
+                    visited[nb] = true;
+                    cluster.push(nb);
+                    q.push_back(nb);
+                }
+            }
+        }
+        if cluster.len() < MIN_FOREST_FACES {
+            for fi in cluster {
+                out[fi] = Terrain::Plains;
+            }
+        }
+    }
+}
+
+/// Max coastal segment sizes in fine faces (the band is 1–2 faces wide, faces are
+/// ~35m across, so 60 faces ≈ a kilometre of beach).
+const MAX_BEACH_FACES: usize = 60;
+const MAX_CLIFF_FACES: usize = 24;
+
+/// Break each continuous ocean shore band into alternating Beach and Cliff
+/// segments with bounded lengths — beaches can't wrap a whole continent as one
+/// region, and each cliff range between them becomes a named region too.
+/// Steep faces still force Cliff regardless of alternation.
+fn segment_coastline(ctx: &GenCtx, terrain: &TerrainGen, out: &mut [Terrain]) {
+    let in_band: Vec<bool> = (0..ctx.n)
+        .map(|fi| matches!(out[fi], Terrain::Beach | Terrain::Cliff))
+        .collect();
+    let mut visited = vec![false; ctx.n];
+    for start in 0..ctx.n {
+        if !in_band[start] || visited[start] {
+            continue;
+        }
+        // BFS order approximates walking along the thin band.
+        let mut order = vec![start];
+        let mut q = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(cur) = q.pop_front() {
+            for &nb in &ctx.adj[cur] {
+                let nb = nb as usize;
+                if in_band[nb] && !visited[nb] {
+                    visited[nb] = true;
+                    order.push(nb);
+                    q.push_back(nb);
+                }
+            }
+        }
+        let mut kind = Terrain::Beach;
+        let mut count = 0usize;
+        for fi in order {
+            let steep = terrain.elevation_at(ctx.centroid(fi)) > 0.15;
+            if steep && kind == Terrain::Beach {
+                kind = Terrain::Cliff;
+                count = 0;
+            }
+            let max = if kind == Terrain::Beach { MAX_BEACH_FACES } else { MAX_CLIFF_FACES };
+            if count >= max {
+                kind = if kind == Terrain::Beach { Terrain::Cliff } else { Terrain::Beach };
+                count = 0;
+            }
+            out[fi] = kind;
+            count += 1;
+        }
+    }
+    // Remove single-tile islands: a band face with no same-kind edge neighbor in
+    // the band joins its neighbors' kind (a lone beach tile between two cliffs
+    // becomes cliff, and vice versa).
+    for _ in 0..8 {
+        let mut changed = false;
+        for fi in 0..ctx.n {
+            if !matches!(out[fi], Terrain::Beach | Terrain::Cliff) {
+                continue;
+            }
+            let mut same = 0;
+            let mut other = 0;
+            for &nb in &ctx.adj[fi] {
+                match out[nb as usize] {
+                    t if t == out[fi] => same += 1,
+                    Terrain::Beach | Terrain::Cliff => other += 1,
+                    _ => {}
+                }
+            }
+            if same == 0 && other >= 2 {
+                out[fi] = if out[fi] == Terrain::Beach { Terrain::Cliff } else { Terrain::Beach };
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // A cove under MIN_BEACH_FACES isn't a beach — fold it into the cliffs.
+    let mut visited = vec![false; ctx.n];
+    for start in 0..ctx.n {
+        if out[start] != Terrain::Beach || visited[start] {
+            continue;
+        }
+        let mut cluster = vec![start];
+        let mut q = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(cur) = q.pop_front() {
+            for &nb in &ctx.adj[cur] {
+                let nb = nb as usize;
+                if out[nb] == Terrain::Beach && !visited[nb] {
+                    visited[nb] = true;
+                    cluster.push(nb);
+                    q.push_back(nb);
+                }
+            }
+        }
+        if cluster.len() < MIN_BEACH_FACES {
+            for fi in cluster {
+                out[fi] = Terrain::Cliff;
+            }
+        }
+    }
+}
+
+const MIN_BEACH_FACES: usize = 10;
+
+/// BFS distance (in face steps, capped at `max_dist`) from each land face to the
+/// nearest water face, plus which water terrain is nearest (for shore tile choice).
+fn water_distance(ctx: &GenCtx, base: &[Terrain], max_dist: u8) -> (Vec<u8>, Vec<Option<Terrain>>) {
+    let mut dist = vec![u8::MAX; ctx.n];
+    let mut kind: Vec<Option<Terrain>> = vec![None; ctx.n];
+    let mut q = VecDeque::new();
+    for fi in 0..ctx.n {
+        if base[fi].is_water() {
+            dist[fi] = 0;
+            kind[fi] = Some(base[fi]);
+            q.push_back(fi);
+        }
+    }
+    while let Some(cur) = q.pop_front() {
+        if dist[cur] >= max_dist {
+            continue;
+        }
+        for &nb in &ctx.adj[cur] {
+            let nb = nb as usize;
+            if dist[nb] == u8::MAX {
+                dist[nb] = dist[cur] + 1;
+                kind[nb] = kind[cur];
+                q.push_back(nb);
+            }
+        }
+    }
+    (dist, kind)
+}
+
+// ---- named regions: contiguous feature clusters (vertex-connected) ----
+
+/// Which nameable feature a face belongs to. Tags win over terrain so towns and
+/// roads cluster as themselves; transition tiles (Cliff/LakeShore/RiverBank)
+/// separate regions and stay unnamed.
+fn region_class(face_types: &[Terrain], painted: &PaintedFaces, fi: usize) -> Option<RegionKind> {
+    if painted.towns.contains(fi) {
+        return Some(RegionKind::Town);
+    }
+    if painted.roads.contains(fi) {
+        return Some(RegionKind::Road);
+    }
+    match face_types[fi] {
+        Terrain::DeepOcean | Terrain::Ocean => Some(RegionKind::Ocean),
+        Terrain::Lake => Some(RegionKind::Lake),
+        Terrain::River => Some(RegionKind::River),
+        Terrain::Beach => Some(RegionKind::Beach),
+        Terrain::Cliff => Some(RegionKind::Cliff),
+        Terrain::Forest => Some(RegionKind::Forest),
+        Terrain::Desert => Some(RegionKind::Desert),
+        Terrain::Mountain | Terrain::Snow => Some(RegionKind::Mountain),
+        Terrain::Plains => Some(RegionKind::Plains),
+        Terrain::Tundra => Some(RegionKind::Tundra),
+        Terrain::LakeShore | Terrain::RiverBank => None,
+    }
+}
+
+/// Flood-fill same-class faces into clusters via edge adjacency (tiles sharing
+/// only a single vertex are NOT linked), name each cluster, and record the
+/// per-face region id for HUD lookup.
+pub fn build_regions(
+    ctx: &GenCtx,
+    terrain: &TerrainGen,
+    face_types: &[Terrain],
+    painted: &PaintedFaces,
+) -> (Vec<RegionData>, Vec<u32>) {
+    let class: Vec<Option<RegionKind>> =
+        (0..ctx.n).map(|fi| region_class(face_types, painted, fi)).collect();
+
+    let mut face_region = vec![NO_REGION; ctx.n];
+    let mut regions: Vec<RegionData> = Vec::new();
+    let mut kind_counts: BTreeMap<u8, usize> = BTreeMap::new();
+
+    for start in 0..ctx.n {
+        let Some(kind) = class[start] else { continue };
+        if face_region[start] != NO_REGION {
+            continue;
+        }
+        // Collect the vertex-connected cluster. Stored refs are region id + 1
+        // (0 = no region, see level::region_index).
+        let re = regions.len() as u32 + 1;
+        let mut faces = vec![start];
+        let mut q = VecDeque::from([start]);
+        face_region[start] = re;
+        while let Some(cur) = q.pop_front() {
+            for &nb in &ctx.adj[cur] {
+                let nb = nb as usize;
+                if class[nb] == Some(kind) && face_region[nb] == NO_REGION {
+                    face_region[nb] = re;
+                    faces.push(nb);
+                    q.push_back(nb);
+                }
+            }
+        }
+        // Tiny scraps stay unnamed (towns and roads always name).
+        let min_faces = match kind {
+            RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
+            RegionKind::Forest => MIN_FOREST_FACES,
+            RegionKind::Beach => MIN_BEACH_FACES,
+            _ => 8,
+        };
+        if faces.len() < min_faces {
+            for fi in faces {
+                face_region[fi] = NO_REGION;
+            }
+            continue;
+        }
+        let cent = faces.iter().map(|&fi| ctx.centroid(fi).0).sum::<Vec3>().normalize_or(Vec3::Y);
+        let idx = *kind_counts.entry(kind as u8).and_modify(|c| *c += 1).or_insert(0);
+        let name = region_name(kind, idx, cent, terrain);
+        regions.push(RegionData { name, pos: cent.to_array(), kind });
+    }
+    (regions, face_region)
+}
+
+fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -> String {
+    const OCEAN: [&str; 20] = ["Azure", "Cobalt", "Cerulean", "Sapphire", "Indigo", "Teal",
+        "Aquamarine", "Turquoise", "Navy", "Sky", "Marine", "Coral", "Lagoon", "Reef",
+        "Abyss", "Trench", "Gulf", "Bay", "Strait", "Channel"];
+    const LAKE: [&str; 12] = ["Mirror", "Crystal", "Emerald", "Silver", "Misty", "Clear",
+        "Loch", "Mere", "Tarn", "Pond", "Basin", "Hollow"];
+    const RIVER: [&str; 12] = ["Serpent", "Winding", "Rushing", "Silver", "Mossy", "Deep",
+        "Brook", "Stream", "Creek", "Fork", "Bend", "Rapids"];
+    const BEACH: [&str; 10] = ["Silver", "Golden", "Pebble", "Shell", "Driftwood", "Coral",
+        "Windswept", "Quiet", "Gull", "Smuggler's"];
+    const CLIFF: [&str; 8] = ["Raven", "Grey", "Storm", "White", "Shear", "Widow's", "Falcon", "Chalk"];
+    const FOREST: [&str; 10] = ["Elder", "Whisper", "Thorn", "Mossy", "Shadow", "Bright",
+        "Tangle", "Hollow", "Fern", "Wolf"];
+    const DESERT: [&str; 6] = ["Amber", "Bone", "Shimmer", "Red", "Glass", "Silent"];
+    const MOUNTAIN: [&str; 8] = ["Iron", "Grey", "Storm", "Frost", "Raven", "Broken", "Cloud", "Thunder"];
+    const PLAINS: [&str; 8] = ["Green", "Wide", "Amber", "Rolling", "Sunlit", "Long", "Low", "Open"];
+    const TUNDRA: [&str; 6] = ["Pale", "Frozen", "White", "Bitter", "Still", "North"];
+    const ROAD: [&str; 8] = ["Old", "King's", "Salt", "Trade", "Pilgrim's", "Coastal", "High", "Low"];
+
+    let pick = |pool: &[&str], suffixes: &[&str]| {
+        format!("{} {}", pool[idx % pool.len()], suffixes[(idx / pool.len()) % suffixes.len()])
+    };
+    match kind {
+        RegionKind::Ocean => pick(&OCEAN, &["Ocean", "Sea"]),
+        RegionKind::Lake => pick(&LAKE, &["Lake"]),
+        RegionKind::River => pick(&RIVER, &["River"]),
+        RegionKind::Beach => pick(&BEACH, &["Beach", "Coast", "Sands"]),
+        RegionKind::Cliff => pick(&CLIFF, &["Cliffs", "Bluffs"]),
+        RegionKind::Forest => pick(&FOREST, &["Forest", "Woods"]),
+        RegionKind::Desert => pick(&DESERT, &["Desert", "Dunes"]),
+        RegionKind::Mountain => pick(&MOUNTAIN, &["Peaks", "Range"]),
+        RegionKind::Plains => pick(&PLAINS, &["Plains", "Fields"]),
+        RegionKind::Tundra => pick(&TUNDRA, &["Tundra", "Wastes"]),
+        RegionKind::Road => pick(&ROAD, &["Road"]),
+        // Towns take the name of the settlement they surround.
+        RegionKind::Town => {
+            terrain.settlement_anchors.iter().enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    a.0.dot(cent).partial_cmp(&b.0.dot(cent)).unwrap().reverse()
+                })
+                .map(|(i, _)| shared::roads::settlement_name(i))
+                .unwrap_or_else(|| format!("Town {idx}"))
+        }
+    }
+}
+
+// ---- L6: mesh straight from the L3 vertex field (no mesh-time terrain edits) ----
+
 pub fn build_mesh(
-    ctx: &GenCtx, terrain: &TerrainGen, face_types: &[Terrain],
-    roads: &Roads, town_faces: &BitSet, road_faces: &BitSet,
-    bridge_faces: &BitSet, bridge_entry_faces: &BitSet,
-) -> (Vec<[[f32; 3]; 3]>, Vec<[f32; 4]>, Vec<u8>) {
-    let n = ctx.n;
+    ctx: &GenCtx,
+    terrain: &TerrainGen,
+    face_types: &[Terrain],
+    painted: &PaintedFaces,
+) -> (Vec<[[f32; 3]; 3]>, Vec<[f32; 4]>) {
+    // Deduplicate vertices so shared corners get one radius — a watertight surface.
     let mut vmap: BTreeMap<[u64; 3], usize> = BTreeMap::new();
     let mut verts: Vec<Vec3> = Vec::new();
     let mut vert_r: Vec<f32> = Vec::new();
-    let mut face_v: Vec<[usize; 3]> = Vec::with_capacity(n);
+    let mut face_v: Vec<[usize; 3]> = Vec::with_capacity(ctx.n);
     for tri in &ctx.unit_tris {
         let mut idx = [0usize; 3];
         for (k, v) in tri.iter().enumerate() {
             let key = [v.x.to_bits() as u64, v.y.to_bits() as u64, v.z.to_bits() as u64];
             idx[k] = *vmap.entry(key).or_insert_with(|| {
                 let i = verts.len();
-                verts.push(v.normalize());
-                vert_r.push(terrain.render_radius(SpherePos::new(v.normalize())));
+                let dir = v.normalize();
+                verts.push(dir);
+                vert_r.push(terrain.render_radius(SpherePos::new(dir)));
                 i
             });
         }
         face_v.push(idx);
     }
-    let nv = verts.len();
-    let mut va: Vec<Vec<usize>> = vec![Vec::new(); nv];
-    for [a, b, c] in &face_v {
-        va[*a].push(*b); va[*a].push(*c);
-        va[*b].push(*a); va[*b].push(*c);
-        va[*c].push(*a); va[*c].push(*b);
-    }
-    for l in &mut va { l.sort_unstable(); l.dedup(); }
 
-    let settle_r: Vec<f32> = roads.settlements.iter()
-        .map(|s| terrain.surface_radius(s.pos).max(shared::sphere::PLANET_RADIUS))
-        .collect();
-    let mut vt = vec![false; nv];
-    for (fi, [a, b, c]) in face_v.iter().enumerate() {
-        if town_faces.contains(fi) {
-            let cent = SpherePos::new((verts[*a] + verts[*b] + verts[*c]) / 3.0);
-            let r = roads.settlements.iter().zip(&settle_r)
-                .min_by(|(a, _), (b, _)| a.pos.distance(cent).partial_cmp(&b.pos.distance(cent)).unwrap())
-                .map(|(_, &r)| r).unwrap_or(shared::sphere::PLANET_RADIUS);
-            for &vi in &[*a, *b, *c] { vt[vi] = true; vert_r[vi] = r; }
+    // Cliff relief: raise cliff-top vertices while leaving the waterline edge
+    // down, so cliffs read as an escarpment. Physics and actors follow the baked
+    // mesh (collider + facet_radius), so this stays consistent with gameplay;
+    // only the smooth-field HUD altitude reads slightly low on cliff tops.
+    let mut touches_cliff = vec![false; verts.len()];
+    let mut touches_water = vec![false; verts.len()];
+    for (fi, idx) in face_v.iter().enumerate() {
+        for &vi in idx {
+            if face_types[fi] == Terrain::Cliff {
+                touches_cliff[vi] = true;
+            }
+            if face_types[fi].is_water() {
+                touches_water[vi] = true;
+            }
         }
     }
-    for _ in 0..5 {
-        let mut next = vert_r.clone();
-        let mut changed = false;
-        for vi in 0..nv {
-            if vt[vi] { continue; }
-            if !va[vi].iter().any(|&n| (vert_r[n] - next[vi]).abs() > 0.1) { continue; }
-            let avg: f32 = va[vi].iter().map(|&n| vert_r[n]).sum::<f32>() / va[vi].len() as f32;
-            next[vi] = next[vi] * 0.6 + avg * 0.4;
-            changed = true;
+    for vi in 0..verts.len() {
+        if touches_cliff[vi] && !touches_water[vi] {
+            vert_r[vi] += CLIFF_LIFT;
         }
-        vert_r = next;
-        if !changed { break; }
-    }
-    for fi in bridge_entry_faces.iter() {
-        let [a, b, c] = face_v[fi];
-        let cent = ((verts[a] + verts[b] + verts[c]) / 3.0).normalize();
-        let er = terrain.surface_radius(SpherePos::new(cent)).max(shared::sphere::PLANET_RADIUS);
-        for &vi in &[a, b, c] { vert_r[vi] = er.max(vert_r[vi]); }
     }
 
-    let mut tris = Vec::with_capacity(n);
-    let mut cols = Vec::with_capacity(n);
-    let mut feats = Vec::with_capacity(n);
+    let road_color = bevy_color::Color::srgb(0.5, 0.42, 0.3).to_linear().to_f32_array();
+    let town_color = shared::theme::WARNING.to_linear().to_f32_array();
+    let entry_color = bevy_color::Color::srgb(0.42, 0.33, 0.24).to_linear().to_f32_array();
+    let mut tris = Vec::with_capacity(ctx.n);
+    let mut cols = Vec::with_capacity(ctx.n);
     for (fi, [a, b, c]) in face_v.iter().enumerate() {
-        let color = if town_faces.contains(fi) {
-            shared::theme::WARNING.to_linear().to_f32_array()
-        } else if road_faces.contains(fi) {
-            bevy_color::Color::srgb(0.5, 0.42, 0.3).to_linear().to_f32_array()
+        let color = if painted.towns.contains(fi) {
+            town_color
+        } else if painted.bridge_entries.contains(fi) {
+            entry_color
+        } else if painted.roads.contains(fi) {
+            road_color
         } else {
             face_types[fi].color().to_linear().to_f32_array()
         };
-        tris.push([(verts[*a] * vert_r[*a]).to_array(), (verts[*b] * vert_r[*b]).to_array(), (verts[*c] * vert_r[*c]).to_array()]);
+        tris.push([
+            (verts[*a] * vert_r[*a]).to_array(),
+            (verts[*b] * vert_r[*b]).to_array(),
+            (verts[*c] * vert_r[*c]).to_array(),
+        ]);
         cols.push(color);
-        let mut f = 0u8;
-        if road_faces.contains(fi) { f |= FACE_FLAG_ROAD; }
-        if town_faces.contains(fi) { f |= FACE_FLAG_TOWN; }
-        if bridge_faces.contains(fi) { f |= FACE_FLAG_BRIDGE; }
-        feats.push(f);
-    }
-    (tris, cols, feats)
-}
-
-// ---- pass 13: feature mesh (bridge decks) ----
-pub fn build_features(ctx: &GenCtx, terrain: &TerrainGen, roads: &Roads) -> (Vec<[[f32; 3]; 3]>, Vec<[f32; 4]>) {
-    let mut tris = Vec::new();
-    let mut cols = Vec::new();
-    let bc = bevy_color::Color::srgb(0.35, 0.25, 0.18).to_linear().to_f32_array();
-    for road in &roads.roads {
-        if !matches!(road.kind, shared::roads::PathKind::Bridge) { continue; }
-        build_bridge_strip(&mut tris, &mut cols, &road.points, terrain, 20.0, bc);
     }
     (tris, cols)
 }
 
-// ---- pass 14: serialize ----
+pub fn build_face_tags(ctx: &GenCtx, painted: &PaintedFaces) -> (Vec<u32>, Vec<u8>) {
+    let mut off = Vec::with_capacity(ctx.n + 1);
+    let mut data = Vec::new();
+    off.push(0u32);
+    for fi in 0..ctx.n {
+        if painted.roads.contains(fi) { data.push(TAG_ROAD); }
+        if painted.towns.contains(fi) { data.push(TAG_TOWN); }
+        if painted.bridges.contains(fi) { data.push(TAG_BRIDGE); }
+        if painted.bridge_entries.contains(fi) { data.push(TAG_BRIDGE_ENTRY); }
+        off.push(data.len() as u32);
+    }
+    (off, data)
+}
+
+// ---- serialize ----
+
 pub fn serialize(
-    ctx: &GenCtx, terrain: &TerrainGen, roads: &Roads, face_types: &[Terrain], water_bodies: &[WaterBodyData],
-    terrain_tris: Vec<[[f32; 3]; 3]>, terrain_colors: Vec<[f32; 4]>, terrain_features: Vec<u8>,
-    feature_tris: Vec<[[f32; 3]; 3]>, feature_colors: Vec<[f32; 4]>,
+    ctx: &GenCtx,
+    terrain: &TerrainGen,
+    face_types: &[Terrain],
+    bridges: &[Vec<SpherePos>],
+    regions: Vec<RegionData>,
+    face_region: Vec<u32>,
+    terrain_tris: Vec<[[f32; 3]; 3]>,
+    terrain_colors: Vec<[f32; 4]>,
+    face_tag_off: Vec<u32>,
+    face_tag_data: Vec<u8>,
 ) {
-    let unit_tris_arr: Vec<[[f32; 3]; 3]> = ctx.unit_tris.iter().map(|[a,b,c]| [a.to_array(), b.to_array(), c.to_array()]).collect();
-    let feat_count = feature_tris.len();
-    let baked = terrain.bake_terrain();
+    let unit_tris_arr: Vec<[[f32; 3]; 3]> =
+        ctx.unit_tris.iter().map(|[a, b, c]| [a.to_array(), b.to_array(), c.to_array()]).collect();
+    let settlements = terrain.settlement_anchors.iter().enumerate()
+        .map(|(i, a)| SettlementData { name: shared::roads::settlement_name(i), pos: a.0.to_array() })
+        .collect();
+    let mut roads: Vec<RoadData> = terrain.road_paths.iter()
+        .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: false })
+        .collect();
+    roads.extend(bridges.iter()
+        .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: true }));
+
     let data = LevelData {
+        version: LEVEL_FORMAT_VERSION,
+        seed: ctx.seed,
         terrain_tris,
         terrain_colors,
-        terrain_features,
         unit_tris: unit_tris_arr,
         face_types: face_types.iter().map(|t| *t as u8).collect(),
-        feature_tris,
-        feature_colors,
-        settlements: roads.settlements.iter().map(|s| SettlementData { name: s.name.clone(), pos: s.pos.0.to_array() }).collect(),
-        roads: roads.roads.iter().map(|r| RoadData { points: r.points.iter().map(|p| p.0.to_array()).collect(), is_bridge: matches!(r.kind, shared::roads::PathKind::Bridge) }).collect(),
-        baked_verts: baked,
-        water_bodies: water_bodies.to_vec(),
+        face_tag_off,
+        face_tag_data,
+        settlements,
+        roads,
+        regions,
+        face_region,
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(ctx.out.parent().unwrap());
     fs::write(&ctx.out, &bytes).expect("write");
-    println!("Wrote {} terrain tris, {} feature tris → {}", ctx.n, feat_count, ctx.out.display());
+    println!("Wrote {} faces → {}", ctx.n, ctx.out.display());
 }
 
-// ---- helpers (below passes, called by passes) ----
-
-fn build_bridge_strip(tris: &mut Vec<[[f32; 3]; 3]>, colors: &mut Vec<[f32; 4]>, points: &[SpherePos], terrain: &TerrainGen, hw: f32, color: [f32; 4]) {
-    let sr = terrain.surface_radius(points[0]);
-    let er = terrain.surface_radius(points[points.len() - 1]);
-    let sea = shared::sphere::PLANET_RADIUS;
-    let spacing = 2.0;
-    let mut dirs = Vec::new();
-    let mut pos = 0.0f32;
-    for seg in points.windows(2) {
-        let sl = seg[0].distance(seg[1]);
-        while pos <= sl + 1e-6 {
-            dirs.push(shared::sphere::slerp(seg[0], seg[1], (pos / sl).min(1.0)).0);
-            if pos >= sl { break; }
-            pos = (pos + spacing).min(sl);
-        }
-        pos -= sl;
+/// Print generation stats for visual sanity checking without a renderer.
+pub fn print_stats(ctx: &GenCtx, terrain: &TerrainGen, face_types: &[Terrain]) {
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    for t in face_types {
+        *counts.entry(match t {
+            Terrain::DeepOcean => "DeepOcean", Terrain::Ocean => "Ocean",
+            Terrain::Lake => "Lake", Terrain::LakeShore => "LakeShore",
+            Terrain::River => "River", Terrain::RiverBank => "RiverBank",
+            Terrain::Beach => "Beach", Terrain::Cliff => "Cliff",
+            Terrain::Desert => "Desert", Terrain::Plains => "Plains",
+            Terrain::Forest => "Forest", Terrain::Tundra => "Tundra",
+            Terrain::Mountain => "Mountain", Terrain::Snow => "Snow",
+        }).or_default() += 1;
     }
-    let last = points.last().unwrap().0;
-    if (dirs.last().unwrap().dot(last)).abs() < 0.999 { dirs.push(last); }
-    let n = dirs.len();
-    let mut rings: Vec<(Vec3, Vec3, Vec3)> = Vec::new();
-    for i in 0..n {
-        let dir = dirs[i];
-        let t = i as f32 / (n - 1).max(1) as f32;
-        let arch = 2.0 * (4.0 * t * (1.0 - t));
-        let base = sr + (er - sr) * t;
-        let tr = terrain.surface_radius(SpherePos::new(dir)).max(sea);
-        let r = base.max(tr) + arch;
-        let up = dir.normalize();
-        let fwd = if i == 0 { (dirs[1] - dirs[0]).normalize() }
-        else if i == n - 1 { (dirs[n-1] - dirs[n-2]).normalize() }
-        else { let p = (dirs[i] - dirs[i-1]).normalize(); let n = (dirs[i+1] - dirs[i]).normalize(); (p + n).normalize_or((dirs[1] - dirs[0]).normalize()) };
-        let left = fwd.cross(up).normalize_or(Vec3::X) * (hw / r);
-        rings.push((dir * r, (dir + left).normalize() * r, (dir - left).normalize() * r));
-    }
-    for p in rings.windows(2) {
-        tris.push([p[0].1.to_array(), p[0].2.to_array(), p[1].1.to_array()]); colors.push(color);
-        tris.push([p[0].2.to_array(), p[1].2.to_array(), p[1].1.to_array()]); colors.push(color);
-    }
+    let water: usize = face_types.iter().filter(|t| t.is_water()).count();
+    println!("water: {:.1}%  breakdown: {:?}", water as f32 / ctx.n as f32 * 100.0, counts);
+    println!(
+        "settlements: {}  roads: {}  rivers: {}",
+        terrain.settlement_anchors.len(),
+        terrain.road_paths.len(),
+        terrain.river_paths.len(),
+    );
 }
 
-fn paint_town_faces(planet: &PlanetMesh, roads: &Roads, n: usize) -> BitSet {
-    let mut bs = BitSet::new(n);
-    for (fi, tri) in planet.tris().iter().enumerate() {
-        let cent = (tri[0] + tri[1] + tri[2]) / 3.0;
-        if roads.settlements.iter().any(|s| arc(cent.normalize(), s.pos.0) <= TOWN_RADIUS) {
-            bs.insert(fi);
-        }
-    }
-    bs
-}
+// ---- helpers ----
 
-fn bridge_approach_faces(planet: &PlanetMesh, adj: &[[u32; 3]], roads: &Roads, bf: &BitSet, n: usize) -> BitSet {
-    let mut ap = BitSet::new(n);
-    for r in &roads.roads {
-        if !matches!(r.kind, shared::roads::PathKind::Bridge) { continue; }
-        for pt in [r.points.first(), r.points.last()] {
-            if let Some(fi) = planet.face_at(pt.unwrap().0) {
-                if !bf.contains(fi) { flood_bfs(&mut ap, adj, fi, bf, 6, n); }
-            }
-        }
-    }
-    ap
-}
-
-fn flood_bfs(out: &mut BitSet, adj: &[[u32; 3]], start: usize, exclude: &BitSet, rings: usize, n: usize) {
-    let mut q = VecDeque::from([(start, 0usize)]);
-    let mut seen = BitSet::new(n);
-    seen.insert(start);
-    while let Some((cur, d)) = q.pop_front() {
-        if d > rings { continue; }
-        out.insert(cur);
-        for &n in &adj[cur] {
-            let n = n as usize;
-            if n == u32::MAX as usize || seen.contains(n) || exclude.contains(n) { continue; }
-            seen.insert(n);
-            q.push_back((n, d + 1));
-        }
-    }
-}
-
-fn face_chain(planet: &PlanetMesh, points: &[SpherePos]) -> Vec<usize> {
+/// The gap-free chain of fine faces a polyline passes over.
+fn face_chain(ctx: &GenCtx, points: &[SpherePos]) -> Vec<usize> {
     let mut c = Vec::new();
     for seg in points.windows(2) {
-        let steps = (arc(seg[0].0, seg[1].0) / 2.0).ceil().max(1.0) as usize;
+        let steps = (seg[0].distance(seg[1]) / 2.0).ceil().max(1.0) as usize;
         for k in 0..=steps {
             let p = seg[0].0.lerp(seg[1].0, k as f32 / steps as f32).normalize();
-            if let Some(fi) = planet.face_at(p) {
-                if c.last() != Some(&fi) { c.push(fi); }
+            if let Some(fi) = ctx.planet.face_at(p) {
+                if c.last() != Some(&fi) {
+                    // Bridge non-adjacent jumps so the chain has no holes.
+                    if let Some(&prev) = c.last() {
+                        if !ctx.adj[prev].contains(&(fi as u32)) {
+                            c.extend(shortest_face_path(&ctx.adj, prev, fi));
+                        }
+                    }
+                    c.push(fi);
+                }
             }
         }
     }
     c
-}
-
-fn paint_chain(faces: &mut BitSet, adj: &[[u32; 3]], chain: &[usize]) {
-    if let Some(&f) = chain.first() { faces.insert(f); }
-    for w in chain.windows(2) {
-        faces.insert(w[0]); faces.insert(w[1]);
-        if !adj[w[0]].contains(&(w[1] as u32)) {
-            for f in shortest_face_path(adj, w[0], w[1]) { faces.insert(f); }
-        }
-    }
 }
 
 fn shortest_face_path(adj: &[[u32; 3]], u: usize, v: usize) -> Vec<usize> {
@@ -607,45 +877,28 @@ fn shortest_face_path(adj: &[[u32; 3]], u: usize, v: usize) -> Vec<usize> {
         if cur == v {
             let mut p = Vec::new();
             let mut c = v;
-            while c != u { if c != v { p.push(c); } c = prev[&c]; }
+            while c != u {
+                if c != v {
+                    p.push(c);
+                }
+                c = prev[&c];
+            }
             p.reverse();
             return p;
         }
-        if d >= 4 { continue; }
+        if d >= 4 {
+            continue;
+        }
         for &n in &adj[cur] {
             let n = n as usize;
-            if n == u32::MAX as usize { continue; }
-            prev.entry(n).or_insert_with(|| { q.push_back((n, d + 1)); cur });
+            if n == u32::MAX as usize {
+                continue;
+            }
+            prev.entry(n).or_insert_with(|| {
+                q.push_back((n, d + 1));
+                cur
+            });
         }
     }
     Vec::new()
 }
-
-fn build_face_adjacency(tris: &[[Vec3; 3]], n: usize) -> Vec<[u32; 3]> {
-    let mut em: BTreeMap<[u64; 2], Vec<u32>> = BTreeMap::new();
-    for (fi, tri) in tris.iter().enumerate() {
-        let fi = fi as u32;
-        for (x, y) in [(0, 1), (1, 2), (2, 0)] {
-            let (ka, kb) = (hv(tri[x]), hv(tri[y]));
-            em.entry(if ka <= kb { [ka, kb] } else { [kb, ka] }).or_default().push(fi);
-        }
-    }
-    let mut adj = vec![[u32::MAX; 3]; n];
-    for (fi, tri) in tris.iter().enumerate() {
-        let mut k = 0;
-        for (x, y) in [(0, 1), (1, 2), (2, 0)] {
-            let (ka, kb) = (hv(tri[x]), hv(tri[y]));
-            if let Some(ns) = em.get(&if ka <= kb { [ka, kb] } else { [kb, ka] }) {
-                for &n in ns { if n as usize != fi && k < 3 { adj[fi][k] = n; k += 1; break; } }
-            }
-        }
-    }
-    adj
-}
-
-fn hv(v: Vec3) -> u64 {
-    let a = v.to_array();
-    a[0].to_bits() as u64 ^ (a[1].to_bits() as u64).wrapping_mul(6364136223846793005) ^ (a[2].to_bits() as u64).wrapping_mul(1442695040888963407)
-}
-
-fn arc(a: Vec3, b: Vec3) -> f32 { a.dot(b).clamp(-1.0, 1.0).acos() * shared::sphere::PLANET_RADIUS }

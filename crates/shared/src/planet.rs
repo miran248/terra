@@ -132,6 +132,36 @@ pub fn ray_triangle_radius(dir: Vec3, t: &[Vec3; 3]) -> Option<f32> {
     (dist > 0.0).then_some(dist)
 }
 
+/// Face adjacency by shared edge: adj[fi] = the 3 neighbouring face indices.
+pub fn build_face_adjacency(tris: &[[Vec3; 3]], n: usize) -> Vec<[u32; 3]> {
+    let mut em: std::collections::BTreeMap<[u64; 2], Vec<u32>> = Default::default();
+    for (fi, tri) in tris.iter().enumerate() {
+        let fi = fi as u32;
+        for (x, y) in [(0, 1), (1, 2), (2, 0)] {
+            let (ka, kb) = (hv(tri[x]), hv(tri[y]));
+            em.entry(if ka <= kb { [ka, kb] } else { [kb, ka] }).or_default().push(fi);
+        }
+    }
+    let mut adj = vec![[u32::MAX; 3]; n];
+    for (fi, tri) in tris.iter().enumerate() {
+        let mut k = 0;
+        for (x, y) in [(0, 1), (1, 2), (2, 0)] {
+            let (ka, kb) = (hv(tri[x]), hv(tri[y]));
+            if let Some(ns) = em.get(&if ka <= kb { [ka, kb] } else { [kb, ka] }) {
+                for &n in ns { if n as usize != fi && k < 3 { adj[fi][k] = n; k += 1; break; } }
+            }
+        }
+    }
+    adj
+}
+
+fn hv(v: Vec3) -> u64 {
+    let a = v.to_array();
+    a[0].to_bits() as u64
+        ^ (a[1].to_bits() as u64).wrapping_mul(6364136223846793005)
+        ^ (a[2].to_bits() as u64).wrapping_mul(1442695040888963407)
+}
+
 /// Build the sphere's base triangles (undisplaced), for tests/benches without Bevy meshes.
 pub fn unit_icosphere_tris(subdivisions: usize) -> Vec<[Vec3; 3]> {
     // Simple recursive icosahedron subdivision, scaled to PLANET_RADIUS.

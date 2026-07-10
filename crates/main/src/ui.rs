@@ -5,7 +5,7 @@ use shared::theme;
 use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{LevelFeatures, LevelFaceTypes, Player, PlayerHp};
+use crate::map::{LevelTags, LevelFaceTypes, LevelRegions, Player, PlayerHp};
 use shared::terrain::Terrain;
 use shared::planet::PlanetMesh;
 use crate::wave::WaveManager;
@@ -457,7 +457,8 @@ fn update_terrain_hud(
     player_q: Query<&Transform, With<Player>>,
     terrain: Option<Res<shared::terrain::TerrainGen>>,
     planet: Option<Res<PlanetMesh>>,
-    features: Option<Res<LevelFeatures>>,
+    tags: Option<Res<LevelTags>>,
+    regions: Option<Res<LevelRegions>>,
     face_types: Option<Res<LevelFaceTypes>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
@@ -486,19 +487,28 @@ fn update_terrain_hud(
     let hab = terrain.is_habitable(pos);
 
     let mut built = String::new();
-    if let (Some(planet), Some(feats)) = (planet, features) {
+    let mut region_name = String::new();
+    if let Some(planet) = planet {
         if let Some(fi) = planet.face_at(tf.translation.normalize()) {
-            let f = feats.0[fi];
-            if f & 1 != 0 { built.push_str(" Road"); }
-            if f & 2 != 0 { built.push_str(" Town"); }
-            if f & 4 != 0 { built.push_str(" Bridge"); }
+            if let Some(tags) = tags {
+                for &tag in tags.0.of(fi) {
+                    built.push(' ');
+                    built.push_str(shared::level::tag_name(tag));
+                }
+            }
+            if let Some(regions) = regions {
+                if let Some(ri) = regions.face_region.get(fi).copied().and_then(shared::level::region_index) {
+                    region_name = format!("\n{}", regions.regions[ri].name);
+                }
+            }
         }
     }
 
     *text = Text::new(format!(
-        "{:?}{}\nAlt: {:.0}m  Slope: {:.1}\nTemp: {:.0}°C{}",
+        "{:?}{}{}\nAlt: {:.0}m  Slope: {:.1}\nTemp: {:.0}°C{}",
         tile,
         if hab { " Habitable" } else { "" },
+        region_name,
         altitude, slope, temp, built,
     ));
     *color = TextColor(hud_tile_color(tile));

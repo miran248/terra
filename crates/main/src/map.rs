@@ -2,7 +2,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use crate::physics::RadialGravity;
-use shared::level::LevelData;
+use shared::level::{FaceTags, LevelData, LEVEL_FORMAT_VERSION};
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::{TerrainGen, MAX_MOUNTAIN};
 use shared::theme;
@@ -25,7 +25,7 @@ pub struct Settlement {
 }
 
 #[derive(Component)]
-pub struct WaterBody {
+pub struct RegionMarker {
     pub name: String,
     pub kind: String,
 }
@@ -53,10 +53,17 @@ pub struct GameAssets {
 pub struct MapPlugin;
 
 #[derive(Resource)]
-pub struct LevelFeatures(pub Vec<u8>);
+pub struct LevelTags(pub FaceTags);
 
 #[derive(Resource)]
 pub struct LevelFaceTypes(pub Vec<shared::terrain::Terrain>);
+
+/// Region names + per-face region ids for the HUD.
+#[derive(Resource)]
+pub struct LevelRegions {
+    pub regions: Vec<shared::level::RegionData>,
+    pub face_region: Vec<u32>,
+}
 
 #[derive(Resource, Default)]
 struct PlayerInput {
@@ -95,11 +102,16 @@ fn setup_map(
 ) {
     let level_bytes = include_bytes!("../assets/level_1337.bin");
     let level: LevelData = postcard::from_bytes(level_bytes).expect("deserialize level");
+    assert_eq!(
+        level.version, LEVEL_FORMAT_VERSION,
+        "stale level binary (format {}, expected {LEVEL_FORMAT_VERSION}) — re-run gen_level",
+        level.version,
+    );
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
-    // Use prebaked vertex data — skips ~100ms of noise generation at startup.
-    let mut terrain = TerrainGen::from_baked(&level.baked_verts);
-    terrain.set_roads_from_baked(&level.baked_verts.road_cells);
+    // The seed deterministically reproduces the exact terrain gen_level baked the
+    // mesh from, so height queries and the rendered surface agree.
+    let terrain = TerrainGen::new(level.seed);
 
     commands.insert_resource(GameAssets {
         zombie_mesh: meshes.add(Sphere::new(ZOMBIE_SIZE * 0.5)),
@@ -133,11 +145,25 @@ fn setup_map(
 
 
 
-    // Features layer
-    if !level.feature_tris.is_empty() {
-        let feat_mesh = build_visual_mesh(&level.feature_tris, &level.feature_colors);
+    // Bridges: entities built at runtime from the recorded spans, like any building.
+    // Deck heights come from the displaced terrain mesh (the surface that renders
+    // and collides), so deck ends meet the actual ground — including lifted cliffs.
+    let displaced: Vec<[Vec3; 3]> = level.terrain_tris.iter()
+        .map(|t| [Vec3::from_array(t[0]), Vec3::from_array(t[1]), Vec3::from_array(t[2])])
+        .collect();
+    let ground = PlanetMesh::new(displaced);
+    let bridge_color = Color::srgb(0.35, 0.25, 0.18).to_linear();
+    for road in level.roads.iter().filter(|r| r.is_bridge) {
+        let span: Vec<shared::sphere::SpherePos> = road.points.iter()
+            .map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p)))
+            .collect();
+        let deck = shared::roads::build_bridge_deck(&span, &ground, 20.0);
+        if deck.is_empty() {
+            continue;
+        }
+        let colors = vec![bridge_color.to_f32_array(); deck.len()];
         commands.spawn((
-            Mesh3d(meshes.add(feat_mesh)),
+            Mesh3d(meshes.add(build_visual_mesh(&deck, &colors))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 perceptual_roughness: 0.4,
@@ -149,7 +175,7 @@ fn setup_map(
         ));
         commands.spawn((
             RigidBody::Static,
-            build_collider(&level.feature_tris),
+            build_collider(&deck),
             Transform::default(),
             Ground,
         ));
@@ -192,6 +218,9 @@ fn setup_map(
         MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
         RigidBody::Dynamic,
         ColliderConstructor::Sphere { radius: PLAYER_SIZE * 0.5 },
+        // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
+        // tunneled through during fast falls.
+        SweptCcd::default(),
         RadialGravity,
         Mass(80.0),
         ColliderDensity(1000.0),
@@ -216,26 +245,30 @@ fn setup_map(
         ));
     }
 
-    // Water body markers
-    for wb in &level.water_bodies {
-        let pos = Vec3::from_array(wb.pos) * PLANET_RADIUS;
+    // Region markers (oceans, beaches, forests, …)
+    for region in &level.regions {
+        let pos = Vec3::from_array(region.pos) * PLANET_RADIUS;
         commands.spawn((
             Transform::from_translation(pos),
-            WaterBody { name: wb.name.clone(), kind: format!("{:?}", wb.kind) },
+            RegionMarker { name: region.name.clone(), kind: format!("{:?}", region.kind) },
         ));
     }
     let tris: Vec<[Vec3; 3]> = level.unit_tris.iter()
         .map(|t| [Vec3::from_array(t[0]), Vec3::from_array(t[1]), Vec3::from_array(t[2])])
         .collect();
     let planet_mesh = PlanetMesh::new(tris);
-    let features = level.terrain_features.clone();
+    let tags = FaceTags { off: level.face_tag_off.clone(), data: level.face_tag_data.clone() };
     let face_types: Vec<shared::terrain::Terrain> = level.face_types.iter()
         .map(|&b| unsafe { std::mem::transmute(b) })
         .collect();
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);
-    commands.insert_resource(LevelFeatures(features));
+    commands.insert_resource(LevelTags(tags));
     commands.insert_resource(LevelFaceTypes(face_types));
+    commands.insert_resource(LevelRegions {
+        regions: level.regions.clone(),
+        face_region: level.face_region.clone(),
+    });
 }
 
 fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[f32; 4]]) -> Mesh {
