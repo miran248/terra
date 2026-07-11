@@ -1856,7 +1856,7 @@ fn max_gradient(a: Terrain, b: Terrain) -> f32 {
         // The whole cliff drop can happen across one vertex edge (toe → crest).
         0.60
     } else if peak(a) || peak(b) {
-        0.22
+        0.28
     } else if water(a) && water(b) {
         0.08
     } else if water(a) || water(b) || a == Beach || b == Beach {

@@ -355,8 +355,8 @@ impl TerrainGen {
             // Small features (lakes, ranges, settlement pads) blend sharper so
             // wide smoothing can't dilute them out of existence.
             let sharp = match kind {
-                ZoneKind::Lake => 3.0,
-                ZoneKind::MountainRange | ZoneKind::Settlement => 2.0,
+                ZoneKind::Lake | ZoneKind::MountainRange => 3.0,
+                ZoneKind::Settlement => 2.0,
                 _ => 1.0,
             };
             let w = sharp / (0.08 + angle);

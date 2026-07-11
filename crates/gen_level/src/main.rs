@@ -57,6 +57,15 @@ fn serialize(state: &GenState, out: &PathBuf) {
 }
 
 fn print_stats(state: &GenState) {
+    let terrain = state.terrain.as_ref().expect("pipeline finished");
+    let e = terrain.vert_elevations();
+    let max_e = e.iter().copied().fold(f32::MIN, f32::max);
+    let min_e = e.iter().copied().fold(f32::MAX, f32::min);
+    println!(
+        "altitude: {:.0}m .. {:.0}m (e {min_e:.2} .. {max_e:.2})",
+        -(-min_e).max(0.0) * shared::terrain::MAX_DEPTH,
+        max_e.max(0.0).powf(1.15) * shared::terrain::MAX_MOUNTAIN,
+    );
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     for t in &state.tiles {
         *counts.entry(match t {

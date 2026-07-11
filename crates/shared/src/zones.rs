@@ -49,7 +49,7 @@ impl ZoneKind {
             // Deep enough that 2-ring blending against the host continent still
             // leaves the zone under water.
             ZoneKind::Lake => ElevationProfile { min: -0.45, max: -0.20, curve: 1.0 },
-            ZoneKind::MountainRange => ElevationProfile { min: 0.40, max: 0.95, curve: 1.1 },
+            ZoneKind::MountainRange => ElevationProfile { min: 0.45, max: 1.40, curve: 0.9 },
             // Deliberately gentle so the whole zone stays buildable.
             ZoneKind::Settlement => ElevationProfile { min: 0.03, max: 0.10, curve: 1.0 },
         }
