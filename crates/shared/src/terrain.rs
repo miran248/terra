@@ -260,7 +260,7 @@ impl TerrainGen {
         (base - lat * 0.9 - lapse + noise).max(-100.0).min(60.0)
     }
 
-    fn moisture_at(&self, pos: SpherePos) -> f32 {
+    pub fn moisture_at(&self, pos: SpherePos) -> f32 {
         self.moisture.get(self.warped(pos)) as f32
     }
 

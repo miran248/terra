@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, FLORA_BUSH, FLORA_FLOWER, FLORA_TREE, NO_REGION, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, FLORA_BUSH, FLORA_FLOWER, FLORA_GRASS, FLORA_ROCK, FLORA_TREE, NO_REGION, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -587,7 +587,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::PlaceFlora => {
             vec![Event::FloraPlaced(place_flora(
-                &state.grid, &state.tiles, &state.painted, &state.mesh_tris,
+                &state.grid, state.terrain(), &state.tiles, &state.painted, &state.mesh_tris,
             ))]
         }
     }
@@ -1947,6 +1947,7 @@ const FLORA_RNG_SALT: u64 = 0x466c_6f72;
 
 fn place_flora(
     grid: &Grid,
+    terrain: &TerrainGen,
     tiles: &[Terrain],
     painted: &Painted,
     mesh_tris: &[[[f32; 3]; 3]],
@@ -1961,16 +1962,32 @@ fn place_flora(
         if clear {
             continue;
         }
-        // (trees, bushes, flowers) expected per face.
-        let (trees, bushes, flowers): (f32, f32, f32) = match tiles[fi] {
-            Terrain::Forest => (1.6, 0.40, 0.05),
-            Terrain::Plains => (0.04, 0.10, 0.30),
-            Terrain::Tundra => (0.01, 0.06, 0.02),
-            Terrain::Desert => (0.0, 0.05, 0.0),
-            Terrain::RiverBank | Terrain::LakeShore => (0.08, 0.20, 0.25),
+        // (trees, bushes, flowers, rocks, grass) expected per face; wetter
+        // ground means denser greenery (flower meadows follow moisture),
+        // drier ground means barer rock.
+        let (trees, bushes, flowers, rocks, grass): (f32, f32, f32, f32, f32) = match tiles[fi] {
+            Terrain::Forest => (1.6, 0.40, 0.05, 0.03, 0.30),
+            Terrain::Plains => (0.04, 0.10, 0.30, 0.02, 0.35),
+            Terrain::Tundra => (0.01, 0.06, 0.02, 0.12, 0.05),
+            Terrain::Desert => (0.0, 0.05, 0.0, 0.10, 0.0),
+            Terrain::Mountain => (0.0, 0.02, 0.0, 0.20, 0.0),
+            Terrain::Cliff => (0.0, 0.0, 0.0, 0.15, 0.0),
+            Terrain::Beach => (0.0, 0.0, 0.0, 0.04, 0.0),
+            Terrain::RiverBank | Terrain::LakeShore => (0.08, 0.20, 0.25, 0.03, 0.30),
             _ => continue,
         };
-        for (density, kind) in [(trees, FLORA_TREE), (bushes, FLORA_BUSH), (flowers, FLORA_FLOWER)] {
+        // Moisture in roughly [-1, 1]: scale greens up on wet ground, rocks
+        // up on dry ground. One sample per face keeps it cheap.
+        let m = terrain.moisture_at(grid.centroid(fi));
+        let wet = (1.0 + m).clamp(0.3, 1.8);
+        let dry = (1.0 - m).clamp(0.5, 1.6);
+        for (density, kind) in [
+            (trees * wet, FLORA_TREE),
+            (bushes * wet, FLORA_BUSH),
+            (flowers * wet * wet, FLORA_FLOWER),
+            (rocks * dry, FLORA_ROCK),
+            (grass * wet, FLORA_GRASS),
+        ] {
             let mut n = density.trunc() as u32;
             if rng.f32() < density.fract() {
                 n += 1;

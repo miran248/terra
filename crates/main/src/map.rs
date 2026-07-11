@@ -2,7 +2,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use crate::physics::RadialGravity;
-use shared::level::{FaceTags, LevelData, FLORA_BUSH, FLORA_FLOWER, FLORA_TREE, LEVEL_FORMAT_VERSION};
+use shared::level::{FaceTags, LevelData, FLORA_BUSH, FLORA_FLOWER, FLORA_GRASS, FLORA_ROCK, FLORA_TREE, LEVEL_FORMAT_VERSION};
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::{TerrainGen, MAX_MOUNTAIN};
 use shared::theme;
@@ -157,6 +157,8 @@ fn setup_map(
         let trunk_mesh = meshes.add(Cylinder::new(0.25, 4.5));
         let canopy_mesh = meshes.add(Sphere::new(2.0));
         let bush_mesh = meshes.add(Sphere::new(0.7));
+        let rock_mesh = meshes.add(Sphere::new(0.6).mesh().ico(1).unwrap());
+        let grass_mesh = meshes.add(Cone { radius: 0.22, height: 0.55 });
         let flower_mesh = meshes.add(Sphere::new(0.16));
         let trunk_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.42, 0.30, 0.18)));
         let canopy_mats = [
@@ -165,6 +167,11 @@ fn setup_map(
             materials.add(StandardMaterial::from_color(Color::srgb(0.24, 0.45, 0.14))),
         ];
         let bush_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.22, 0.40, 0.20)));
+        let rock_mats = [
+            materials.add(StandardMaterial::from_color(Color::srgb(0.45, 0.44, 0.42))),
+            materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.53, 0.50))),
+        ];
+        let grass_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.38, 0.52, 0.22)));
         let flower_mats = [
             materials.add(StandardMaterial::from_color(Color::srgb(0.90, 0.25, 0.30))),
             materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.80, 0.25))),
@@ -211,6 +218,35 @@ fn setup_map(
                         Mesh3d(flower_mesh.clone()),
                         MeshMaterial3d(flower_mats[(h >> 16) as usize % flower_mats.len()].clone()),
                         Transform::from_translation(pos + up * 0.22)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                }
+                FLORA_ROCK => {
+                    // Irregular via non-uniform scale; boulders block movement.
+                    let sx = 0.8 + (h >> 24 & 0x7) as f32 / 7.0 * 0.7;
+                    let sz = 0.8 + (h >> 27 & 0x7) as f32 / 7.0 * 0.7;
+                    let boulder = scale > 1.05;
+                    let size = if boulder { scale * 1.8 } else { scale };
+                    let mut e = commands.spawn((
+                        Mesh3d(rock_mesh.clone()),
+                        MeshMaterial3d(rock_mats[(h >> 16) as usize % rock_mats.len()].clone()),
+                        Transform::from_translation(pos + up * 0.25 * size)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::new(size * sx, size * 0.7, size * sz)),
+                    ));
+                    if boulder {
+                        e.insert((
+                            RigidBody::Static,
+                            ColliderConstructor::Sphere { radius: 0.55 },
+                        ));
+                    }
+                }
+                FLORA_GRASS => {
+                    commands.spawn((
+                        Mesh3d(grass_mesh.clone()),
+                        MeshMaterial3d(grass_mat.clone()),
+                        Transform::from_translation(pos + up * 0.18 * scale)
                             .with_rotation(rot)
                             .with_scale(Vec3::splat(scale)),
                     ));

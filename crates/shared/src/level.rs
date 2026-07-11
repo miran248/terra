@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 8;
+pub const LEVEL_FORMAT_VERSION: u32 = 9;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -79,6 +79,8 @@ pub struct LevelData {
 pub const FLORA_TREE: u8 = 0;
 pub const FLORA_BUSH: u8 = 1;
 pub const FLORA_FLOWER: u8 = 2;
+pub const FLORA_ROCK: u8 = 3;
+pub const FLORA_GRASS: u8 = 4;
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct FloraData {
