@@ -305,8 +305,13 @@ fn try_generate(
             let id = b.push_zone(spec.kind, seed, Some(host));
             grow_simultaneous(&mut b, &[id], target, rng, |b, fi, id| {
                 // Growth stays inside the host, never severs it, and obeys the
-                // adjacency matrix (a lake can't reach the coast, etc.).
-                b.zone_of[fi] == host && carve_safe(b, fi, host) && b.claim_ok(fi, id, kind)
+                // adjacency matrix. Lakes additionally keep 2 coarse faces
+                // (~16 fine tiles) from the future ocean so lake and sea can
+                // never sit within splashing distance of each other.
+                b.zone_of[fi] == host
+                    && carve_safe(b, fi, host)
+                    && b.claim_ok(fi, id, kind)
+                    && (kind != ZoneKind::Lake || no_unassigned_within(b, fi, 2))
             });
             if b.zones[id as usize].faces.len() < faces_for(spec.min_area_m2, face_area) {
                 return None;
@@ -443,6 +448,29 @@ fn carve_safe(b: &Builder, fi: usize, host: u16) -> bool {
         }
     }
     host_nbs.iter().all(|nb| seen.contains(nb))
+}
+
+/// No unassigned (future-ocean) face within `rings` steps of `fi`.
+fn no_unassigned_within(b: &Builder, fi: usize, rings: usize) -> bool {
+    let mut cur = vec![fi];
+    let mut seen = vec![fi];
+    for _ in 0..rings {
+        let mut next = Vec::new();
+        for &f in &cur {
+            for &nb in &b.adj[f] {
+                let nb = nb as usize;
+                if b.zone_of[nb] == UNASSIGNED {
+                    return false;
+                }
+                if !seen.contains(&nb) {
+                    seen.push(nb);
+                    next.push(nb);
+                }
+            }
+        }
+        cur = next;
+    }
+    true
 }
 
 /// All faces within `rings` adjacency steps of `fi` still belong to `host`.

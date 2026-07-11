@@ -427,6 +427,8 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, face_types: &mut [T
         face_types[fi] = Terrain::LakeShore;
     }
 
+    enforce_water_shape(grid, face_types);
+
     let mut visited = vec![false; grid.n];
     for start in 0..grid.n {
         if !face_types[start].is_water() || face_types[start] == Terrain::River || visited[start] {
@@ -476,6 +478,139 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, face_types: &mut [T
             } else {
                 face_types[fi]
             };
+        }
+    }
+}
+
+/// Water narrower than ~5 tiles reads as a visual glitch, and two water
+/// sheets meeting at a single shared vertex read as disconnected. Fill both:
+///   • width: water within 2 steps of land must reach "core" water (≥3 steps
+///     from land) within 2 steps, or it is a sliver/neck → land.
+///   • pinch: the water faces around any vertex must form ONE edge-connected
+///     component; every component but the largest → land.
+/// Rivers are linear by nature and exempt. Iterated to a fixed point (fills
+/// can expose new pinches).
+fn enforce_water_shape(grid: &Grid, face_types: &mut [Terrain]) {
+    // vertex → faces map (edge-based linking happens via grid.adj).
+    let mut by_vert: BTreeMap<u64, Vec<u32>> = BTreeMap::new();
+    for (fi, tri) in grid.unit_tris.iter().enumerate() {
+        for v in tri {
+            by_vert.entry(vkey(*v)).or_default().push(fi as u32);
+        }
+    }
+    let fill_kind = |face_types: &[Terrain], fi: usize| -> Terrain {
+        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for &nb in &grid.adj[fi] {
+            let t = face_types[nb as usize];
+            if t.is_land() {
+                *counts.entry(t as u8).or_default() += 1;
+            }
+        }
+        counts.iter().max_by_key(|(_, c)| **c)
+            .map(|(&k, _)| Terrain::ALL[k as usize])
+            .unwrap_or(Terrain::Plains)
+    };
+    let wet = |t: Terrain| t.is_water() && t != Terrain::River;
+
+    for _ in 0..4 {
+        let mut changed = false;
+
+        // (a) minimum width.
+        let mut dist = vec![u8::MAX; grid.n];
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for fi in 0..grid.n {
+            if face_types[fi].is_land() {
+                dist[fi] = 0;
+                q.push_back(fi);
+            }
+        }
+        while let Some(cur) = q.pop_front() {
+            if dist[cur] >= 3 {
+                continue;
+            }
+            for &nb in &grid.adj[cur] {
+                let nb = nb as usize;
+                if dist[nb] == u8::MAX {
+                    dist[nb] = dist[cur] + 1;
+                    q.push_back(nb);
+                }
+            }
+        }
+        // Core water (≥3 from land) reaches outward 2 steps.
+        let mut core_reach = vec![false; grid.n];
+        let mut q: VecDeque<(usize, u8)> = VecDeque::new();
+        for fi in 0..grid.n {
+            if wet(face_types[fi]) && dist[fi] == u8::MAX {
+                core_reach[fi] = true;
+                q.push_back((fi, 0));
+            }
+        }
+        while let Some((cur, d)) = q.pop_front() {
+            if d >= 2 {
+                continue;
+            }
+            for &nb in &grid.adj[cur] {
+                let nb = nb as usize;
+                if wet(face_types[nb]) && !core_reach[nb] {
+                    core_reach[nb] = true;
+                    q.push_back((nb, d + 1));
+                }
+            }
+        }
+        for fi in 0..grid.n {
+            if wet(face_types[fi]) && !core_reach[fi] {
+                face_types[fi] = fill_kind(face_types, fi);
+                changed = true;
+            }
+        }
+
+        // (b) vertex pinches.
+        for faces in by_vert.values() {
+            let water: Vec<usize> = faces.iter()
+                .map(|&f| f as usize)
+                .filter(|&f| wet(face_types[f]))
+                .collect();
+            if water.len() < 2 {
+                continue;
+            }
+            // Edge-connected components within this vertex's water fan.
+            let mut comp = vec![usize::MAX; water.len()];
+            let mut n_comp = 0;
+            for i in 0..water.len() {
+                if comp[i] != usize::MAX {
+                    continue;
+                }
+                let mut stack = vec![i];
+                comp[i] = n_comp;
+                while let Some(k) = stack.pop() {
+                    for j in 0..water.len() {
+                        if comp[j] == usize::MAX
+                            && grid.adj[water[k]].contains(&(water[j] as u32))
+                        {
+                            comp[j] = n_comp;
+                            stack.push(j);
+                        }
+                    }
+                }
+                n_comp += 1;
+            }
+            if n_comp <= 1 {
+                continue;
+            }
+            let mut sizes = vec![0usize; n_comp];
+            for &c in &comp {
+                sizes[c] += 1;
+            }
+            let keep = sizes.iter().enumerate().max_by_key(|(_, s)| **s).unwrap().0;
+            for (i, &fi) in water.iter().enumerate() {
+                if comp[i] != keep {
+                    face_types[fi] = fill_kind(face_types, fi);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
         }
     }
 }
@@ -1321,8 +1456,9 @@ fn elev_range(t: Terrain) -> (f32, f32) {
         RiverBank => (0.0, 0.65),
         Beach => (0.0, 0.05),
         // Cliff relief lives in the field itself (no mesh lift): a hard floor
-        // well above the beach makes the escarpment.
-        Cliff => (0.18, 0.45),
+        // well above the beach guarantees a minimum drop of ~0.25 (125m) at
+        // every cliff seam — as steep as a 70m vertex grid can express.
+        Cliff => (0.30, 0.55),
         Desert | Plains | Forest | Tundra => (0.02, 0.50),
         Mountain => (0.45, 1.0),
         Snow => (0.50, 1.0),
@@ -1848,6 +1984,110 @@ mod tests {
             for end in [span.first(), span.last()].into_iter().flatten() {
                 let slope = terrain.slope(*end);
                 assert!(slope < 0.15, "bridge entry not flat: slope {slope}");
+            }
+        }
+
+        // Water topology: no two water sheets meet at just a vertex, and no
+        // lake sits within 10 tiles of the ocean.
+        {
+            let wet = |t: Terrain| t.is_water() && t != Terrain::River;
+            let mut by_vert: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+            for (fi, tri) in state.grid.unit_tris.iter().enumerate() {
+                for v in tri {
+                    by_vert.entry(vkey(*v)).or_default().push(fi);
+                }
+            }
+            for faces in by_vert.values() {
+                let water: Vec<usize> =
+                    faces.iter().copied().filter(|&f| wet(state.tiles[f])).collect();
+                if water.len() < 2 {
+                    continue;
+                }
+                // All water at this vertex must be one edge-connected fan.
+                let mut seen = vec![false; water.len()];
+                let mut stack = vec![0usize];
+                seen[0] = true;
+                while let Some(k) = stack.pop() {
+                    for j in 0..water.len() {
+                        if !seen[j] && state.grid.adj[water[k]].contains(&(water[j] as u32)) {
+                            seen[j] = true;
+                            stack.push(j);
+                        }
+                    }
+                }
+                assert!(
+                    seen.iter().all(|&s| s),
+                    "water pinch: {} water faces at one vertex in 2+ components",
+                    water.len()
+                );
+            }
+
+            // Lake-to-ocean distance ≥ 10 edge steps.
+            let mut dist = vec![u16::MAX; state.grid.n];
+            let mut q: VecDeque<usize> = VecDeque::new();
+            for fi in 0..state.grid.n {
+                if state.tiles[fi].is_water()
+                    && terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Ocean
+                {
+                    dist[fi] = 0;
+                    q.push_back(fi);
+                }
+            }
+            while let Some(cur) = q.pop_front() {
+                if dist[cur] >= 10 {
+                    continue;
+                }
+                for &nb in &state.grid.adj[cur] {
+                    let nb = nb as usize;
+                    if dist[nb] == u16::MAX {
+                        dist[nb] = dist[cur] + 1;
+                        q.push_back(nb);
+                    }
+                }
+            }
+            for fi in 0..state.grid.n {
+                if state.tiles[fi] == Terrain::Lake {
+                    assert!(
+                        dist[fi] > 10,
+                        "lake face {fi} only {} tiles from ocean water",
+                        dist[fi]
+                    );
+                }
+            }
+        }
+
+        // Cliff seams drop hard: a cliff vertex beside water/beach sits at
+        // least ~0.2 (100m) above it (blend-ramp and pad verts excepted).
+        let vkind: Vec<Terrain> = (0..terrain.vert_count())
+            .map(|vi| {
+                state.grid.planet.face_at(terrain.vert_dir(vi))
+                    .map(|fi| state.tiles[fi])
+                    .unwrap_or(Terrain::Plains)
+            })
+            .collect();
+        for a in 0..terrain.vert_count() {
+            if vkind[a] != Terrain::Cliff || pad_vert[a] {
+                continue;
+            }
+            let Some(fa) = state.grid.planet.face_at(terrain.vert_dir(a)) else { continue };
+            if blend_of.contains_key(&(fa as u32)) {
+                continue;
+            }
+            for &b in terrain.adj_of(a) {
+                if pad_vert[b] || canyon[b] {
+                    continue;
+                }
+                let Some(fb) = state.grid.planet.face_at(terrain.vert_dir(b)) else { continue };
+                if blend_of.contains_key(&(fb as u32)) {
+                    continue;
+                }
+                if matches!(vkind[b], Terrain::Beach | Terrain::Ocean | Terrain::Lake) {
+                    assert!(
+                        e[a] - e[b] > 0.2,
+                        "cliff seam too gentle: {} over {:?} {}",
+                        e[a], vkind[b], e[b]
+                    );
+                }
             }
         }
 
