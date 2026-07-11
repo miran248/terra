@@ -2217,7 +2217,25 @@ fn solve_elevation(
                 }
             }
         }
-        // 3) cliff crest tracking: the crest equals the hinterland edge.
+        // 3) lake and river beds are CONCAVE: every water vert is pushed
+        // below the average of its neighbors, so basins bowl toward the
+        // middle and channels dip below their banks — depth grows naturally
+        // with basin size instead of being a flat plate.
+        for vi in 0..nv {
+            let c = match owner[vi] {
+                Terrain::Lake => 0.010,
+                Terrain::River => 0.030,
+                _ => continue,
+            };
+            let nbs = terrain.adj_of(vi);
+            let avg: f32 = nbs.iter().map(|&nb| e[nb]).sum::<f32>() / nbs.len() as f32;
+            let cap = avg - c;
+            if e[vi] > cap {
+                residual += e[vi] - cap;
+                e[vi] = cap;
+            }
+        }
+        // 3b) cliff crest tracking: the crest equals the hinterland edge.
         for vi in 0..nv {
             if cliff_crest[vi] {
                 let mut hinterland = f32::MIN;
@@ -2612,6 +2630,31 @@ mod tests {
                         vkind[vi], e[vi], vkind[nb], e[nb].max(0.0)
                     );
                 }
+            }
+        }
+
+        // Lake beds are concave: interior verts (all-lake neighborhoods) sit
+        // below the bed's edge verts on average.
+        {
+            let mut interior = Vec::new();
+            let mut edge = Vec::new();
+            for vi in 0..terrain.vert_count() {
+                if vkind[vi] != Terrain::Lake || canyon[vi] {
+                    continue;
+                }
+                if terrain.adj_of(vi).iter().all(|&nb| vkind[nb] == Terrain::Lake) {
+                    interior.push(e[vi]);
+                } else {
+                    edge.push(e[vi]);
+                }
+            }
+            if !interior.is_empty() && !edge.is_empty() {
+                let avg = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+                assert!(
+                    avg(&interior) < avg(&edge),
+                    "lake beds not concave: interior {} vs edge {}",
+                    avg(&interior), avg(&edge)
+                );
             }
         }
 
