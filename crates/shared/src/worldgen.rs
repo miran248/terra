@@ -137,12 +137,37 @@ impl BitSet {
     }
 }
 
+/// Built features, painted per CELL (like terrain identity): a face is a
+/// solid feature where ≥2 of its corner cells are painted, and fades out at
+/// the edges through per-corner colors — the same construction as terrain,
+/// so feature footprints can never pinch or zigzag either.
 #[derive(Clone)]
 pub struct Painted {
     pub roads: BitSet,
     pub towns: BitSet,
     pub bridges: BitSet,
     pub bridge_entries: BitSet,
+}
+
+impl Painted {
+    fn empty(nv: usize) -> Self {
+        Self {
+            roads: BitSet::new(nv),
+            towns: BitSet::new(nv),
+            bridges: BitSet::new(nv),
+            bridge_entries: BitSet::new(nv),
+        }
+    }
+}
+
+/// How many of a face's corner cells are in the set.
+fn painted_corners(grid: &Grid, bits: &BitSet, fi: usize) -> usize {
+    grid.face_verts[fi].iter().filter(|&&vi| bits.contains(vi as usize)).count()
+}
+
+/// A face is a solid feature face when the feature owns most of it.
+fn face_solid(grid: &Grid, bits: &BitSet, fi: usize) -> bool {
+    painted_corners(grid, bits, fi) >= 2
 }
 
 // ---- state ----
@@ -172,18 +197,13 @@ pub struct GenState {
 impl GenState {
     pub fn new(seed: u32) -> Self {
         let grid = Grid::new(seed);
-        let n = grid.n;
+        let painted = Painted::empty(grid.nv);
         Self {
             grid,
             terrain: None,
             cells: Vec::new(),
             tiles: Vec::new(),
-            painted: Painted {
-                roads: BitSet::new(n),
-                towns: BitSet::new(n),
-                bridges: BitSet::new(n),
-                bridge_entries: BitSet::new(n),
-            },
+            painted,
             bridges: Vec::new(),
             roads: Vec::new(),
             blends: Vec::new(),
@@ -348,7 +368,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::WaterNormalized(cells)]
         }
         Command::PaintFeatures => {
-            let (painted, roads) = paint_features(&state.grid, state.terrain(), &state.tiles);
+            let (painted, roads) = paint_features(&state.grid, state.terrain(), &state.cells);
             vec![Event::FeaturesPainted(painted, roads)]
         }
         Command::ResolveTransitions => {
@@ -375,13 +395,15 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         Command::SelectBridges => {
             let mut painted = state.painted.clone();
             let bridges =
-                build_bridges(&state.grid, &state.tiles, &state.face_region, &mut painted);
+                build_bridges(
+                &state.grid, state.terrain(), &state.cells, &state.tiles,
+                &state.face_region, &mut painted,
+            );
             vec![Event::BridgesSelected(bridges, painted)]
         }
         Command::BuildMesh => {
-            let (tris, cols) = build_mesh(
-                &state.grid, state.terrain(), &state.cells, &state.painted, &state.blends,
-            );
+            let (tris, cols) =
+                build_mesh(&state.grid, state.terrain(), &state.cells, &state.painted);
             vec![Event::MeshBuilt(tris, cols)]
         }
         Command::BuildTags => {
@@ -800,35 +822,33 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 /// faces of area, so 15 cells ≈ the old 30-face minimum).
 const MIN_WATER_BODY_CELLS: usize = 15;
 
-/// Roads may not cross water: a planned path whose face chain touches a water
-/// tile is dropped entirely (crossing there needs a bridge, not a road).
+/// Roads may not cross water: a planned path whose cell chain touches a water
+/// cell is dropped entirely (crossing there needs a bridge, not a road).
 fn paint_features(
     grid: &Grid,
     terrain: &TerrainGen,
-    tiles: &[Terrain],
+    cells: &[Terrain],
 ) -> (Painted, Vec<Vec<SpherePos>>) {
-    let mut roads = BitSet::new(grid.n);
+    let mut painted = Painted::empty(grid.nv);
     let mut kept: Vec<Vec<SpherePos>> = Vec::new();
     for path in &terrain.road_paths {
-        let chain = face_chain(grid, path);
-        if chain.iter().any(|&fi| tiles[fi].is_water()) {
+        let chain = vert_chain(grid, path);
+        if chain.iter().any(|&vi| cells[vi].is_water()) {
             continue;
         }
-        for fi in chain {
-            roads.insert(fi);
+        for vi in chain {
+            painted.roads.insert(vi);
         }
         kept.push(path.clone());
     }
     // Bridges are painted later, once regions exist to validate their endpoints.
-    let bridges = BitSet::new(grid.n);
-    let mut towns = BitSet::new(grid.n);
-    for fi in 0..grid.n {
-        let cent = grid.centroid(fi);
-        if terrain.settlement_anchors.iter().any(|a| a.distance(cent) <= TOWN_RADIUS) {
-            towns.insert(fi);
+    for vi in 0..grid.nv {
+        let pos = grid.vert_pos(vi);
+        if terrain.settlement_anchors.iter().any(|a| a.distance(pos) <= TOWN_RADIUS) {
+            painted.towns.insert(vi);
         }
     }
-    (Painted { roads, towns, bridges, bridge_entries: BitSet::new(grid.n) }, kept)
+    (painted, kept)
 }
 
 /// Gaps up to this bridge freely.
@@ -845,6 +865,8 @@ const BRIDGE_ENTRY_OVERLAP: f32 = 25.0;
 /// of a *different* region on a different landmass, crossing open water.
 fn build_bridges(
     grid: &Grid,
+    terrain: &TerrainGen,
+    cells: &[Terrain],
     face_types: &[Terrain],
     face_region: &[u32],
     painted: &mut Painted,
@@ -878,6 +900,26 @@ fn build_bridges(
         {
             heads.entry(comp[fi]).or_default().push(fi);
         }
+    }
+    // A landmass with no beach (an all-cliff island, now that cliffs follow
+    // the raised ground) still gets a way in: its lowest coastal faces serve
+    // as harbor sites — the bridge-entry pad flattens the footing there.
+    let mut coast: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+    for fi in 0..grid.n {
+        if comp[fi] == u32::MAX || heads.contains_key(&comp[fi]) || face_types[fi].is_water() {
+            continue;
+        }
+        if grid.adj[fi].iter().any(|&nb| face_types[nb as usize].is_water()) {
+            coast.entry(comp[fi]).or_default().push(fi);
+        }
+    }
+    for (c, mut faces) in coast {
+        faces.sort_by(|&a, &b| {
+            terrain.elevation_at(grid.centroid(a))
+                .partial_cmp(&terrain.elevation_at(grid.centroid(b))).unwrap()
+        });
+        faces.truncate(30);
+        heads.insert(c, faces);
     }
     let comps: Vec<u32> = heads.keys().copied().collect();
     let mut candidates: Vec<(f32, usize, usize, usize, usize)> = Vec::new();
@@ -933,19 +975,22 @@ fn build_bridges(
         if !crosses_water {
             continue;
         }
-        for fi in face_chain(grid, &span) {
-            painted.bridges.insert(fi);
+        for vi in vert_chain(grid, &span) {
+            painted.bridges.insert(vi);
         }
-        // Bridge entries: the land faces around each deck end.
+        // Bridge entries: the land cells around each deck end.
         for end in [span.first(), span.last()] {
             let Some(fi) = end.and_then(|p| grid.planet.face_at(p.0)) else { continue };
-            if face_types[fi].is_land() {
-                painted.bridge_entries.insert(fi);
-            }
-            for &nb in &grid.adj[fi] {
-                let nb = nb as usize;
-                if face_types[nb].is_land() {
-                    painted.bridge_entries.insert(nb);
+            for &vi in &grid.face_verts[fi] {
+                let vi = vi as usize;
+                if !cells[vi].is_land() {
+                    continue;
+                }
+                painted.bridge_entries.insert(vi);
+                for &nb in &grid.vert_adj[vi] {
+                    if cells[nb as usize].is_land() {
+                        painted.bridge_entries.insert(nb as usize);
+                    }
                 }
             }
         }
@@ -1074,7 +1119,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     for (ci, &vi) in wfc_cells.iter().enumerate() {
         resolved[vi] = solved[ci];
     }
-    segment_coastline(grid, terrain, &mut resolved);
+    smooth_coast_band(grid, &mut resolved);
     absorb_small_forests(grid, &mut resolved);
     resolved
 }
@@ -1087,20 +1132,22 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
 fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Painted) -> Vec<(u32, u8, u8)> {
     let plain = |t: Terrain| t.is_land();
     let overlay = |fi: usize| {
-        painted.roads.contains(fi) || painted.towns.contains(fi) || painted.bridge_entries.contains(fi)
+        face_solid(grid, &painted.roads, fi)
+            || face_solid(grid, &painted.towns, fi)
+            || face_solid(grid, &painted.bridge_entries, fi)
     };
     let mut out = Vec::new();
     for fi in 0..grid.n {
         if !plain(tiles[fi]) || overlay(fi) {
             continue;
         }
-        // Feature flanks blend toward the feature; most specific wins
-        // (entry pad < town blob < road network by footprint).
-        let feature = if grid.adj[fi].iter().any(|&nb| painted.bridge_entries.contains(nb as usize)) {
+        // Feature flanks (a painted corner without ownership) blend toward the
+        // feature; most specific wins (entry pad < town blob < road network).
+        let feature = if painted_corners(grid, &painted.bridge_entries, fi) > 0 {
             Some(crate::level::BLEND_BRIDGE_ENTRY)
-        } else if grid.adj[fi].iter().any(|&nb| painted.towns.contains(nb as usize)) {
+        } else if painted_corners(grid, &painted.towns, fi) > 0 {
             Some(crate::level::BLEND_TOWN)
-        } else if grid.adj[fi].iter().any(|&nb| painted.roads.contains(nb as usize)) {
+        } else if painted_corners(grid, &painted.roads, fi) > 0 {
             Some(crate::level::BLEND_ROAD)
         } else {
             None
@@ -1156,59 +1203,18 @@ fn absorb_small_forests(grid: &Grid, out: &mut [Terrain]) {
     }
 }
 
-/// Max coastal segment sizes in cells (the band is 1-2 cells wide, cells are
-/// ~35m apart, so 30 cells is on the order of a kilometre of beach).
+/// Coastal region naming granularity: one named beach/cliff region covers at
+/// most this many cells (regions are split while naming, never by retyping).
 const MAX_BEACH_CELLS: usize = 30;
 const MAX_CLIFF_CELLS: usize = 12;
 const MIN_BEACH_CELLS: usize = 10;
 
-/// Break each continuous ocean shore band into alternating Beach and Cliff
-/// segments with bounded lengths — beaches can't wrap a whole continent as one
-/// region, and each cliff range between them becomes a named region too.
-/// Steep cells still force Cliff regardless of alternation.
-fn segment_coastline(grid: &Grid, terrain: &TerrainGen, out: &mut [Terrain]) {
-    let in_band: Vec<bool> = (0..grid.nv)
-        .map(|vi| matches!(out[vi], Terrain::Beach | Terrain::Cliff))
-        .collect();
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
-        if !in_band[start] || visited[start] {
-            continue;
-        }
-        // BFS order approximates walking along the thin band.
-        let mut order = vec![start];
-        let mut q = VecDeque::from([start]);
-        visited[start] = true;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if in_band[nb] && !visited[nb] {
-                    visited[nb] = true;
-                    order.push(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
-        let mut kind = Terrain::Beach;
-        let mut count = 0usize;
-        for vi in order {
-            let steep = terrain.elevation_at(grid.vert_pos(vi)) > 0.15;
-            if steep && kind == Terrain::Beach {
-                kind = Terrain::Cliff;
-                count = 0;
-            }
-            let max = if kind == Terrain::Beach { MAX_BEACH_CELLS } else { MAX_CLIFF_CELLS };
-            if count >= max {
-                kind = if kind == Terrain::Beach { Terrain::Cliff } else { Terrain::Beach };
-                count = 0;
-            }
-            out[vi] = kind;
-            count += 1;
-        }
-    }
-    // Remove single-cell islands: a band cell with no same-kind neighbor in
-    // the band joins its neighbors' kind (a lone beach cell between two cliffs
-    // becomes cliff, and vice versa).
+/// The coast band is PROACTIVE: Beach vs Cliff was already decided by the
+/// proposed elevation field (high ground meeting water is a cliff, low ground
+/// a beach — the ground is raised first, the label follows). This pass only
+/// smooths single-cell islands in the band: a lone beach cell between two
+/// cliffs joins them, and vice versa.
+fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
     for _ in 0..8 {
         let mut changed = false;
         for vi in 0..grid.nv {
@@ -1231,32 +1237,6 @@ fn segment_coastline(grid: &Grid, terrain: &TerrainGen, out: &mut [Terrain]) {
         }
         if !changed {
             break;
-        }
-    }
-
-    // A cove under MIN_BEACH_CELLS isn't a beach — fold it into the cliffs.
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
-        if out[start] != Terrain::Beach || visited[start] {
-            continue;
-        }
-        let mut cluster = vec![start];
-        let mut q = VecDeque::from([start]);
-        visited[start] = true;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if out[nb] == Terrain::Beach && !visited[nb] {
-                    visited[nb] = true;
-                    cluster.push(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
-        if cluster.len() < MIN_BEACH_CELLS {
-            for vi in cluster {
-                out[vi] = Terrain::Cliff;
-            }
         }
     }
 }
@@ -1295,12 +1275,14 @@ fn water_distance(grid: &Grid, base: &[Terrain], max_dist: u8) -> (Vec<u8>, Vec<
 /// Which nameable feature a face belongs to. Tags win over terrain so towns and
 /// roads cluster as themselves; LakeShore/RiverBank separate regions and stay
 /// unnamed.
-fn region_class(face_types: &[Terrain], painted: &Painted, fi: usize) -> Option<RegionKind> {
-    if painted.towns.contains(fi) {
-        return Some(RegionKind::Town);
-    }
-    if painted.roads.contains(fi) {
-        return Some(RegionKind::Road);
+fn region_class(grid: &Grid, face_types: &[Terrain], painted: Option<&Painted>, fi: usize) -> Option<RegionKind> {
+    if let Some(p) = painted {
+        if face_solid(grid, &p.towns, fi) {
+            return Some(RegionKind::Town);
+        }
+        if face_solid(grid, &p.roads, fi) {
+            return Some(RegionKind::Road);
+        }
     }
     match face_types[fi] {
         Terrain::DeepOcean | Terrain::Ocean => Some(RegionKind::Ocean),
@@ -1327,24 +1309,13 @@ fn build_regions(
     painted: &Painted,
 ) -> (Vec<RegionData>, Vec<u32>) {
     let class: Vec<Option<RegionKind>> =
-        (0..grid.n).map(|fi| region_class(face_types, painted, fi)).collect();
+        (0..grid.n).map(|fi| region_class(grid, face_types, Some(painted), fi)).collect();
     // Terrain-derived class ignoring the road/town overlay: a road slicing
     // through a desert must not split it into two regions, so terrain clusters
     // may flow THROUGH overlay faces whose underlying terrain matches (without
     // claiming them — those faces belong to their Road/Town region).
     let terrain_class: Vec<Option<RegionKind>> = (0..grid.n)
-        .map(|fi| {
-            region_class(
-                face_types,
-                &Painted {
-                    roads: BitSet::new(0),
-                    towns: BitSet::new(0),
-                    bridges: BitSet::new(0),
-                    bridge_entries: BitSet::new(0),
-                },
-                fi,
-            )
-        })
+        .map(|fi| region_class(grid, face_types, None, fi))
         .collect();
 
     let mut face_region = vec![NO_REGION; grid.n];
@@ -1360,11 +1331,21 @@ fn build_regions(
         // Collect the edge-connected cluster. Stored refs are region id + 1
         // (0 = no region, see level::region_index).
         let re = regions.len() as u32 + 1;
+        // Long coastlines split into multiple named regions while naming —
+        // the tiles themselves are never retyped for naming's sake.
+        let max_faces = match kind {
+            RegionKind::Beach => MAX_BEACH_CELLS * 2,
+            RegionKind::Cliff => MAX_CLIFF_CELLS * 2,
+            _ => usize::MAX,
+        };
         let mut faces = vec![start];
         let mut q = VecDeque::from([start]);
         let mut visited_connector = BitSet::new(grid.n);
         face_region[start] = re;
         while let Some(cur) = q.pop_front() {
+            if faces.len() >= max_faces {
+                break;
+            }
             for &nb in &grid.adj[cur] {
                 let nb = nb as usize;
                 if class[nb] == Some(kind) && face_region[nb] == NO_REGION {
@@ -1462,12 +1443,7 @@ fn build_mesh(
     terrain: &TerrainGen,
     cells: &[Terrain],
     painted: &Painted,
-    blends: &[(u32, u8, u8)],
 ) -> (Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>) {
-    let mut blend_of: BTreeMap<u32, (u8, u8)> = BTreeMap::new();
-    for &(fi, a, b) in blends {
-        blend_of.insert(fi, (a, b));
-    }
     let vert_r: Vec<f32> = grid.verts.iter()
         .map(|dir| terrain.render_radius(SpherePos::new(*dir)))
         .collect();
@@ -1475,32 +1451,25 @@ fn build_mesh(
     let road_color = bevy::prelude::Color::srgb(0.5, 0.42, 0.3).to_linear().to_f32_array();
     let town_color = crate::theme::WARNING.to_linear().to_f32_array();
     let entry_color = bevy::prelude::Color::srgb(0.42, 0.33, 0.24).to_linear().to_f32_array();
-    let mix = |a: [f32; 4], b: [f32; 4]| {
-        [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0, (a[2] + b[2]) / 2.0, (a[3] + b[3]) / 2.0]
-    };
     let mut tris = Vec::with_capacity(grid.n);
     let mut cols = Vec::with_capacity(grid.n);
-    for (fi, idx) in grid.face_verts.iter().enumerate() {
-        let corner = |k: usize| cells[idx[k] as usize].color().to_linear().to_f32_array();
-        let color: [[f32; 4]; 3] = if painted.towns.contains(fi) {
-            [town_color; 3]
-        } else if painted.bridge_entries.contains(fi) {
-            [entry_color; 3]
-        } else if painted.roads.contains(fi) {
-            [road_color; 3]
-        } else if let Some(&(_, kb)) = blend_of.get(&(fi as u32)).filter(|&&(_, b)| b >= crate::level::BLEND_FEATURE_MIN) {
-            // Feature flank: fade each corner toward the feature color.
-            let cb = match kb {
-                crate::level::BLEND_ROAD => road_color,
-                crate::level::BLEND_TOWN => town_color,
-                _ => entry_color,
-            };
-            [mix(corner(0), cb), mix(corner(1), cb), mix(corner(2), cb)]
-        } else {
-            // Cell colors per corner: solid inside a region, gradient at
-            // boundaries (terrain-pair blends need no special casing).
-            [corner(0), corner(1), corner(2)]
+    for idx in grid.face_verts.iter() {
+        // Feature identity is per corner cell, like terrain: solid where the
+        // feature owns the corners, fading out at the footprint edge — no
+        // face-level overrides, no seams, no pinches.
+        let corner = |k: usize| {
+            let vi = idx[k] as usize;
+            if painted.towns.contains(vi) {
+                town_color
+            } else if painted.bridge_entries.contains(vi) {
+                entry_color
+            } else if painted.roads.contains(vi) {
+                road_color
+            } else {
+                cells[vi].color().to_linear().to_f32_array()
+            }
         };
+        let color: [[f32; 4]; 3] = [corner(0), corner(1), corner(2)];
         tris.push([
             (grid.verts[idx[0] as usize] * vert_r[idx[0] as usize]).to_array(),
             (grid.verts[idx[1] as usize] * vert_r[idx[1] as usize]).to_array(),
@@ -1516,10 +1485,10 @@ fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
     let mut data = Vec::new();
     off.push(0u32);
     for fi in 0..grid.n {
-        if painted.roads.contains(fi) { data.push(TAG_ROAD); }
-        if painted.towns.contains(fi) { data.push(TAG_TOWN); }
-        if painted.bridges.contains(fi) { data.push(TAG_BRIDGE); }
-        if painted.bridge_entries.contains(fi) { data.push(TAG_BRIDGE_ENTRY); }
+        if face_solid(grid, &painted.roads, fi) { data.push(TAG_ROAD); }
+        if face_solid(grid, &painted.towns, fi) { data.push(TAG_TOWN); }
+        if face_solid(grid, &painted.bridges, fi) { data.push(TAG_BRIDGE); }
+        if face_solid(grid, &painted.bridge_entries, fi) { data.push(TAG_BRIDGE_ENTRY); }
         off.push(data.len() as u32);
     }
     (off, data)
@@ -1654,9 +1623,9 @@ fn solve_elevation(
         lo[vi] = rlo;
         hi[vi] = rhi;
     }
-    for fi in 0..grid.n {
-        if painted.roads.contains(fi) {
-            for &(vi, _) in terrain.kernel(grid.centroid(fi))[..3].iter() {
+    for ci in 0..grid.nv {
+        if painted.roads.contains(ci) {
+            for &(vi, _) in terrain.kernel(grid.vert_pos(ci))[..3].iter() {
                 is_road_vert[vi] = true;
             }
         }
@@ -1721,21 +1690,17 @@ fn solve_elevation(
         .map(|vi| if is_canyon_vert[vi] { Terrain::River } else { owner[vi] })
         .collect();
 
-    // Cliff ramp vertices: a cliff-owned vert beside water/beach is the TOE
-    // (pinned to shore level); every other cliff vert is the CREST (tracks the
-    // highest adjacent hinterland vert exactly, so nothing sticks out above
-    // the terrain behind and lower neighbors stay untouched).
+    // Cliff crest vertices track the hinterland: the high ground CARRIES
+    // INWARD (the cliff is the edge of a raised coast, not a wall in front of
+    // low ground), and nothing sticks out above the terrain behind. The
+    // seaward drop needs no pinning — the wide Cliff range and the steep
+    // cliff/water gradient allowance let the whole drop happen at the edge.
     let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
-    let mut cliff_toe: Vec<bool> = vec![false; nv];
     let mut cliff_crest: Vec<bool> = vec![false; nv];
     for vi in 0..nv {
-        if owner[vi] != Terrain::Cliff {
-            continue;
-        }
-        let shoreside = terrain.adj_of(vi).iter().any(|&nb| shore_kind(owner[nb]));
-        if shoreside {
-            cliff_toe[vi] = true;
-        } else {
+        if owner[vi] == Terrain::Cliff
+            && !terrain.adj_of(vi).iter().any(|&nb| shore_kind(owner[nb]))
+        {
             cliff_crest[vi] = true;
         }
     }
@@ -1815,22 +1780,9 @@ fn solve_elevation(
                 }
             }
         }
-        // 3) cliff ramp tracking: toe hugs the shore, crest equals the
-        // hinterland edge.
+        // 3) cliff crest tracking: the crest equals the hinterland edge.
         for vi in 0..nv {
-            if cliff_toe[vi] {
-                let mut shore = f32::MAX;
-                for &nb in terrain.adj_of(vi) {
-                    if shore_kind(owner[nb]) {
-                        shore = shore.min(e[nb]);
-                    }
-                }
-                if shore < f32::MAX {
-                    let target = (shore.max(-0.02) + 0.02).min(0.06);
-                    residual += (e[vi] - target).abs();
-                    e[vi] = target;
-                }
-            } else if cliff_crest[vi] {
+            if cliff_crest[vi] {
                 let mut hinterland = f32::MIN;
                 for &nb in terrain.adj_of(vi) {
                     if owner[nb].is_land() && owner[nb] != Terrain::Cliff && !shore_kind(owner[nb]) {
@@ -2093,10 +2045,19 @@ mod tests {
             }
         }
 
-        // Roads never sit on water tiles.
+        // Roads never sit on water: checked per cell (painting is per cell)
+        // and per solid road face.
+        for vi in 0..state.grid.nv {
+            if state.painted.roads.contains(vi) {
+                assert!(state.cells[vi].is_land(), "road painted on water cell {vi}");
+            }
+        }
         for fi in 0..state.grid.n {
-            if state.painted.roads.contains(fi) {
-                assert!(state.tiles[fi].is_land(), "road painted on water tile {fi}");
+            let solid = state.grid.face_verts[fi].iter()
+                .filter(|&&vi| state.painted.roads.contains(vi as usize))
+                .count() >= 2;
+            if solid {
+                assert!(state.tiles[fi].is_land(), "solid road face on water tile {fi}");
             }
         }
 
@@ -2172,9 +2133,10 @@ mod tests {
                 continue;
             }
             let shoreside = terrain.adj_of(a).iter().any(|&nb| shore_kind(vkind[nb]));
-            if shoreside {
-                assert!(e[a] <= 0.08, "cliff toe floats above the shore: {}", e[a]);
-            } else {
+            // Seaward cliff verts are free — the drop happens at the water
+            // edge; only the crest is constrained (carries the hinterland
+            // inward, never sticks out above it).
+            if !shoreside {
                 let hinterland = terrain.adj_of(a).iter()
                     .filter(|&&nb| vkind[nb].is_land() && vkind[nb] != Terrain::Cliff && !shore_kind(vkind[nb]))
                     .map(|&nb| e[nb])

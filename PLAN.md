@@ -29,10 +29,15 @@ PaintRivers         river polylines → River cells
 NormalizeWater      connectivity identity on cells: Ocean iff it reaches
                     ocean-zone cells, else Lake; min body size, min width,
                     lake rim dams, lakes trimmed ~250m clear of the sea
-PaintFeatures       roads + towns face sets
-ResolveTransitions  shore bands, micro WFC, coast segmentation (beach ≤30 /
-                    cliff ≤12 cells, alternating, named) — all on the hex
-                    cell graph; no repair passes exist or are needed
+PaintFeatures       roads + towns painted per CELL (same construction as
+                    terrain: solid where ≥2 corners painted, edges fade via
+                    per-corner colors — feature footprints can't pinch)
+ResolveTransitions  shore bands + micro WFC on the hex cell graph. Beach
+                    vs Cliff is PROACTIVE: the proposed field is raised
+                    first, high ground meeting water is a cliff and carries
+                    inland; no alternation, no toe pinning, no repairs.
+                    Long coasts split into named regions while NAMING
+                    (beach ≤30 / cliff ≤12 cells), never by retyping
 MarkBlends          faces whose corner cells disagree carry (A, B) kind
                     pairs (edge-connected strips by construction) +
                     feature flanks (road/town/bridge-entry codes)
@@ -42,7 +47,9 @@ SolveElevation      Gauss-Seidel on the sub=5 vert field:
                       • soft per-kind-pair gradient caps (≥ forced range gap)
                       • river monotone descent (until the sea), road caps
 BuildRegions        edge-linked named clusters (min sizes per kind)
-SelectBridges       landmass pairs via shore-band heads, union-find connect
+SelectBridges       landmass pairs via beach heads, union-find connect;
+                    an all-cliff landmass gets harbor heads at its lowest
+                    coast (the entry pad flattens the footing)
 BuildMesh           pure projection of the solved field, PER-CORNER colors
                     (boundaries are gradients; color pinch cannot render)
 BuildTags           per-face tag table (road/town/bridge/bridge-entry)
