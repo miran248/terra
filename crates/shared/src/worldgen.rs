@@ -165,9 +165,13 @@ fn painted_corners(grid: &Grid, bits: &BitSet, fi: usize) -> usize {
     grid.face_verts[fi].iter().filter(|&&vi| bits.contains(vi as usize)).count()
 }
 
-/// A face is a solid feature face when the feature owns most of it.
+/// A face is a solid feature surface only when the feature owns ALL its
+/// corners: for a band painted as two parallel lattice lines that is exactly
+/// the parallelogram strip between them (straight edges = the lines
+/// themselves). Faces with 1–2 painted corners form one straight-edged strip
+/// on each side — the blend band, rendered as a per-corner gradient.
 fn face_solid(grid: &Grid, bits: &BitSet, fi: usize) -> bool {
-    painted_corners(grid, bits, fi) >= 2
+    painted_corners(grid, bits, fi) == 3
 }
 
 // ---- state ----
@@ -2167,7 +2171,7 @@ mod tests {
         for fi in 0..state.grid.n {
             let solid = state.grid.face_verts[fi].iter()
                 .filter(|&&vi| state.painted.roads.contains(vi as usize))
-                .count() >= 2;
+                .count() == 3;
             if solid {
                 assert!(state.tiles[fi].is_land(), "solid road face on water tile {fi}");
             }
