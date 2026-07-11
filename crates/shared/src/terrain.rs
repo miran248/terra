@@ -222,13 +222,13 @@ impl TerrainGen {
         self.interp_elevation(pos)
     }
 
-    /// The WALKABLE/RENDERED surface: land relief above sea level, and a
-    /// flat water surface exactly at altitude 0 — the signed depth field
-    /// stays internal (solver shelf constraints, water identity), but the
-    /// seabed is never the surface the player sees or stands on.
     pub fn surface_radius(&self, pos: SpherePos) -> f32 {
         let e = self.elevation_at(pos);
-        PLANET_RADIUS + e.max(0.0).powf(1.15) * MAX_MOUNTAIN
+        if e > 0.0 {
+            PLANET_RADIUS + e.powf(1.15) * MAX_MOUNTAIN
+        } else {
+            PLANET_RADIUS - (-e) * MAX_DEPTH
+        }
     }
 
     pub fn render_radius(&self, pos: SpherePos) -> f32 { self.surface_radius(pos) }

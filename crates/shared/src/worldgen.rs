@@ -1943,9 +1943,12 @@ fn elev_range(t: Terrain) -> (f32, f32) {
     // within one edge's gradient cap) or the constraint set is unsatisfiable.
     match t {
         DeepOcean => (-1.0, -0.15),
+        // The sea's ceiling is the waterline; its floor shows below it.
         Ocean => (-0.35, -0.01),
-        Lake => (-0.25, -0.03),
-        LakeShore => (0.0, 0.08),
+        // Lakes and rivers carry their OWN water level — a mountain lake may
+        // sit high above the sea; only its shores must stay above it.
+        Lake => (-0.25, 0.55),
+        LakeShore => (0.0, 0.60),
         // Rivers descend from mountains to the sea; their range must span it.
         River => (-1.0, 0.60),
         RiverBank => (0.0, 0.65),
