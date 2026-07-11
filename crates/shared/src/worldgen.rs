@@ -107,21 +107,167 @@ impl Grid {
 /// present, else water, else the lowest discriminant — deterministic and
 /// conservative at waterlines.
 pub fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> Vec<Terrain> {
+    grid.face_verts.iter().map(|idx| {
+        derive_one(cells[idx[0] as usize], cells[idx[1] as usize], cells[idx[2] as usize])
+    }).collect()
+}
+
+fn derive_one(a: Terrain, b: Terrain, c: Terrain) -> Terrain {
     let pri = |t: Terrain| match t {
         Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank => 0u8,
         t if t.is_water() => 1,
         _ => 2,
     };
-    grid.face_verts.iter().map(|idx| {
-        let [a, b, c] = [cells[idx[0] as usize], cells[idx[1] as usize], cells[idx[2] as usize]];
-        if a == b || a == c {
-            a
-        } else if b == c {
-            b
-        } else {
-            [a, b, c].into_iter().min_by_key(|t| (pri(*t), *t as u8)).unwrap()
+    if a == b || a == c {
+        a
+    } else if b == c {
+        b
+    } else {
+        [a, b, c].into_iter().min_by_key(|t| (pri(*t), *t as u8)).unwrap()
+    }
+}
+
+/// The neighbors of a cell in CYCLIC order (walking the face fan), starting
+/// from the lowest-id neighbor — deterministic.
+fn ring(grid: &Grid, v: usize) -> Vec<usize> {
+    let mut out = Vec::with_capacity(grid.vert_adj[v].len());
+    let mut cur = grid.vert_adj[v][0] as usize;
+    out.push(cur);
+    loop {
+        let next = grid.vert_faces[v].iter().find_map(|&f| {
+            let idx = grid.face_verts[f as usize];
+            if !idx.contains(&(cur as u32)) {
+                return None;
+            }
+            let third = *idx.iter().find(|&&x| x as usize != v && x as usize != cur)?;
+            (!out.contains(&(third as usize))).then_some(third as usize)
+        });
+        match next {
+            Some(t) => {
+                out.push(t);
+                cur = t;
+            }
+            None => break,
         }
-    }).collect()
+    }
+    debug_assert_eq!(out.len(), grid.vert_adj[v].len());
+    out
+}
+
+/// THE LINKING RULE, generic over every type: around any cell, the faces
+/// deriving to a given type must form ONE edge-connected fan — same-type
+/// triangles are never linked by a lone vertex. Where a fan splits into two
+/// runs, retype one gap cell (same land/water class, deterministic order,
+/// only if it provably merges the runs) so the band thickens through the
+/// pinch. Iterated to a fixed point.
+fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
+    // Pinch potential at a cell: how many extra runs its face fan carries,
+    // summed over types. Zero everywhere ⇔ the linking rule holds.
+    fn potential_at(grid: &Grid, cells: &[Terrain], v: usize) -> usize {
+        let ring = ring(grid, v);
+        let n = ring.len();
+        let ts: Vec<Terrain> = (0..n)
+            .map(|i| derive_one(cells[v], cells[ring[i]], cells[ring[(i + 1) % n]]))
+            .collect();
+        let mut types = ts.clone();
+        types.sort_by_key(|t| *t as u8);
+        types.dedup();
+        types.iter().map(|&t| {
+            let runs = (0..n).filter(|&i| ts[i] == t && ts[(i + n - 1) % n] != t).count();
+            runs.saturating_sub(1)
+        }).sum()
+    }
+    // A retype of cell c only changes faces containing c — the fans of c and
+    // its ring. Accept a candidate only if the potential over that
+    // neighborhood strictly DROPS: the loop then converges (the global
+    // potential is a non-negative integer that decreases with every change).
+    let local = |cells: &[Terrain], c: usize| -> usize {
+        potential_at(grid, cells, c)
+            + ring(grid, c).iter().map(|&w| potential_at(grid, cells, w)).sum::<usize>()
+    };
+    for it in 0..64 {
+        debug_assert!(it < 63, "link_tile_pinches did not converge");
+        let mut changed = false;
+        for v in 0..grid.nv {
+            if potential_at(grid, cells, v) == 0 {
+                continue;
+            }
+            let ring_v = ring(grid, v);
+            let ts: Vec<Terrain> = {
+                let n = ring_v.len();
+                (0..n)
+                    .map(|i| derive_one(cells[v], cells[ring_v[i]], cells[ring_v[(i + 1) % n]]))
+                    .collect()
+            };
+            let mut types = ts;
+            types.sort_by_key(|t| *t as u8);
+            types.dedup();
+            // Prefer a class-preserving retype; fall back to crossing the
+            // waterline only when nothing else merges the runs.
+            'candidates: for cross in [false, true] {
+                for t in &types {
+                    let t = *t;
+                    for &c in &ring_v {
+                        if cells[c] == t || (cells[c].is_water() != t.is_water()) != cross {
+                            continue;
+                        }
+                        let before = local(cells, c);
+                        let old = cells[c];
+                        cells[c] = t;
+                        if local(cells, c) < before {
+                            changed = true;
+                            break 'candidates;
+                        }
+                        cells[c] = old;
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Same rule for painted features: the solid faces of a feature around any
+/// cell must form one edge-connected fan. Solid needs all 3 corners painted,
+/// so a pinch is two painted runs around a painted cell — paint a passable
+/// gap cell to merge them (e.g. the miter cell at a road's 60° turn).
+fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize) -> bool) {
+    for _ in 0..8 {
+        let mut changed = false;
+        for v in 0..grid.nv {
+            if !bits.contains(v) {
+                continue;
+            }
+            let ring = ring(grid, v);
+            let n = ring.len();
+            let runs = |bits: &BitSet| -> usize {
+                let solid =
+                    |i: usize| bits.contains(ring[i]) && bits.contains(ring[(i + 1) % n]);
+                (0..n).filter(|&i| solid(i) && !solid((i + n - 1) % n)).count()
+            };
+            let r = runs(bits);
+            if r < 2 {
+                continue;
+            }
+            for i in 0..n {
+                if bits.contains(ring[i]) || !passable(ring[i]) {
+                    continue;
+                }
+                bits.insert(ring[i]);
+                if runs(bits) < r {
+                    changed = true;
+                    break;
+                }
+                // BitSet has no remove; rebuild the bit by clearing the word bit.
+                bits.0[ring[i] >> 6] &= !(1u64 << (ring[i] & 63));
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 // ---- bitset ----
@@ -513,9 +659,12 @@ pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
 // ---- command implementations (single responsibility each) ----
 
 /// River polylines → River cells (land only; the mouth is already water).
+/// Painted as an edge PAIR (chain + parallel partner line), like roads: a
+/// single chain's derived faces only touch at the chain vertices.
 fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
     for path in &terrain.river_paths {
-        for vi in vert_chain(grid, path) {
+        let chain = vert_chain(grid, path);
+        for vi in widen_band(grid, &chain) {
             if cells[vi].is_land() {
                 cells[vi] = Terrain::River;
             }
@@ -954,6 +1103,8 @@ fn paint_features(
             painted.towns.insert(vi);
         }
     }
+    link_feature_pinches(grid, &mut painted.roads, |vi| cells[vi].is_land());
+    link_feature_pinches(grid, &mut painted.towns, |_| true);
     (painted, kept)
 }
 
@@ -1102,6 +1253,7 @@ fn build_bridges(
         }
         spans.push(span);
     }
+    link_feature_pinches(grid, &mut painted.bridge_entries, |vi| cells[vi].is_land());
     spans
 }
 
@@ -1227,6 +1379,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     }
     smooth_coast_band(grid, &mut resolved);
     absorb_small_forests(grid, &mut resolved);
+    link_tile_pinches(grid, &mut resolved);
     resolved
 }
 
@@ -1584,7 +1737,28 @@ fn build_mesh(
         } else if face_solid(grid, &painted.roads, fi) {
             [road_color; 3]
         } else {
-            [corner(0), corner(1), corner(2)]
+            // Boundary faces render ONE flat color — the equal-weight average
+            // of the distinct corner colors (50/50 for a pair) — so band
+            // bounds stay crisp instead of smearing into a gradient.
+            let (c0, c1, c2) = (corner(0), corner(1), corner(2));
+            if c0 == c1 && c1 == c2 {
+                [c0; 3]
+            } else {
+                let mut distinct = vec![c0];
+                for c in [c1, c2] {
+                    if !distinct.contains(&c) {
+                        distinct.push(c);
+                    }
+                }
+                let k = distinct.len() as f32;
+                let mut avg = [0.0f32; 4];
+                for c in &distinct {
+                    for i in 0..4 {
+                        avg[i] += c[i] / k;
+                    }
+                }
+                [avg; 3]
+            }
         };
         tris.push([
             (grid.verts[idx[0] as usize] * vert_r[idx[0] as usize]).to_array(),
@@ -2185,10 +2359,11 @@ mod tests {
             }
         }
 
-        // Tile identity lives on hex cells: two same-type cells can only meet
-        // along an edge, so vertex pinches are impossible by construction.
-        // Check the derivation instead: every face's type is one of its
-        // corner cells, and blend faces genuinely have mixed corners.
+        // Tile identity lives on hex cells (cells can't pinch), and the
+        // LINKING RULE covers the derived faces: around any cell, same-type
+        // faces form ONE edge-connected fan — never linked by a lone vertex.
+        // Also checked: every face's type is one of its corner cells, and
+        // solid feature faces obey the same fan rule.
         {
             for fi in 0..state.grid.n {
                 let corners = state.grid.face_verts[fi];
@@ -2198,6 +2373,38 @@ mod tests {
                     state.tiles[fi]
                 );
             }
+            let mut tile_pinches = 0usize;
+            let mut road_pinches = 0usize;
+            for v in 0..state.grid.nv {
+                let ring = ring(&state.grid, v);
+                let n = ring.len();
+                let ts: Vec<Terrain> = (0..n)
+                    .map(|i| derive_one(
+                        state.cells[v], state.cells[ring[i]], state.cells[ring[(i + 1) % n]],
+                    ))
+                    .collect();
+                let mut types = ts.clone();
+                types.sort_by_key(|t| *t as u8);
+                types.dedup();
+                for t in types {
+                    let runs = (0..n).filter(|&i| ts[i] == t && ts[(i + n - 1) % n] != t).count();
+                    if runs >= 2 {
+                        tile_pinches += 1;
+                    }
+                }
+                if state.painted.roads.contains(v) {
+                    let solid = |i: usize| {
+                        state.painted.roads.contains(ring[i])
+                            && state.painted.roads.contains(ring[(i + 1) % n])
+                    };
+                    let runs = (0..n).filter(|&i| solid(i) && !solid((i + n - 1) % n)).count();
+                    if runs >= 2 {
+                        road_pinches += 1;
+                    }
+                }
+            }
+            assert_eq!(tile_pinches, 0, "same-type faces linked by a lone vertex");
+            assert_eq!(road_pinches, 0, "road strip pinched at a vertex");
 
             // Lake-to-ocean distance ≥ 10 edge steps.
             let mut dist = vec![u16::MAX; state.grid.n];
