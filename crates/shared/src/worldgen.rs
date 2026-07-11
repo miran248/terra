@@ -1453,23 +1453,33 @@ fn build_mesh(
     let entry_color = bevy::prelude::Color::srgb(0.42, 0.33, 0.24).to_linear().to_f32_array();
     let mut tris = Vec::with_capacity(grid.n);
     let mut cols = Vec::with_capacity(grid.n);
-    for idx in grid.face_verts.iter() {
-        // Feature identity is per corner cell, like terrain: solid where the
-        // feature owns the corners, fading out at the footprint edge — no
-        // face-level overrides, no seams, no pinches.
+    for (fi, idx) in grid.face_verts.iter().enumerate() {
+        // Features are built structures: a face the feature OWNS (≥2 painted
+        // corners — the two-triangle quads along the painted cell chain)
+        // renders solid with a hard edge. Faces with exactly one painted
+        // corner are the flank band and fade via the corner gradient. Total:
+        // blend band / solid strip / blend band, for every feature.
         let corner = |k: usize| {
             let vi = idx[k] as usize;
-            if painted.towns.contains(vi) {
-                town_color
-            } else if painted.bridge_entries.contains(vi) {
+            if painted.bridge_entries.contains(vi) {
                 entry_color
+            } else if painted.towns.contains(vi) {
+                town_color
             } else if painted.roads.contains(vi) {
                 road_color
             } else {
                 cells[vi].color().to_linear().to_f32_array()
             }
         };
-        let color: [[f32; 4]; 3] = [corner(0), corner(1), corner(2)];
+        let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, fi) {
+            [entry_color; 3]
+        } else if face_solid(grid, &painted.towns, fi) {
+            [town_color; 3]
+        } else if face_solid(grid, &painted.roads, fi) {
+            [road_color; 3]
+        } else {
+            [corner(0), corner(1), corner(2)]
+        };
         tris.push([
             (grid.verts[idx[0] as usize] * vert_r[idx[0] as usize]).to_array(),
             (grid.verts[idx[1] as usize] * vert_r[idx[1] as usize]).to_array(),
