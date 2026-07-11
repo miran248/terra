@@ -928,7 +928,117 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
     segment_coastline(grid, terrain, &mut resolved);
     absorb_small_forests(grid, &mut resolved);
     enforce_counting_rule(grid, &mut resolved);
+    connect_type_pinches(grid, &mut resolved);
+    enforce_counting_rule(grid, &mut resolved);
     resolved
+}
+
+/// Same-type tiles must share an edge (two vertices), never just a corner.
+/// Where a type's faces around a vertex fall into 2+ edge-connected components
+/// (the zigzag: two beach tiles diagonal to each other with a foreign tile
+/// wedged between), retype the separator face on the same land/water side to
+/// that type — the band thickens through the pinch instead of losing a tile.
+/// Water pinches are handled by enforce_water_shape (fill); this covers land.
+fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
+    let mut by_vert: BTreeMap<u64, Vec<u32>> = BTreeMap::new();
+    for (fi, tri) in grid.unit_tris.iter().enumerate() {
+        for v in tri {
+            by_vert.entry(vkey(*v)).or_default().push(fi as u32);
+        }
+    }
+    for _ in 0..16 {
+        let mut changed = false;
+        for faces in by_vert.values() {
+            // Types present at this vertex (land only), deterministic order.
+            // RiverBank follows the river's winding topology — banks on
+            // opposite sides meeting at a bend is normal, not a pinch.
+            let mut types: Vec<Terrain> = faces.iter()
+                .map(|&f| out[f as usize])
+                .filter(|&t| t.is_land() && t != Terrain::RiverBank)
+                .collect();
+            types.sort_by_key(|t| *t as u8);
+            types.dedup();
+            for t in types {
+                let members: Vec<usize> = faces.iter()
+                    .map(|&f| f as usize)
+                    .filter(|&f| out[f] == t)
+                    .collect();
+                if members.len() < 2 {
+                    continue;
+                }
+                // Edge-components among this type's fan members.
+                let mut comp = vec![usize::MAX; members.len()];
+                let mut n_comp = 0;
+                for i in 0..members.len() {
+                    if comp[i] != usize::MAX {
+                        continue;
+                    }
+                    let mut stack = vec![i];
+                    comp[i] = n_comp;
+                    while let Some(k) = stack.pop() {
+                        for j in 0..members.len() {
+                            if comp[j] == usize::MAX
+                                && grid.adj[members[k]].contains(&(members[j] as u32))
+                            {
+                                comp[j] = n_comp;
+                                stack.push(j);
+                            }
+                        }
+                    }
+                    n_comp += 1;
+                }
+                if n_comp <= 1 {
+                    continue;
+                }
+                // Separator: a land fan face of another type edge-adjacent to
+                // two different components — retype it to t (lowest index wins).
+                let bridge = faces.iter().map(|&f| f as usize).find(|&f| {
+                    if out[f] == t || !out[f].is_land() {
+                        return false;
+                    }
+                    let mut touched: Vec<usize> = Vec::new();
+                    for (i, &m) in members.iter().enumerate() {
+                        if grid.adj[f].contains(&(m as u32)) && !touched.contains(&comp[i]) {
+                            touched.push(comp[i]);
+                        }
+                    }
+                    touched.len() >= 2
+                });
+                if let Some(f) = bridge {
+                    out[f] = t;
+                    changed = true;
+                } else {
+                    // No land separator to thicken through (e.g. mountains
+                    // pinched across a jagged coast): the smaller component
+                    // fades into its surrounding kind instead.
+                    let mut sizes = vec![0usize; n_comp];
+                    for &c in &comp {
+                        sizes[c] += 1;
+                    }
+                    let keep = sizes.iter().enumerate().max_by_key(|(_, s)| **s).unwrap().0;
+                    for (i, &m) in members.iter().enumerate() {
+                        if comp[i] == keep {
+                            continue;
+                        }
+                        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+                        for &nb in &grid.adj[m] {
+                            let k = out[nb as usize];
+                            if k.is_land() && k != t {
+                                *counts.entry(k as u8).or_default() += 1;
+                            }
+                        }
+                        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
+                            out[m] = Terrain::ALL[k as usize];
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }
 
 /// Inland biome boundaries get a blend mark: the face keeps its kind, but
@@ -1455,10 +1565,11 @@ fn elev_range(t: Terrain) -> (f32, f32) {
         River => (-1.0, 0.60),
         RiverBank => (0.0, 0.65),
         Beach => (0.0, 0.05),
-        // Cliff relief lives in the field itself (no mesh lift): a hard floor
-        // well above the beach guarantees a minimum drop of ~0.25 (125m) at
-        // every cliff seam — as steep as a 70m vertex grid can express.
-        Cliff => (0.30, 0.55),
+        // Cliff tiles are RAMPS, not plateaus: the toe verts sit at shore
+        // level and the crest verts track the hinterland (see the cliff
+        // tracking step in the solver), so the whole drop happens across the
+        // cliff face. The range here is just the envelope.
+        Cliff => (-0.02, 0.60),
         Desert | Plains | Forest | Tundra => (0.02, 0.50),
         Mountain => (0.45, 1.0),
         Snow => (0.50, 1.0),
@@ -1475,7 +1586,8 @@ fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     let base: f32 = if matches!(a, River | RiverBank) || matches!(b, River | RiverBank) {
         0.45
     } else if a == Cliff || b == Cliff {
-        0.20
+        // The whole cliff drop can happen across one vertex edge (toe → crest).
+        0.60
     } else if peak(a) || peak(b) {
         0.22
     } else if water(a) && water(b) {
@@ -1624,6 +1736,25 @@ fn solve_elevation(
         .map(|vi| if is_canyon_vert[vi] { Terrain::River } else { owner[vi] })
         .collect();
 
+    // Cliff ramp vertices: a cliff-owned vert beside water/beach is the TOE
+    // (pinned to shore level); every other cliff vert is the CREST (tracks the
+    // highest adjacent hinterland vert exactly, so nothing sticks out above
+    // the terrain behind and lower neighbors stay untouched).
+    let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
+    let mut cliff_toe: Vec<bool> = vec![false; nv];
+    let mut cliff_crest: Vec<bool> = vec![false; nv];
+    for vi in 0..nv {
+        if owner[vi] != Terrain::Cliff {
+            continue;
+        }
+        let shoreside = terrain.adj_of(vi).iter().any(|&nb| shore_kind(owner[nb]));
+        if shoreside {
+            cliff_toe[vi] = true;
+        } else {
+            cliff_crest[vi] = true;
+        }
+    }
+
     // Bridge-entry pads: the vertices under each deck end are driven to one
     // common height (slope 0) so the deck meets the ground seamlessly.
     let pad_verts_at = |end: &SpherePos| -> Vec<usize> {
@@ -1699,7 +1830,35 @@ fn solve_elevation(
                 }
             }
         }
-        // 3) tile ranges — hard constraints and always get the
+        // 3) cliff ramp tracking: toe hugs the shore, crest equals the
+        // hinterland edge.
+        for vi in 0..nv {
+            if cliff_toe[vi] {
+                let mut shore = f32::MAX;
+                for &nb in terrain.adj_of(vi) {
+                    if shore_kind(owner[nb]) {
+                        shore = shore.min(e[nb]);
+                    }
+                }
+                if shore < f32::MAX {
+                    let target = (shore.max(-0.02) + 0.02).min(0.06);
+                    residual += (e[vi] - target).abs();
+                    e[vi] = target;
+                }
+            } else if cliff_crest[vi] {
+                let mut hinterland = f32::MIN;
+                for &nb in terrain.adj_of(vi) {
+                    if owner[nb].is_land() && owner[nb] != Terrain::Cliff && !shore_kind(owner[nb]) {
+                        hinterland = hinterland.max(e[nb]);
+                    }
+                }
+                if hinterland > f32::MIN {
+                    residual += (e[vi] - hinterland).abs();
+                    e[vi] = hinterland;
+                }
+            }
+        }
+        // 4) tile ranges — hard constraints and always get the
         // final word each iteration, so the finished field satisfies every
         // tile's elevation range exactly (caps are best-effort where the tile
         // map demands steeper chains than they allow).
@@ -1998,28 +2157,40 @@ mod tests {
                 }
             }
             for faces in by_vert.values() {
-                let water: Vec<usize> =
-                    faces.iter().copied().filter(|&f| wet(state.tiles[f])).collect();
-                if water.len() < 2 {
-                    continue;
-                }
-                // All water at this vertex must be one edge-connected fan.
-                let mut seen = vec![false; water.len()];
-                let mut stack = vec![0usize];
-                seen[0] = true;
-                while let Some(k) = stack.pop() {
-                    for j in 0..water.len() {
-                        if !seen[j] && state.grid.adj[water[k]].contains(&(water[j] as u32)) {
-                            seen[j] = true;
-                            stack.push(j);
+                // Per class: all same-class faces at a vertex must form ONE
+                // edge-connected fan — water as a whole, and each land type.
+                let mut classes: Vec<u8> = faces.iter()
+                    .map(|&f| if wet(state.tiles[f]) { 200 } else { state.tiles[f] as u8 })
+                    .filter(|&c| c != Terrain::River as u8 && c != Terrain::RiverBank as u8)
+                    .collect();
+                classes.sort_unstable();
+                classes.dedup();
+                for class in classes {
+                    let members: Vec<usize> = faces.iter().copied()
+                        .filter(|&f| {
+                            if class == 200 { wet(state.tiles[f]) } else { state.tiles[f] as u8 == class }
+                        })
+                        .collect();
+                    if members.len() < 2 {
+                        continue;
+                    }
+                    let mut seen = vec![false; members.len()];
+                    let mut stack = vec![0usize];
+                    seen[0] = true;
+                    while let Some(k) = stack.pop() {
+                        for j in 0..members.len() {
+                            if !seen[j] && state.grid.adj[members[k]].contains(&(members[j] as u32)) {
+                                seen[j] = true;
+                                stack.push(j);
+                            }
                         }
                     }
+                    assert!(
+                        seen.iter().all(|&s| s),
+                        "type pinch: {} faces of class {class} at one vertex in 2+ components",
+                        members.len()
+                    );
                 }
-                assert!(
-                    seen.iter().all(|&s| s),
-                    "water pinch: {} water faces at one vertex in 2+ components",
-                    water.len()
-                );
             }
 
             // Lake-to-ocean distance ≥ 10 edge steps.
@@ -2056,8 +2227,9 @@ mod tests {
             }
         }
 
-        // Cliff seams drop hard: a cliff vertex beside water/beach sits at
-        // least ~0.2 (100m) above it (blend-ramp and pad verts excepted).
+        // Cliff tiles are ramps: toe verts hug the shore (lower neighbors
+        // unchanged), crest verts never rise above the hinterland behind them
+        // (nothing sticks out) — the drop happens across the cliff face.
         let vkind: Vec<Terrain> = (0..terrain.vert_count())
             .map(|vi| {
                 state.grid.planet.face_at(terrain.vert_dir(vi))
@@ -2065,27 +2237,24 @@ mod tests {
                     .unwrap_or(Terrain::Plains)
             })
             .collect();
+        let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
         for a in 0..terrain.vert_count() {
-            if vkind[a] != Terrain::Cliff || pad_vert[a] {
+            if vkind[a] != Terrain::Cliff || pad_vert[a] || canyon[a] {
                 continue;
             }
-            let Some(fa) = state.grid.planet.face_at(terrain.vert_dir(a)) else { continue };
-            if blend_of.contains_key(&(fa as u32)) {
-                continue;
-            }
-            for &b in terrain.adj_of(a) {
-                if pad_vert[b] || canyon[b] {
-                    continue;
-                }
-                let Some(fb) = state.grid.planet.face_at(terrain.vert_dir(b)) else { continue };
-                if blend_of.contains_key(&(fb as u32)) {
-                    continue;
-                }
-                if matches!(vkind[b], Terrain::Beach | Terrain::Ocean | Terrain::Lake) {
+            let shoreside = terrain.adj_of(a).iter().any(|&nb| shore_kind(vkind[nb]));
+            if shoreside {
+                assert!(e[a] <= 0.08, "cliff toe floats above the shore: {}", e[a]);
+            } else {
+                let hinterland = terrain.adj_of(a).iter()
+                    .filter(|&&nb| vkind[nb].is_land() && vkind[nb] != Terrain::Cliff && !shore_kind(vkind[nb]))
+                    .map(|&nb| e[nb])
+                    .fold(f32::MIN, f32::max);
+                if hinterland > f32::MIN {
                     assert!(
-                        e[a] - e[b] > 0.2,
-                        "cliff seam too gentle: {} over {:?} {}",
-                        e[a], vkind[b], e[b]
+                        e[a] <= hinterland + 0.05,
+                        "cliff crest sticks out: {} above hinterland {}",
+                        e[a], hinterland
                     );
                 }
             }
