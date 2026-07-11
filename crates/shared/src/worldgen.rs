@@ -1306,17 +1306,16 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
             }
         }
     };
+    // Every transition band is TWO chains of cells one edge apart (never a
+    // single chain — its faces would only touch at vertices): the waterline
+    // chain plus the chain right behind it, for beaches, cliffs, lake shores
+    // and river banks alike. Wide types (oceans, lakes, rivers, towns) are
+    // free-width; bands are not.
     for vi in 0..grid.nv {
         if base[vi].is_water() {
             continue;
         }
-        let touching_water = grid.vert_adj[vi].iter()
-            .map(|&nb| base[nb as usize])
-            .find(|t| t.is_water());
-        if let Some(kind) = touching_water {
-            out[vi] = shore(vi, kind);
-        } else if water_dist[vi] <= 2 && terrain.elevation_at(grid.vert_pos(vi)) < 0.08 {
-            // Low, flat coast: the band is more than one cell wide.
+        if water_dist[vi] <= 2 {
             out[vi] = shore(vi, water_kind[vi].unwrap_or(Terrain::Ocean));
         }
     }
@@ -1378,7 +1377,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
         resolved[vi] = solved[ci];
     }
     smooth_coast_band(grid, &mut resolved);
-    absorb_small_forests(grid, &mut resolved);
+    absorb_small_patches(grid, &mut resolved);
     link_tile_pinches(grid, &mut resolved);
     resolved
 }
@@ -1432,31 +1431,55 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
     out
 }
 
-/// A forest smaller than this many cells is just some trees in a field.
-const MIN_FOREST_CELLS: usize = 10;
+/// A biome patch smaller than this many cells is speckle, not a region —
+/// threshold classifiers (snow by temperature, mountains by elevation)
+/// salt-and-pepper at their contour lines without this.
+const MIN_PATCH_CELLS: usize = 10;
 
-fn absorb_small_forests(grid: &Grid, out: &mut [Terrain]) {
+/// Generic min-region-size for every plain land biome: undersized clusters
+/// join their most common neighboring land kind. Transition bands (shore
+/// kinds) are thin by design and exempt; water minimums live in
+/// normalize_water_bodies.
+fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
+    let plain = |t: Terrain| matches!(
+        t,
+        Terrain::Desert | Terrain::Plains | Terrain::Forest
+            | Terrain::Tundra | Terrain::Mountain | Terrain::Snow
+    );
     let mut visited = vec![false; grid.nv];
     for start in 0..grid.nv {
-        if out[start] != Terrain::Forest || visited[start] {
+        if !plain(out[start]) || visited[start] {
             continue;
         }
+        let kind = out[start];
         let mut cluster = vec![start];
         let mut q = VecDeque::from([start]);
         visited[start] = true;
         while let Some(cur) = q.pop_front() {
             for &nb in &grid.vert_adj[cur] {
                 let nb = nb as usize;
-                if out[nb] == Terrain::Forest && !visited[nb] {
+                if out[nb] == kind && !visited[nb] {
                     visited[nb] = true;
                     cluster.push(nb);
                     q.push_back(nb);
                 }
             }
         }
-        if cluster.len() < MIN_FOREST_CELLS {
+        if cluster.len() >= MIN_PATCH_CELLS {
+            continue;
+        }
+        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for &vi in &cluster {
+            for &nb in &grid.vert_adj[vi] {
+                let t = out[nb as usize];
+                if t.is_land() && t != kind {
+                    *counts.entry(t as u8).or_default() += 1;
+                }
+            }
+        }
+        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
             for vi in cluster {
-                out[vi] = Terrain::Plains;
+                out[vi] = Terrain::ALL[k as usize];
             }
         }
     }
@@ -1626,7 +1649,7 @@ fn build_regions(
         let min_faces = match kind {
             RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
             // Cell minimums expressed in faces (one cell ≈ two faces of area).
-            RegionKind::Forest => MIN_FOREST_CELLS * 2,
+            RegionKind::Forest => MIN_PATCH_CELLS * 2,
             RegionKind::Beach => MIN_BEACH_CELLS * 2,
             _ => 8,
         };
