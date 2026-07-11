@@ -11,7 +11,7 @@ use crate::planet::{build_face_adjacency, unit_icosphere_tris};
 use crate::sphere::PLANET_RADIUS;
 
 pub const COARSE_SUB: usize = 3;
-pub const FINE_SUB: usize = 6;
+pub const FINE_SUB: usize = 7;
 /// Each subdivision splits a face into 4 children pushed in order, so a fine face's
 /// coarse ancestor is simply `fine_fi / FINE_FACES_PER_COARSE`.
 pub const FINE_FACES_PER_COARSE: usize = 1 << (2 * (FINE_SUB - COARSE_SUB));

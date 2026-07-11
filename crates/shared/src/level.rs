@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 9;
+pub const LEVEL_FORMAT_VERSION: u32 = 11;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -74,6 +74,18 @@ pub struct LevelData {
     /// displaced mesh (they sit exactly on the rendered ground), placed
     /// deterministically at gen time from the tile map.
     pub flora: Vec<FloraData>,
+    /// Contextual built structures (ruins, docks, walls, …), placed at gen
+    /// time and spawned as runtime entities like bridges.
+    pub structures: Vec<StructureData>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct StructureData {
+    pub pos: [f32; 3],
+    pub face: u32,
+    pub kind: u8,
+    /// Facing yaw about the local up (radians).
+    pub yaw: f32,
 }
 
 pub const FLORA_TREE: u8 = 0;
@@ -81,6 +93,34 @@ pub const FLORA_BUSH: u8 = 1;
 pub const FLORA_FLOWER: u8 = 2;
 pub const FLORA_ROCK: u8 = 3;
 pub const FLORA_GRASS: u8 = 4;
+pub const FLORA_LOG: u8 = 5;
+pub const FLORA_MUSHROOM: u8 = 6;
+pub const FLORA_CACTUS: u8 = 7;
+pub const FLORA_BERRY: u8 = 8;
+pub const FLORA_DEADTREE: u8 = 9;
+pub const FLORA_REED: u8 = 10;
+
+// Structures: built props placed contextually (like towns and bridges).
+pub const STRUCT_RUIN: u8 = 0;
+pub const STRUCT_WATCHTOWER: u8 = 1;
+pub const STRUCT_DOCK: u8 = 2;
+pub const STRUCT_FARM: u8 = 3;
+pub const STRUCT_WALL: u8 = 4;
+pub const STRUCT_WELL: u8 = 5;
+pub const STRUCT_CAMPFIRE: u8 = 6;
+
+pub fn structure_name(kind: u8) -> &'static str {
+    match kind {
+        STRUCT_RUIN => "Ruins",
+        STRUCT_WATCHTOWER => "Watchtower",
+        STRUCT_DOCK => "Dock",
+        STRUCT_FARM => "Farm",
+        STRUCT_WALL => "Wall",
+        STRUCT_WELL => "Well",
+        STRUCT_CAMPFIRE => "Campfire",
+        _ => "?",
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct FloraData {
@@ -141,6 +181,11 @@ pub enum RegionKind {
     Mountain,
     Plains,
     Tundra,
+    Swamp,
+    Jungle,
+    Savanna,
+    Volcano,
+    Glacier,
     Town,
     Road,
 }

@@ -50,6 +50,7 @@ fn serialize(state: &GenState, out: &PathBuf) {
         regions: state.regions.clone(),
         face_region: state.face_region.clone(),
         flora: state.flora.clone(),
+        structures: state.structures.clone(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());
@@ -77,9 +78,13 @@ fn print_stats(state: &GenState) {
             Terrain::Desert => "Desert", Terrain::Plains => "Plains",
             Terrain::Forest => "Forest", Terrain::Tundra => "Tundra",
             Terrain::Mountain => "Mountain", Terrain::Snow => "Snow",
+            Terrain::Swamp => "Swamp", Terrain::Jungle => "Jungle",
+            Terrain::Savanna => "Savanna", Terrain::Volcanic => "Volcanic",
+            Terrain::Glacier => "Glacier",
         }).or_default() += 1;
     }
     let water: usize = state.tiles.iter().filter(|t| t.is_water()).count();
     println!("water: {:.1}%  breakdown: {:?}", water as f32 / state.grid.n as f32 * 100.0, counts);
+    println!("flora: {}  structures: {}", state.flora.len(), state.structures.len());
     println!("regions: {}  bridges: {}", state.regions.len(), state.bridges.len());
 }

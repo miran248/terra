@@ -2,9 +2,15 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use crate::physics::RadialGravity;
-use shared::level::{FaceTags, LevelData, FLORA_BUSH, FLORA_FLOWER, FLORA_GRASS, FLORA_ROCK, FLORA_TREE, LEVEL_FORMAT_VERSION};
+use shared::level::{
+    FaceTags, LevelData, LEVEL_FORMAT_VERSION,
+    FLORA_BUSH, FLORA_FLOWER, FLORA_GRASS, FLORA_ROCK, FLORA_TREE,
+    FLORA_BERRY, FLORA_CACTUS, FLORA_DEADTREE, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED,
+    STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL,
+    STRUCT_WATCHTOWER, STRUCT_WELL,
+};
 use shared::sphere::PLANET_RADIUS;
-use shared::terrain::{TerrainGen, MAX_MOUNTAIN};
+use shared::terrain::TerrainGen;
 use shared::theme;
 use shared::planet::PlanetMesh;
 use crate::minimap::MinimapCamera;
@@ -41,6 +47,16 @@ pub struct Player {
 
 #[derive(Resource)]
 pub struct PlayerHp(pub f32);
+
+/// Debug teleport ring: named landmarks (bridges, towns, one per named
+/// region) the player can jump between. `[` / `]` cycle, the current name is
+/// logged. Each target is the WORLD position to drop the player at (already
+/// lifted above the ground or the bridge deck).
+#[derive(Resource, Default)]
+pub struct Teleports {
+    pub targets: Vec<(String, Vec3)>,
+    pub idx: usize,
+}
 
 #[derive(Resource)]
 pub struct GameAssets {
@@ -91,7 +107,7 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                (orient_player, camera_follow)
+                (orient_player, camera_follow, teleport_player)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -128,6 +144,11 @@ fn setup_map(
             ..default()
         }),
     });
+
+    let spawn_surface_r = terrain
+        .surface_radius(shared::sphere::SpherePos::new(Vec3::from_array(
+            level.settlements.first().expect("no settlements").pos,
+        )));
 
     // Terrain layer
     let terrain_mesh = build_visual_mesh(&level.terrain_tris, &level.terrain_colors);
@@ -172,6 +193,18 @@ fn setup_map(
             materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.53, 0.50))),
         ];
         let grass_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.38, 0.52, 0.22)));
+        let log_mesh = meshes.add(Cylinder::new(0.35, 3.0));
+        let log_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.36, 0.26, 0.16)));
+        let mush_mesh = meshes.add(Sphere::new(0.18));
+        let mush_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.80, 0.35, 0.30)));
+        let cactus_mesh = meshes.add(Capsule3d::new(0.30, 1.6));
+        let cactus_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.28, 0.45, 0.24)));
+        let berry_mesh = meshes.add(Sphere::new(0.6));
+        let berry_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.30, 0.20, 0.35)));
+        let dead_mesh = meshes.add(Cylinder::new(0.22, 4.0));
+        let dead_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.34, 0.30, 0.24)));
+        let reed_mesh = meshes.add(Cone { radius: 0.10, height: 1.3 });
+        let reed_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.58, 0.30)));
         let flower_mats = [
             materials.add(StandardMaterial::from_color(Color::srgb(0.90, 0.25, 0.30))),
             materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.80, 0.25))),
@@ -251,6 +284,145 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
+                FLORA_LOG => {
+                    // Fallen: lie along the ground (trunk axis tangent to up).
+                    let lie = rot * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
+                    commands.spawn((
+                        Mesh3d(log_mesh.clone()),
+                        MeshMaterial3d(log_mat.clone()),
+                        RigidBody::Static,
+                        ColliderConstructor::Cylinder { radius: 0.35 * scale, height: 3.0 * scale },
+                        Transform::from_translation(pos + up * 0.35 * scale)
+                            .with_rotation(lie)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                }
+                FLORA_MUSHROOM => {
+                    commands.spawn((
+                        Mesh3d(mush_mesh.clone()),
+                        MeshMaterial3d(mush_mat.clone()),
+                        Transform::from_translation(pos + up * 0.16 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::new(scale, scale * 0.7, scale)),
+                    ));
+                }
+                FLORA_CACTUS => {
+                    commands.spawn((
+                        Mesh3d(cactus_mesh.clone()),
+                        MeshMaterial3d(cactus_mat.clone()),
+                        RigidBody::Static,
+                        ColliderConstructor::Capsule { radius: 0.30 * scale, height: 1.6 * scale },
+                        Transform::from_translation(pos + up * 0.9 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                }
+                FLORA_BERRY => {
+                    commands.spawn((
+                        Mesh3d(berry_mesh.clone()),
+                        MeshMaterial3d(berry_mat.clone()),
+                        Transform::from_translation(pos + up * 0.4 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::new(scale, scale * 0.85, scale)),
+                    ));
+                }
+                FLORA_DEADTREE => {
+                    commands.spawn((
+                        Mesh3d(dead_mesh.clone()),
+                        MeshMaterial3d(dead_mat.clone()),
+                        RigidBody::Static,
+                        ColliderConstructor::Cylinder { radius: 0.25 * scale, height: 4.0 * scale },
+                        Transform::from_translation(pos + up * 2.0 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                }
+                FLORA_REED => {
+                    commands.spawn((
+                        Mesh3d(reed_mesh.clone()),
+                        MeshMaterial3d(reed_mat.clone()),
+                        Transform::from_translation(pos + up * 0.65 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Structures: contextual built props (wells, docks, walls, watchtowers,
+    // ruins, farms, campfires), spawned from baked positions like bridges.
+    {
+        let stone = materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.53, 0.50)));
+        let dark_stone = materials.add(StandardMaterial::from_color(Color::srgb(0.40, 0.38, 0.36)));
+        let wood = materials.add(StandardMaterial::from_color(Color::srgb(0.45, 0.32, 0.20)));
+        let plank = materials.add(StandardMaterial::from_color(Color::srgb(0.52, 0.40, 0.26)));
+        let soil = materials.add(StandardMaterial::from_color(Color::srgb(0.34, 0.24, 0.15)));
+        let ember = materials.add(StandardMaterial {
+            base_color: Color::srgb(0.9, 0.4, 0.1),
+            emissive: LinearRgba::rgb(0.9, 0.35, 0.05),
+            ..default()
+        });
+        let box_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
+        let cyl_mesh = meshes.add(Cylinder::new(0.5, 1.0));
+        for st in &level.structures {
+            let pos = Vec3::from_array(st.pos);
+            let up = pos.normalize();
+            let base = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(st.yaw);
+            let mut at = |cmd: &mut Commands, mesh: Handle<Mesh>, mat: Handle<StandardMaterial>,
+                          lift: f32, scale: Vec3, collide: bool| {
+                let mut e = cmd.spawn((
+                    Mesh3d(mesh),
+                    MeshMaterial3d(mat),
+                    Transform::from_translation(pos + up * lift)
+                        .with_rotation(base)
+                        .with_scale(scale),
+                ));
+                if collide {
+                    e.insert((RigidBody::Static, ColliderConstructor::ConvexHullFromMesh));
+                }
+            };
+            match st.kind {
+                STRUCT_WELL => {
+                    at(&mut commands, cyl_mesh.clone(), stone.clone(), 0.6, Vec3::new(2.0, 1.2, 2.0), true);
+                }
+                STRUCT_CAMPFIRE => {
+                    at(&mut commands, cyl_mesh.clone(), dark_stone.clone(), 0.2, Vec3::new(1.6, 0.4, 1.6), false);
+                    at(&mut commands, box_mesh.clone(), ember.clone(), 0.5, Vec3::splat(0.7), false);
+                }
+                STRUCT_WALL => {
+                    at(&mut commands, box_mesh.clone(), dark_stone.clone(), 1.5, Vec3::new(6.0, 3.0, 1.2), true);
+                }
+                STRUCT_DOCK => {
+                    at(&mut commands, box_mesh.clone(), plank.clone(), 0.4, Vec3::new(3.0, 0.4, 10.0), true);
+                }
+                STRUCT_FARM => {
+                    at(&mut commands, box_mesh.clone(), soil.clone(), 0.1, Vec3::new(9.0, 0.2, 9.0), false);
+                }
+                STRUCT_WATCHTOWER => {
+                    at(&mut commands, box_mesh.clone(), wood.clone(), 6.0, Vec3::new(3.0, 12.0, 3.0), true);
+                    at(&mut commands, box_mesh.clone(), plank.clone(), 12.5, Vec3::new(4.5, 1.0, 4.5), true);
+                }
+                STRUCT_RUIN => {
+                    // A broken ring of stub columns.
+                    for k in 0..5 {
+                        let a = k as f32 / 5.0 * std::f32::consts::TAU;
+                        let (east, north) = shared::sphere::SpherePos::new(up).tangent_basis();
+                        let off = (east * a.cos() + north * a.sin()) * 3.0;
+                        let cpos = pos + off;
+                        let cup = cpos.normalize();
+                        commands.spawn((
+                            Mesh3d(box_mesh.clone()),
+                            MeshMaterial3d(stone.clone()),
+                            RigidBody::Static,
+                            ColliderConstructor::ConvexHullFromMesh,
+                            Transform::from_translation(cpos + cup * (1.0 + k as f32 % 2.0))
+                                .with_rotation(Quat::from_rotation_arc(Vec3::Y, cup))
+                                .with_scale(Vec3::new(1.0, 2.0 + (k % 3) as f32, 1.0)),
+                        ));
+                    }
+                }
                 _ => {}
             }
         }
@@ -315,15 +487,13 @@ fn setup_map(
         Ground,
     ));
 
-    // Player: spawn at the first settlement, well above the mesh.
+    // Player: spawn ON the ground at the first settlement.
     let s = level.settlements.first().expect("no settlements");
     let start = shared::sphere::SpherePos::new(Vec3::from_array(s.pos));
     let up = start.0;
     let capsule_radius = PLAYER_SIZE * 0.4;
     let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
-    // Spawn high above terrain — gravity settles onto the collider.
-    let spawn_r = PLANET_RADIUS + MAX_MOUNTAIN + 50.0;
-    let spawn_pos = up * spawn_r;
+    let spawn_pos = up * (spawn_surface_r + capsule_half + 0.5);
     commands.spawn((
         Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
         MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
@@ -372,6 +542,31 @@ fn setup_map(
     let face_types: Vec<shared::terrain::Terrain> = level.face_types.iter()
         .map(|&b| unsafe { std::mem::transmute(b) })
         .collect();
+    // Teleport ring: bridges first (hard to find on foot), then towns, then
+    // one landmark per named region.
+    let mut targets: Vec<(String, Vec3)> = Vec::new();
+    // Drop just above the SOLVED surface (works at any altitude — inland
+    // river bridges sit high, so a fixed sea-level height would be
+    // underground).
+    let surface = |p: [f32; 3]| {
+        let dir = Vec3::from_array(p).normalize();
+        let pos = shared::sphere::SpherePos::new(dir);
+        dir * (terrain.surface_radius(pos) + 3.0)
+    };
+    // Bridges: spawn at the on-land entry (the deck's grounded end) so the
+    // player arrives beside the bridge on solid ground, not over the water.
+    for (i, road) in level.roads.iter().filter(|r| r.is_bridge).enumerate() {
+        if let Some(end) = road.points.first() {
+            targets.push((format!("Bridge {}", i + 1), surface(*end)));
+        }
+    }
+    for s in &level.settlements {
+        targets.push((s.name.clone(), surface(s.pos)));
+    }
+    for r in &level.regions {
+        targets.push((r.name.clone(), surface(r.pos)));
+    }
+    commands.insert_resource(Teleports { targets, idx: 0 });
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);
     commands.insert_resource(LevelTags(tags));
@@ -418,14 +613,21 @@ fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
 }
 
 fn build_collider(tris: &[[[f32; 3]; 3]]) -> ColliderConstructor {
+    // Shared corners get one vertex — the subdivided mesh would otherwise
+    // triple the collider's vertex count.
+    let mut map: std::collections::HashMap<[u32; 3], u32> = std::collections::HashMap::new();
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
-    for (i, tri) in tris.iter().enumerate() {
-        let base = i as u32 * 3;
-        vertices.push(Vec3::from_array(tri[0]));
-        vertices.push(Vec3::from_array(tri[1]));
-        vertices.push(Vec3::from_array(tri[2]));
-        indices.push([base, base + 1, base + 2]);
+    for tri in tris {
+        let mut idx = [0u32; 3];
+        for (k, v) in tri.iter().enumerate() {
+            let key = [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+            idx[k] = *map.entry(key).or_insert_with(|| {
+                vertices.push(Vec3::from_array(*v));
+                vertices.len() as u32 - 1
+            });
+        }
+        indices.push(idx);
     }
     ColliderConstructor::Trimesh { vertices, indices }
 }
@@ -477,6 +679,41 @@ fn move_player(
         let v = forces.linear_velocity();
         *forces.linear_velocity_mut() = v + up * 8.0;
     }
+}
+
+/// `[` / `]` step through the teleport ring; `T` jumps to the next bridge.
+/// The player is placed just above the ground at the target and its velocity
+/// zeroed so it settles cleanly instead of launching.
+fn teleport_player(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut tp: ResMut<Teleports>,
+    mut q: Query<(&mut Transform, &mut LinearVelocity, &mut shared::sphere::SpherePos), With<Player>>,
+) {
+    if tp.targets.is_empty() {
+        return;
+    }
+    let n = tp.targets.len();
+    let step = if keys.just_pressed(KeyCode::BracketRight) {
+        1
+    } else if keys.just_pressed(KeyCode::BracketLeft) {
+        n - 1
+    } else if keys.just_pressed(KeyCode::KeyT) {
+        // Jump to the next bridge in the ring (bridges are named "Bridge N").
+        let mut k = 1;
+        while k <= n && !tp.targets[(tp.idx + k) % n].0.starts_with("Bridge") {
+            k += 1;
+        }
+        k % n
+    } else {
+        return;
+    };
+    tp.idx = (tp.idx + step) % n;
+    let (name, world) = tp.targets[tp.idx].clone();
+    let Ok((mut tf, mut vel, mut sp)) = q.single_mut() else { return };
+    tf.translation = world;
+    *sp = shared::sphere::SpherePos::new(world.normalize());
+    vel.0 = Vec3::ZERO;
+    info!("Teleported to {name} ({}/{n})", tp.idx + 1);
 }
 
 fn orient_player(mut q: Query<(&Player, &mut Transform), With<RigidBody>>) {

@@ -33,14 +33,22 @@ pub enum Terrain {
     Tundra,
     Mountain,
     Snow,
+    // Added kinds (appended so existing discriminants are stable).
+    Swamp,
+    Jungle,
+    Savanna,
+    Volcanic,
+    Glacier,
 }
 
 impl Terrain {
-    pub const ALL: [Terrain; 14] = [
+    pub const ALL: [Terrain; 19] = [
         Terrain::DeepOcean, Terrain::Ocean, Terrain::Lake, Terrain::LakeShore,
         Terrain::River, Terrain::RiverBank, Terrain::Beach, Terrain::Cliff,
         Terrain::Desert, Terrain::Plains, Terrain::Forest, Terrain::Tundra,
         Terrain::Mountain, Terrain::Snow,
+        Terrain::Swamp, Terrain::Jungle, Terrain::Savanna, Terrain::Volcanic,
+        Terrain::Glacier,
     ];
 
     pub fn color(&self) -> Color {
@@ -59,6 +67,11 @@ impl Terrain {
             Terrain::Tundra => Color::srgb(0.55, 0.58, 0.52),
             Terrain::Mountain => Color::srgb(0.45, 0.42, 0.40),
             Terrain::Snow => Color::srgb(0.92, 0.94, 0.97),
+            Terrain::Swamp => Color::srgb(0.28, 0.35, 0.22),
+            Terrain::Jungle => Color::srgb(0.09, 0.30, 0.11),
+            Terrain::Savanna => Color::srgb(0.64, 0.60, 0.30),
+            Terrain::Volcanic => Color::srgb(0.19, 0.15, 0.15),
+            Terrain::Glacier => Color::srgb(0.80, 0.88, 0.93),
         }
     }
 
@@ -136,7 +149,7 @@ impl TerrainGen {
     /// Grid, noise generators, and coarse zones — the deterministic
     /// environment every later planning step reads. No elevation yet.
     pub fn init(seed: u32) -> Self {
-        let sub = 5;
+        let sub = 6;
         let (verts, adj_off, adj_data) = build_ico_grid(sub);
         let vert_grid = build_vert_grid(&verts, Self::VERT_GRID_LATS, Self::VERT_GRID_LONS);
 
@@ -281,8 +294,12 @@ impl TerrainGen {
             ZoneKind::Ocean => if e < -0.30 { Terrain::DeepOcean } else { Terrain::Ocean },
             ZoneKind::Lake => if e < 0.0 { Terrain::Lake } else { self.land_biome(pos, e) },
             ZoneKind::MountainRange => {
+                let temp = self.interp_temperature(pos);
                 if e < 0.0 { Terrain::Ocean }
-                else if self.interp_temperature(pos) < -5.0 { Terrain::Snow }
+                else if temp < -20.0 { Terrain::Glacier }
+                else if temp < -5.0 { Terrain::Snow }
+                // Hot high peaks are volcanic rock.
+                else if temp > 22.0 && e > 0.72 { Terrain::Volcanic }
                 else { Terrain::Mountain }
             }
             _ => if e < 0.0 { Terrain::Ocean } else { self.land_biome(pos, e) },
@@ -292,12 +309,19 @@ impl TerrainGen {
     fn land_biome(&self, pos: SpherePos, e: f32) -> Terrain {
         let t = self.interp_temperature(pos);
         let m = self.interp_moisture(pos);
+        // Coldest first.
+        if t < -28.0 { return Terrain::Glacier; }
         if t < -15.0 { return Terrain::Snow; }
         if t < 0.0 { return Terrain::Tundra; }
         if e > 0.50 { return Terrain::Mountain; }
-        if t > 30.0 && m < -0.15 { Terrain::Desert }
-        else if m > 0.10 { Terrain::Forest }
-        else { Terrain::Plains }
+        // Warm-climate biomes, most specific first.
+        // Low, very wet ground is swamp (whatever the heat); hot wet ground
+        // above the flats is jungle.
+        if e < 0.12 && m > 0.28 { return Terrain::Swamp; }
+        if t > 24.0 && m > 0.25 { return Terrain::Jungle; }
+        if t > 30.0 && m < -0.15 { return Terrain::Desert; }
+        if t > 22.0 && m < 0.05 { return Terrain::Savanna; }
+        if m > 0.10 { Terrain::Forest } else { Terrain::Plains }
     }
 
     /// Point classification without face data (HUD fallback).
@@ -607,8 +631,8 @@ impl TerrainGen {
         [base[0] + wx * 0.18, base[1] + wy * 0.18, base[2] + wz * 0.18]
     }
 
-    const VERT_GRID_LATS: usize = 32;
-    const VERT_GRID_LONS: usize = 64;
+    const VERT_GRID_LATS: usize = 64;
+    const VERT_GRID_LONS: usize = 128;
 
     pub fn adj_of(&self, vi: usize) -> &[usize] {
         let start = self.adj_off[vi];

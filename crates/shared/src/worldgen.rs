@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, FLORA_BUSH, FLORA_FLOWER, FLORA_GRASS, FLORA_ROCK, FLORA_TREE, NO_REGION, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, StructureData, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -361,6 +361,7 @@ pub struct GenState {
     pub tag_off: Vec<u32>,
     pub tag_data: Vec<u8>,
     pub flora: Vec<FloraData>,
+    pub structures: Vec<StructureData>,
 }
 
 impl GenState {
@@ -383,6 +384,7 @@ impl GenState {
             tag_off: Vec::new(),
             tag_data: Vec::new(),
             flora: Vec::new(),
+            structures: Vec::new(),
         }
     }
 
@@ -436,6 +438,8 @@ pub enum Command {
     /// Sub-tile decoration scatter: trees, bushes, flowers on the finished
     /// mesh, densities from the tile map.
     PlaceFlora,
+    /// Contextual built structures (ruins, docks, walls, wells, …).
+    PlaceStructures,
 }
 
 pub enum Event {
@@ -457,6 +461,7 @@ pub enum Event {
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
     TagsBuilt(Vec<u32>, Vec<u8>),
     FloraPlaced(Vec<FloraData>),
+    StructuresPlaced(Vec<StructureData>),
 }
 
 impl Event {
@@ -486,6 +491,7 @@ impl Event {
             Event::MeshBuilt(t, _) => format!("mesh built: {} tris", t.len()),
             Event::TagsBuilt(_, d) => format!("tags built: {} entries", d.len()),
             Event::FloraPlaced(f) => format!("flora placed: {}", f.len()),
+            Event::StructuresPlaced(v) => format!("structures placed: {}", v.len()),
         }
     }
 }
@@ -557,7 +563,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::SolveElevation => {
             let (field, iters, residual) = solve_elevation(
-                &state.grid, state.terrain(), &state.tiles, &state.painted,
+                &state.grid, state.terrain(), &state.cells, &state.tiles, &state.painted,
                 &state.blends, &state.bridges,
             );
             vec![Event::ElevationSolved { field, iters, residual }]
@@ -587,6 +593,11 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::PlaceFlora => {
             vec![Event::FloraPlaced(place_flora(
+                &state.grid, state.terrain(), &state.tiles, &state.painted, &state.mesh_tris,
+            ))]
+        }
+        Command::PlaceStructures => {
+            vec![Event::StructuresPlaced(place_structures(
                 &state.grid, state.terrain(), &state.tiles, &state.painted, &state.mesh_tris,
             ))]
         }
@@ -643,6 +654,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
             state.tag_data = data;
         }
         Event::FloraPlaced(f) => state.flora = f,
+        Event::StructuresPlaced(v) => state.structures = v,
     }
     state
 }
@@ -672,7 +684,8 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
         Event::TagsBuilt(..) => vec![Command::PlaceFlora],
-        Event::FloraPlaced(_) => vec![],
+        Event::FloraPlaced(_) => vec![Command::PlaceStructures],
+        Event::StructuresPlaced(_) => vec![],
     }
 }
 
@@ -866,9 +879,14 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
                 }
             }
         }
-        let is_ocean = body.iter()
-            .any(|&vi| cell_zone(grid, terrain, vi) == crate::zones::ZoneKind::Ocean);
-        if !is_ocean && body.len() < MIN_WATER_BODY_CELLS {
+        // A body is an OCEAN only if it reaches ocean-zone cells AND is large
+        // enough to be one: an isolated pocket of ocean-zone faces walled off
+        // by land (a single coarse face — hence the tell-tale triangle shape)
+        // is a lake, not a sea. Min ocean size sits well above any lake.
+        let is_ocean = body.len() >= size_range(Terrain::Ocean).0
+            && body.iter()
+                .any(|&vi| cell_zone(grid, terrain, vi) == crate::zones::ZoneKind::Ocean);
+        if !is_ocean && body.len() < size_range(Terrain::Lake).0 {
             // A puddle isn't a lake: fill it with the most common surrounding
             // land kind so no 1-cell water ever survives.
             let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
@@ -958,7 +976,7 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
                 }
             }
         }
-        if body.len() < MIN_WATER_BODY_CELLS {
+        if body.len() < size_range(Terrain::Lake).0 {
             for &vi in &body {
                 cells[vi] = fill_kind(cells, vi);
             }
@@ -996,8 +1014,8 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
                 q.push_back(vi);
             }
         }
-        // Cell steps are ~35m (vs ~20m face steps): core water sits ≥3 cells
-        // (~100m) from land, matching the old face-based width in meters.
+        // Cell steps are ~17.5m: with resolution doubled to pack in content,
+        // core water sits ≥3 steps from land (half the old physical width).
         while let Some(cur) = q.pop_front() {
             if dist[cur] >= 2 {
                 continue;
@@ -1046,7 +1064,32 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 /// Enclosed water smaller than this many cells is filled to land — a couple
 /// of tiles of "lake" beside the ocean makes no sense (one cell ≈ two fine
 /// faces of area, so 15 cells ≈ the old 30-face minimum).
-const MIN_WATER_BODY_CELLS: usize = 15;
+/// Size envelope, in CELLS, for every tile kind — the area analogue of
+/// `elev_range`. `min`: a contiguous region smaller than this is not viable
+/// and gets absorbed/filled/renamed away. `max`: a region larger than this is
+/// split (only kinds with a splitter — the coastal bands — enforce it; all
+/// others are `usize::MAX`, i.e. unbounded). Oceans and lakes are separated
+/// here: min-ocean sits one above max-lake, so a small isolated ocean-zone
+/// pocket falls through to Lake.
+fn size_range(t: Terrain) -> (usize, usize) {
+    use Terrain::*;
+    const INF: usize = usize::MAX;
+    match t {
+        // A real sea; anything smaller on ocean zone is reclassified a lake.
+        DeepOcean | Ocean => (4000, INF),
+        // Enclosed water: a puddle below min is filled; capped just under the
+        // ocean minimum so "min ocean > max lake" holds by construction.
+        Lake => (60, 3999),
+        // Linear water/bands — area minimums don't apply.
+        River | LakeShore | RiverBank => (1, INF),
+        // Coastal bands: thin, with a min length and a max named-segment length.
+        Beach => (20, 60),
+        Cliff => (1, 24),
+        // Land biomes: a patch below min is speckle and joins its surroundings.
+        Desert | Plains | Forest | Tundra | Mountain | Snow
+            | Swamp | Jungle | Savanna | Volcanic | Glacier => (40, INF),
+    }
+}
 
 /// Nearest cell to a point: the closest corner of the face under it.
 fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
@@ -1194,150 +1237,279 @@ fn paint_features(
 }
 
 /// Gaps up to this bridge freely.
-const BRIDGE_MAX_SPAN: f32 = 250.0;
-/// Longer gaps (up to this) are bridged only to connect an otherwise
-/// unreachable landmass — every island gets at least one way in.
-const BRIDGE_CONNECT_SPAN: f32 = 500.0;
-const BRIDGE_MAX_COUNT: usize = 6;
-/// How far a bridge deck reaches inland past its shore face, meters.
-const BRIDGE_ENTRY_OVERLAP: f32 = 25.0;
+/// How far a bridge deck reaches inland past its bank cell, meters.
+const BRIDGE_ENTRY_OVERLAP: f32 = 15.0;
+/// A river/lake crossing longer than this isn't a bridge — the water is too
+/// wide (that would be a ferry, not a footbridge).
+const BRIDGE_MAX_SPAN: f32 = 200.0;
+/// Keep bridges apart: no two within this many meters.
+const BRIDGE_MIN_SPACING: f32 = 400.0;
+const BRIDGE_MAX_COUNT: usize = 12;
+/// A land component smaller than this, ringed only by lake water, is an island
+/// in the lake and earns a bridge to the mainland.
+const LAKE_ISLAND_MAX_CELLS: usize = 1500;
 
-/// Pick bridges from the fine map, where true water separation is known: each
-/// bridge runs from a shore-band face of one named region to a shore-band face
-/// of a *different* region on a different landmass, crossing open water.
+/// Terrain a bridge may land on: gentle, walkable ground — never a mountain,
+/// cliff, snowfield, glacier or volcanic slope.
+fn bridge_walkable(t: Terrain) -> bool {
+    matches!(
+        t,
+        Terrain::Plains | Terrain::Forest | Terrain::Savanna | Terrain::Tundra
+            | Terrain::Desert | Terrain::Jungle | Terrain::Swamp
+    )
+}
+
+/// Walk straight across a water band from walkable ground `land`, entering the
+/// band at `first`, following the initial heading cell-to-cell until walkable
+/// ground is reached on the FAR side. `band` says which kinds are the crossing
+/// (river+its banks, or lake+its shores). Returns the far-side walkable cell,
+/// or None if the band doesn't end in walkable ground within `max` steps (e.g.
+/// it runs into a mountain, or the band is too wide).
+fn cross_band(
+    grid: &Grid,
+    cells: &[Terrain],
+    land: usize,
+    first: usize,
+    max: usize,
+    band: impl Fn(Terrain) -> bool,
+) -> Option<usize> {
+    let tangent = |from: Vec3, step: Vec3| {
+        let s = step - from * step.dot(from);
+        s.normalize_or_zero()
+    };
+    let heading = tangent(grid.verts[land], grid.verts[first] - grid.verts[land]);
+    if heading == Vec3::ZERO {
+        return None;
+    }
+    let (mut prev, mut cur) = (land, first);
+    for _ in 0..max {
+        if bridge_walkable(cells[cur]) {
+            return Some(cur);
+        }
+        // Only cross the intended band; anything else (open ocean, a mountain
+        // foot) aborts — no bridge there.
+        if !band(cells[cur]) {
+            return None;
+        }
+        let cpos = grid.verts[cur];
+        let mut best = None;
+        let mut best_dot = -2.0;
+        for &nb in &grid.vert_adj[cur] {
+            let nb = nb as usize;
+            if nb == prev {
+                continue;
+            }
+            let d = tangent(cpos, grid.verts[nb] - cpos).dot(heading);
+            if d > best_dot {
+                best_dot = d;
+                best = Some(nb);
+            }
+        }
+        prev = cur;
+        cur = best?;
+    }
+    None
+}
+
+/// Bridges cross WATER LOCALLY:/// Bridges cross WATER LOCALLY: over a river from one walkable bank to the
+/// other, and over a lake to reach an island within it. Never oceans, never
+/// mountains — a short footbridge on gentle ground.
 fn build_bridges(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
-    face_types: &[Terrain],
-    face_region: &[u32],
+    _face_types: &[Terrain],
+    _face_region: &[u32],
     painted: &mut Painted,
 ) -> Vec<Vec<SpherePos>> {
-    // Landmasses: edge-connected components of land faces.
-    let mut comp = vec![u32::MAX; grid.n];
-    let mut count = 0u32;
-    for fi in 0..grid.n {
-        if face_types[fi].is_water() || comp[fi] != u32::MAX {
-            continue;
+    let mut spans: Vec<Vec<SpherePos>> = Vec::new();
+    let mut mids: Vec<SpherePos> = Vec::new();
+    // A deck grounds cleanly only on gentle ground: reject an endpoint whose
+    // proposed elevation differs sharply from its land neighbors (a steep bank
+    // shoulder the entry pad couldn't flatten). Proposed field is set by now.
+    // One walkable cell further from `away`, so the deck grounds inland of the
+    // steep bank edge (the pad there sits on flat ground, clear of the carved
+    // channel). Falls back to the cell itself if no inland walkable neighbor.
+    let inland1 = |vi: usize, away: Vec3| {
+        grid.vert_adj[vi].iter()
+            .map(|&nb| nb as usize)
+            .filter(|&nb| bridge_walkable(cells[nb]))
+            .max_by(|&a, &b| {
+                grid.verts[a].distance(away).partial_cmp(&grid.verts[b].distance(away)).unwrap()
+            })
+            .unwrap_or(vi)
+    };
+    let inland = inland1;
+    // A deck grounds cleanly only on an open, gentle patch: the anchor cell
+    // and all its neighbors must be walkable land (no sea, shore band, cliff,
+    // mountain, snow, glacier or volcanic rock anywhere in the ring) with a
+    // small proposed-elevation spread. This keeps bridges inland on flat
+    // ground and away from mouths, coasts and steep shoulders.
+    // Forbidden around an anchor: steep ground and the open sea/coast. The
+    // crossing band itself (river/lake and their shores) is fine — that is what
+    // the bridge spans.
+    let forbidden = |t: Terrain| matches!(
+        t,
+        Terrain::Mountain | Terrain::Snow | Terrain::Cliff | Terrain::Glacier
+            | Terrain::Volcanic | Terrain::Ocean | Terrain::DeepOcean | Terrain::Beach
+    );
+    let good_anchor = |vi: usize| {
+        if !bridge_walkable(cells[vi]) {
+            return false;
         }
-        let mut q = VecDeque::from([fi]);
-        comp[fi] = count;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.adj[cur] {
-                let nb = nb as usize;
-                if !face_types[nb].is_water() && comp[nb] == u32::MAX {
-                    comp[nb] = count;
-                    q.push_back(nb);
-                }
-            }
+        let e0 = terrain.elevation_at(grid.vert_pos(vi));
+        grid.vert_adj[vi].iter().all(|&nb| {
+            let nb = nb as usize;
+            !forbidden(cells[nb])
+                // Gentle where it's walkable land; band cells are exempt.
+                && (!bridge_walkable(cells[nb])
+                    || (terrain.elevation_at(grid.vert_pos(nb)) - e0).abs() < 0.10)
+        })
+    };
+
+    // Commit a bridge between two bank cells if it clears the spacing rule.
+    let mut commit = |a: usize, b: usize, spans: &mut Vec<Vec<SpherePos>>,
+                      mids: &mut Vec<SpherePos>, painted: &mut Painted| -> bool {
+        let (pa, pb) = (grid.vert_pos(a), grid.vert_pos(b));
+        let d = pa.distance(pb);
+        if d < 1.0 || d > BRIDGE_MAX_SPAN {
+            return false;
         }
-        count += 1;
-    }
-    // Bridgeheads: shore-band faces that belong to a named region. Beaches only —
-    // cliff tops are high by construction, and a deck ending on one becomes a wall.
-    let mut heads: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for fi in 0..grid.n {
-        if face_types[fi] == Terrain::Beach
-            && crate::level::region_index(face_region[fi]).is_some()
-        {
-            heads.entry(comp[fi]).or_default().push(fi);
+        let mid = SpherePos::new((pa.0 + pb.0).normalize());
+        if mids.iter().any(|m| m.distance(mid) < BRIDGE_MIN_SPACING) {
+            return false;
         }
-    }
-    // A landmass with no beach (an all-cliff island, now that cliffs follow
-    // the raised ground) still gets a way in: its lowest coastal faces serve
-    // as harbor sites — the bridge-entry pad flattens the footing there.
-    let mut coast: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
-    for fi in 0..grid.n {
-        if comp[fi] == u32::MAX || heads.contains_key(&comp[fi]) || face_types[fi].is_water() {
-            continue;
-        }
-        if grid.adj[fi].iter().any(|&nb| face_types[nb as usize].is_water()) {
-            coast.entry(comp[fi]).or_default().push(fi);
-        }
-    }
-    for (c, mut faces) in coast {
-        faces.sort_by(|&a, &b| {
-            terrain.elevation_at(grid.centroid(a))
-                .partial_cmp(&terrain.elevation_at(grid.centroid(b))).unwrap()
-        });
-        faces.truncate(30);
-        heads.insert(c, faces);
-    }
-    let comps: Vec<u32> = heads.keys().copied().collect();
-    let mut candidates: Vec<(f32, usize, usize, usize, usize)> = Vec::new();
-    for i in 0..comps.len() {
-        for j in (i + 1)..comps.len() {
-            let mut best: Option<(f32, usize, usize)> = None;
-            for &fa in &heads[&comps[i]] {
-                for &fb in &heads[&comps[j]] {
-                    let d = grid.centroid(fa).distance(grid.centroid(fb));
-                    if best.is_none_or(|(bd, _, _)| d < bd) {
-                        best = Some((d, fa, fb));
-                    }
-                }
-            }
-            if let Some((d, fa, fb)) = best {
-                if d <= BRIDGE_CONNECT_SPAN {
-                    candidates.push((d, fa, fb, i, j));
-                }
-            }
-        }
-    }
-    candidates.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-    // Union-find over landmasses: long spans only earn a bridge by connecting.
-    let mut parent: Vec<usize> = (0..comps.len()).collect();
-    fn root(parent: &mut [usize], mut x: usize) -> usize {
-        while parent[x] != x {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        x
-    }
-    let mut spans = Vec::new();
-    for &(d, fa, fb, ci, cj) in &candidates {
-        if spans.len() >= BRIDGE_MAX_COUNT {
-            break;
-        }
-        let (ri, rj) = (root(&mut parent, ci), root(&mut parent, cj));
-        if d > BRIDGE_MAX_SPAN && ri == rj {
-            continue;
-        }
-        parent[ri] = rj;
-        let (a, b) = (grid.centroid(fa), grid.centroid(fb));
-        // Extend past both shore faces so the deck grounds on solid land instead
-        // of ending exactly at the waterline face centroid.
         let ext = BRIDGE_ENTRY_OVERLAP / d;
-        let steps = (d * (1.0 + 2.0 * ext) / 10.0).ceil().max(2.0) as usize;
+        let steps = (d * (1.0 + 2.0 * ext) / 6.0).ceil().max(2.0) as usize;
         let span: Vec<SpherePos> = (0..=steps)
-            .map(|k| crate::sphere::slerp(a, b, -ext + (1.0 + 2.0 * ext) * k as f32 / steps as f32))
+            .map(|k| crate::sphere::slerp(pa, pb, -ext + (1.0 + 2.0 * ext) * k as f32 / steps as f32))
             .collect();
-        let crosses_water = span.iter().any(|p| {
-            grid.planet.face_at(p.0).is_some_and(|fi| face_types[fi].is_water())
-        });
-        if !crosses_water {
-            continue;
-        }
         for vi in vert_chain(grid, &span) {
             painted.bridges.insert(vi);
         }
-        // Bridge entries: the land cells around each deck end.
         for end in [span.first(), span.last()] {
             let Some(fi) = end.and_then(|p| grid.planet.face_at(p.0)) else { continue };
             for &vi in &grid.face_verts[fi] {
                 let vi = vi as usize;
-                if !cells[vi].is_land() {
-                    continue;
-                }
-                painted.bridge_entries.insert(vi);
-                for &nb in &grid.vert_adj[vi] {
-                    if cells[nb as usize].is_land() {
-                        painted.bridge_entries.insert(nb as usize);
+                if cells[vi].is_land() {
+                    painted.bridge_entries.insert(vi);
+                    for &nb in &grid.vert_adj[vi] {
+                        if cells[nb as usize].is_land() {
+                            painted.bridge_entries.insert(nb as usize);
+                        }
                     }
                 }
             }
         }
+        mids.push(mid);
         spans.push(span);
+        true
+    };
+
+    // (1) River crossings: a walkable cell beside a river bank, straight
+    // across the band (bank → channel → bank) to walkable ground on the far
+    // side. The endpoints are the walkable ground next to the banks.
+    let river_band = |t: Terrain| matches!(t, Terrain::River | Terrain::RiverBank);
+    for l1 in 0..grid.nv {
+        if spans.len() >= BRIDGE_MAX_COUNT {
+            break;
+        }
+        if !bridge_walkable(cells[l1]) {
+            continue;
+        }
+        let Some(&entry) = grid.vert_adj[l1].iter()
+            .find(|&&nb| cells[nb as usize] == Terrain::RiverBank)
+        else {
+            continue;
+        };
+        if let Some(l2) = cross_band(grid, cells, l1, entry as usize, 9, river_band) {
+            if l2 == l1 {
+                continue;
+            }
+            let mid = (grid.verts[l1] + grid.verts[l2]) * 0.5;
+            let (g1, g2) = (inland(l1, mid), inland(l2, mid));
+            if good_anchor(g1) && good_anchor(g2) {
+                commit(g1, g2, &mut spans, &mut mids, painted);
+            }
+        }
     }
+
+
+    // (2) Lake islands: a land component ringed only by lake water, small
+    // enough to be an island, bridged to the nearest mainland lake shore.
+    let mut comp = vec![u32::MAX; grid.nv];
+    let mut sizes: Vec<usize> = Vec::new();
+    for start in 0..grid.nv {
+        if !cells[start].is_land() || comp[start] != u32::MAX {
+            continue;
+        }
+        let id = sizes.len() as u32;
+        let mut n = 0usize;
+        let mut q = VecDeque::from([start]);
+        comp[start] = id;
+        while let Some(cur) = q.pop_front() {
+            n += 1;
+            for &nb in &grid.vert_adj[cur] {
+                let nb = nb as usize;
+                if cells[nb].is_land() && comp[nb] == u32::MAX {
+                    comp[nb] = id;
+                    q.push_back(nb);
+                }
+            }
+        }
+        sizes.push(n);
+    }
+    // Which components are lake islands: small, and every adjacent water cell
+    // is Lake (no ocean, no river).
+    let n_comp = sizes.len();
+    let mut has_lake = vec![false; n_comp];
+    let mut only_lake = vec![true; n_comp];
+    for vi in 0..grid.nv {
+        let Some(&id) = (cells[vi].is_land()).then(|| &comp[vi]) else { continue };
+        for &nb in &grid.vert_adj[vi] {
+            match cells[nb as usize] {
+                Terrain::Lake => has_lake[id as usize] = true,
+                t if t.is_water() => only_lake[id as usize] = false,
+                _ => {}
+            }
+        }
+    }
+    for id in 0..n_comp {
+        if spans.len() >= BRIDGE_MAX_COUNT {
+            break;
+        }
+        if !(has_lake[id] && only_lake[id] && sizes[id] <= LAKE_ISLAND_MAX_CELLS) {
+            continue;
+        }
+        // Island shore cells (this component, beside lake) and mainland shore
+        // cells (a different component, beside lake). Nearest pair.
+        let lake_shore = |vi: usize| bridge_walkable(cells[vi])
+            && grid.vert_adj[vi].iter().any(|&nb| cells[nb as usize] == Terrain::LakeShore);
+        let island_shore: Vec<usize> = (0..grid.nv)
+            .filter(|&vi| comp[vi] == id as u32 && lake_shore(vi))
+            .collect();
+        let mut best: Option<(f32, usize, usize)> = None;
+        for &a in &island_shore {
+            let pa = grid.vert_pos(a);
+            for vi in 0..grid.nv {
+                if comp[vi] == id as u32 || comp[vi] == u32::MAX || !lake_shore(vi) {
+                    continue;
+                }
+                let dd = pa.distance(grid.vert_pos(vi));
+                if best.is_none_or(|(bd, _, _)| dd < bd) {
+                    best = Some((dd, a, vi));
+                }
+            }
+        }
+        if let Some((_, a, b)) = best {
+            let mid = (grid.verts[a] + grid.verts[b]) * 0.5;
+            let (g1, g2) = (inland(a, mid), inland(b, mid));
+            if good_anchor(g1) && good_anchor(g2) {
+                commit(g1, g2, &mut spans, &mut mids, painted);
+            }
+        }
+    }
+
     link_feature_pinches(grid, &mut painted.bridge_entries, |vi| cells[vi].is_land());
     spans
 }
@@ -1516,6 +1688,8 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
                 t,
                 Terrain::Desert | Terrain::Plains | Terrain::Forest
                     | Terrain::Tundra | Terrain::Mountain | Terrain::Snow
+                    | Terrain::Swamp | Terrain::Jungle | Terrain::Savanna
+                    | Terrain::Volcanic | Terrain::Glacier
             ) {
                 *counts.entry(t as u8).or_default() += 1;
             }
@@ -1578,8 +1752,6 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
 /// A biome patch smaller than this many cells is speckle, not a region —
 /// threshold classifiers (snow by temperature, mountains by elevation)
 /// salt-and-pepper at their contour lines without this.
-const MIN_PATCH_CELLS: usize = 10;
-
 /// Generic min-region-size for every plain land biome: undersized clusters
 /// join their most common neighboring land kind. Transition bands (shore
 /// kinds) are thin by design and exempt; water minimums live in
@@ -1589,6 +1761,8 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
         t,
         Terrain::Desert | Terrain::Plains | Terrain::Forest
             | Terrain::Tundra | Terrain::Mountain | Terrain::Snow
+            | Terrain::Swamp | Terrain::Jungle | Terrain::Savanna
+            | Terrain::Volcanic | Terrain::Glacier
     );
     let mut visited = vec![false; grid.nv];
     for start in 0..grid.nv {
@@ -1609,7 +1783,7 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
                 }
             }
         }
-        if cluster.len() >= MIN_PATCH_CELLS {
+        if cluster.len() >= size_range(kind).0 {
             continue;
         }
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
@@ -1628,12 +1802,6 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
         }
     }
 }
-
-/// Coastal region naming granularity: one named beach/cliff region covers at
-/// most this many cells (regions are split while naming, never by retyping).
-const MAX_BEACH_CELLS: usize = 30;
-const MAX_CLIFF_CELLS: usize = 12;
-const MIN_BEACH_CELLS: usize = 10;
 
 /// The coast band is PROACTIVE: Beach vs Cliff was already decided by the
 /// proposed elevation field (high ground meeting water is a cliff, low ground
@@ -1721,6 +1889,11 @@ fn region_class(grid: &Grid, face_types: &[Terrain], painted: Option<&Painted>, 
         Terrain::Mountain | Terrain::Snow => Some(RegionKind::Mountain),
         Terrain::Plains => Some(RegionKind::Plains),
         Terrain::Tundra => Some(RegionKind::Tundra),
+        Terrain::Swamp => Some(RegionKind::Swamp),
+        Terrain::Jungle => Some(RegionKind::Jungle),
+        Terrain::Savanna => Some(RegionKind::Savanna),
+        Terrain::Volcanic => Some(RegionKind::Volcano),
+        Terrain::Glacier => Some(RegionKind::Glacier),
         Terrain::LakeShore | Terrain::RiverBank => None,
     }
 }
@@ -1760,8 +1933,8 @@ fn build_regions(
         // Long coastlines split into multiple named regions while naming —
         // the tiles themselves are never retyped for naming's sake.
         let max_faces = match kind {
-            RegionKind::Beach => MAX_BEACH_CELLS * 2,
-            RegionKind::Cliff => MAX_CLIFF_CELLS * 2,
+            RegionKind::Beach => size_range(Terrain::Beach).1 * 2,
+            RegionKind::Cliff => size_range(Terrain::Cliff).1 * 2,
             _ => usize::MAX,
         };
         let mut faces = vec![start];
@@ -1793,8 +1966,8 @@ fn build_regions(
         let min_faces = match kind {
             RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
             // Cell minimums expressed in faces (one cell ≈ two faces of area).
-            RegionKind::Forest => MIN_PATCH_CELLS * 2,
-            RegionKind::Beach => MIN_BEACH_CELLS * 2,
+            RegionKind::Forest => size_range(Terrain::Forest).0 * 2,
+            RegionKind::Beach => size_range(Terrain::Beach).0 * 2,
             _ => 8,
         };
         if faces.len() < min_faces {
@@ -1829,6 +2002,11 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
     const PLAINS: [&str; 8] = ["Green", "Wide", "Amber", "Rolling", "Sunlit", "Long", "Low", "Open"];
     const TUNDRA: [&str; 6] = ["Pale", "Frozen", "White", "Bitter", "Still", "North"];
     const ROAD: [&str; 8] = ["Old", "King's", "Salt", "Trade", "Pilgrim's", "Coastal", "High", "Low"];
+    const SWAMP: [&str; 6] = ["Murk", "Fen", "Bog", "Mire", "Black", "Sunken"];
+    const JUNGLE: [&str; 6] = ["Verdant", "Emerald", "Tangle", "Vine", "Fever", "Green"];
+    const SAVANNA: [&str; 6] = ["Amber", "Sun", "Dust", "Lion", "Wide", "Gold"];
+    const VOLCANO: [&str; 6] = ["Ash", "Ember", "Cinder", "Smoke", "Molten", "Black"];
+    const GLACIER: [&str; 6] = ["Frost", "White", "Blue", "Silent", "Everice", "North"];
 
     let pick = |pool: &[&str], suffixes: &[&str]| {
         format!("{} {}", pool[idx % pool.len()], suffixes[(idx / pool.len()) % suffixes.len()])
@@ -1844,6 +2022,11 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
         RegionKind::Mountain => pick(&MOUNTAIN, &["Peaks", "Range"]),
         RegionKind::Plains => pick(&PLAINS, &["Plains", "Fields"]),
         RegionKind::Tundra => pick(&TUNDRA, &["Tundra", "Wastes"]),
+        RegionKind::Swamp => pick(&SWAMP, &["Swamp", "Marsh", "Fen"]),
+        RegionKind::Jungle => pick(&JUNGLE, &["Jungle", "Rainforest"]),
+        RegionKind::Savanna => pick(&SAVANNA, &["Savanna", "Plains"]),
+        RegionKind::Volcano => pick(&VOLCANO, &["Peaks", "Fields", "Wastes"]),
+        RegionKind::Glacier => pick(&GLACIER, &["Glacier", "Ice", "Wastes"]),
         RegionKind::Road => pick(&ROAD, &["Road"]),
         // Towns take the name of the settlement they surround.
         RegionKind::Town => {
@@ -1945,6 +2128,79 @@ fn build_mesh(
 /// Deterministic: one seeded stream in face order.
 const FLORA_RNG_SALT: u64 = 0x466c_6f72;
 
+/// How a flora kind's density responds to ground moisture.
+#[derive(Clone, Copy)]
+enum FloraScale {
+    /// Denser on wet ground (greenery).
+    Wet,
+    /// Wet, squared — meadows bloom sharply with moisture (flowers).
+    WetSq,
+    /// Denser on dry ground (rocks, cacti).
+    Dry,
+    /// Density independent of moisture (fallen logs, dead trees).
+    Flat,
+}
+
+/// Base per-face density (expected instances) for each flora kind on a tile,
+/// with its moisture response — the scatter analogue of `elev_range`. Faces
+/// are ~9m across at sub=7, so values are small. Empty ⇒ nothing grows here.
+fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, u8)> {
+    use FloraScale::*;
+    // (base, scale, kind). Kept sparse: only the kinds that grow on this tile.
+    let v: &[(f32, FloraScale, u8)] = match t {
+        Terrain::Forest => &[
+            (0.40, Wet, FLORA_TREE), (0.10, Wet, FLORA_BUSH), (0.012, WetSq, FLORA_FLOWER),
+            (0.008, Dry, FLORA_ROCK), (0.075, Wet, FLORA_GRASS),
+            (0.03, Flat, FLORA_LOG), (0.06, Wet, FLORA_MUSHROOM), (0.04, Wet, FLORA_BERRY),
+            (0.01, Flat, FLORA_DEADTREE),
+        ],
+        Terrain::Jungle => &[
+            (0.55, Wet, FLORA_TREE), (0.18, Wet, FLORA_BUSH), (0.02, WetSq, FLORA_FLOWER),
+            (0.004, Dry, FLORA_ROCK), (0.10, Wet, FLORA_GRASS),
+            (0.05, Flat, FLORA_LOG), (0.09, Wet, FLORA_MUSHROOM), (0.05, Wet, FLORA_BERRY),
+            (0.02, Wet, FLORA_REED),
+        ],
+        Terrain::Swamp => &[
+            (0.05, Wet, FLORA_TREE), (0.12, Wet, FLORA_BUSH), (0.03, WetSq, FLORA_FLOWER),
+            (0.004, Dry, FLORA_ROCK), (0.10, Wet, FLORA_GRASS),
+            (0.05, Flat, FLORA_LOG), (0.05, Wet, FLORA_MUSHROOM), (0.06, Flat, FLORA_DEADTREE),
+            (0.18, Wet, FLORA_REED),
+        ],
+        Terrain::Plains => &[
+            (0.01, Wet, FLORA_TREE), (0.025, Wet, FLORA_BUSH), (0.075, WetSq, FLORA_FLOWER),
+            (0.005, Dry, FLORA_ROCK), (0.088, Wet, FLORA_GRASS),
+            (0.004, Flat, FLORA_LOG), (0.02, Wet, FLORA_BERRY),
+        ],
+        Terrain::Savanna => &[
+            (0.02, Wet, FLORA_TREE), (0.04, Wet, FLORA_BUSH), (0.04, WetSq, FLORA_FLOWER),
+            (0.008, Dry, FLORA_ROCK), (0.11, Wet, FLORA_GRASS),
+            (0.008, Flat, FLORA_LOG), (0.015, Dry, FLORA_CACTUS), (0.01, Wet, FLORA_BERRY),
+            (0.02, Flat, FLORA_DEADTREE),
+        ],
+        Terrain::Tundra => &[
+            (0.003, Wet, FLORA_TREE), (0.015, Wet, FLORA_BUSH), (0.005, WetSq, FLORA_FLOWER),
+            (0.03, Dry, FLORA_ROCK), (0.012, Wet, FLORA_GRASS),
+            (0.01, Flat, FLORA_LOG), (0.008, Wet, FLORA_BERRY), (0.03, Flat, FLORA_DEADTREE),
+        ],
+        Terrain::Desert => &[
+            (0.012, Wet, FLORA_BUSH), (0.025, Dry, FLORA_ROCK),
+            (0.06, Dry, FLORA_CACTUS), (0.02, Flat, FLORA_DEADTREE),
+        ],
+        Terrain::RiverBank | Terrain::LakeShore => &[
+            (0.02, Wet, FLORA_TREE), (0.05, Wet, FLORA_BUSH), (0.062, WetSq, FLORA_FLOWER),
+            (0.008, Dry, FLORA_ROCK), (0.075, Wet, FLORA_GRASS),
+            (0.01, Flat, FLORA_LOG), (0.12, Wet, FLORA_REED),
+        ],
+        Terrain::Mountain => &[(0.005, Wet, FLORA_BUSH), (0.05, Dry, FLORA_ROCK)],
+        Terrain::Cliff => &[(0.038, Dry, FLORA_ROCK)],
+        Terrain::Beach => &[(0.01, Dry, FLORA_ROCK)],
+        Terrain::Volcanic => &[(0.06, Dry, FLORA_ROCK)],
+        Terrain::Glacier => &[(0.01, Dry, FLORA_ROCK)],
+        _ => &[],
+    };
+    v.to_vec()
+}
+
 fn place_flora(
     grid: &Grid,
     terrain: &TerrainGen,
@@ -1962,32 +2218,22 @@ fn place_flora(
         if clear {
             continue;
         }
-        // (trees, bushes, flowers, rocks, grass) expected per face; wetter
-        // ground means denser greenery (flower meadows follow moisture),
-        // drier ground means barer rock.
-        let (trees, bushes, flowers, rocks, grass): (f32, f32, f32, f32, f32) = match tiles[fi] {
-            Terrain::Forest => (1.6, 0.40, 0.05, 0.03, 0.30),
-            Terrain::Plains => (0.04, 0.10, 0.30, 0.02, 0.35),
-            Terrain::Tundra => (0.01, 0.06, 0.02, 0.12, 0.05),
-            Terrain::Desert => (0.0, 0.05, 0.0, 0.10, 0.0),
-            Terrain::Mountain => (0.0, 0.02, 0.0, 0.20, 0.0),
-            Terrain::Cliff => (0.0, 0.0, 0.0, 0.15, 0.0),
-            Terrain::Beach => (0.0, 0.0, 0.0, 0.04, 0.0),
-            Terrain::RiverBank | Terrain::LakeShore => (0.08, 0.20, 0.25, 0.03, 0.30),
-            _ => continue,
-        };
+        let mix = flora_density(tiles[fi]);
+        if mix.is_empty() {
+            continue;
+        }
         // Moisture in roughly [-1, 1]: scale greens up on wet ground, rocks
         // up on dry ground. One sample per face keeps it cheap.
         let m = terrain.moisture_at(grid.centroid(fi));
         let wet = (1.0 + m).clamp(0.3, 1.8);
         let dry = (1.0 - m).clamp(0.5, 1.6);
-        for (density, kind) in [
-            (trees * wet, FLORA_TREE),
-            (bushes * wet, FLORA_BUSH),
-            (flowers * wet * wet, FLORA_FLOWER),
-            (rocks * dry, FLORA_ROCK),
-            (grass * wet, FLORA_GRASS),
-        ] {
+        for &(base, scale, kind) in &mix {
+            let density = base * match scale {
+                FloraScale::Wet => wet,
+                FloraScale::WetSq => wet * wet,
+                FloraScale::Dry => dry,
+                FloraScale::Flat => 1.0,
+            };
             let mut n = density.trunc() as u32;
             if rng.f32() < density.fract() {
                 n += 1;
@@ -2007,6 +2253,119 @@ fn place_flora(
                 let pos = a + (b - a) * u + (c - a) * v;
                 out.push(FloraData { pos: pos.to_array(), face: fi as u32, kind });
             }
+        }
+    }
+    out
+}
+
+const STRUCT_RNG_SALT: u64 = 0x5374_7563_7572_65;
+
+/// Contextual structures, placed like towns/bridges: wells, campfires and
+/// farms cluster in and around towns; walls ring town edges; docks reach out
+/// from coastal town shores; watchtowers crown high ground near roads; ruins
+/// scatter through the wilderness. Positions sit on the displaced mesh (face
+/// centroids). Deterministic: one seeded stream in face order.
+fn place_structures(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    tiles: &[Terrain],
+    painted: &Painted,
+    mesh_tris: &[[[f32; 3]; 3]],
+) -> Vec<StructureData> {
+    let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ STRUCT_RNG_SALT);
+    let face_center = |fi: usize| {
+        let t = &mesh_tris[fi];
+        (Vec3::from_array(t[0]) + Vec3::from_array(t[1]) + Vec3::from_array(t[2])) / 3.0
+    };
+    let town = |fi: usize| face_solid(grid, &painted.towns, fi);
+    let road = |fi: usize| face_solid(grid, &painted.roads, fi);
+    let feature = |fi: usize| {
+        town(fi) || road(fi)
+            || painted_corners(grid, &painted.bridges, fi) > 0
+            || painted_corners(grid, &painted.bridge_entries, fi) > 0
+    };
+    // Face-step distance from any town (capped) — cheap context for the rest.
+    let mut town_dist = vec![u16::MAX; grid.n];
+    let mut q: VecDeque<usize> = VecDeque::new();
+    for fi in 0..grid.n {
+        if town(fi) {
+            town_dist[fi] = 0;
+            q.push_back(fi);
+        }
+    }
+    while let Some(cur) = q.pop_front() {
+        if town_dist[cur] >= 6 {
+            continue;
+        }
+        for &nb in &grid.adj[cur] {
+            let nb = nb as usize;
+            if town_dist[nb] == u16::MAX {
+                town_dist[nb] = town_dist[cur] + 1;
+                q.push_back(nb);
+            }
+        }
+    }
+    let road_near = |fi: usize| grid.adj[fi].iter().any(|&nb| road(nb as usize)) || road(fi);
+
+    let mut out = Vec::new();
+    let mut push = |rng: &mut fastrand::Rng, fi: usize, kind: u8| {
+        out.push(StructureData {
+            pos: face_center(fi).to_array(),
+            face: fi as u32,
+            kind,
+            yaw: rng.f32() * std::f32::consts::TAU,
+        });
+    };
+    for fi in 0..grid.n {
+        if tiles[fi].is_water() {
+            continue;
+        }
+        // Town interior: a well or a campfire in a clearing.
+        if town(fi) {
+            let r = rng.f32();
+            if r < 0.010 {
+                push(&mut rng, fi, STRUCT_WELL);
+            } else if r < 0.045 {
+                push(&mut rng, fi, STRUCT_CAMPFIRE);
+            }
+            continue;
+        }
+        // Town edge (non-town land beside a town): a wall segment or a farm.
+        let touches_town = grid.adj[fi].iter().any(|&nb| town(nb as usize));
+        if touches_town {
+            let coastal = grid.adj[fi].iter().any(|&nb| tiles[nb as usize].is_water());
+            if coastal && rng.f32() < 0.5 {
+                push(&mut rng, fi, STRUCT_DOCK);
+            } else if rng.f32() < 0.4 {
+                push(&mut rng, fi, STRUCT_WALL);
+            }
+            continue;
+        }
+        if feature(fi) {
+            continue;
+        }
+        // Farmland: fertile flat ground just outside town.
+        if town_dist[fi] <= 3
+            && matches!(tiles[fi], Terrain::Plains | Terrain::Savanna | Terrain::Forest)
+            && rng.f32() < 0.10
+        {
+            push(&mut rng, fi, STRUCT_FARM);
+            continue;
+        }
+        // Watchtower: high ground overlooking a road.
+        if road_near(fi)
+            && terrain.elevation_at(grid.centroid(fi)) > 0.25
+            && rng.f32() < 0.03
+        {
+            push(&mut rng, fi, STRUCT_WATCHTOWER);
+            continue;
+        }
+        // Ruins: rare, deep in the wilderness (far from any town).
+        if town_dist[fi] == u16::MAX
+            && !matches!(tiles[fi], Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank)
+            && rng.f32() < 0.0006
+        {
+            push(&mut rng, fi, STRUCT_RUIN);
         }
     }
     out
@@ -2038,6 +2397,28 @@ fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
 
 /// Elevation range (in [-1,1] units; 1.0 land unit = 500m) a tile's ground
 /// may occupy.
+/// How far below its neighbors' average a water bed vertex is pushed each
+/// solver step — a concave basin/channel instead of a flat plate. `None` for
+/// non-bed kinds. (Rivers cut sharper than lake basins.)
+fn water_concavity(t: Terrain) -> Option<f32> {
+    match t {
+        Terrain::Lake => Some(0.005),
+        Terrain::River => Some(0.020),
+        _ => None,
+    }
+}
+
+/// The water kinds a shore/bank vertex must sit strictly above (its adjacent
+/// body). Empty for non-bank kinds.
+fn bank_water(t: Terrain) -> &'static [Terrain] {
+    match t {
+        Terrain::RiverBank => &[Terrain::River],
+        Terrain::LakeShore => &[Terrain::Lake],
+        Terrain::Beach => &[Terrain::Ocean, Terrain::DeepOcean],
+        _ => &[],
+    }
+}
+
 fn elev_range(t: Terrain) -> (f32, f32) {
     use Terrain::*;
     // Ranges of kinds that may sit next to each other must overlap (or lie
@@ -2059,9 +2440,16 @@ fn elev_range(t: Terrain) -> (f32, f32) {
         // tracking step in the solver), so the whole drop happens across the
         // cliff face. The range here is just the envelope.
         Cliff => (-0.02, 0.60),
-        Desert | Plains | Forest | Tundra => (0.02, 0.50),
+        Desert | Plains | Forest | Tundra | Savanna => (0.02, 0.50),
+        // Swamp is low, wet, near-flat ground just above the water line.
+        Swamp => (0.0, 0.15),
+        // Jungle covers lowland to hills.
+        Jungle => (0.02, 0.55),
         Mountain => (0.45, 1.0),
         Snow => (0.50, 1.0),
+        // Volcanic peaks and glaciers ride the high ground like Mountain/Snow.
+        Volcanic => (0.45, 1.0),
+        Glacier => (0.45, 1.0),
     }
 }
 
@@ -2070,24 +2458,25 @@ fn elev_range(t: Terrain) -> (f32, f32) {
 fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     use Terrain::*;
     let water = |t: Terrain| matches!(t, Ocean | DeepOcean | Lake);
-    let peak = |t: Terrain| matches!(t, Mountain | Snow);
+    let peak = |t: Terrain| matches!(t, Mountain | Snow | Volcanic | Glacier);
     // Rivers are canyons: their walls may be steep wherever they cut through.
+    // Caps are per vertex edge (~35m at field sub=6).
     let base: f32 = if matches!(a, River | RiverBank) || matches!(b, River | RiverBank) {
-        0.45
+        0.22
     } else if a == Cliff || b == Cliff {
         // The whole cliff drop can happen across one vertex edge (toe → crest).
-        0.60
+        0.30
     } else if peak(a) || peak(b) {
-        0.28
+        0.14
     } else if water(a) && water(b) {
-        0.08
+        0.04
     } else if water(a) || water(b) || a == Beach || b == Beach {
-        0.03
+        0.015
     } else {
-        // Ordinary land: ~0.04 e per ~70m edge ≈ 16° — walkable country,
+        // Ordinary land: ~0.02 e per ~35m edge ≈ 15° — walkable country,
         // not ski slopes. Steepness is a property of mountains, cliffs and
         // canyons (their caps above), not of plains.
-        0.04
+        0.02
     };
     // Feasibility: a cap can never be tighter than the jump the two kinds'
     // disjoint elevation ranges force — otherwise range clamp and gradient cap
@@ -2099,8 +2488,8 @@ fn max_gradient(a: Terrain, b: Terrain) -> f32 {
 }
 
 /// Tight cap along road corridors so roads stay walkable.
-const ROAD_EDGE_GRADIENT: f32 = 0.02;
-const SOLVER_MAX_ITERS: usize = 150;
+const ROAD_EDGE_GRADIENT: f32 = 0.01;
+const SOLVER_MAX_ITERS: usize = 250;
 const SOLVER_EPS: f32 = 0.002;
 
 fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
@@ -2114,9 +2503,41 @@ fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
     if sum > 0.0 { weighted / sum } else { values[kernel[0].0] }
 }
 
+/// Solver verts are a bit-exact subset of the grid's cell vertices (each
+/// subdivision keeps its parents), so tile ownership comes straight from the
+/// cell labels — no geometric face lookup, no fallback kind.
+fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terrain> {
+    let index: BTreeMap<[u32; 3], u32> = grid.verts.iter().enumerate()
+        .map(|(i, v)| ([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()], i as u32))
+        .collect();
+    (0..terrain.vert_count())
+        .map(|vi| {
+            let d = terrain.vert_dir(vi);
+            let key = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
+            match index.get(&key) {
+                Some(&ci) => cells[ci as usize],
+                // Not bit-identical (should not happen): nearest corner of the
+                // face underneath.
+                None => grid.planet.face_at(d)
+                    .map(|fi| {
+                        let best = grid.face_verts[fi].iter().copied()
+                            .max_by(|&a, &b| {
+                                grid.verts[a as usize].dot(d)
+                                    .partial_cmp(&grid.verts[b as usize].dot(d)).unwrap()
+                            })
+                            .unwrap();
+                        cells[best as usize]
+                    })
+                    .unwrap_or(Terrain::Plains),
+            }
+        })
+        .collect()
+}
+
 fn solve_elevation(
     grid: &Grid,
     terrain: &TerrainGen,
+    cells: &[Terrain],
     tiles: &[Terrain],
     painted: &Painted,
     blends: &[(u32, u8, u8)],
@@ -2132,13 +2553,8 @@ fn solve_elevation(
     // directly under it — the same mapping the gradient caps use, so the
     // constraint set is self-consistent by construction. Transitions between
     // kinds are shaped by the edge caps, not by range intersections.
-    let owner: Vec<Terrain> = (0..nv)
-        .map(|vi| {
-            grid.planet.face_at(terrain.vert_dir(vi))
-                .map(|fi| tiles[fi])
-                .unwrap_or(Terrain::Plains)
-        })
-        .collect();
+    let owner: Vec<Terrain> = owner_cells(grid, terrain, cells);
+    let _ = tiles;
     let owner_face: Vec<Option<usize>> = (0..nv)
         .map(|vi| grid.planet.face_at(terrain.vert_dir(vi)))
         .collect();
@@ -2199,9 +2615,10 @@ fn solve_elevation(
                     3 => -0.70,
                     _ => -1.0,
                 };
-                lo[vi] = lo[vi].max(shelf);
-                // Keep the interval non-empty against the owner's ceiling.
-                hi[vi] = hi[vi].max(lo[vi]);
+                // The shelf floor never overrides the owner's ceiling: a
+                // deep-water vert near land pins to its ceiling instead of
+                // rising above its range.
+                lo[vi] = lo[vi].max(shelf).min(hi[vi]);
             }
         }
     }
@@ -2269,7 +2686,19 @@ fn solve_elevation(
     let pads: Vec<Vec<usize>> = bridges.iter()
         .flat_map(|span| [span.first(), span.last()])
         .flatten()
-        .map(pad_verts_at)
+        .map(|end| {
+            // The pad flattens ONLY ordinary dry ground: never water, a river
+            // bed (canyon), or a shore band — those keep their own tight
+            // ranges, so the deck grounds without disturbing the coast/channel.
+            pad_verts_at(end).into_iter()
+                .filter(|&vi| !is_canyon_vert[vi]
+                    && owner[vi].is_land()
+                    && !matches!(
+                        owner[vi],
+                        Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank
+                    ))
+                .collect()
+        })
         .collect();
 
     let mut e: Vec<f32> = terrain.vert_elevations().to_vec();
@@ -2294,6 +2723,37 @@ fn solve_elevation(
                     e[a] -= dir * excess;
                     e[b] += dir * excess;
                     residual += excess;
+                }
+            }
+        }
+        // 1b) road smoothing: pull every road vertex toward the average of
+        // its road-corridor neighbors, so the ROAD SURFACE has no local bumps —
+        // the gradient cap bounds the slope, this bounds the change in slope
+        // (curvature), giving a road that eases over the ground.
+        {
+            let mut delta = vec![0.0f32; nv];
+            for a in 0..nv {
+                if !is_road_vert[a] {
+                    continue;
+                }
+                let mut sum = 0.0;
+                let mut cnt = 0;
+                for &b in terrain.adj_of(a) {
+                    if is_road_vert[b] {
+                        sum += e[b];
+                        cnt += 1;
+                    }
+                }
+                if cnt > 0 {
+                    // Half-strength Laplacian: smooths bumps without erasing
+                    // the road's overall descent.
+                    delta[a] = 0.5 * (sum / cnt as f32 - e[a]);
+                }
+            }
+            for a in 0..nv {
+                if delta[a] != 0.0 {
+                    e[a] += delta[a];
+                    residual += delta[a].abs();
                 }
             }
         }
@@ -2323,11 +2783,7 @@ fn solve_elevation(
         // middle and channels dip below their banks — depth grows naturally
         // with basin size instead of being a flat plate.
         for vi in 0..nv {
-            let c = match owner[vi] {
-                Terrain::Lake => 0.010,
-                Terrain::River => 0.040,
-                _ => continue,
-            };
+            let Some(c) = water_concavity(owner[vi]) else { continue };
             let nbs = terrain.adj_of(vi);
             let avg: f32 = nbs.iter().map(|&nb| e[nb]).sum::<f32>() / nbs.len() as f32;
             let cap = avg - c;
@@ -2363,12 +2819,10 @@ fn solve_elevation(
             if is_canyon_vert[vi] && owner[vi] != Terrain::RiverBank {
                 continue;
             }
-            let matching_water: &[Terrain] = match owner[vi] {
-                Terrain::RiverBank => &[Terrain::River],
-                Terrain::LakeShore => &[Terrain::Lake],
-                Terrain::Beach => &[Terrain::Ocean, Terrain::DeepOcean],
-                _ => continue,
-            };
+            let matching_water = bank_water(owner[vi]);
+            if matching_water.is_empty() {
+                continue;
+            }
             let mut water_surface = f32::MIN;
             for &nb in terrain.adj_of(vi) {
                 if matching_water.contains(&owner[nb]) {
@@ -2396,8 +2850,11 @@ fn solve_elevation(
         // footing is dead flat even where tile ranges disagree slightly.
         for pad in &pads {
             let mean: f32 = pad.iter().map(|&vi| e[vi]).sum::<f32>() / pad.len() as f32;
-            // A footing sits at shore level regardless of what it averaged.
-            let footing = mean.clamp(0.01, 0.08);
+            // The footing flattens to the LOCAL ground (the pad average), so
+            // the deck meets whatever it lands on seamlessly — river bridges
+            // sit at bank height, not forced down to sea level. Kept above the
+            // waterline so an entry never floods.
+            let footing = mean.max(0.02);
             for &vi in pad {
                 residual += (e[vi] - footing).abs();
                 e[vi] = footing;
@@ -2406,6 +2863,29 @@ fn solve_elevation(
         iters = it + 1;
         if residual < SOLVER_EPS {
             break;
+        }
+    }
+    // Final guarantee (the solver's per-iteration bank floor can lose a race
+    // to river descent at a high source): every bank vert ends strictly above
+    // its adjacent water surface. Highest banks first so a bank that borders
+    // another bank still clears the shared water.
+    let mut order: Vec<usize> = (0..nv)
+        .filter(|&vi| matches!(owner[vi], Terrain::RiverBank | Terrain::LakeShore | Terrain::Beach))
+        .collect();
+    order.sort_by(|&a, &b| e[b].partial_cmp(&e[a]).unwrap());
+    for &vi in &order {
+        let matching = bank_water(owner[vi]);
+        if matching.is_empty() {
+            continue;
+        }
+        let mut surface = f32::MIN;
+        for &nb in terrain.adj_of(vi) {
+            if matching.contains(&owner[nb]) {
+                surface = surface.max(e[nb].max(0.0));
+            }
+        }
+        if surface > f32::MIN {
+            e[vi] = e[vi].max(surface + 0.01);
         }
     }
     for v in &mut e {
@@ -2477,6 +2957,9 @@ mod tests {
                 }
             }
         }
+        // Ownership is per-CELL (each solver vert is a grid cell), exactly as
+        // the solver assigns ranges — the face type may differ at boundaries.
+        let owners = owner_cells(&state.grid, terrain, &state.cells);
         for vi in 0..terrain.vert_count() {
             if canyon[vi] || pad_vert[vi] {
                 continue;
@@ -2484,18 +2967,18 @@ mod tests {
             let Some(fi) = state.grid.planet.face_at(terrain.vert_dir(vi)) else { continue };
             // Blend faces ramp between both kinds' ranges (mirror the solver).
             let (rlo, rhi) = match blend_of.get(&(fi as u32)) {
-                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(state.tiles[fi]),
+                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owners[vi]),
                 Some(&(a, b)) => {
                     let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
                     let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
                     (alo.min(blo), ahi.max(bhi))
                 }
-                None => elev_range(state.tiles[fi]),
+                None => elev_range(owners[vi]),
             };
             assert!(
                 e[vi] >= rlo - 1e-4 && e[vi] <= rhi + 1e-4,
                 "vert {vi} ({:?}) out of range: {} not in [{rlo}, {rhi}]",
-                state.tiles[fi], e[vi]
+                owners[vi], e[vi]
             );
         }
 
@@ -2548,7 +3031,7 @@ mod tests {
                 cell_zone(&state.grid, terrain, vi) == crate::zones::ZoneKind::Ocean
             });
             assert!(
-                is_ocean || body.len() >= MIN_WATER_BODY_CELLS,
+                is_ocean || body.len() >= size_range(Terrain::Lake).0,
                 "enclosed water body of only {} cells survived",
                 body.len()
             );
@@ -2592,11 +3075,23 @@ mod tests {
             }
         }
 
-        // Bridge-entry pads are flat: the deck meets the ground seamlessly.
+        // Bridge entries land on walkable ground: the deck grounds at ground
+        // height (no vertical gap, by the deck builder) and the player steps
+        // onto it from gentle inland terrain. (An omnidirectional slope test is
+        // meaningless here — every deck end sits at a water's edge, so the bank
+        // drop toward the water is steep by nature; the approach is inland.)
+        let bridge_walkable = |t: Terrain| matches!(
+            t,
+            Terrain::Plains | Terrain::Forest | Terrain::Savanna | Terrain::Tundra
+                | Terrain::Desert | Terrain::Jungle | Terrain::Swamp
+        );
         for span in &state.bridges {
             for end in [span.first(), span.last()].into_iter().flatten() {
-                let slope = terrain.slope(*end);
-                assert!(slope < 0.15, "bridge entry not flat: slope {slope}");
+                let fi = state.grid.planet.face_at(end.0).expect("deck end on a face");
+                assert!(
+                    bridge_walkable(state.tiles[fi]),
+                    "bridge entry on non-walkable tile {:?}", state.tiles[fi]
+                );
             }
         }
 
@@ -2651,9 +3146,10 @@ mod tests {
             let mut dist = vec![u16::MAX; state.grid.n];
             let mut q: VecDeque<usize> = VecDeque::new();
             for fi in 0..state.grid.n {
-                if state.tiles[fi].is_water()
-                    && terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Ocean
-                {
+                // Actual ocean TILES, not ocean-zone: an isolated ocean-zone
+                // pocket is reclassified to a lake (see size_range(Ocean)) and
+                // must not seed the distance field.
+                if matches!(state.tiles[fi], Terrain::Ocean | Terrain::DeepOcean) {
                     dist[fi] = 0;
                     q.push_back(fi);
                 }
@@ -2684,13 +3180,7 @@ mod tests {
         // Cliff tiles are ramps: toe verts hug the shore (lower neighbors
         // unchanged), crest verts never rise above the hinterland behind them
         // (nothing sticks out) — the drop happens across the cliff face.
-        let vkind: Vec<Terrain> = (0..terrain.vert_count())
-            .map(|vi| {
-                state.grid.planet.face_at(terrain.vert_dir(vi))
-                    .map(|fi| state.tiles[fi])
-                    .unwrap_or(Terrain::Plains)
-            })
-            .collect();
+        let vkind: Vec<Terrain> = owner_cells(&state.grid, terrain, &state.cells);
         let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
         for a in 0..terrain.vert_count() {
             if vkind[a] != Terrain::Cliff || pad_vert[a] || canyon[a] {
@@ -2721,12 +3211,10 @@ mod tests {
             if (canyon[vi] && vkind[vi] != Terrain::RiverBank) || pad_vert[vi] {
                 continue;
             }
-            let matching: &[Terrain] = match vkind[vi] {
-                Terrain::RiverBank => &[Terrain::River],
-                Terrain::LakeShore => &[Terrain::Lake],
-                Terrain::Beach => &[Terrain::Ocean, Terrain::DeepOcean],
-                _ => continue,
-            };
+            let matching = bank_water(vkind[vi]);
+            if matching.is_empty() {
+                continue;
+            }
             for &nb in terrain.adj_of(vi) {
                 if matching.contains(&vkind[nb]) {
                     assert!(
@@ -2882,6 +3370,60 @@ mod tests {
     }
 
     #[test]
+    fn mesh_is_watertight() {
+        // Every fall-through bug is a crack: an edge used by only one triangle
+        // is a hole the player can drop through. On a closed surface each edge
+        // is shared by EXACTLY two faces, and every vertex fan is a full ring.
+        // Assert both on the baked mesh (the collider is built from it).
+        let state = run(1337, |_| {});
+        let grid = &state.grid;
+
+        // (a) each undirected edge belongs to exactly two faces.
+        let mut edge_faces: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+        for idx in &grid.face_verts {
+            for k in 0..3 {
+                let (a, b) = (idx[k], idx[(k + 1) % 3]);
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edge_faces.entry(key).or_default() += 1;
+            }
+        }
+        for (&(a, b), &n) in &edge_faces {
+            assert_eq!(n, 2, "edge ({a},{b}) shared by {n} faces (not 2) — a crack");
+        }
+
+        // (b) every vertex's faces form ONE closed fan: walking face→face
+        // across shared edges visits all of them and returns. A vertex whose
+        // fan splits is a pinhole even if each edge is shared twice.
+        for v in 0..grid.nv {
+            let faces = &grid.vert_faces[v];
+            let n = faces.len();
+            assert!((5..=6).contains(&n), "vertex {v} has {n} faces");
+            let mut seen = vec![false; n];
+            let mut stack = vec![0usize];
+            seen[0] = true;
+            let mut count = 1;
+            while let Some(i) = stack.pop() {
+                for j in 0..n {
+                    if seen[j] {
+                        continue;
+                    }
+                    // Adjacent in the fan iff they share an edge through v
+                    // (two common vertices).
+                    let fi = grid.face_verts[faces[i] as usize];
+                    let fj = grid.face_verts[faces[j] as usize];
+                    let shared = fi.iter().filter(|x| fj.contains(x)).count();
+                    if shared == 2 {
+                        seen[j] = true;
+                        count += 1;
+                        stack.push(j);
+                    }
+                }
+            }
+            assert_eq!(count, n, "vertex {v} fan is not one closed ring — a pinhole");
+        }
+    }
+
+    #[test]
     fn deterministic_pipeline() {
         let a = run(42, |_| {});
         let b = run(42, |_| {});
@@ -2891,6 +3433,8 @@ mod tests {
         assert_eq!(a.regions.len(), b.regions.len());
         assert_eq!(a.flora.len(), b.flora.len());
         assert!(a.flora.iter().zip(&b.flora).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
+        assert_eq!(a.structures.len(), b.structures.len());
+        assert!(a.structures.iter().zip(&b.structures).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
     }
 
     #[test]

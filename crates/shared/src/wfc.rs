@@ -8,7 +8,7 @@
 
 use crate::terrain::Terrain;
 
-const T: usize = 14;
+const T: usize = Terrain::ALL.len();
 
 fn idx(t: Terrain) -> usize {
     t as usize
@@ -28,7 +28,9 @@ impl Default for Compat {
         for t in Terrain::ALL {
             allow(t, t);
         }
-        let land = [Desert, Plains, Forest, Tundra];
+        // All non-peak land biomes freely neighbor each other and the
+        // transition bands.
+        let land = [Desert, Plains, Forest, Tundra, Swamp, Jungle, Savanna];
         for a in land {
             for b in land {
                 allow(a, b);
@@ -38,6 +40,16 @@ impl Default for Compat {
             allow(a, Cliff);
             allow(a, LakeShore);
             allow(a, RiverBank);
+        }
+        // Swamp is wet lowland: it sits against water bodies directly.
+        allow(Swamp, River);
+        allow(Swamp, Lake);
+        // Volcanic and Glacier ride the high ground with the other peaks.
+        for p in [Volcanic, Glacier] {
+            allow(p, Mountain);
+            allow(p, Snow);
+            allow(p, Cliff);
+            allow(p, Tundra);
         }
         allow(Mountain, Snow);
         allow(Mountain, Cliff);

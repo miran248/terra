@@ -541,5 +541,10 @@ fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
         shared::terrain::Terrain::Tundra => Color::srgb(0.6, 0.65, 0.6),
         shared::terrain::Terrain::Mountain => Color::srgb(0.5, 0.45, 0.4),
         shared::terrain::Terrain::Snow => Color::srgb(0.95, 0.97, 1.0),
+        shared::terrain::Terrain::Swamp => Color::srgb(0.45, 0.55, 0.35),
+        shared::terrain::Terrain::Jungle => Color::srgb(0.2, 0.65, 0.25),
+        shared::terrain::Terrain::Savanna => Color::srgb(0.8, 0.75, 0.4),
+        shared::terrain::Terrain::Volcanic => Color::srgb(0.6, 0.4, 0.35),
+        shared::terrain::Terrain::Glacier => Color::srgb(0.85, 0.92, 1.0),
     }
 }
