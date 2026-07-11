@@ -927,9 +927,16 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
     }
     segment_coastline(grid, terrain, &mut resolved);
     absorb_small_forests(grid, &mut resolved);
-    enforce_counting_rule(grid, &mut resolved);
-    connect_type_pinches(grid, &mut resolved);
-    enforce_counting_rule(grid, &mut resolved);
+    // Counting (≥2 same-kind edges) and pinch-connection (same-type tiles
+    // always share an edge) can each disturb the other — iterate the pair to
+    // a joint fixed point.
+    for _ in 0..8 {
+        let a = enforce_counting_rule(grid, &mut resolved);
+        let b = connect_type_pinches(grid, &mut resolved);
+        if !a && !b {
+            break;
+        }
+    }
     resolved
 }
 
@@ -939,7 +946,8 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, vadj: &[Vec<u32>], bas
 /// wedged between), retype the separator face on the same land/water side to
 /// that type — the band thickens through the pinch instead of losing a tile.
 /// Water pinches are handled by enforce_water_shape (fill); this covers land.
-fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
+fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) -> bool {
+    let mut any = false;
     let mut by_vert: BTreeMap<u64, Vec<u32>> = BTreeMap::new();
     for (fi, tri) in grid.unit_tris.iter().enumerate() {
         for v in tri {
@@ -950,11 +958,10 @@ fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
         let mut changed = false;
         for faces in by_vert.values() {
             // Types present at this vertex (land only), deterministic order.
-            // RiverBank follows the river's winding topology — banks on
-            // opposite sides meeting at a bend is normal, not a pinch.
+            // ALL types, land and water alike: same-type tiles must always
+            // share an edge (two vertices), never just a corner.
             let mut types: Vec<Terrain> = faces.iter()
                 .map(|&f| out[f as usize])
-                .filter(|&t| t.is_land() && t != Terrain::RiverBank)
                 .collect();
             types.sort_by_key(|t| *t as u8);
             types.dedup();
@@ -990,10 +997,11 @@ fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
                 if n_comp <= 1 {
                     continue;
                 }
-                // Separator: a land fan face of another type edge-adjacent to
-                // two different components — retype it to t (lowest index wins).
+                // Separator: a fan face of another type on the SAME land/water
+                // side, edge-adjacent to two different components — retype it
+                // to t (lowest index wins).
                 let bridge = faces.iter().map(|&f| f as usize).find(|&f| {
-                    if out[f] == t || !out[f].is_land() {
+                    if out[f] == t || out[f].is_water() != t.is_water() {
                         return false;
                     }
                     let mut touched: Vec<usize> = Vec::new();
@@ -1007,10 +1015,12 @@ fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
                 if let Some(f) = bridge {
                     out[f] = t;
                     changed = true;
+                    any = true;
                 } else {
-                    // No land separator to thicken through (e.g. mountains
-                    // pinched across a jagged coast): the smaller component
-                    // fades into its surrounding kind instead.
+                    // No same-side separator to thicken through: the smaller
+                    // component fades. Fade target is the majority same-side
+                    // neighbor kind; river banks pinched across a bend join
+                    // the river itself (widening it at the bend).
                     let mut sizes = vec![0usize; n_comp];
                     for &c in &comp {
                         sizes[c] += 1;
@@ -1023,13 +1033,18 @@ fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
                         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
                         for &nb in &grid.adj[m] {
                             let k = out[nb as usize];
-                            if k.is_land() && k != t {
+                            if k.is_water() == t.is_water() && k != t {
                                 *counts.entry(k as u8).or_default() += 1;
                             }
                         }
                         if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
                             out[m] = Terrain::ALL[k as usize];
                             changed = true;
+                            any = true;
+                        } else if t == Terrain::RiverBank {
+                            out[m] = Terrain::River;
+                            changed = true;
+                            any = true;
                         }
                     }
                 }
@@ -1039,6 +1054,7 @@ fn connect_type_pinches(grid: &Grid, out: &mut [Terrain]) {
             break;
         }
     }
+    any
 }
 
 /// Inland biome boundaries get a blend mark: the face keeps its kind, but
@@ -1084,7 +1100,96 @@ fn mark_blends(grid: &Grid, tiles: &[Terrain], painted: &Painted) -> Vec<(u32, u
             out.push((fi as u32, tiles[fi] as u8, other));
         }
     }
-    out
+
+    // Blend bands obey the same edge rule as tiles: marks toward the same
+    // target must form edge-connected strips (like the side strips of a road),
+    // never touch at a lone vertex. Bridge through unmarked separators; if
+    // none, drop the smaller piece.
+    let mut mark_of: BTreeMap<u32, (u8, u8)> = out.iter().map(|&(f, a, b)| (f, (a, b))).collect();
+    let mut by_vert: BTreeMap<u64, Vec<u32>> = BTreeMap::new();
+    for (fi, tri) in grid.unit_tris.iter().enumerate() {
+        for v in tri {
+            by_vert.entry(vkey(*v)).or_default().push(fi as u32);
+        }
+    }
+    for _ in 0..8 {
+        let mut changed = false;
+        for faces in by_vert.values() {
+            let mut targets: Vec<u8> = faces.iter()
+                .filter_map(|f| mark_of.get(f).map(|&(_, b)| b))
+                .collect();
+            targets.sort_unstable();
+            targets.dedup();
+            for b in targets {
+                let members: Vec<usize> = faces.iter()
+                    .filter(|f| mark_of.get(f).is_some_and(|&(_, mb)| mb == b))
+                    .map(|&f| f as usize)
+                    .collect();
+                if members.len() < 2 {
+                    continue;
+                }
+                let mut comp = vec![usize::MAX; members.len()];
+                let mut n_comp = 0;
+                for i in 0..members.len() {
+                    if comp[i] != usize::MAX {
+                        continue;
+                    }
+                    let mut stack = vec![i];
+                    comp[i] = n_comp;
+                    while let Some(k) = stack.pop() {
+                        for j in 0..members.len() {
+                            if comp[j] == usize::MAX
+                                && grid.adj[members[k]].contains(&(members[j] as u32))
+                            {
+                                comp[j] = n_comp;
+                                stack.push(j);
+                            }
+                        }
+                    }
+                    n_comp += 1;
+                }
+                if n_comp <= 1 {
+                    continue;
+                }
+                let bridge = faces.iter().map(|&f| f as usize).find(|&f| {
+                    if mark_of.contains_key(&(f as u32))
+                        || !plain(tiles[f])
+                        || overlay(f)
+                        || tiles[f] as u8 == b
+                    {
+                        return false;
+                    }
+                    let mut touched: Vec<usize> = Vec::new();
+                    for (i, &m) in members.iter().enumerate() {
+                        if grid.adj[f].contains(&(m as u32)) && !touched.contains(&comp[i]) {
+                            touched.push(comp[i]);
+                        }
+                    }
+                    touched.len() >= 2
+                });
+                if let Some(f) = bridge {
+                    mark_of.insert(f as u32, (tiles[f] as u8, b));
+                    changed = true;
+                } else {
+                    let mut sizes = vec![0usize; n_comp];
+                    for &c in &comp {
+                        sizes[c] += 1;
+                    }
+                    let keep = sizes.iter().enumerate().max_by_key(|(_, s)| **s).unwrap().0;
+                    for (i, &m) in members.iter().enumerate() {
+                        if comp[i] != keep {
+                            mark_of.remove(&(m as u32));
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    mark_of.into_iter().map(|(f, (a, b))| (f, a, b)).collect()
 }
 
 /// The tile-linking rule: a non-transition land tile must share an edge with at
@@ -1092,7 +1197,8 @@ fn mark_blends(grid: &Grid, tiles: &[Terrain], painted: &Painted) -> Vec<(u32, u
 /// tiles (shore band) and Rivers (linear by nature) are the sanctioned linking
 /// tiles and are exempt. Violators join their most common neighbor kind;
 /// iterate to a fixed point (each pass only removes violators).
-fn enforce_counting_rule(grid: &Grid, out: &mut [Terrain]) {
+fn enforce_counting_rule(grid: &Grid, out: &mut [Terrain]) -> bool {
+    let mut any = false;
     let exempt = |t: Terrain| {
         t.is_water()
             || matches!(t, Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank)
@@ -1121,12 +1227,14 @@ fn enforce_counting_rule(grid: &Grid, out: &mut [Terrain]) {
             if let Some((&k, _)) = counts.iter().filter(|(_, c)| **c >= 2).next() {
                 out[fi] = Terrain::ALL[k as usize];
                 changed = true;
+                any = true;
             }
         }
         if !changed {
             break;
         }
     }
+    any
 }
 
 /// A forest smaller than this many faces is just some trees in a field.
@@ -2091,10 +2199,8 @@ mod tests {
             t.is_water()
                 || matches!(t, Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank)
         };
-        let blend_faces: std::collections::BTreeSet<u32> =
-            state.blends.iter().map(|&(fi, _, _)| fi).collect();
         for fi in 0..state.grid.n {
-            if exempt(state.tiles[fi]) || blend_faces.contains(&(fi as u32)) {
+            if exempt(state.tiles[fi]) {
                 continue;
             }
             let land_nbs = state.grid.adj[fi].iter()
@@ -2102,6 +2208,16 @@ mod tests {
                 .count();
             if land_nbs < 2 {
                 continue; // nothing to link to — mostly surrounded by water
+            }
+            // A junction tile (all three neighbors different kinds) can never
+            // satisfy the rule — it IS the boundary, the blend layer covers it.
+            let mut nb_kinds: Vec<u8> = state.grid.adj[fi].iter()
+                .map(|&nb| state.tiles[nb as usize] as u8)
+                .collect();
+            nb_kinds.sort_unstable();
+            nb_kinds.dedup();
+            if nb_kinds.len() == 3 {
+                continue;
             }
             let same = state.grid.adj[fi].iter()
                 .filter(|&&nb| state.tiles[nb as usize] == state.tiles[fi])
@@ -2157,19 +2273,16 @@ mod tests {
                 }
             }
             for faces in by_vert.values() {
-                // Per class: all same-class faces at a vertex must form ONE
-                // edge-connected fan — water as a whole, and each land type.
+                // Per TYPE, no exemptions: all same-type faces at a vertex
+                // must form ONE edge-connected fan.
                 let mut classes: Vec<u8> = faces.iter()
-                    .map(|&f| if wet(state.tiles[f]) { 200 } else { state.tiles[f] as u8 })
-                    .filter(|&c| c != Terrain::River as u8 && c != Terrain::RiverBank as u8)
+                    .map(|&f| state.tiles[f] as u8)
                     .collect();
                 classes.sort_unstable();
                 classes.dedup();
                 for class in classes {
                     let members: Vec<usize> = faces.iter().copied()
-                        .filter(|&f| {
-                            if class == 200 { wet(state.tiles[f]) } else { state.tiles[f] as u8 == class }
-                        })
+                        .filter(|&f| state.tiles[f] as u8 == class)
                         .collect();
                     if members.len() < 2 {
                         continue;
