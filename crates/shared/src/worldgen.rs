@@ -723,7 +723,7 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
                 }
             }
         }
-        for vi in widen_band(grid, &chain) {
+        for vi in widen_band_sym(grid, &chain) {
             if cells[vi].is_land() {
                 cells[vi] = Terrain::River;
             }
@@ -1107,6 +1107,17 @@ fn lattice_path(grid: &Grid, cells: &[Terrain], from: usize, to: usize) -> Vec<u
 /// every face between the two lines has ≥2 painted corners — a gap-free strip
 /// of stacked parallelograms with straight edges.
 fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
+    widen(grid, chain, false)
+}
+
+/// Three lattice lines: the chain plus BOTH side partners (~105m) — wide
+/// enough that the elevation solver owns distinct channel and bank verts and
+/// can actually carve a cross-section (rivers).
+fn widen_band_sym(grid: &Grid, chain: &[usize]) -> Vec<usize> {
+    widen(grid, chain, true)
+}
+
+fn widen(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<usize> {
     let mut out = chain.to_vec();
     for seg in chain.windows(2) {
         let (a, b) = (seg[0], seg[1]);
@@ -1117,7 +1128,8 @@ fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
                 continue;
             }
             let third = idx.iter().find(|&&v| v as usize != a && v as usize != b).unwrap();
-            if grid.verts[*third as usize].dot(left) > 0.0 && !out.contains(&(*third as usize)) {
+            let side_ok = both_sides || grid.verts[*third as usize].dot(left) > 0.0;
+            if side_ok && !out.contains(&(*third as usize)) {
                 out.push(*third as usize);
             }
         }
@@ -2224,7 +2236,7 @@ fn solve_elevation(
         for vi in 0..nv {
             let c = match owner[vi] {
                 Terrain::Lake => 0.010,
-                Terrain::River => 0.030,
+                Terrain::River => 0.040,
                 _ => continue,
             };
             let nbs = terrain.adj_of(vi);
