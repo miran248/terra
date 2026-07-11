@@ -1980,7 +1980,10 @@ fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     } else if water(a) || water(b) || a == Beach || b == Beach {
         0.03
     } else {
-        0.10
+        // Ordinary land: ~0.04 e per ~70m edge ≈ 16° — walkable country,
+        // not ski slopes. Steepness is a property of mountains, cliffs and
+        // canyons (their caps above), not of plains.
+        0.04
     };
     // Feasibility: a cap can never be tighter than the jump the two kinds'
     // disjoint elevation ranges force — otherwise range clamp and gradient cap
@@ -2226,7 +2229,35 @@ fn solve_elevation(
                 }
             }
         }
-        // 4) tile ranges — hard constraints and always get the
+        // 4) banks sit ABOVE their water: a river bank is strictly higher
+        // than the adjacent river, a lake shore than its lake, a beach than
+        // the sea — the water's edge is always a step up onto land. Water
+        // surfaces render clamped at 0, so the floor is vs max(water e, 0).
+        for vi in 0..nv {
+            if is_canyon_vert[vi] {
+                continue;
+            }
+            let matching_water: &[Terrain] = match owner[vi] {
+                Terrain::RiverBank => &[Terrain::River],
+                Terrain::LakeShore => &[Terrain::Lake],
+                Terrain::Beach => &[Terrain::Ocean, Terrain::DeepOcean],
+                _ => continue,
+            };
+            let mut water_surface = f32::MIN;
+            for &nb in terrain.adj_of(vi) {
+                if matching_water.contains(&owner[nb]) {
+                    water_surface = water_surface.max(e[nb].max(0.0));
+                }
+            }
+            if water_surface > f32::MIN {
+                let floor = water_surface + 0.01;
+                if e[vi] < floor {
+                    residual += floor - e[vi];
+                    e[vi] = floor;
+                }
+            }
+        }
+        // 5) tile ranges — hard constraints and always get the
         // final word each iteration, so the finished field satisfies every
         // tile's elevation range exactly (caps are best-effort where the tile
         // map demands steeper chains than they allow).
@@ -2235,7 +2266,7 @@ fn solve_elevation(
             residual += (c - e[vi]).abs();
             e[vi] = c;
         }
-        // 4) bridge-entry pads LAST: the deck is a built structure — its
+        // 6) bridge-entry pads LAST: the deck is a built structure — its
         // footing is dead flat even where tile ranges disagree slightly.
         for pad in &pads {
             let mean: f32 = pad.iter().map(|&vi| e[vi]).sum::<f32>() / pad.len() as f32;
@@ -2553,6 +2584,29 @@ mod tests {
                         e[a] <= hinterland + 0.05,
                         "cliff crest sticks out: {} above hinterland {}",
                         e[a], hinterland
+                    );
+                }
+            }
+        }
+
+        // Banks sit strictly above their water: bank verts exceed the
+        // adjacent water surface (water renders clamped at 0).
+        for vi in 0..terrain.vert_count() {
+            if canyon[vi] || pad_vert[vi] {
+                continue;
+            }
+            let matching: &[Terrain] = match vkind[vi] {
+                Terrain::RiverBank => &[Terrain::River],
+                Terrain::LakeShore => &[Terrain::Lake],
+                Terrain::Beach => &[Terrain::Ocean, Terrain::DeepOcean],
+                _ => continue,
+            };
+            for &nb in terrain.adj_of(vi) {
+                if matching.contains(&vkind[nb]) {
+                    assert!(
+                        e[vi] > e[nb].max(0.0),
+                        "{:?} vert at {} not above its {:?} water at {}",
+                        vkind[vi], e[vi], vkind[nb], e[nb].max(0.0)
                     );
                 }
             }
