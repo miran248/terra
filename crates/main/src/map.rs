@@ -2,7 +2,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use crate::physics::RadialGravity;
-use shared::level::{FaceTags, LevelData, LEVEL_FORMAT_VERSION};
+use shared::level::{FaceTags, LevelData, FLORA_BUSH, FLORA_FLOWER, FLORA_TREE, LEVEL_FORMAT_VERSION};
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::{TerrainGen, MAX_MOUNTAIN};
 use shared::theme;
@@ -149,6 +149,76 @@ fn setup_map(
     ));
 
 
+
+    // Flora: instanced low-poly props on the baked positions (they sit exactly
+    // on the displaced mesh). Shared mesh/material handles keep this cheap;
+    // per-instance scale/yaw variety comes from hashing the position bits.
+    {
+        let trunk_mesh = meshes.add(Cylinder::new(0.25, 4.5));
+        let canopy_mesh = meshes.add(Sphere::new(2.0));
+        let bush_mesh = meshes.add(Sphere::new(0.7));
+        let flower_mesh = meshes.add(Sphere::new(0.16));
+        let trunk_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.42, 0.30, 0.18)));
+        let canopy_mats = [
+            materials.add(StandardMaterial::from_color(Color::srgb(0.13, 0.34, 0.16))),
+            materials.add(StandardMaterial::from_color(Color::srgb(0.18, 0.42, 0.18))),
+            materials.add(StandardMaterial::from_color(Color::srgb(0.24, 0.45, 0.14))),
+        ];
+        let bush_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.22, 0.40, 0.20)));
+        let flower_mats = [
+            materials.add(StandardMaterial::from_color(Color::srgb(0.90, 0.25, 0.30))),
+            materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.80, 0.25))),
+            materials.add(StandardMaterial::from_color(Color::srgb(0.75, 0.45, 0.90))),
+            materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.95, 0.95))),
+        ];
+        for f in &level.flora {
+            let pos = Vec3::from_array(f.pos);
+            let up = pos.normalize();
+            let h = f.pos[0].to_bits() ^ f.pos[1].to_bits().rotate_left(13) ^ f.pos[2].to_bits().rotate_left(27);
+            let scale = 0.7 + (h & 0xff) as f32 / 255.0 * 0.6;
+            let yaw = (h >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+            let rot = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
+            match f.kind {
+                FLORA_TREE => {
+                    commands.spawn((
+                        Mesh3d(trunk_mesh.clone()),
+                        MeshMaterial3d(trunk_mat.clone()),
+                        RigidBody::Static,
+                        ColliderConstructor::Cylinder { radius: 0.3 * scale, height: 4.5 * scale },
+                        Transform::from_translation(pos + up * 2.25 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                    commands.spawn((
+                        Mesh3d(canopy_mesh.clone()),
+                        MeshMaterial3d(canopy_mats[(h >> 16) as usize % canopy_mats.len()].clone()),
+                        Transform::from_translation(pos + up * 5.2 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::new(scale, scale * 1.25, scale)),
+                    ));
+                }
+                FLORA_BUSH => {
+                    commands.spawn((
+                        Mesh3d(bush_mesh.clone()),
+                        MeshMaterial3d(bush_mat.clone()),
+                        Transform::from_translation(pos + up * 0.45 * scale)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::new(scale, scale * 0.75, scale)),
+                    ));
+                }
+                FLORA_FLOWER => {
+                    commands.spawn((
+                        Mesh3d(flower_mesh.clone()),
+                        MeshMaterial3d(flower_mats[(h >> 16) as usize % flower_mats.len()].clone()),
+                        Transform::from_translation(pos + up * 0.22)
+                            .with_rotation(rot)
+                            .with_scale(Vec3::splat(scale)),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
 
     // Bridges: entities built at runtime from the recorded spans, like any building.
     // Deck heights come from the displaced terrain mesh (the surface that renders

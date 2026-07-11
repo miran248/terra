@@ -296,7 +296,7 @@ impl TerrainGen {
         if t < 0.0 { return Terrain::Tundra; }
         if e > 0.50 { return Terrain::Mountain; }
         if t > 30.0 && m < -0.15 { Terrain::Desert }
-        else if m > 0.25 { Terrain::Forest }
+        else if m > 0.10 { Terrain::Forest }
         else { Terrain::Plains }
     }
 

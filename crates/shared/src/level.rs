@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 7;
+pub const LEVEL_FORMAT_VERSION: u32 = 8;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -70,6 +70,23 @@ pub struct LevelData {
     /// Zero is the sentinel because postcard varint-encodes it in one byte.
     /// Decode with `region_index`.
     pub face_region: Vec<u32>,
+    /// Sub-tile decoration scatter: trees, bushes, flowers. Points ON the
+    /// displaced mesh (they sit exactly on the rendered ground), placed
+    /// deterministically at gen time from the tile map.
+    pub flora: Vec<FloraData>,
+}
+
+pub const FLORA_TREE: u8 = 0;
+pub const FLORA_BUSH: u8 = 1;
+pub const FLORA_FLOWER: u8 = 2;
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct FloraData {
+    /// World position on the displaced terrain mesh.
+    pub pos: [f32; 3],
+    /// The face it sits on (for gameplay queries).
+    pub face: u32,
+    pub kind: u8,
 }
 
 pub const NO_REGION: u32 = 0;

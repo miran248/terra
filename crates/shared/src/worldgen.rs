@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{RegionData, RegionKind, NO_REGION, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, FLORA_BUSH, FLORA_FLOWER, FLORA_TREE, NO_REGION, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -360,6 +360,7 @@ pub struct GenState {
     pub mesh_colors: Vec<[[f32; 4]; 3]>,
     pub tag_off: Vec<u32>,
     pub tag_data: Vec<u8>,
+    pub flora: Vec<FloraData>,
 }
 
 impl GenState {
@@ -381,6 +382,7 @@ impl GenState {
             mesh_colors: Vec::new(),
             tag_off: Vec::new(),
             tag_data: Vec::new(),
+            flora: Vec::new(),
         }
     }
 
@@ -431,6 +433,9 @@ pub enum Command {
     BuildMesh,
     /// Per-face tag table.
     BuildTags,
+    /// Sub-tile decoration scatter: trees, bushes, flowers on the finished
+    /// mesh, densities from the tile map.
+    PlaceFlora,
 }
 
 pub enum Event {
@@ -451,6 +456,7 @@ pub enum Event {
     BridgesSelected(Vec<Vec<SpherePos>>, Painted),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
     TagsBuilt(Vec<u32>, Vec<u8>),
+    FloraPlaced(Vec<FloraData>),
 }
 
 impl Event {
@@ -479,6 +485,7 @@ impl Event {
             Event::BridgesSelected(b, _) => format!("bridges selected: {}", b.len()),
             Event::MeshBuilt(t, _) => format!("mesh built: {} tris", t.len()),
             Event::TagsBuilt(_, d) => format!("tags built: {} entries", d.len()),
+            Event::FloraPlaced(f) => format!("flora placed: {}", f.len()),
         }
     }
 }
@@ -578,6 +585,11 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             let (off, data) = build_face_tags(&state.grid, &state.painted);
             vec![Event::TagsBuilt(off, data)]
         }
+        Command::PlaceFlora => {
+            vec![Event::FloraPlaced(place_flora(
+                &state.grid, &state.tiles, &state.painted, &state.mesh_tris,
+            ))]
+        }
     }
 }
 
@@ -630,6 +642,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
             state.tag_off = off;
             state.tag_data = data;
         }
+        Event::FloraPlaced(f) => state.flora = f,
     }
     state
 }
@@ -658,7 +671,8 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::BlendsMarked(_) => vec![Command::SolveElevation],
         Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
-        Event::TagsBuilt(..) => vec![],
+        Event::TagsBuilt(..) => vec![Command::PlaceFlora],
+        Event::FloraPlaced(_) => vec![],
     }
 }
 
@@ -1923,6 +1937,64 @@ fn build_mesh(
     (tris, cols)
 }
 
+/// Sub-tile decoration scatter. Flora are POINTS, not tiles: a tree consumes
+/// part of a face, so it lives in its own layer over the finished mesh.
+/// Densities (expected instances per face) come from the tile kind; features
+/// keep their ground clear including flanks; positions are uniform barycentric
+/// samples of the DISPLACED triangle so every prop sits exactly on the ground.
+/// Deterministic: one seeded stream in face order.
+const FLORA_RNG_SALT: u64 = 0x466c_6f72;
+
+fn place_flora(
+    grid: &Grid,
+    tiles: &[Terrain],
+    painted: &Painted,
+    mesh_tris: &[[[f32; 3]; 3]],
+) -> Vec<FloraData> {
+    let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ FLORA_RNG_SALT);
+    let mut out = Vec::new();
+    for fi in 0..grid.n {
+        let clear = painted_corners(grid, &painted.roads, fi) > 0
+            || painted_corners(grid, &painted.towns, fi) > 0
+            || painted_corners(grid, &painted.bridge_entries, fi) > 0
+            || painted_corners(grid, &painted.bridges, fi) > 0;
+        if clear {
+            continue;
+        }
+        // (trees, bushes, flowers) expected per face.
+        let (trees, bushes, flowers): (f32, f32, f32) = match tiles[fi] {
+            Terrain::Forest => (1.6, 0.40, 0.05),
+            Terrain::Plains => (0.04, 0.10, 0.30),
+            Terrain::Tundra => (0.01, 0.06, 0.02),
+            Terrain::Desert => (0.0, 0.05, 0.0),
+            Terrain::RiverBank | Terrain::LakeShore => (0.08, 0.20, 0.25),
+            _ => continue,
+        };
+        for (density, kind) in [(trees, FLORA_TREE), (bushes, FLORA_BUSH), (flowers, FLORA_FLOWER)] {
+            let mut n = density.trunc() as u32;
+            if rng.f32() < density.fract() {
+                n += 1;
+            }
+            for _ in 0..n {
+                let (mut u, mut v) = (rng.f32(), rng.f32());
+                if u + v > 1.0 {
+                    u = 1.0 - u;
+                    v = 1.0 - v;
+                }
+                let t = &mesh_tris[fi];
+                let (a, b, c) = (
+                    Vec3::from_array(t[0]),
+                    Vec3::from_array(t[1]),
+                    Vec3::from_array(t[2]),
+                );
+                let pos = a + (b - a) * u + (c - a) * v;
+                out.push(FloraData { pos: pos.to_array(), face: fi as u32, kind });
+            }
+        }
+    }
+    out
+}
+
 fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
     let mut off = Vec::with_capacity(grid.n + 1);
     let mut data = Vec::new();
@@ -2800,5 +2872,23 @@ mod tests {
         assert_eq!(a.cells, b.cells);
         assert_eq!(a.tiles, b.tiles);
         assert_eq!(a.regions.len(), b.regions.len());
+        assert_eq!(a.flora.len(), b.flora.len());
+        assert!(a.flora.iter().zip(&b.flora).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
+    }
+
+    #[test]
+    fn flora_stays_off_water_and_features() {
+        let state = run(1337, |_| {});
+        assert!(state.flora.len() > 1000, "flora nearly absent: {}", state.flora.len());
+        for f in &state.flora {
+            let fi = f.face as usize;
+            assert!(state.tiles[fi].is_land(), "flora on water face {fi}");
+            for bits in [&state.painted.roads, &state.painted.towns, &state.painted.bridge_entries] {
+                assert_eq!(
+                    painted_corners(&state.grid, bits, fi), 0,
+                    "flora on a feature face {fi}"
+                );
+            }
+        }
     }
 }

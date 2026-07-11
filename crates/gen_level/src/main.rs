@@ -49,6 +49,7 @@ fn serialize(state: &GenState, out: &PathBuf) {
         roads,
         regions: state.regions.clone(),
         face_region: state.face_region.clone(),
+        flora: state.flora.clone(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());
