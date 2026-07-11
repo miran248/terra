@@ -2255,7 +2255,11 @@ fn solve_elevation(
         // the sea — the water's edge is always a step up onto land. Water
         // surfaces render clamped at 0, so the floor is vs max(water e, 0).
         for vi in 0..nv {
-            if is_canyon_vert[vi] {
+            // A bank vert caught in a river's descent kernel still IS a bank:
+            // on a hillside the kernel would drag the downhill bank below the
+            // water and the river would spill. The floor runs after the
+            // descent step, so both banks end above the channel everywhere.
+            if is_canyon_vert[vi] && owner[vi] != Terrain::RiverBank {
                 continue;
             }
             let matching_water: &[Terrain] = match owner[vi] {
@@ -2613,7 +2617,7 @@ mod tests {
         // Banks sit strictly above their water: bank verts exceed the
         // adjacent water surface (water renders clamped at 0).
         for vi in 0..terrain.vert_count() {
-            if canyon[vi] || pad_vert[vi] {
+            if (canyon[vi] && vkind[vi] != Terrain::RiverBank) || pad_vert[vi] {
                 continue;
             }
             let matching: &[Terrain] = match vkind[vi] {
