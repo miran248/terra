@@ -122,6 +122,11 @@ fn derive_one(a: Terrain, b: Terrain, c: Terrain) -> Terrain {
         a
     } else if b == c {
         b
+    } else if [a, b, c].iter().filter(|t| t.is_water()).count() >= 2 {
+        // Two water kinds meeting (a river mouth: River + Ocean + bank) are
+        // never dammed by the third corner — the face stays water, keeping
+        // the water surface continuous where bodies join.
+        [a, b, c].into_iter().filter(|t| t.is_water()).min_by_key(|t| *t as u8).unwrap()
     } else {
         [a, b, c].into_iter().min_by_key(|t| (pri(*t), *t as u8)).unwrap()
     }
@@ -208,7 +213,20 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
                 for t in &types {
                     let t = *t;
                     for &c in &ring_v {
-                        if cells[c] == t || (cells[c].is_water() != t.is_water()) != cross {
+                        // Rivers are planned linear features two cells wide —
+                        // consuming a cell can sever the channel.
+                        if cells[c] == t
+                            || cells[c] == Terrain::River
+                            || (cells[c].is_water() != t.is_water()) != cross
+                        {
+                            continue;
+                        }
+                        // Turning land into water must extend an existing
+                        // body of that kind, never strand a puddle.
+                        if cross
+                            && t.is_water()
+                            && !grid.vert_adj[c].iter().any(|&nb| cells[nb as usize] == t)
+                        {
                             continue;
                         }
                         let before = local(cells, c);
@@ -625,9 +643,11 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::RiversPlanned(_) => vec![Command::PlaceSettlements],
         Event::SettlementsPlaced(_) => vec![Command::PlanRoads],
         Event::RoadsPlanned(_) => vec![Command::ClassifyTiles],
-        Event::TilesClassified(_) => vec![Command::PaintRivers],
-        Event::RiversPainted(_) => vec![Command::NormalizeWater],
-        Event::WaterNormalized(_) => vec![Command::PaintFeatures],
+        // Water is normalized BEFORE rivers paint: min-size fills and dams
+        // must not punch holes into an already-painted channel.
+        Event::TilesClassified(_) => vec![Command::NormalizeWater],
+        Event::WaterNormalized(_) => vec![Command::PaintRivers],
+        Event::RiversPainted(_) => vec![Command::PaintFeatures],
         Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
         // Regions and bridge selection read only tiles/geometry, so they run
         // BEFORE the solver — which then knows the bridge-entry pads to flatten.
@@ -662,8 +682,47 @@ pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
 /// Painted as an edge PAIR (chain + parallel partner line), like roads: a
 /// single chain's derived faces only touch at the chain vertices.
 fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
+    let sea = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::DeepOcean | Terrain::Lake);
     for path in &terrain.river_paths {
-        let chain = vert_chain(grid, path);
+        let mut chain = vert_chain(grid, path);
+        // The planned endpoint sits on the PROPOSED waterline; normalization
+        // may have moved the coast since. If the channel no longer meets open
+        // water, extend it from its end along the shortest cell path to the
+        // nearest sea/lake cell — a river always reaches a larger body.
+        let reaches = chain.iter().any(|&vi| {
+            sea(cells[vi]) || grid.vert_adj[vi].iter().any(|&nb| sea(cells[nb as usize]))
+        });
+        if !reaches {
+            if let Some(&end) = chain.last() {
+                let mut prev: BTreeMap<usize, usize> = BTreeMap::new();
+                let mut q = VecDeque::from([(end, 0usize)]);
+                prev.insert(end, end);
+                'bfs: while let Some((cur, d)) = q.pop_front() {
+                    if d >= 60 {
+                        continue;
+                    }
+                    for &nb in &grid.vert_adj[cur] {
+                        let nb = nb as usize;
+                        if prev.contains_key(&nb) {
+                            continue;
+                        }
+                        prev.insert(nb, cur);
+                        if sea(cells[nb]) {
+                            let mut ext = Vec::new();
+                            let mut c = cur;
+                            while c != end {
+                                ext.push(c);
+                                c = prev[&c];
+                            }
+                            ext.reverse();
+                            chain.extend(ext);
+                            break 'bfs;
+                        }
+                        q.push_back((nb, d + 1));
+                    }
+                }
+            }
+        }
         for vi in widen_band(grid, &chain) {
             if cells[vi].is_land() {
                 cells[vi] = Terrain::River;
@@ -1378,8 +1437,67 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     }
     smooth_coast_band(grid, &mut resolved);
     absorb_small_patches(grid, &mut resolved);
+    prune_orphan_bands(grid, &mut resolved);
     link_tile_pinches(grid, &mut resolved);
     resolved
+}
+
+/// A transition band without its water is not a transition: a river bank
+/// needs a River within band reach (2 cells), a lake shore a Lake, a beach
+/// or cliff the sea. Orphans (left behind when fills/trims move the water)
+/// join their most common plain land neighbor.
+fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
+    let dist_to = |pred: &dyn Fn(Terrain) -> bool| -> Vec<u8> {
+        let mut dist = vec![u8::MAX; grid.nv];
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for vi in 0..grid.nv {
+            if pred(cells[vi]) {
+                dist[vi] = 0;
+                q.push_back(vi);
+            }
+        }
+        while let Some(cur) = q.pop_front() {
+            if dist[cur] >= 2 {
+                continue;
+            }
+            for &nb in &grid.vert_adj[cur] {
+                let nb = nb as usize;
+                if dist[nb] == u8::MAX {
+                    dist[nb] = dist[cur] + 1;
+                    q.push_back(nb);
+                }
+            }
+        }
+        dist
+    };
+    let river = dist_to(&|t| t == Terrain::River);
+    let lake = dist_to(&|t| t == Terrain::Lake);
+    let sea = dist_to(&|t| matches!(t, Terrain::Ocean | Terrain::DeepOcean));
+    for vi in 0..grid.nv {
+        let orphan = match cells[vi] {
+            Terrain::RiverBank => river[vi] > 2,
+            Terrain::LakeShore => lake[vi] > 2,
+            Terrain::Beach | Terrain::Cliff => sea[vi] > 2 && lake[vi] > 2 && river[vi] > 2,
+            _ => false,
+        };
+        if !orphan {
+            continue;
+        }
+        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for &nb in &grid.vert_adj[vi] {
+            let t = cells[nb as usize];
+            if matches!(
+                t,
+                Terrain::Desert | Terrain::Plains | Terrain::Forest
+                    | Terrain::Tundra | Terrain::Mountain | Terrain::Snow
+            ) {
+                *counts.entry(t as u8).or_default() += 1;
+            }
+        }
+        cells[vi] = counts.iter().max_by_key(|(_, c)| **c)
+            .map(|(&k, _)| Terrain::ALL[k as usize])
+            .unwrap_or(Terrain::Plains);
+    }
 }
 
 /// Inland biome boundaries get a blend mark: the face keeps its derived
@@ -2560,6 +2678,59 @@ mod tests {
             }
         }
         assert!(lake_faces > 100, "lakes nearly vanished: {lake_faces} faces");
+    }
+
+    #[test]
+    fn rivers_reach_the_sea() {
+        // Every river must join a larger water body — no thin terrain band
+        // may cut a mouth off (guards the junction-face damming bug).
+        let state = run(1337, |_| {});
+        let mut visited = vec![false; state.grid.nv];
+        for start in 0..state.grid.nv {
+            if state.cells[start] != Terrain::River || visited[start] {
+                continue;
+            }
+            let mut comp = vec![start];
+            let mut q = VecDeque::from([start]);
+            visited[start] = true;
+            while let Some(cur) = q.pop_front() {
+                for &nb in &state.grid.vert_adj[cur] {
+                    let nb = nb as usize;
+                    if state.cells[nb] == Terrain::River && !visited[nb] {
+                        visited[nb] = true;
+                        comp.push(nb);
+                        q.push_back(nb);
+                    }
+                }
+            }
+            let touches_sea = comp.iter().any(|&vi| {
+                state.grid.vert_adj[vi].iter().any(|&nb| matches!(
+                    state.cells[nb as usize], Terrain::Ocean | Terrain::DeepOcean | Terrain::Lake
+                ))
+            });
+            assert!(touches_sea, "river component of {} cells cut off from any water body", comp.len());
+            // And the mouth is open at FACE level too: some River face is
+            // edge-adjacent to an Ocean/DeepOcean/Lake face.
+            let mut open = false;
+            'faces: for fi in 0..state.grid.n {
+                if state.tiles[fi] != Terrain::River {
+                    continue;
+                }
+                if !state.grid.face_verts[fi].iter().any(|&vi| comp.contains(&(vi as usize))) {
+                    continue;
+                }
+                for &nb in &state.grid.adj[fi] {
+                    if matches!(
+                        state.tiles[nb as usize],
+                        Terrain::Ocean | Terrain::DeepOcean | Terrain::Lake
+                    ) {
+                        open = true;
+                        break 'faces;
+                    }
+                }
+            }
+            assert!(open, "river mouth dammed at face level ({} cells)", comp.len());
+        }
     }
 
     #[test]
