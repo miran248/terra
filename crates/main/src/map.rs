@@ -166,7 +166,7 @@ fn setup_map(
         if deck.is_empty() {
             continue;
         }
-        let colors = vec![bridge_color.to_f32_array(); deck.len()];
+        let colors = vec![[bridge_color.to_f32_array(); 3]; deck.len()];
         commands.spawn((
             Mesh3d(meshes.add(build_visual_mesh(&deck, &colors))),
             MeshMaterial3d(materials.add(StandardMaterial {
@@ -279,7 +279,7 @@ fn setup_map(
     ));
 }
 
-fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[f32; 4]]) -> Mesh {
+fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
     let mut positions = Vec::with_capacity(tris.len() * 3);
     let mut normals_out = Vec::with_capacity(tris.len() * 3);
     let mut colors_out = Vec::with_capacity(tris.len() * 3);
@@ -296,9 +296,9 @@ fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[f32; 4]]) -> Mesh {
         normals_out.push(n.to_array());
         normals_out.push(n.to_array());
         normals_out.push(n.to_array());
-        colors_out.push(*color);
-        colors_out.push(*color);
-        colors_out.push(*color);
+        colors_out.push(color[0]);
+        colors_out.push(color[1]);
+        colors_out.push(color[2]);
     }
 
     let mut mesh = Mesh::new(
