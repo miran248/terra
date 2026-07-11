@@ -2259,63 +2259,6 @@ fn solve_elevation(
 
 // ---- helpers ----
 
-/// The gap-free chain of fine faces a polyline passes over.
-fn face_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
-    let mut c = Vec::new();
-    for seg in points.windows(2) {
-        let steps = (seg[0].distance(seg[1]) / 2.0).ceil().max(1.0) as usize;
-        for k in 0..=steps {
-            let p = seg[0].0.lerp(seg[1].0, k as f32 / steps as f32).normalize();
-            if let Some(fi) = grid.planet.face_at(p) {
-                if c.last() != Some(&fi) {
-                    // Bridge non-adjacent jumps so the chain has no holes.
-                    if let Some(&prev) = c.last() {
-                        if !grid.adj[prev].contains(&(fi as u32)) {
-                            c.extend(shortest_face_path(&grid.adj, prev, fi));
-                        }
-                    }
-                    c.push(fi);
-                }
-            }
-        }
-    }
-    c
-}
-
-fn shortest_face_path(adj: &[[u32; 3]], u: usize, v: usize) -> Vec<usize> {
-    let mut prev: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut q = VecDeque::from([(u, 0usize)]);
-    prev.insert(u, u);
-    while let Some((cur, d)) = q.pop_front() {
-        if cur == v {
-            let mut p = Vec::new();
-            let mut c = v;
-            while c != u {
-                if c != v {
-                    p.push(c);
-                }
-                c = prev[&c];
-            }
-            p.reverse();
-            return p;
-        }
-        if d >= 4 {
-            continue;
-        }
-        for &n in &adj[cur] {
-            let n = n as usize;
-            if n == u32::MAX as usize {
-                continue;
-            }
-            prev.entry(n).or_insert_with(|| {
-                q.push_back((n, d + 1));
-                cur
-            });
-        }
-    }
-    Vec::new()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
