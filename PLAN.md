@@ -29,9 +29,12 @@ PaintRivers         river polylines → River cells
 NormalizeWater      connectivity identity on cells: Ocean iff it reaches
                     ocean-zone cells, else Lake; min body size, min width,
                     lake rim dams, lakes trimmed ~250m clear of the sea
-PaintFeatures       roads + towns painted per CELL (same construction as
-                    terrain: solid where ≥2 corners painted, edges fade via
-                    per-corner colors — feature footprints can't pinch)
+PaintFeatures       roads + towns painted per CELL. Roads are LATTICE-
+                    ALIGNED: A* over cells with a turn penalty (straight
+                    runs, discrete 60° turns), widened to an edge PAIR so
+                    the surface is a gap-free strip of stacked
+                    parallelograms; 1-corner flanks are the blend bands
+                    (blend / solid / blend, three faces wide)
 ResolveTransitions  shore bands + micro WFC on the hex cell graph. Beach
                     vs Cliff is PROACTIVE: the proposed field is raised
                     first, high ground meeting water is a cliff and carries

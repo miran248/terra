@@ -822,6 +822,97 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 /// faces of area, so 15 cells ≈ the old 30-face minimum).
 const MIN_WATER_BODY_CELLS: usize = 15;
 
+/// Nearest cell to a point: the closest corner of the face under it.
+fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
+    let fi = grid.planet.face_at(p.0)?;
+    grid.face_verts[fi].iter().copied()
+        .max_by(|&a, &b| {
+            grid.verts[a as usize].dot(p.0)
+                .partial_cmp(&grid.verts[b as usize].dot(p.0)).unwrap()
+        })
+        .map(|vi| vi as usize)
+}
+
+/// Lattice-aligned routing: A* over cells where changing direction costs
+/// extra, so paths run straight along one of the 3 lattice axes and turn in
+/// discrete 60° steps spaced apart (the lattice dictates the turning radius).
+/// Water cells are impassable — roads route around lakes on the lattice.
+/// Returns the chain including both endpoints, or empty if unreachable.
+fn lattice_path(grid: &Grid, cells: &[Terrain], from: usize, to: usize) -> Vec<usize> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    if from == to {
+        return vec![from];
+    }
+    // Costs in milli-steps. One 60° turn ≈ 1.25 extra steps keeps runs long.
+    const STEP: u64 = 1000;
+    let turn_cost = |pd: Vec3, d: Vec3| ((1.0 - pd.dot(d)).max(0.0) * 2500.0) as u64;
+    let edge_angle = grid.verts[0].angle_between(grid.verts[grid.vert_adj[0][0] as usize]);
+    let h = |vi: usize| (grid.verts[vi].angle_between(grid.verts[to]) / edge_angle * 990.0) as u64;
+    let dir = |a: usize, b: usize| (grid.verts[b] - grid.verts[a]).normalize();
+
+    // State: (cell, slot of the edge we arrived through; 6 = start).
+    let mut best: BTreeMap<(usize, usize), u64> = BTreeMap::new();
+    let mut came: BTreeMap<(usize, usize), (usize, usize)> = BTreeMap::new();
+    let mut heap: BinaryHeap<Reverse<(u64, u64, usize, usize)>> = BinaryHeap::new();
+    best.insert((from, 6), 0);
+    heap.push(Reverse((h(from), 0, from, 6)));
+    while let Some(Reverse((_, g, vi, slot))) = heap.pop() {
+        if best.get(&(vi, slot)).is_some_and(|&b| b < g) {
+            continue;
+        }
+        if vi == to {
+            let mut path = vec![vi];
+            let mut cur = (vi, slot);
+            while let Some(&prev) = came.get(&cur) {
+                path.push(prev.0);
+                cur = prev;
+            }
+            path.reverse();
+            return path;
+        }
+        let pd = (slot < 6).then(|| dir(grid.vert_adj[vi][slot] as usize, vi));
+        for &nb in &grid.vert_adj[vi] {
+            let nb = nb as usize;
+            if cells[nb].is_water() && nb != to {
+                continue;
+            }
+            let d = dir(vi, nb);
+            let ng = g + STEP + pd.map_or(0, |pd| turn_cost(pd, d));
+            let nslot = grid.vert_adj[nb].iter().position(|&x| x as usize == vi).unwrap();
+            if best.get(&(nb, nslot)).is_none_or(|&b| ng < b) {
+                best.insert((nb, nslot), ng);
+                came.insert((nb, nslot), (vi, slot));
+                heap.push(Reverse((ng + h(nb), ng, nb, nslot)));
+            }
+        }
+    }
+    Vec::new()
+}
+
+/// A band needs TWO parallel lattice lines: a single chain's quads only touch
+/// at the chain vertices. Widen the chain with each edge's left partner so
+/// every face between the two lines has ≥2 painted corners — a gap-free strip
+/// of stacked parallelograms with straight edges.
+fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
+    let mut out = chain.to_vec();
+    for seg in chain.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let left = grid.verts[a].cross(grid.verts[b]);
+        for &f in &grid.vert_faces[a] {
+            let idx = grid.face_verts[f as usize];
+            if !idx.contains(&(b as u32)) {
+                continue;
+            }
+            let third = idx.iter().find(|&&v| v as usize != a && v as usize != b).unwrap();
+            if grid.verts[*third as usize].dot(left) > 0.0 && !out.contains(&(*third as usize)) {
+                out.push(*third as usize);
+            }
+        }
+    }
+    out
+}
+
 /// Roads may not cross water: a planned path whose cell chain touches a water
 /// cell is dropped entirely (crossing there needs a bridge, not a road).
 fn paint_features(
@@ -831,12 +922,23 @@ fn paint_features(
 ) -> (Painted, Vec<Vec<SpherePos>>) {
     let mut painted = Painted::empty(grid.nv);
     let mut kept: Vec<Vec<SpherePos>> = Vec::new();
-    for path in &terrain.road_paths {
-        let chain = vert_chain(grid, path);
-        if chain.iter().any(|&vi| cells[vi].is_water()) {
+    'paths: for path in &terrain.road_paths {
+        // Waypoints → cells, then lattice-aligned legs between them.
+        let mut chain: Vec<usize> = Vec::new();
+        let waypoints: Vec<usize> = path.iter().filter_map(|p| nearest_cell(grid, *p)).collect();
+        for leg in waypoints.windows(2) {
+            let seg = lattice_path(grid, cells, leg[0], leg[1]);
+            if seg.is_empty() {
+                continue 'paths; // no dry lattice route — needs a bridge
+            }
+            let skip = usize::from(chain.last() == seg.first());
+            chain.extend(&seg[skip..]);
+        }
+        let band = widen_band(grid, &chain);
+        if band.iter().any(|&vi| cells[vi].is_water()) {
             continue;
         }
-        for vi in chain {
+        for vi in band {
             painted.roads.insert(vi);
         }
         kept.push(path.clone());
