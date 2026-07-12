@@ -18,7 +18,6 @@ use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::light::Atmosphere;
-use bevy::light::AtmosphereEnvironmentMapLight;
 use bevy::light::atmosphere::ScatteringMedium;
 use bevy::pbr::AtmosphereSettings;
 use bevy::post_process::bloom::{Bloom, BloomPrefilter};
@@ -140,11 +139,10 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
         // off (they don't combine).
         Msaa::Off,
         TemporalAntiAliasing::default(),
-        // Generates a sky environment cubemap from the atmosphere for image-based
-        // lighting — gives the water (and all PBR surfaces) real sky reflections
-        // and ambient that tracks the day/night sky. The engine auto-creates the
-        // cubemap image.
-        AtmosphereEnvironmentMapLight::default(),
+        // (No AtmosphereEnvironmentMapLight: its sky IBL is global — it lit every
+        // surface, causing the pre-dawn "glow" on stones/flora, and it can't be
+        // scoped to water only. Removed. Water keeps its sun-glint specular; a
+        // water-only sky reflection would be computed in the water shader.)
         AtmosphereSettings {
             // The whole world spans ~2000 units; shrink the aerial-perspective
             // range from Earth's 32 km so distance haze reads at this scale, but

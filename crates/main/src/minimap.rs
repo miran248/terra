@@ -43,7 +43,7 @@ pub struct MinimapPlugin;
 struct MinimapTimer(Timer);
 
 impl Default for MinimapTimer {
-    fn default() -> Self { Self(Timer::from_seconds(0.15, TimerMode::Repeating)) }
+    fn default() -> Self { Self(Timer::from_seconds(0.05, TimerMode::Repeating)) }
 }
 
 impl Plugin for MinimapPlugin {

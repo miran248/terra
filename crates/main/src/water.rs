@@ -4,11 +4,14 @@
 //! Base PBR lighting/specular comes from `StandardMaterial`, so the sun glints
 //! off the surface. Per-body meshes and river flow are later phases.
 
-use bevy::asset::Asset;
+use bevy::asset::{Asset, RenderAssetUsages};
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
+use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+use shared::planet::build_face_adjacency;
+use shared::terrain::Terrain;
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 
@@ -61,6 +64,104 @@ pub fn water_material() -> WaterMaterial {
             },
         },
     }
+}
+
+/// Build a flat water-surface mesh for each connected lake (Phase 2). Lakes on
+/// high ground aren't covered by the sea sphere (which sits at sea level), so
+/// they get their own surface at the lake's waterline. `tris` are the baked,
+/// displaced terrain triangles; `face_types` are per-face `Terrain` discriminants.
+pub fn build_lake_surfaces(tris: &[[[f32; 3]; 3]], face_types: &[u8]) -> Vec<Mesh> {
+    let lake = Terrain::Lake as u8;
+    let n = tris.len();
+    let vtris: Vec<[Vec3; 3]> = tris
+        .iter()
+        .map(|t| [Vec3::from_array(t[0]), Vec3::from_array(t[1]), Vec3::from_array(t[2])])
+        .collect();
+    let adj = build_face_adjacency(&vtris, n);
+
+    let mut visited = vec![false; n];
+    let mut meshes = Vec::new();
+    for start in 0..n {
+        if visited[start] || face_types.get(start).copied() != Some(lake) {
+            continue;
+        }
+        // Flood-fill this connected lake body over face adjacency.
+        let mut body = Vec::new();
+        let mut stack = vec![start];
+        visited[start] = true;
+        while let Some(f) = stack.pop() {
+            body.push(f);
+            for &nb in &adj[f] {
+                let nb = nb as usize;
+                if nb < n && !visited[nb] && face_types.get(nb).copied() == Some(lake) {
+                    visited[nb] = true;
+                    stack.push(nb);
+                }
+            }
+        }
+
+        // Waterline radius: the shallowest bed point (lake bed is displaced below
+        // the surface, so its max radius is the shore edge). Cap it near the
+        // body's own deepest point so a body that happens to span altitudes can't
+        // float a sheet up in the sky.
+        let mut max_r = 0.0f32;
+        let mut min_r = f32::MAX;
+        for &f in &body {
+            for k in 0..3 {
+                let r = vtris[f][k].length();
+                max_r = max_r.max(r);
+                min_r = min_r.min(r);
+            }
+        }
+        let surf_r = max_r.min(min_r + 50.0) + 1.5;
+
+        let mut positions = Vec::with_capacity(body.len() * 3);
+        let mut normals = Vec::with_capacity(body.len() * 3);
+        let mut uvs = Vec::with_capacity(body.len() * 3);
+        for &f in &body {
+            for k in 0..3 {
+                let dir = vtris[f][k].normalize();
+                positions.push((dir * surf_r).to_array());
+                normals.push(dir.to_array());
+                uvs.push([0.0, 0.0]);
+            }
+        }
+        let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        meshes.push(mesh);
+    }
+    meshes
+}
+
+/// Build a single flat ocean-surface mesh over all `Ocean` faces at `sea_r`.
+/// Replaces the full sea sphere so the ocean surface only exists over real ocean
+/// — a full sphere poked up inside any lake basin whose bed dips below sea level.
+pub fn build_ocean_surface(tris: &[[[f32; 3]; 3]], face_types: &[u8], sea_r: f32) -> Option<Mesh> {
+    let ocean = Terrain::Ocean as u8;
+    let mut positions = Vec::new();
+    let mut normals = Vec::new();
+    let mut uvs = Vec::new();
+    for (fi, t) in tris.iter().enumerate() {
+        if face_types.get(fi).copied() != Some(ocean) {
+            continue;
+        }
+        for k in 0..3 {
+            let dir = Vec3::from_array(t[k]).normalize();
+            positions.push((dir * sea_r).to_array());
+            normals.push(dir.to_array());
+            uvs.push([0.0, 0.0]);
+        }
+    }
+    if positions.is_empty() {
+        return None;
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    Some(mesh)
 }
 
 pub struct WaterPlugin;

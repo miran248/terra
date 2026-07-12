@@ -194,7 +194,7 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                (orient_player, camera_follow, drive_daynight, teleport_player, cull_props)
+                (orient_player, camera_follow, drive_daynight, drive_fog, teleport_player, cull_props)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -258,6 +258,12 @@ fn setup_map(
     commands.spawn((
         RigidBody::Static,
         build_collider(&level.terrain_tris),
+        // The terrain is an infinitely-thin trimesh, so fast/unlucky movement can
+        // tunnel through it (random falls through the map). A collision margin
+        // gives the surface thickness — a speculative skin that catches movers
+        // before they pass through. Raise it if falls persist; lower it if the
+        // player visibly floats.
+        CollisionMargin(0.3),
         Transform::default(),
         Ground,
     ));
@@ -570,16 +576,33 @@ fn setup_map(
         ));
     }
 
-    // Water: a global sea sphere with the depth-fading, rippling water material
-    // (see crate::water). Per-body lakes/rivers are later phases.
-    commands.spawn((
-        // Sit the sea surface a couple units below the reference radius; a
-        // 0.5-unit gap z-fought with the shoreline terrain (flickering speckle).
-        Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS - 2.0))),
-        MeshMaterial3d(water_mats.add(crate::water::water_material())),
-        Transform::default(),
-        Ground,
-    ));
+    // Water (see crate::water): the ocean is a flat surface over ocean faces at
+    // sea level — NOT a full sphere, which used to poke up inside lakes whose bed
+    // dips below sea level. Sea sits a couple units below the reference radius so
+    // it doesn't z-fight the shoreline.
+    let water_mat = water_mats.add(crate::water::water_material());
+    if let Some(ocean) =
+        crate::water::build_ocean_surface(&level.terrain_tris, &level.face_types, PLANET_RADIUS - 2.0)
+    {
+        commands.spawn((
+            Mesh3d(meshes.add(ocean)),
+            MeshMaterial3d(water_mat.clone()),
+            Transform::default(),
+            Ground,
+        ));
+    }
+
+    // Per-lake water surfaces (Phase 2): each lake gets its own flat surface at
+    // its waterline (lakes above sea level were never covered by the ocean).
+    let lake_water = water_mat;
+    for lake_mesh in crate::water::build_lake_surfaces(&level.terrain_tris, &level.face_types) {
+        commands.spawn((
+            Mesh3d(meshes.add(lake_mesh)),
+            MeshMaterial3d(lake_water.clone()),
+            Transform::default(),
+            Ground,
+        ));
+    }
 
     // Sun
     commands.spawn((
@@ -927,4 +950,26 @@ fn drive_daynight(
     sun_tf.look_at(Vec3::ZERO, Vec3::Y);
     light.illuminance = 13_000.0;
     light.color = Color::WHITE;
+}
+
+/// Tint the distance fog by how sunlit the camera's location is. With a fixed
+/// bright fog colour, at night the distant terrain faded to bright blue while the
+/// near (unlit) terrain went dark — distant looked brighter than near. Scaling
+/// the fog colour with the local day factor keeps distance haze consistent with
+/// the sky's day/night state.
+fn drive_fog(
+    tod: Res<TimeOfDay>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+    mut fog_q: Query<(&Transform, &mut DistanceFog), With<MainCamera>>,
+) {
+    let Ok((tf, mut fog)) = fog_q.single_mut() else { return };
+    let day = tf.translation.normalize().dot(tod.sun_dir).clamp(0.0, 1.0);
+    let c = Color::srgb(0.7 * day + 0.02, 0.8 * day + 0.03, 0.92 * day + 0.07);
+    fog.color = c;
+    fog.falloff = FogFalloff::from_visibility_colors(1700.0, c, c);
+
+    // Ambient is global (can't track the day/night hemispheres on its own), so
+    // drive it by the camera's day factor: a dim moonlit floor at night rising to
+    // full fill by day. Fixed-bright ambient made objects glow at night.
+    ambient.brightness = 35.0 + 130.0 * day;
 }
