@@ -55,11 +55,9 @@ impl Default for Compat {
         allow(Mountain, Cliff);
         allow(Snow, Tundra);
         allow(Snow, Cliff);
-        allow(Ocean, DeepOcean);
         allow(Ocean, Beach);
         allow(Ocean, Cliff);
         allow(Ocean, River);
-        allow(DeepOcean, Cliff);
         allow(Lake, LakeShore);
         allow(Lake, River);
         allow(LakeShore, RiverBank);

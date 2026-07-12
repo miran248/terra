@@ -19,7 +19,6 @@ pub const HABITABLE_MAX_TEMP: f32 = 30.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Terrain {
-    DeepOcean,
     Ocean,
     Lake,
     LakeShore,
@@ -42,8 +41,8 @@ pub enum Terrain {
 }
 
 impl Terrain {
-    pub const ALL: [Terrain; 19] = [
-        Terrain::DeepOcean, Terrain::Ocean, Terrain::Lake, Terrain::LakeShore,
+    pub const ALL: [Terrain; 18] = [
+        Terrain::Ocean, Terrain::Lake, Terrain::LakeShore,
         Terrain::River, Terrain::RiverBank, Terrain::Beach, Terrain::Cliff,
         Terrain::Desert, Terrain::Plains, Terrain::Forest, Terrain::Tundra,
         Terrain::Mountain, Terrain::Snow,
@@ -53,7 +52,6 @@ impl Terrain {
 
     pub fn color(&self) -> Color {
         match self {
-            Terrain::DeepOcean => Color::srgb(0.05, 0.12, 0.35),
             Terrain::Ocean => Color::srgb(0.10, 0.25, 0.55),
             Terrain::Lake => Color::srgb(0.15, 0.35, 0.65),
             Terrain::LakeShore => Color::srgb(0.20, 0.48, 0.55),
@@ -76,7 +74,7 @@ impl Terrain {
     }
 
     pub fn is_water(&self) -> bool {
-        matches!(self, Terrain::DeepOcean | Terrain::Ocean | Terrain::Lake | Terrain::River)
+        matches!(self, Terrain::Ocean | Terrain::Lake | Terrain::River)
     }
 
     pub fn is_land(&self) -> bool { !self.is_water() }
@@ -291,7 +289,7 @@ impl TerrainGen {
     fn classify_in_zone(&self, pos: SpherePos, kind: ZoneKind) -> Terrain {
         let e = self.interp_elevation(pos);
         match kind {
-            ZoneKind::Ocean => if e < -0.30 { Terrain::DeepOcean } else { Terrain::Ocean },
+            ZoneKind::Ocean => Terrain::Ocean,
             ZoneKind::Lake => if e < 0.0 { Terrain::Lake } else { self.land_biome(pos, e) },
             ZoneKind::MountainRange => {
                 let temp = self.interp_temperature(pos);

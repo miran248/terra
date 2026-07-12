@@ -462,6 +462,7 @@ fn update_terrain_hud(
     blends: Option<Res<crate::map::LevelBlends>>,
     face_types: Option<Res<LevelFaceTypes>>,
     slope_class: Option<Res<LevelSlope>>,
+    water_depth: Option<Res<crate::map::LevelWaterDepth>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
@@ -487,12 +488,17 @@ fn update_terrain_hud(
     let temp = terrain.temperature_at(pos);
     let _slope = terrain.slope(pos);
     let hab = terrain.is_habitable(pos);
-    let landform = if let (Some(planet), Some(sc)) = (planet.as_ref(), slope_class.as_ref()) {
-        planet.face_at(tf.translation.normalize())
-            .and_then(|fi| sc.0.get(fi).copied())
-            .map(|c| shared::level::slope_name(c))
-            .unwrap_or("")
-    } else { "" };
+    let landform: String = if let Some(planet) = planet.as_ref() {
+        planet.face_at(tf.translation.normalize()).map(|fi| {
+            if tile.is_water() {
+                water_depth.as_ref().and_then(|wd| wd.0.get(fi).copied())
+                    .map(|d| shared::level::depth_name(d).to_string()).unwrap_or_default()
+            } else {
+                slope_class.as_ref().and_then(|sc| sc.0.get(fi).copied())
+                    .map(|c| shared::level::slope_name(c).to_string()).unwrap_or_default()
+            }
+        }).unwrap_or_default()
+    } else { String::new() };
 
     // Tile line: everything about the ground under the player, in one place —
     // type (both types when the face is a blend), built tags, habitability.
@@ -534,7 +540,6 @@ fn update_terrain_hud(
 
 fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
     match tile {
-        shared::terrain::Terrain::DeepOcean |
         shared::terrain::Terrain::Ocean |
         shared::terrain::Terrain::Lake |
         shared::terrain::Terrain::River => Color::srgb(0.2, 0.5, 1.0),

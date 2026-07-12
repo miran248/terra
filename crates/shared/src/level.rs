@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 12;
+pub const LEVEL_FORMAT_VERSION: u32 = 13;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -79,6 +79,8 @@ pub struct LevelData {
     pub structures: Vec<StructureData>,
     /// Per-face slope class (SLOPE_*), from the solved field.
     pub slope_class: Vec<u8>,
+    /// Per-face water depth class (DEPTH_*) for water faces; 0 on land.
+    pub water_depth: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -109,6 +111,21 @@ pub fn slope_name(c: u8) -> &'static str {
 /// A cell is walkable/buildable when its slope class is flat or gentle.
 pub fn slope_walkable(c: u8) -> bool {
     c <= SLOPE_GENTLE
+}
+
+/// Per-cell/-face WATER DEPTH class (from the solved field). The depth analogue
+/// of the slope class: identity (ocean/lake/river) is one thing, depth another.
+pub const DEPTH_SHALLOW: u8 = 0;
+pub const DEPTH_DEEP: u8 = 1;
+pub const DEPTH_ABYSS: u8 = 2;
+
+pub fn depth_name(d: u8) -> &'static str {
+    match d {
+        DEPTH_SHALLOW => "Shallow",
+        DEPTH_DEEP => "Deep",
+        DEPTH_ABYSS => "Abyss",
+        _ => "?",
+    }
 }
 
 pub const FLORA_TREE: u8 = 0;

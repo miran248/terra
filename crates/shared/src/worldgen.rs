@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -367,6 +367,8 @@ pub struct GenState {
     /// mountain pass (Gentle inside Mountains) is traversable and a "flat"
     /// biome that solved steep is not.
     pub slope_class: Vec<u8>,
+    /// Per-cell water depth class (DEPTH_*) for water cells.
+    pub water_depth: Vec<u8>,
 }
 
 impl GenState {
@@ -391,6 +393,7 @@ impl GenState {
             flora: Vec::new(),
             structures: Vec::new(),
             slope_class: Vec::new(),
+            water_depth: Vec::new(),
         }
     }
 
@@ -470,7 +473,7 @@ pub enum Event {
     TagsBuilt(Vec<u32>, Vec<u8>),
     FloraPlaced(Vec<FloraData>),
     StructuresPlaced(Vec<StructureData>),
-    SlopeClassified(Vec<u8>),
+    SlopeClassified(Vec<u8>, Vec<u8>),
 }
 
 impl Event {
@@ -501,10 +504,10 @@ impl Event {
             Event::TagsBuilt(_, d) => format!("tags built: {} entries", d.len()),
             Event::FloraPlaced(f) => format!("flora placed: {}", f.len()),
             Event::StructuresPlaced(v) => format!("structures placed: {}", v.len()),
-            Event::SlopeClassified(sc) => {
+            Event::SlopeClassified(sc, wd) => {
                 let cliffs = sc.iter().filter(|&&c| c == SLOPE_CLIFF).count();
-                let steep = sc.iter().filter(|&&c| c == SLOPE_STEEP).count();
-                format!("slope classified: {steep} steep, {cliffs} cliff cells")
+                let abyss = wd.iter().filter(|&&d| d == DEPTH_ABYSS).count();
+                format!("relief classified: {cliffs} cliff cells, {abyss} abyss cells")
             }
         }
     }
@@ -534,7 +537,9 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::RoadsPlanned(state.terrain().plan_road_paths())]
         }
         Command::ClassifySlope => {
-            vec![Event::SlopeClassified(classify_slope(&state.grid, state.terrain()))]
+            let slope = classify_slope(&state.grid, state.terrain());
+            let depth = classify_water_depth(&state.grid, &state.cells, state.terrain());
+            vec![Event::SlopeClassified(slope, depth)]
         }
         Command::ClassifyTiles => {
             let terrain = state.terrain();
@@ -603,7 +608,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::BuildMesh => {
             let (tris, cols) =
-                build_mesh(&state.grid, state.terrain(), &state.cells, &state.painted);
+                build_mesh(&state.grid, state.terrain(), &state.cells, &state.painted, &state.water_depth);
             vec![Event::MeshBuilt(tris, cols)]
         }
         Command::BuildTags => {
@@ -675,7 +680,10 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
         }
         Event::FloraPlaced(f) => state.flora = f,
         Event::StructuresPlaced(v) => state.structures = v,
-        Event::SlopeClassified(sc) => state.slope_class = sc,
+        Event::SlopeClassified(sc, wd) => {
+            state.slope_class = sc;
+            state.water_depth = wd;
+        }
     }
     state
 }
@@ -701,7 +709,7 @@ pub fn react(event: &Event) -> Vec<Command> {
         // labelled. Regions/blends follow so they see the final footprints.
         Event::TransitionsResolved(_) => vec![Command::SolveElevation],
         Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::ClassifySlope],
-        Event::SlopeClassified(_) => vec![Command::PaintFeatures],
+        Event::SlopeClassified(..) => vec![Command::PaintFeatures],
         Event::FeaturesPainted(..) => vec![Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
         Event::BridgesSelected(..) => vec![Command::MarkBlends],
@@ -733,7 +741,7 @@ pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
 /// Painted as an edge PAIR (chain + parallel partner line), like roads: a
 /// single chain's derived faces only touch at the chain vertices.
 fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
-    let sea = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::DeepOcean | Terrain::Lake);
+    let sea = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::Lake);
     for path in &terrain.river_paths {
         let mut chain = vert_chain(grid, path);
         // The planned endpoint sits on the PROPOSED waterline; normalization
@@ -948,7 +956,7 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
     let mut ocean_dist = vec![u8::MAX; grid.nv];
     let mut q: VecDeque<usize> = VecDeque::new();
     for vi in 0..grid.nv {
-        if matches!(cells[vi], Terrain::Ocean | Terrain::DeepOcean) {
+        if cells[vi] == Terrain::Ocean {
             ocean_dist[vi] = 0;
             q.push_back(vi);
         }
@@ -1100,7 +1108,7 @@ fn size_range(t: Terrain) -> (usize, usize) {
     const INF: usize = usize::MAX;
     match t {
         // A real sea; anything smaller on ocean zone is reclassified a lake.
-        DeepOcean | Ocean => (4000, INF),
+        Ocean => (4000, INF),
         // Enclosed water: a puddle below min is filled; capped just under the
         // ocean minimum so "min ocean > max lake" holds by construction.
         Lake => (60, 3999),
@@ -1165,6 +1173,27 @@ fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
                 SLOPE_STEEP
             } else {
                 SLOPE_CLIFF
+            }
+        })
+        .collect()
+}
+
+/// Per-water-cell depth class from the solved surface: shore-shallows deepen
+/// to abyss offshore (and lake/river beds shallow-to-deep by their concavity).
+/// Land cells are DEPTH_SHALLOW (unused). The depth analogue of slope class.
+fn classify_water_depth(grid: &Grid, cells: &[Terrain], terrain: &TerrainGen) -> Vec<u8> {
+    (0..grid.nv)
+        .map(|vi| {
+            if !cells[vi].is_water() {
+                return DEPTH_SHALLOW;
+            }
+            let e = terrain.elevation_at(grid.vert_pos(vi));
+            if e > -0.20 {
+                DEPTH_SHALLOW
+            } else if e > -0.55 {
+                DEPTH_DEEP
+            } else {
+                DEPTH_ABYSS
             }
         })
         .collect()
@@ -1444,7 +1473,7 @@ fn build_bridges(
     let forbidden = |t: Terrain| matches!(
         t,
         Terrain::Mountain | Terrain::Snow | Terrain::Cliff | Terrain::Glacier
-            | Terrain::Volcanic | Terrain::Ocean | Terrain::DeepOcean | Terrain::Beach
+            | Terrain::Volcanic | Terrain::Ocean | Terrain::Beach
     );
     // The field is SOLVED by now, so gate on the REAL slope: a deck anchor
     // must be gentle ground (a mountain "pass" qualifies, a steep forested
@@ -1613,37 +1642,10 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     // by chance. The band widens onto the second ring where the coast is flat,
     // and a land cell wedged between two shore cells joins the band.
     let mut out = base.to_vec();
-    // DeepOcean may never surface: not even a corner of a deep face may rise
-    // above the waterline. The interpolated surface reaches ~150m past any
-    // land vertex and cells are ~35m apart — deep water keeps a shallow
-    // (Ocean) margin so no land vertex can leak into a deep corner.
-    {
-        let mut land_dist = vec![u8::MAX; grid.nv];
-        let mut q: VecDeque<usize> = VecDeque::new();
-        for vi in 0..grid.nv {
-            if out[vi].is_land() {
-                land_dist[vi] = 0;
-                q.push_back(vi);
-            }
-        }
-        while let Some(cur) = q.pop_front() {
-            if land_dist[cur] >= 6 {
-                continue;
-            }
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if land_dist[nb] == u8::MAX {
-                    land_dist[nb] = land_dist[cur] + 1;
-                    q.push_back(nb);
-                }
-            }
-        }
-        for vi in 0..grid.nv {
-            if out[vi] == Terrain::DeepOcean && land_dist[vi] <= 6 {
-                out[vi] = Terrain::Ocean;
-            }
-        }
-    }
+    // Ocean is one identity now; DEPTH is a per-cell class derived from the
+    // solved field afterwards (shallow near shore → abyss offshore, via the
+    // shelf constraint). Deep water never surfaces because Ocean's range floor
+    // deepens with distance from land — no separate tile, no margin pass.
     let (water_dist, water_kind) = water_distance(grid, base, 2);
     let shore = |vi: usize, kind: Terrain| -> Terrain {
         match kind {
@@ -1763,7 +1765,7 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
     };
     let river = dist_to(&|t| t == Terrain::River);
     let lake = dist_to(&|t| t == Terrain::Lake);
-    let sea = dist_to(&|t| matches!(t, Terrain::Ocean | Terrain::DeepOcean));
+    let sea = dist_to(&|t| t == Terrain::Ocean);
     for vi in 0..grid.nv {
         let orphan = match cells[vi] {
             Terrain::RiverBank => river[vi] > 2,
@@ -1972,7 +1974,7 @@ fn region_class(grid: &Grid, face_types: &[Terrain], painted: Option<&Painted>, 
         }
     }
     match face_types[fi] {
-        Terrain::DeepOcean | Terrain::Ocean => Some(RegionKind::Ocean),
+        Terrain::Ocean => Some(RegionKind::Ocean),
         Terrain::Lake => Some(RegionKind::Lake),
         Terrain::River => Some(RegionKind::River),
         Terrain::Beach => Some(RegionKind::Beach),
@@ -2145,6 +2147,7 @@ fn build_mesh(
     terrain: &TerrainGen,
     cells: &[Terrain],
     painted: &Painted,
+    water_depth: &[u8],
 ) -> (Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>) {
     let vert_r: Vec<f32> = grid.verts.iter()
         .map(|dir| terrain.render_radius(SpherePos::new(*dir)))
@@ -2170,7 +2173,21 @@ fn build_mesh(
             } else if painted.roads.contains(vi) {
                 road_color
             } else {
-                cells[vi].color().to_linear().to_f32_array()
+                let mut c = cells[vi].color().to_linear().to_f32_array();
+                // Water darkens with depth (shallow shore → dark abyss), so the
+                // sea reads as a smooth depth gradient across the per-corner
+                // colors instead of a hard tile line.
+                if cells[vi].is_water() {
+                    let f = match water_depth[vi] {
+                        DEPTH_SHALLOW => 1.0,
+                        DEPTH_DEEP => 0.62,
+                        _ => 0.35,
+                    };
+                    for ch in c.iter_mut().take(3) {
+                        *ch *= f;
+                    }
+                }
+                c
             }
         };
         let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, fi) {
@@ -2512,7 +2529,7 @@ fn bank_water(t: Terrain) -> &'static [Terrain] {
     match t {
         Terrain::RiverBank => &[Terrain::River],
         Terrain::LakeShore => &[Terrain::Lake],
-        Terrain::Beach => &[Terrain::Ocean, Terrain::DeepOcean],
+        Terrain::Beach => &[Terrain::Ocean],
         _ => &[],
     }
 }
@@ -2522,9 +2539,9 @@ fn elev_range(t: Terrain) -> (f32, f32) {
     // Ranges of kinds that may sit next to each other must overlap (or lie
     // within one edge's gradient cap) or the constraint set is unsatisfiable.
     match t {
-        DeepOcean => (-1.0, -0.15),
-        // The sea's ceiling is the waterline; its floor shows below it.
-        Ocean => (-0.35, -0.01),
+        // One ocean identity; the shelf constraint deepens the floor with
+        // distance from land, so the range spans shore-shallows to abyss.
+        Ocean => (-1.0, -0.01),
         // Lakes and rivers carry their OWN water level — a mountain lake may
         // sit high above the sea; only its shores must stay above it.
         Lake => (-0.25, 0.55),
@@ -2555,7 +2572,7 @@ fn elev_range(t: Terrain) -> (f32, f32) {
 /// Small at shores (continental shelf), large into mountains and at cliffs.
 fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     use Terrain::*;
-    let water = |t: Terrain| matches!(t, Ocean | DeepOcean | Lake);
+    let water = |t: Terrain| matches!(t, Ocean | Lake);
     let peak = |t: Terrain| matches!(t, Mountain | Snow | Volcanic | Glacier);
     // Rivers are canyons: their walls may be steep wherever they cut through.
     // Caps are per vertex edge (~35m at field sub=6).
@@ -2681,9 +2698,11 @@ fn solve_elevation(
             }
         }
     }
-    // Continental shelf as a HARD range: water depth may only grow with
-    // distance from land (per vertex step ~70m), so the sea floor can never
-    // wall off right at the shore no matter what chains the tile map builds.
+    // Continental shelf as a HARD range: since Ocean is one identity now, the
+    // shelf both keeps water shallow near shore (no wall at the coast) AND
+    // forces it deep offshore (the ceiling drops with distance from land), so
+    // the deep basins/abyss come from geometry, not a separate tile. Distance
+    // to land in vertex steps (~35m).
     {
         let mut dist = vec![u8::MAX; nv];
         let mut q: VecDeque<usize> = VecDeque::new();
@@ -2694,7 +2713,7 @@ fn solve_elevation(
             }
         }
         while let Some(cur) = q.pop_front() {
-            if dist[cur] >= 3 {
+            if dist[cur] >= 8 {
                 continue;
             }
             for &nb in terrain.adj_of(cur) {
@@ -2705,18 +2724,29 @@ fn solve_elevation(
             }
         }
         for vi in 0..nv {
-            if owner[vi].is_water() {
-                let shelf = match dist[vi] {
-                    1 => -0.20,
-                    2 => -0.45,
-                    3 => -0.70,
-                    _ => -1.0,
-                };
-                // The shelf floor never overrides the owner's ceiling: a
-                // deep-water vert near land pins to its ceiling instead of
-                // rising above its range.
-                lo[vi] = lo[vi].max(shelf).min(hi[vi]);
+            if !owner[vi].is_water() || owner[vi] == Terrain::River {
+                continue;
             }
+            // Lakes keep their own (concave) profile; only the open sea shelves.
+            if owner[vi] == Terrain::Lake {
+                continue;
+            }
+            // A narrow depth WINDOW per distance band, both bounds deepening
+            // with distance: shore-shallows (no wall at the coast) grading to
+            // abyss offshore. floor ≤ ceil, and the step between adjacent
+            // bands stays within the extreme-edge limit.
+            let (floor, ceil) = match dist[vi] {
+                1 => (-0.10, -0.03),
+                2 => (-0.22, -0.08),
+                3 => (-0.38, -0.18),
+                4 => (-0.52, -0.32),
+                5 => (-0.64, -0.46),
+                6 => (-0.74, -0.56),
+                7 => (-0.82, -0.62),
+                _ => (-0.95, -0.70),
+            };
+            hi[vi] = hi[vi].min(ceil);
+            lo[vi] = lo[vi].max(floor).min(hi[vi]);
         }
     }
 
@@ -3064,25 +3094,13 @@ mod tests {
             );
         }
 
-        // Every corner of every DeepOcean face renders below the waterline
-        // (the mesh displaces corners by the interpolated field).
-        for fi in 0..state.grid.n {
-            if state.tiles[fi] != Terrain::DeepOcean {
-                continue;
-            }
-            for v in &state.grid.unit_tris[fi] {
-                let corner = crate::sphere::SpherePos::new(v.normalize());
-                let elev = terrain.elevation_at(corner);
-                if elev >= 0.0 {
-                    let detail: Vec<String> = terrain.kernel(corner).iter().map(|&(vi, _)| {
-                        let owner = state.grid.planet.face_at(terrain.vert_dir(vi))
-                            .map(|of| format!("{:?}", state.tiles[of]))
-                            .unwrap_or("?".into());
-                        let d = corner.distance(crate::sphere::SpherePos::new(terrain.vert_dir(vi)));
-                        format!("v{vi}={:.2}({owner},{d:.0}m)", e[vi])
-                    }).collect();
-                    panic!("DeepOcean face {fi} corner renders above water: {elev} kernel: {}", detail.join(" "));
-                }
+        // Deep water never surfaces: every abyss-depth cell solves well below
+        // the waterline (the depth class replaces the old DeepOcean tile).
+        // (Depth is per grid CELL — sample the solved field at the cell.)
+        for vi in 0..state.grid.nv {
+            if state.water_depth[vi] == DEPTH_ABYSS {
+                let d = terrain.elevation_at(state.grid.vert_pos(vi));
+                assert!(d < -0.1, "abyss cell {vi} not deep: {d}");
             }
         }
 
@@ -3186,7 +3204,7 @@ mod tests {
                 // Actual ocean TILES, not ocean-zone: an isolated ocean-zone
                 // pocket is reclassified to a lake (see size_range(Ocean)) and
                 // must not seed the distance field.
-                if matches!(state.tiles[fi], Terrain::Ocean | Terrain::DeepOcean) {
+                if state.tiles[fi] == Terrain::Ocean {
                     dist[fi] = 0;
                     q.push_back(fi);
                 }
@@ -3378,12 +3396,12 @@ mod tests {
             }
             let touches_sea = comp.iter().any(|&vi| {
                 state.grid.vert_adj[vi].iter().any(|&nb| matches!(
-                    state.cells[nb as usize], Terrain::Ocean | Terrain::DeepOcean | Terrain::Lake
+                    state.cells[nb as usize], Terrain::Ocean | Terrain::Lake
                 ))
             });
             assert!(touches_sea, "river component of {} cells cut off from any water body", comp.len());
             // And the mouth is open at FACE level too: some River face is
-            // edge-adjacent to an Ocean/DeepOcean/Lake face.
+            // edge-adjacent to an Ocean/Lake face.
             let mut open = false;
             'faces: for fi in 0..state.grid.n {
                 if state.tiles[fi] != Terrain::River {
@@ -3395,7 +3413,7 @@ mod tests {
                 for &nb in &state.grid.adj[fi] {
                     if matches!(
                         state.tiles[nb as usize],
-                        Terrain::Ocean | Terrain::DeepOcean | Terrain::Lake
+                        Terrain::Ocean | Terrain::Lake
                     ) {
                         open = true;
                         break 'faces;
@@ -3473,6 +3491,7 @@ mod tests {
         assert_eq!(a.structures.len(), b.structures.len());
         assert!(a.structures.iter().zip(&b.structures).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
         assert_eq!(a.slope_class, b.slope_class);
+        assert_eq!(a.water_depth, b.water_depth);
     }
 
     #[test]

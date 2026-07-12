@@ -57,6 +57,10 @@ fn serialize(state: &GenState, out: &PathBuf) {
             state.grid.face_verts[fi].iter()
                 .map(|&vi| state.slope_class[vi as usize]).max().unwrap_or(0)
         }).collect(),
+        water_depth: (0..state.grid.n).map(|fi| {
+            state.grid.face_verts[fi].iter()
+                .map(|&vi| state.water_depth[vi as usize]).max().unwrap_or(0)
+        }).collect(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());
@@ -77,7 +81,7 @@ fn print_stats(state: &GenState) {
     let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
     for t in &state.tiles {
         *counts.entry(match t {
-            Terrain::DeepOcean => "DeepOcean", Terrain::Ocean => "Ocean",
+            Terrain::Ocean => "Ocean",
             Terrain::Lake => "Lake", Terrain::LakeShore => "LakeShore",
             Terrain::River => "River", Terrain::RiverBank => "RiverBank",
             Terrain::Beach => "Beach", Terrain::Cliff => "Cliff",
