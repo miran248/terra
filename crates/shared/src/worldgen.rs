@@ -564,7 +564,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         Command::SolveElevation => {
             let (field, iters, residual) = solve_elevation(
                 &state.grid, state.terrain(), &state.cells, &state.tiles, &state.painted,
-                &state.blends, &state.bridges,
+                &state.blends,
             );
             vec![Event::ElevationSolved { field, iters, residual }]
         }
@@ -674,14 +674,15 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::WaterNormalized(_) => vec![Command::PaintRivers],
         Event::RiversPainted(_) => vec![Command::PaintFeatures],
         Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
-        // Regions and bridge selection read only tiles/geometry, so they run
-        // BEFORE the solver — which then knows the bridge-entry pads to flatten.
-        // Blends come after bridges so entry flanks can blend toward the pads.
-        Event::TransitionsResolved(_) => vec![Command::BuildRegions],
+        // Elevation is solved FIRST, then features CONFORM to the finished
+        // terrain: bridges gate on the real solved slope (a bridge never lands
+        // on steep ground, whatever the tile is labelled). Regions and blends
+        // follow so they see the final bridge footprints.
+        Event::TransitionsResolved(_) => vec![Command::SolveElevation],
+        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
         Event::BridgesSelected(..) => vec![Command::MarkBlends],
-        Event::BlendsMarked(_) => vec![Command::SolveElevation],
-        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildMesh],
+        Event::BlendsMarked(_) => vec![Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
         Event::TagsBuilt(..) => vec![Command::PlaceFlora],
         Event::FloraPlaced(_) => vec![Command::PlaceStructures],
@@ -1237,8 +1238,9 @@ fn paint_features(
 }
 
 /// Gaps up to this bridge freely.
-/// How far a bridge deck reaches inland past its bank cell, meters.
-const BRIDGE_ENTRY_OVERLAP: f32 = 15.0;
+/// A tiny overshoot past the gentle anchor cell so the deck grounds just
+/// inside solid ground (bridges conform — no long inland ramp).
+const BRIDGE_ENTRY_OVERLAP: f32 = 3.0;
 /// A river/lake crossing longer than this isn't a bridge — the water is too
 /// wide (that would be a ferry, not a footbridge).
 const BRIDGE_MAX_SPAN: f32 = 200.0;
@@ -1248,6 +1250,10 @@ const BRIDGE_MAX_COUNT: usize = 12;
 /// A land component smaller than this, ringed only by lake water, is an island
 /// in the lake and earns a bridge to the mainland.
 const LAKE_ISLAND_MAX_CELLS: usize = 1500;
+/// A bridge anchor must be this gentle (rise/run ≈ tan angle; 0.25 ≈ 14°) on
+/// the SOLVED field — a walkable spot, even if it sits inside a mountain
+/// landform (a pass).
+const BRIDGE_MAX_ANCHOR_SLOPE: f32 = 0.25;
 
 /// Terrain a bridge may land on: gentle, walkable ground — never a mountain,
 /// cliff, snowfield, glacier or volcanic slope.
@@ -1353,18 +1359,14 @@ fn build_bridges(
         Terrain::Mountain | Terrain::Snow | Terrain::Cliff | Terrain::Glacier
             | Terrain::Volcanic | Terrain::Ocean | Terrain::DeepOcean | Terrain::Beach
     );
+    // The field is SOLVED by now, so gate on the REAL slope: a deck anchor
+    // must be gentle ground (a mountain "pass" qualifies, a steep forested
+    // slope does not — whatever the tile is labelled), with no marine/steep
+    // tile in its ring.
     let good_anchor = |vi: usize| {
-        if !bridge_walkable(cells[vi]) {
-            return false;
-        }
-        let e0 = terrain.elevation_at(grid.vert_pos(vi));
-        grid.vert_adj[vi].iter().all(|&nb| {
-            let nb = nb as usize;
-            !forbidden(cells[nb])
-                // Gentle where it's walkable land; band cells are exempt.
-                && (!bridge_walkable(cells[nb])
-                    || (terrain.elevation_at(grid.vert_pos(nb)) - e0).abs() < 0.10)
-        })
+        bridge_walkable(cells[vi])
+            && terrain.slope(grid.vert_pos(vi)) < BRIDGE_MAX_ANCHOR_SLOPE
+            && grid.vert_adj[vi].iter().all(|&nb| !forbidden(cells[nb as usize]))
     };
 
     // Commit a bridge between two bank cells if it clears the spacing rule.
@@ -2541,7 +2543,6 @@ fn solve_elevation(
     tiles: &[Terrain],
     painted: &Painted,
     blends: &[(u32, u8, u8)],
-    bridges: &[Vec<SpherePos>],
 ) -> (Vec<f32>, usize, f32) {
     let nv = terrain.vert_count();
     let mut blend_of: BTreeMap<u32, (u8, u8)> = BTreeMap::new();
@@ -2660,47 +2661,9 @@ fn solve_elevation(
         }
     }
 
-    // Bridge-entry pads: the vertices under each deck end are driven to one
-    // common height (slope 0) so the deck meets the ground seamlessly.
-    let pad_verts_at = |end: &SpherePos| -> Vec<usize> {
-        // The pad covers the end plus a ~30m ring around it, so height probes
-        // anywhere near the footing read only pad vertices (slope ≈ 0).
-        let (east, north) = end.tangent_basis();
-        let step = 30.0 / crate::sphere::PLANET_RADIUS;
-        let mut verts: Vec<usize> = Vec::new();
-        for dir in [
-            end.0,
-            (end.0 + east * step).normalize(),
-            (end.0 - east * step).normalize(),
-            (end.0 + north * step).normalize(),
-            (end.0 - north * step).normalize(),
-        ] {
-            for (vi, _) in terrain.kernel(SpherePos::new(dir)) {
-                if !verts.contains(&vi) {
-                    verts.push(vi);
-                }
-            }
-        }
-        verts
-    };
-    let pads: Vec<Vec<usize>> = bridges.iter()
-        .flat_map(|span| [span.first(), span.last()])
-        .flatten()
-        .map(|end| {
-            // The pad flattens ONLY ordinary dry ground: never water, a river
-            // bed (canyon), or a shore band — those keep their own tight
-            // ranges, so the deck grounds without disturbing the coast/channel.
-            pad_verts_at(end).into_iter()
-                .filter(|&vi| !is_canyon_vert[vi]
-                    && owner[vi].is_land()
-                    && !matches!(
-                        owner[vi],
-                        Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank
-                    ))
-                .collect()
-        })
-        .collect();
-
+    // Bridges CONFORM to the finished terrain (selected after this solve on
+    // gentle ground), so the solver no longer flattens entry pads — features
+    // no longer reshape the field here.
     let mut e: Vec<f32> = terrain.vert_elevations().to_vec();
     let mut iters = 0;
     let mut residual = f32::MAX;
@@ -2846,20 +2809,6 @@ fn solve_elevation(
             residual += (c - e[vi]).abs();
             e[vi] = c;
         }
-        // 6) bridge-entry pads LAST: the deck is a built structure — its
-        // footing is dead flat even where tile ranges disagree slightly.
-        for pad in &pads {
-            let mean: f32 = pad.iter().map(|&vi| e[vi]).sum::<f32>() / pad.len() as f32;
-            // The footing flattens to the LOCAL ground (the pad average), so
-            // the deck meets whatever it lands on seamlessly — river bridges
-            // sit at bank height, not forced down to sea level. Kept above the
-            // waterline so an entry never floods.
-            let footing = mean.max(0.02);
-            for &vi in pad {
-                residual += (e[vi] - footing).abs();
-                e[vi] = footing;
-            }
-        }
         iters = it + 1;
         if residual < SOLVER_EPS {
             break;
@@ -2937,31 +2886,13 @@ mod tests {
         let e = terrain.vert_elevations();
         let blend_of: std::collections::BTreeMap<u32, (u8, u8)> =
             state.blends.iter().map(|&(fi, a, b)| (fi, (a, b))).collect();
-        // Bridge-entry pad verts are a built-structure exception (like canyons):
-        // the footing is flattened to shore level regardless of tile ranges.
-        let mut pad_vert = vec![false; terrain.vert_count()];
-        for span in &state.bridges {
-            for end in [span.first(), span.last()].into_iter().flatten() {
-                let (east, north) = end.tangent_basis();
-                let step = 30.0 / crate::sphere::PLANET_RADIUS;
-                for dir in [
-                    end.0,
-                    (end.0 + east * step).normalize(),
-                    (end.0 - east * step).normalize(),
-                    (end.0 + north * step).normalize(),
-                    (end.0 - north * step).normalize(),
-                ] {
-                    for (vi, _) in terrain.kernel(crate::sphere::SpherePos::new(dir)) {
-                        pad_vert[vi] = true;
-                    }
-                }
-            }
-        }
+        // Bridges CONFORM to the terrain (no entry pads), so every vertex must
+        // satisfy its tile range — no pad exemption.
         // Ownership is per-CELL (each solver vert is a grid cell), exactly as
         // the solver assigns ranges — the face type may differ at boundaries.
         let owners = owner_cells(&state.grid, terrain, &state.cells);
         for vi in 0..terrain.vert_count() {
-            if canyon[vi] || pad_vert[vi] {
+            if canyon[vi] {
                 continue;
             }
             let Some(fi) = state.grid.planet.face_at(terrain.vert_dir(vi)) else { continue };
@@ -3092,6 +3023,16 @@ mod tests {
                     bridge_walkable(state.tiles[fi]),
                     "bridge entry on non-walkable tile {:?}", state.tiles[fi]
                 );
+                // The anchor CELL (where placement gated on the solved slope)
+                // is genuinely gentle — a bridge never lands on steep ground,
+                // whatever the biome. (An omnidirectional slope at the exact
+                // water's-edge end would just read the natural bank drop.)
+                let cell = state.grid.face_verts[fi].iter().copied()
+                    .max_by(|&a, &b| state.grid.verts[a as usize].dot(end.0)
+                        .partial_cmp(&state.grid.verts[b as usize].dot(end.0)).unwrap())
+                    .unwrap();
+                let slope = terrain.slope(state.grid.vert_pos(cell as usize));
+                assert!(slope < 0.3, "bridge anchor on steep ground: slope {slope}");
             }
         }
 
@@ -3183,7 +3124,7 @@ mod tests {
         let vkind: Vec<Terrain> = owner_cells(&state.grid, terrain, &state.cells);
         let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
         for a in 0..terrain.vert_count() {
-            if vkind[a] != Terrain::Cliff || pad_vert[a] || canyon[a] {
+            if vkind[a] != Terrain::Cliff || canyon[a] {
                 continue;
             }
             let shoreside = terrain.adj_of(a).iter().any(|&nb| shore_kind(vkind[nb]));
@@ -3208,7 +3149,7 @@ mod tests {
         // Banks sit strictly above their water: bank verts exceed the
         // adjacent water surface (water renders clamped at 0).
         for vi in 0..terrain.vert_count() {
-            if (canyon[vi] && vkind[vi] != Terrain::RiverBank) || pad_vert[vi] {
+            if canyon[vi] && vkind[vi] != Terrain::RiverBank {
                 continue;
             }
             let matching = bank_water(vkind[vi]);
