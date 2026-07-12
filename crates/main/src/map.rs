@@ -15,6 +15,11 @@ use shared::planet::PlanetMesh;
 use crate::minimap::MinimapCamera;
 use crate::constants::*;
 
+/// Speculative collision skin added to the thin terrain trimesh so fast movement
+/// doesn't tunnel through it. The player mesh is dropped by this much to hide the
+/// float it would otherwise cause.
+const TERRAIN_MARGIN: f32 = 0.3;
+
 #[derive(Component)]
 pub struct Ground;
 
@@ -261,9 +266,9 @@ fn setup_map(
         // The terrain is an infinitely-thin trimesh, so fast/unlucky movement can
         // tunnel through it (random falls through the map). A collision margin
         // gives the surface thickness — a speculative skin that catches movers
-        // before they pass through. Raise it if falls persist; lower it if the
-        // player visibly floats.
-        CollisionMargin(0.3),
+        // before they pass through. The player mesh is lowered by the same amount
+        // (see the player spawn) to hide the resulting float.
+        CollisionMargin(TERRAIN_MARGIN),
         Transform::default(),
         Ground,
     ));
@@ -592,13 +597,22 @@ fn setup_map(
         ));
     }
 
-    // Per-lake water surfaces (Phase 2): each lake gets its own flat surface at
-    // its waterline (lakes above sea level were never covered by the ocean).
-    let lake_water = water_mat;
-    for lake_mesh in crate::water::build_lake_surfaces(&level.terrain_tris, &level.face_types) {
+    // River surfaces (Phase 3): render River faces as downstream-flowing water.
+    if let Some(river) = crate::water::build_river_surfaces(&level.terrain_tris, &level.face_types) {
+        commands.spawn((
+            Mesh3d(meshes.add(river)),
+            MeshMaterial3d(water_mats.add(crate::water::river_material())),
+            Transform::default(),
+            Ground,
+        ));
+    }
+
+    // Lake water surfaces (Phase 2): a thin water skin over lake faces (lakes
+    // above sea level were never covered by the ocean).
+    if let Some(lake_mesh) = crate::water::build_lake_surfaces(&level.terrain_tris, &level.face_types) {
         commands.spawn((
             Mesh3d(meshes.add(lake_mesh)),
-            MeshMaterial3d(lake_water.clone()),
+            MeshMaterial3d(water_mat.clone()),
             Transform::default(),
             Ground,
         ));
@@ -649,7 +663,9 @@ fn setup_map(
         .with_child((
             Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
             MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
-            Transform::from_xyz(0.0, capsule_radius, 0.0),
+            // Rest the base on the ground contact point, then drop by the terrain
+            // collision margin so the visual doesn't float above the terrain.
+            Transform::from_xyz(0.0, capsule_radius - TERRAIN_MARGIN, 0.0),
         ));
 
     // Settlement markers

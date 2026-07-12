@@ -21,6 +21,7 @@ struct WaterParams {
     wave_amp: f32,
     wave_scale: f32,
     wave_speed: f32,
+    flow: f32,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
@@ -32,8 +33,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Animated ripples: perturb the surface normal with a couple of scrolling
     // sinusoids so the specular highlight moves and the surface reads as liquid.
+    // For rivers (flow > 0) the sample point drifts along the per-vertex flow
+    // direction (encoded in vertex colour), so the pattern moves downstream.
     let t = globals.time * water.wave_speed;
-    let p = in.world_position.xz * water.wave_scale;
+    var sample_pos = in.world_position.xyz;
+#ifdef VERTEX_COLORS
+    if water.flow > 0.0 {
+        let flow_dir = in.color.rgb * 2.0 - vec3<f32>(1.0);
+        sample_pos = sample_pos - flow_dir * globals.time * water.flow;
+    }
+#endif
+    let p = sample_pos.xz * water.wave_scale;
     let bump = vec3<f32>(
         sin(p.x + t) + sin(p.y * 0.7 - t * 1.3),
         0.0,
