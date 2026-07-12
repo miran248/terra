@@ -5,7 +5,7 @@ use shared::theme;
 use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{LevelTags, LevelFaceTypes, LevelRegions, Player, PlayerHp};
+use crate::map::{LevelTags, LevelFaceTypes, LevelSlope, LevelRegions, Player, PlayerHp};
 use shared::terrain::Terrain;
 use shared::planet::PlanetMesh;
 use crate::wave::WaveManager;
@@ -461,6 +461,7 @@ fn update_terrain_hud(
     regions: Option<Res<LevelRegions>>,
     blends: Option<Res<crate::map::LevelBlends>>,
     face_types: Option<Res<LevelFaceTypes>>,
+    slope_class: Option<Res<LevelSlope>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
@@ -484,8 +485,14 @@ fn update_terrain_hud(
     };
     let altitude = terrain.altitude(pos);
     let temp = terrain.temperature_at(pos);
-    let slope = terrain.slope(pos);
+    let _slope = terrain.slope(pos);
     let hab = terrain.is_habitable(pos);
+    let landform = if let (Some(planet), Some(sc)) = (planet.as_ref(), slope_class.as_ref()) {
+        planet.face_at(tf.translation.normalize())
+            .and_then(|fi| sc.0.get(fi).copied())
+            .map(|c| shared::level::slope_name(c))
+            .unwrap_or("")
+    } else { "" };
 
     // Tile line: everything about the ground under the player, in one place —
     // type (both types when the face is a blend), built tags, habitability.
@@ -520,7 +527,7 @@ fn update_terrain_hud(
     }
 
     *text = Text::new(format!(
-        "{tile_line}{region_name}\nAlt: {altitude:.0}m  Slope: {slope:.1}  Temp: {temp:.0}°C",
+        "{tile_line}{region_name}\nAlt: {altitude:.0}m  {landform}  Temp: {temp:.0}°C",
     ));
     *color = TextColor(hud_tile_color(tile));
 }

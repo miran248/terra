@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 11;
+pub const LEVEL_FORMAT_VERSION: u32 = 12;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -77,6 +77,8 @@ pub struct LevelData {
     /// Contextual built structures (ruins, docks, walls, …), placed at gen
     /// time and spawned as runtime entities like bridges.
     pub structures: Vec<StructureData>,
+    /// Per-face slope class (SLOPE_*), from the solved field.
+    pub slope_class: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -86,6 +88,27 @@ pub struct StructureData {
     pub kind: u8,
     /// Facing yaw about the local up (radians).
     pub yaw: f32,
+}
+
+/// Per-cell/-face terrain steepness (slope class) from the solved field.
+pub const SLOPE_FLAT: u8 = 0;
+pub const SLOPE_GENTLE: u8 = 1;
+pub const SLOPE_STEEP: u8 = 2;
+pub const SLOPE_CLIFF: u8 = 3;
+
+pub fn slope_name(c: u8) -> &'static str {
+    match c {
+        SLOPE_FLAT => "Flat",
+        SLOPE_GENTLE => "Gentle",
+        SLOPE_STEEP => "Steep",
+        SLOPE_CLIFF => "Cliff",
+        _ => "?",
+    }
+}
+
+/// A cell is walkable/buildable when its slope class is flat or gentle.
+pub fn slope_walkable(c: u8) -> bool {
+    c <= SLOPE_GENTLE
 }
 
 pub const FLORA_TREE: u8 = 0;

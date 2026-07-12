@@ -51,6 +51,12 @@ fn serialize(state: &GenState, out: &PathBuf) {
         face_region: state.face_region.clone(),
         flora: state.flora.clone(),
         structures: state.structures.clone(),
+        // Per-FACE slope class = steepest corner cell (conservative for
+        // walkability/rendering).
+        slope_class: (0..state.grid.n).map(|fi| {
+            state.grid.face_verts[fi].iter()
+                .map(|&vi| state.slope_class[vi as usize]).max().unwrap_or(0)
+        }).collect(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());

@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, StructureData, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -362,6 +362,11 @@ pub struct GenState {
     pub tag_data: Vec<u8>,
     pub flora: Vec<FloraData>,
     pub structures: Vec<StructureData>,
+    /// Per-cell terrain steepness (0 Flat, 1 Gentle, 2 Steep, 3 Cliff) from the
+    /// SOLVED field. Walkability and feature placement gate on this, so a
+    /// mountain pass (Gentle inside Mountains) is traversable and a "flat"
+    /// biome that solved steep is not.
+    pub slope_class: Vec<u8>,
 }
 
 impl GenState {
@@ -385,6 +390,7 @@ impl GenState {
             tag_data: Vec::new(),
             flora: Vec::new(),
             structures: Vec::new(),
+            slope_class: Vec::new(),
         }
     }
 
@@ -440,6 +446,8 @@ pub enum Command {
     PlaceFlora,
     /// Contextual built structures (ruins, docks, walls, wells, …).
     PlaceStructures,
+    /// Per-cell steepness from the solved field (slope class).
+    ClassifySlope,
 }
 
 pub enum Event {
@@ -462,6 +470,7 @@ pub enum Event {
     TagsBuilt(Vec<u32>, Vec<u8>),
     FloraPlaced(Vec<FloraData>),
     StructuresPlaced(Vec<StructureData>),
+    SlopeClassified(Vec<u8>),
 }
 
 impl Event {
@@ -492,6 +501,11 @@ impl Event {
             Event::TagsBuilt(_, d) => format!("tags built: {} entries", d.len()),
             Event::FloraPlaced(f) => format!("flora placed: {}", f.len()),
             Event::StructuresPlaced(v) => format!("structures placed: {}", v.len()),
+            Event::SlopeClassified(sc) => {
+                let cliffs = sc.iter().filter(|&&c| c == SLOPE_CLIFF).count();
+                let steep = sc.iter().filter(|&&c| c == SLOPE_STEEP).count();
+                format!("slope classified: {steep} steep, {cliffs} cliff cells")
+            }
         }
     }
 }
@@ -518,6 +532,9 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::PlanRoads => {
             vec![Event::RoadsPlanned(state.terrain().plan_road_paths())]
+        }
+        Command::ClassifySlope => {
+            vec![Event::SlopeClassified(classify_slope(&state.grid, state.terrain()))]
         }
         Command::ClassifyTiles => {
             let terrain = state.terrain();
@@ -549,7 +566,9 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::WaterNormalized(cells)]
         }
         Command::PaintFeatures => {
-            let (painted, roads) = paint_features(&state.grid, state.terrain(), &state.cells);
+            let (painted, roads) = paint_features(
+                &state.grid, state.terrain(), &state.cells, &state.slope_class,
+            );
             vec![Event::FeaturesPainted(painted, roads)]
         }
         Command::ResolveTransitions => {
@@ -577,8 +596,8 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             let mut painted = state.painted.clone();
             let bridges =
                 build_bridges(
-                &state.grid, state.terrain(), &state.cells, &state.tiles,
-                &state.face_region, &mut painted,
+                &state.grid, state.terrain(), &state.cells, &state.slope_class,
+                &state.tiles, &state.face_region, &mut painted,
             );
             vec![Event::BridgesSelected(bridges, painted)]
         }
@@ -598,7 +617,8 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::PlaceStructures => {
             vec![Event::StructuresPlaced(place_structures(
-                &state.grid, state.terrain(), &state.tiles, &state.painted, &state.mesh_tris,
+                &state.grid, state.terrain(), &state.tiles, &state.painted,
+                &state.slope_class, &state.mesh_tris,
             ))]
         }
     }
@@ -655,6 +675,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
         }
         Event::FloraPlaced(f) => state.flora = f,
         Event::StructuresPlaced(v) => state.structures = v,
+        Event::SlopeClassified(sc) => state.slope_class = sc,
     }
     state
 }
@@ -672,14 +693,16 @@ pub fn react(event: &Event) -> Vec<Command> {
         // must not punch holes into an already-painted channel.
         Event::TilesClassified(_) => vec![Command::NormalizeWater],
         Event::WaterNormalized(_) => vec![Command::PaintRivers],
-        Event::RiversPainted(_) => vec![Command::PaintFeatures],
-        Event::FeaturesPainted(..) => vec![Command::ResolveTransitions],
-        // Elevation is solved FIRST, then features CONFORM to the finished
-        // terrain: bridges gate on the real solved slope (a bridge never lands
-        // on steep ground, whatever the tile is labelled). Regions and blends
-        // follow so they see the final bridge footprints.
+        Event::RiversPainted(_) => vec![Command::ResolveTransitions],
+        // Elevation is solved FIRST, then EVERY built feature CONFORMS to the
+        // finished terrain: slope is classified from the solved field, then
+        // roads route around steep ground and bridges/structures gate on it —
+        // a road or bridge never lands on a slope, whatever the tile is
+        // labelled. Regions/blends follow so they see the final footprints.
         Event::TransitionsResolved(_) => vec![Command::SolveElevation],
-        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::BuildRegions],
+        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::ClassifySlope],
+        Event::SlopeClassified(_) => vec![Command::PaintFeatures],
+        Event::FeaturesPainted(..) => vec![Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
         Event::BridgesSelected(..) => vec![Command::MarkBlends],
         Event::BlendsMarked(_) => vec![Command::BuildMesh],
@@ -1108,7 +1131,55 @@ fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
 /// discrete 60° steps spaced apart (the lattice dictates the turning radius).
 /// Water cells are impassable — roads route around lakes on the lattice.
 /// Returns the chain including both endpoints, or empty if unreachable.
-fn lattice_path(grid: &Grid, cells: &[Terrain], from: usize, to: usize) -> Vec<usize> {
+/// Slope-class thresholds (rise/run ≈ tan angle) on the solved field.
+const SLOPE_GENTLE_MAX: f32 = 0.18; // ~10°: flat/gentle boundary
+const SLOPE_STEEP_MAX: f32 = 0.45;  // ~24°: gentle/steep (walkable) boundary
+const SLOPE_CLIFF_MAX: f32 = 0.90;  // ~42°: steep/cliff (impassable) boundary
+
+/// Per-cell steepness of the SOLVED surface — the micro landform layer.
+/// Measured at CELL scale (max rise/run to an edge-neighbor over the real
+/// ground distance), not at a sub-metre probe, so it reflects terrain the
+/// player traverses rather than interpolation noise. Passes (gentle cells in
+/// mountains) and escarpments (cliff cells) fall out of it automatically.
+fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
+    let alt: Vec<f32> = (0..grid.nv)
+        .map(|vi| terrain.altitude(grid.vert_pos(vi)))
+        .collect();
+    (0..grid.nv)
+        .map(|vi| {
+            let a = grid.verts[vi];
+            let mut worst = 0.0f32;
+            for &nb in &grid.vert_adj[vi] {
+                let nb = nb as usize;
+                let dist = a.distance(grid.verts[nb]) * crate::sphere::PLANET_RADIUS;
+                if dist > 1.0 {
+                    worst = worst.max((alt[vi] - alt[nb]).abs() / dist);
+                }
+            }
+
+            if worst < SLOPE_GENTLE_MAX {
+                SLOPE_FLAT
+            } else if worst < SLOPE_STEEP_MAX {
+                SLOPE_GENTLE
+            } else if worst < SLOPE_CLIFF_MAX {
+                SLOPE_STEEP
+            } else {
+                SLOPE_CLIFF
+            }
+        })
+        .collect()
+}
+
+/// Route on the cell lattice, refusing `blocked` cells and paying `extra` per
+/// cell entered (so roads can be steered toward gentle ground without being
+/// walled off it).
+fn lattice_path(
+    grid: &Grid,
+    blocked: impl Fn(usize) -> bool,
+    extra: impl Fn(usize) -> u64,
+    from: usize,
+    to: usize,
+) -> Vec<usize> {
     use std::cmp::Reverse;
     use std::collections::BinaryHeap;
     if from == to {
@@ -1144,11 +1215,11 @@ fn lattice_path(grid: &Grid, cells: &[Terrain], from: usize, to: usize) -> Vec<u
         let pd = (slot < 6).then(|| dir(grid.vert_adj[vi][slot] as usize, vi));
         for &nb in &grid.vert_adj[vi] {
             let nb = nb as usize;
-            if cells[nb].is_water() && nb != to {
+            if blocked(nb) && nb != to {
                 continue;
             }
             let d = dir(vi, nb);
-            let ng = g + STEP + pd.map_or(0, |pd| turn_cost(pd, d));
+            let ng = g + STEP + extra(nb) + pd.map_or(0, |pd| turn_cost(pd, d));
             let nslot = grid.vert_adj[nb].iter().position(|&x| x as usize == vi).unwrap();
             if best.get(&(nb, nslot)).is_none_or(|&b| ng < b) {
                 best.insert((nb, nslot), ng);
@@ -1201,23 +1272,35 @@ fn paint_features(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
+    slope_class: &[u8],
 ) -> (Painted, Vec<Vec<SpherePos>>) {
     let mut painted = Painted::empty(grid.nv);
     let mut kept: Vec<Vec<SpherePos>> = Vec::new();
+    // Roads route on WALKABLE ground: they follow valleys and mountain passes
+    // and refuse water and steep slopes (conform, don't carve). A leg that has
+    // no gentle dry route is dropped — that gap wants a bridge.
+    // Roads may not cross water or a cliff, and are steered strongly toward
+    // gentle ground (steep cells cost extra), so they follow valleys and
+    // passes but can still climb a slope when they must.
+    let blocked = |vi: usize| cells[vi].is_water() || slope_class[vi] == SLOPE_CLIFF;
+    let extra = |vi: usize| match slope_class[vi] {
+        SLOPE_FLAT => 0,
+        SLOPE_GENTLE => 400,
+        _ => 4000, // steep
+    };
     'paths: for path in &terrain.road_paths {
-        // Waypoints → cells, then lattice-aligned legs between them.
         let mut chain: Vec<usize> = Vec::new();
         let waypoints: Vec<usize> = path.iter().filter_map(|p| nearest_cell(grid, *p)).collect();
         for leg in waypoints.windows(2) {
-            let seg = lattice_path(grid, cells, leg[0], leg[1]);
+            let seg = lattice_path(grid, blocked, extra, leg[0], leg[1]);
             if seg.is_empty() {
-                continue 'paths; // no dry lattice route — needs a bridge
+                continue 'paths;
             }
             let skip = usize::from(chain.last() == seg.first());
             chain.extend(&seg[skip..]);
         }
         let band = widen_band(grid, &chain);
-        if band.iter().any(|&vi| cells[vi].is_water()) {
+        if band.iter().any(|&vi| cells[vi].is_water() || slope_class[vi] == SLOPE_CLIFF) {
             continue;
         }
         for vi in band {
@@ -1225,10 +1308,12 @@ fn paint_features(
         }
         kept.push(path.clone());
     }
-    // Bridges are painted later, once regions exist to validate their endpoints.
+    // Towns sit on walkable ground within the settlement radius.
     for vi in 0..grid.nv {
         let pos = grid.vert_pos(vi);
-        if terrain.settlement_anchors.iter().any(|a| a.distance(pos) <= TOWN_RADIUS) {
+        if slope_walkable(slope_class[vi])
+            && terrain.settlement_anchors.iter().any(|a| a.distance(pos) <= TOWN_RADIUS)
+        {
             painted.towns.insert(vi);
         }
     }
@@ -1250,10 +1335,11 @@ const BRIDGE_MAX_COUNT: usize = 12;
 /// A land component smaller than this, ringed only by lake water, is an island
 /// in the lake and earns a bridge to the mainland.
 const LAKE_ISLAND_MAX_CELLS: usize = 1500;
-/// A bridge anchor must be this gentle (rise/run ≈ tan angle; 0.25 ≈ 14°) on
-/// the SOLVED field — a walkable spot, even if it sits inside a mountain
-/// landform (a pass).
-const BRIDGE_MAX_ANCHOR_SLOPE: f32 = 0.25;
+/// A bridge FOOTING must be this gentle (footing-scale slope, rise/run) — the
+/// immediate spot the deck grounds on. Measured at footing scale (not cell
+/// scale) because a bank cell is locally steep toward the channel yet has a
+/// flat footing on top.
+const BRIDGE_MAX_FOOTING_SLOPE: f32 = 0.25;
 
 /// Terrain a bridge may land on: gentle, walkable ground — never a mountain,
 /// cliff, snowfield, glacier or volcanic slope.
@@ -1324,6 +1410,7 @@ fn build_bridges(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
+    slope_class: &[u8],
     _face_types: &[Terrain],
     _face_region: &[u32],
     painted: &mut Painted,
@@ -1363,9 +1450,13 @@ fn build_bridges(
     // must be gentle ground (a mountain "pass" qualifies, a steep forested
     // slope does not — whatever the tile is labelled), with no marine/steep
     // tile in its ring.
+    // Footing gentle (the spot the deck grounds on — a bank top can be flat
+    // even though the cell is steep toward the channel) and no marine/steep
+    // tile in the ring. slope_class is unused here (bridges use footing scale).
+    let _ = slope_class;
     let good_anchor = |vi: usize| {
         bridge_walkable(cells[vi])
-            && terrain.slope(grid.vert_pos(vi)) < BRIDGE_MAX_ANCHOR_SLOPE
+            && terrain.slope(grid.vert_pos(vi)) < BRIDGE_MAX_FOOTING_SLOPE
             && grid.vert_adj[vi].iter().all(|&nb| !forbidden(cells[nb as usize]))
     };
 
@@ -2272,6 +2363,7 @@ fn place_structures(
     terrain: &TerrainGen,
     tiles: &[Terrain],
     painted: &Painted,
+    slope_class: &[u8],
     mesh_tris: &[[[f32; 3]; 3]],
 ) -> Vec<StructureData> {
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ STRUCT_RNG_SALT);
@@ -2318,8 +2410,12 @@ fn place_structures(
             yaw: rng.f32() * std::f32::consts::TAU,
         });
     };
+    // A structure needs buildable ground: skip any face with a steep/cliff
+    // corner (watchtowers on a ridge are the exception — handled below).
+    let buildable = |fi: usize| grid.face_verts[fi].iter()
+        .all(|&vi| slope_walkable(slope_class[vi as usize]));
     for fi in 0..grid.n {
-        if tiles[fi].is_water() {
+        if tiles[fi].is_water() || !buildable(fi) {
             continue;
         }
         // Town interior: a well or a campfire in a clearing.
@@ -3376,6 +3472,7 @@ mod tests {
         assert!(a.flora.iter().zip(&b.flora).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
         assert_eq!(a.structures.len(), b.structures.len());
         assert!(a.structures.iter().zip(&b.structures).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
+        assert_eq!(a.slope_class, b.slope_class);
     }
 
     #[test]
