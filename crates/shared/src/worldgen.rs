@@ -593,8 +593,8 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::SolveElevation => {
             let (field, iters, residual) = solve_elevation(
-                &state.grid, state.terrain(), &state.cells, &state.tiles, &state.painted,
-                &state.blends,
+                &state.grid, state.terrain(), &state.cells, &state.landform, &state.tiles,
+                &state.painted, &state.blends,
             );
             vec![Event::ElevationSolved { field, iters, residual }]
         }
@@ -2671,6 +2671,45 @@ fn bank_water(t: Terrain) -> &'static [Terrain] {
     }
 }
 
+/// A cover biome whose ELEVATION comes from its landform, not itself (a snowy
+/// lowland stays low; snow doesn't imply a mountain). Water, shore bands and
+/// rivers keep their own ranges — they aren't landforms.
+fn is_cover(t: Terrain) -> bool {
+    use Terrain::*;
+    matches!(
+        t,
+        Desert | Plains | Forest | Tundra | Savanna | Swamp | Jungle
+            | Mountain | Snow | Volcanic | Glacier
+    )
+}
+
+/// Elevation range a LANDFORM's ground may occupy — the base layer that drives
+/// height (cover only colors it). Bands overlap so adjacent landforms
+/// (ordered lowland→hills→mountains) meet without an impossible jump.
+fn landform_range(lf: u8) -> (f32, f32) {
+    match lf {
+        LANDFORM_VALLEY => (0.0, 0.16),
+        LANDFORM_LOWLAND => (0.02, 0.20),
+        LANDFORM_HILLS => (0.14, 0.45),
+        LANDFORM_MOUNTAINS => (0.40, 1.0),
+        LANDFORM_PLATEAU => (0.36, 0.74),
+        _ => (0.02, 0.50),
+    }
+}
+
+/// How steep a land edge may be, from the steeper of the two landforms:
+/// lowlands are gentle, mountains steep, hills between.
+fn landform_edge_cap(lfa: u8, lfb: u8) -> f32 {
+    let one = |lf: u8| -> f32 { match lf {
+        LANDFORM_VALLEY | LANDFORM_LOWLAND => 0.04,
+        LANDFORM_HILLS => 0.14,
+        LANDFORM_PLATEAU => 0.20,
+        LANDFORM_MOUNTAINS => 0.40,
+        _ => 0.10,
+    } };
+    one(lfa).max(one(lfb))
+}
+
 fn elev_range(t: Terrain) -> (f32, f32) {
     use Terrain::*;
     // Ranges of kinds that may sit next to each other must overlap (or lie
@@ -2786,10 +2825,36 @@ fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terr
         .collect()
 }
 
+/// Per-solver-vertex landform (bit-exact cell subset, like owner_cells).
+fn owner_landform(grid: &Grid, terrain: &TerrainGen, landform: &[u8]) -> Vec<u8> {
+    let index: BTreeMap<[u32; 3], u32> = grid.verts.iter().enumerate()
+        .map(|(i, v)| ([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()], i as u32))
+        .collect();
+    (0..terrain.vert_count())
+        .map(|vi| {
+            let d = terrain.vert_dir(vi);
+            let key = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
+            match index.get(&key) {
+                Some(&ci) => landform[ci as usize],
+                None => grid.planet.face_at(d)
+                    .map(|fi| {
+                        let best = grid.face_verts[fi].iter().copied()
+                            .max_by(|&a, &b| grid.verts[a as usize].dot(d)
+                                .partial_cmp(&grid.verts[b as usize].dot(d)).unwrap())
+                            .unwrap();
+                        landform[best as usize]
+                    })
+                    .unwrap_or(LANDFORM_LOWLAND),
+            }
+        })
+        .collect()
+}
+
 fn solve_elevation(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
+    landform: &[u8],
     tiles: &[Terrain],
     painted: &Painted,
     blends: &[(u32, u8, u8)],
@@ -2805,6 +2870,7 @@ fn solve_elevation(
     // constraint set is self-consistent by construction. Transitions between
     // kinds are shaped by the edge caps, not by range intersections.
     let owner: Vec<Terrain> = owner_cells(grid, terrain, cells);
+    let owner_lf: Vec<u8> = owner_landform(grid, terrain, landform);
     let _ = tiles;
     let owner_face: Vec<Option<usize>> = (0..nv)
         .map(|vi| grid.planet.face_at(terrain.vert_dir(vi)))
@@ -2815,15 +2881,20 @@ fn solve_elevation(
     for vi in 0..nv {
         // Blend faces are the altitude ramp between two kinds: their vertices
         // get the HULL of both ranges so the solver can transition through.
-        let (rlo, rhi) = match owner_face[vi].and_then(|fi| blend_of.get(&(fi as u32))) {
-            // Feature blends are visual only — features follow the ground.
-            Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owner[vi]),
-            Some(&(a, b)) => {
-                let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
-                let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
-                (alo.min(blo), ahi.max(bhi))
+        // Land COVER takes its landform's range (height from the massif, not
+        // the biome); water/shore/river keep their own range and blend hull.
+        let (rlo, rhi) = if is_cover(owner[vi]) {
+            landform_range(owner_lf[vi])
+        } else {
+            match owner_face[vi].and_then(|fi| blend_of.get(&(fi as u32))) {
+                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owner[vi]),
+                Some(&(a, b)) => {
+                    let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
+                    let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
+                    (alo.min(blo), ahi.max(bhi))
+                }
+                None => elev_range(owner[vi]),
             }
-            None => elev_range(owner[vi]),
         };
         lo[vi] = rlo;
         hi[vi] = rhi;
@@ -2938,7 +3009,11 @@ fn solve_elevation(
                 if b <= a {
                     continue;
                 }
-                let mut cap = max_gradient(vkind[a], vkind[b]);
+                let mut cap = if is_cover(vkind[a]) && is_cover(vkind[b]) {
+                    landform_edge_cap(owner_lf[a], owner_lf[b])
+                } else {
+                    max_gradient(vkind[a], vkind[b])
+                };
                 if is_road_vert[a] && is_road_vert[b] {
                     cap = cap.min(ROAD_EDGE_GRADIENT);
                 }
@@ -3154,20 +3229,26 @@ mod tests {
         // Ownership is per-CELL (each solver vert is a grid cell), exactly as
         // the solver assigns ranges — the face type may differ at boundaries.
         let owners = owner_cells(&state.grid, terrain, &state.cells);
+        let owners_lf = owner_landform(&state.grid, terrain, &state.landform);
         for vi in 0..terrain.vert_count() {
             if canyon[vi] {
                 continue;
             }
             let Some(fi) = state.grid.planet.face_at(terrain.vert_dir(vi)) else { continue };
-            // Blend faces ramp between both kinds' ranges (mirror the solver).
-            let (rlo, rhi) = match blend_of.get(&(fi as u32)) {
-                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owners[vi]),
-                Some(&(a, b)) => {
-                    let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
-                    let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
-                    (alo.min(blo), ahi.max(bhi))
+            // Land cover takes its landform's range (mirror the solver);
+            // water/shore/river keep their own range and blend hull.
+            let (rlo, rhi) = if is_cover(owners[vi]) {
+                landform_range(owners_lf[vi])
+            } else {
+                match blend_of.get(&(fi as u32)) {
+                    Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owners[vi]),
+                    Some(&(a, b)) => {
+                        let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
+                        let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
+                        (alo.min(blo), ahi.max(bhi))
+                    }
+                    None => elev_range(owners[vi]),
                 }
-                None => elev_range(owners[vi]),
             };
             assert!(
                 e[vi] >= rlo - 1e-4 && e[vi] <= rhi + 1e-4,
