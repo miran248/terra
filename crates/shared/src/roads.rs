@@ -57,13 +57,6 @@ pub fn build_bridge_deck(
     if points.len() < 2 {
         return tris;
     }
-    // Ground height at the two grounded ends; the deck is a SMOOTH CONVEX arch
-    // between them (a straight ground line + a parabola), sampling terrain only
-    // at the ends — so no per-face steps, no stair-stepped planks, and the top
-    // is convex by construction.
-    let sr = ground.facet_radius(points[0].0, PLANET_RADIUS);
-    let er = ground.facet_radius(points[points.len() - 1].0, PLANET_RADIUS);
-
     // Resample the centreline UNIFORMLY by arc length: perfectly even rings
     // (no per-segment leftover, no tiny planks at joints), so the planks line
     // up and the arch reads smooth.
@@ -94,19 +87,9 @@ pub fn build_bridge_deck(
     let thickness = 1.4; // deck slab depth (a solid, not a ribbon)
     let embed = 1.5;     // sink the grounded ends into the terrain — no float
 
-    // Per-ring frame: top-left/right and bottom-left/right world points. The
-    // middle is the pure smooth arch; near the two ends each CORNER is grounded
-    // independently into its own local terrain (so an entrance never clips
-    // above sloped ground), fading out by ~18% in so no stairs reappear.
-    let mut rings: Vec<[Vec3; 4]> = Vec::with_capacity(n);
-    for i in 0..n {
-        let t = i as f32 / (n - 1) as f32;
+    // Per-ring lateral frame (fwd → left offset), reused for the end grounding.
+    let ring_left = |i: usize, r: f32| -> Vec3 {
         let up = dirs[i].normalize();
-        let ground_r = sr + (er - sr) * t;
-        let arch = clearance * (4.0 * t * (1.0 - t));
-        let top_r = ground_r + arch;
-        // Entrance factor: 1 at the very ends, 0 by ~18% in.
-        let ef = ((0.18 - (0.5 - (t - 0.5).abs()).min(0.18)) / 0.18).clamp(0.0, 1.0);
         let fwd = if i == 0 {
             (dirs[1] - dirs[0]).normalize()
         } else if i == n - 1 {
@@ -115,17 +98,31 @@ pub fn build_bridge_deck(
             ((dirs[i] - dirs[i - 1]).normalize() + (dirs[i + 1] - dirs[i]).normalize())
                 .normalize_or((dirs[1] - dirs[0]).normalize())
         };
-        let left = fwd.cross(up).normalize_or(Vec3::X) * (half_width / top_r);
+        fwd.cross(up).normalize_or(Vec3::X) * (half_width / r)
+    };
+    // The deck is ONE smooth convex arch: the two end radii are grounded just
+    // under the LOWEST terrain across each end ring (so the flat ends never
+    // clip on sloped ground), and a single parabola arches between them. No
+    // separate entrance ramp — one curve end to end.
+    let end_ground = |i: usize| -> f32 {
+        let l = ring_left(i, PLANET_RADIUS);
+        let ld = (dirs[i] + l).normalize();
+        let rd = (dirs[i] - l).normalize();
+        ground.facet_radius(ld, PLANET_RADIUS)
+            .min(ground.facet_radius(rd, PLANET_RADIUS))
+            .min(ground.facet_radius(dirs[i], PLANET_RADIUS))
+            - embed
+    };
+    let sr = end_ground(0);
+    let er = end_ground(n - 1);
+
+    let mut rings: Vec<[Vec3; 4]> = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = i as f32 / (n - 1) as f32;
+        let r = sr + (er - sr) * t + clearance * (4.0 * t * (1.0 - t));
+        let left = ring_left(i, r);
         let ld = (dirs[i] + left).normalize();
         let rd = (dirs[i] - left).normalize();
-        // Single radius per ring → planks stay LEVEL. Near the ends, drop the
-        // whole ring to just under the LOWEST terrain across its width, so no
-        // corner clips above sloped ground; the arch over water is untouched.
-        let lt = ground.facet_radius(ld, PLANET_RADIUS)
-            .min(ground.facet_radius(rd, PLANET_RADIUS))
-            .min(ground.facet_radius(dirs[i], PLANET_RADIUS));
-        let grounded = lt - embed;
-        let r = top_r - ef * (top_r - grounded).max(0.0);
         rings.push([ld * r, rd * r, ld * (r - thickness), rd * (r - thickness)]);
     }
 
