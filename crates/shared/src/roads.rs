@@ -116,19 +116,17 @@ pub fn build_bridge_deck(
                 .normalize_or((dirs[1] - dirs[0]).normalize())
         };
         let left = fwd.cross(up).normalize_or(Vec3::X) * (half_width / top_r);
-        // Radius for one corner: the arch, pulled DOWN into the local terrain
-        // near the ends (never up — the arch over water is untouched).
-        let corner = |cdir: Vec3| -> Vec3 {
-            let lt = ground.facet_radius(cdir, PLANET_RADIUS);
-            let grounded = lt - embed;
-            let r = top_r - ef * (top_r - grounded).max(0.0);
-            cdir * r
-        };
         let ld = (dirs[i] + left).normalize();
         let rd = (dirs[i] - left).normalize();
-        let tl = corner(ld);
-        let tr_ = corner(rd);
-        rings.push([tl, tr_, ld * (tl.length() - thickness), rd * (tr_.length() - thickness)]);
+        // Single radius per ring → planks stay LEVEL. Near the ends, drop the
+        // whole ring to just under the LOWEST terrain across its width, so no
+        // corner clips above sloped ground; the arch over water is untouched.
+        let lt = ground.facet_radius(ld, PLANET_RADIUS)
+            .min(ground.facet_radius(rd, PLANET_RADIUS))
+            .min(ground.facet_radius(dirs[i], PLANET_RADIUS));
+        let grounded = lt - embed;
+        let r = top_r - ef * (top_r - grounded).max(0.0);
+        rings.push([ld * r, rd * r, ld * (r - thickness), rd * (r - thickness)]);
     }
 
     let mut quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| {

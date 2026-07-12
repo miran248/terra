@@ -458,7 +458,7 @@ fn setup_map(
         }
         let colors = vec![[bridge_color.to_f32_array(); 3]; deck.len()];
         commands.spawn((
-            Mesh3d(meshes.add(build_visual_mesh(&deck, &colors))),
+            Mesh3d(meshes.add(build_smooth_mesh(&deck, &colors))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 perceptual_roughness: 0.4,
@@ -625,6 +625,43 @@ fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(positions));
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, VertexAttributeValues::Float32x3(normals_out));
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(colors_out));
+    mesh
+}
+
+/// Like build_visual_mesh but with ANGLE-THRESHOLDED smooth normals: a vertex
+/// averages the normals of the faces sharing its position that lie within
+/// ~40° of each other. The gently curving arch top smooths away its planks,
+/// while the slab's hard edges (top↔side, ends) stay sharp.
+fn build_smooth_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
+    let key = |v: [f32; 3]| [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()];
+    let face_n: Vec<Vec3> = tris.iter().map(|t| {
+        let (a, b, c) = (Vec3::from_array(t[0]), Vec3::from_array(t[1]), Vec3::from_array(t[2]));
+        (b - a).cross(c - a).normalize_or(Vec3::Y)
+    }).collect();
+    let mut at: std::collections::HashMap<[u32; 3], Vec<usize>> = std::collections::HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        for v in t { at.entry(key(*v)).or_default().push(fi); }
+    }
+    let cos_thresh = 40.0f32.to_radians().cos();
+    let mut positions = Vec::with_capacity(tris.len() * 3);
+    let mut normals = Vec::with_capacity(tris.len() * 3);
+    let mut cols = Vec::with_capacity(tris.len() * 3);
+    for (fi, (t, color)) in tris.iter().zip(colors.iter()).enumerate() {
+        let fn_ = face_n[fi];
+        for (k, v) in t.iter().enumerate() {
+            let mut acc = Vec3::ZERO;
+            for &nb in &at[&key(*v)] {
+                if face_n[nb].dot(fn_) >= cos_thresh { acc += face_n[nb]; }
+            }
+            positions.push(*v);
+            normals.push(acc.normalize_or(fn_).to_array());
+            cols.push(color[k]);
+        }
+    }
+    let mut mesh = Mesh::new(bevy::render::mesh::PrimitiveTopology::TriangleList, Default::default());
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, VertexAttributeValues::Float32x3(positions));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, VertexAttributeValues::Float32x3(normals));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, VertexAttributeValues::Float32x4(cols));
     mesh
 }
 
