@@ -1447,6 +1447,10 @@ const BRIDGE_MAX_COUNT: usize = 12;
 /// A land component smaller than this, ringed only by lake water, is an island
 /// in the lake and earns a bridge to the mainland.
 const LAKE_ISLAND_MAX_CELLS: usize = 1500;
+/// An ocean island (small land ringed only by ocean) is bridged to the nearest
+/// other landmass, but only across a SHORT gap (islands are seeded near land).
+const OCEAN_ISLAND_MAX_CELLS: usize = 3000;
+const OCEAN_BRIDGE_MAX_SPAN: f32 = 700.0;
 /// A bridge FOOTING must be this gentle (footing-scale slope, rise/run) — the
 /// immediate spot the deck grounds on. Measured at footing scale (not cell
 /// scale) because a bank cell is locally steep toward the channel yet has a
@@ -1476,6 +1480,7 @@ fn cross_band(
     first: usize,
     max: usize,
     band: impl Fn(Terrain) -> bool,
+    is_end: impl Fn(Terrain) -> bool,
 ) -> Option<usize> {
     let tangent = |from: Vec3, step: Vec3| {
         let s = step - from * step.dot(from);
@@ -1487,7 +1492,7 @@ fn cross_band(
     }
     let (mut prev, mut cur) = (land, first);
     for _ in 0..max {
-        if bridge_walkable(cells[cur]) {
+        if is_end(cells[cur]) {
             return Some(cur);
         }
         // Only cross the intended band; anything else (open ocean, a mountain
@@ -1576,11 +1581,11 @@ fn build_bridges(
     };
 
     // Commit a bridge between two bank cells if it clears the spacing rule.
-    let mut commit = |a: usize, b: usize, spans: &mut Vec<Vec<SpherePos>>,
+    let mut commit = |a: usize, b: usize, max_span: f32, spans: &mut Vec<Vec<SpherePos>>,
                       mids: &mut Vec<SpherePos>, painted: &mut Painted| -> bool {
         let (pa, pb) = (grid.vert_pos(a), grid.vert_pos(b));
         let d = pa.distance(pb);
-        if d < 1.0 || d > BRIDGE_MAX_SPAN {
+        if d < 1.0 || d > max_span {
             return false;
         }
         let mid = SpherePos::new((pa.0 + pb.0).normalize());
@@ -1630,14 +1635,43 @@ fn build_bridges(
         else {
             continue;
         };
-        if let Some(l2) = cross_band(grid, cells, l1, entry as usize, 9, river_band) {
+        if let Some(l2) = cross_band(grid, cells, l1, entry as usize, 9, river_band, bridge_walkable) {
             if l2 == l1 {
                 continue;
             }
             let mid = (grid.verts[l1] + grid.verts[l2]) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
-                commit(g1, g2, &mut spans, &mut mids, painted);
+                commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
+            }
+        }
+    }
+
+    // (1b) Swamp crossings (boardwalks): a walkable cell beside a swamp, across
+    // the swamp band to dry walkable ground on the far side — same rules, with
+    // the swamp itself as the crossable band.
+    let swamp_band = |t: Terrain| t == Terrain::Swamp;
+    let dry_end = |t: Terrain| bridge_walkable(t) && t != Terrain::Swamp;
+    for l1 in 0..grid.nv {
+        if spans.len() >= BRIDGE_MAX_COUNT {
+            break;
+        }
+        if !dry_end(cells[l1]) {
+            continue;
+        }
+        let Some(&entry) = grid.vert_adj[l1].iter()
+            .find(|&&nb| cells[nb as usize] == Terrain::Swamp)
+        else {
+            continue;
+        };
+        if let Some(l2) = cross_band(grid, cells, l1, entry as usize, 9, swamp_band, dry_end) {
+            if l2 == l1 {
+                continue;
+            }
+            let mid = (grid.verts[l1] + grid.verts[l2]) * 0.5;
+            let (g1, g2) = (inland(l1, mid), inland(l2, mid));
+            if good_anchor(g1) && good_anchor(g2) {
+                commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
             }
         }
     }
@@ -1667,53 +1701,71 @@ fn build_bridges(
         }
         sizes.push(n);
     }
-    // Which components are lake islands: small, and every adjacent water cell
-    // is Lake (no ocean, no river).
+    // Per-component water adjacency: is every water cell it touches Lake?
+    // Ocean? (an island ringed by exactly one body is bridgeable to the
+    // mainland). Rivers touching don't disqualify — they cross separately.
     let n_comp = sizes.len();
-    let mut has_lake = vec![false; n_comp];
+    let mut touch_lake = vec![false; n_comp];
+    let mut touch_ocean = vec![false; n_comp];
     let mut only_lake = vec![true; n_comp];
+    let mut only_ocean = vec![true; n_comp];
     for vi in 0..grid.nv {
         let Some(&id) = (cells[vi].is_land()).then(|| &comp[vi]) else { continue };
+        let id = id as usize;
         for &nb in &grid.vert_adj[vi] {
             match cells[nb as usize] {
-                Terrain::Lake => has_lake[id as usize] = true,
-                t if t.is_water() => only_lake[id as usize] = false,
+                Terrain::Lake => { touch_lake[id] = true; only_ocean[id] = false; }
+                Terrain::Ocean => { touch_ocean[id] = true; only_lake[id] = false; }
+                Terrain::River => {}
+                t if t.is_water() => { only_lake[id] = false; only_ocean[id] = false; }
                 _ => {}
             }
         }
     }
-    for id in 0..n_comp {
-        if spans.len() >= BRIDGE_MAX_COUNT {
-            break;
-        }
-        if !(has_lake[id] && only_lake[id] && sizes[id] <= LAKE_ISLAND_MAX_CELLS) {
-            continue;
-        }
-        // Island shore cells (this component, beside lake) and mainland shore
-        // cells (a different component, beside lake). Nearest pair.
-        let lake_shore = |vi: usize| bridge_walkable(cells[vi])
-            && grid.vert_adj[vi].iter().any(|&nb| cells[nb as usize] == Terrain::LakeShore);
-        let island_shore: Vec<usize> = (0..grid.nv)
-            .filter(|&vi| comp[vi] == id as u32 && lake_shore(vi))
-            .collect();
-        let mut best: Option<(f32, usize, usize)> = None;
-        for &a in &island_shore {
-            let pa = grid.vert_pos(a);
-            for vi in 0..grid.nv {
-                if comp[vi] == id as u32 || comp[vi] == u32::MAX || !lake_shore(vi) {
-                    continue;
-                }
-                let dd = pa.distance(grid.vert_pos(vi));
-                if best.is_none_or(|(bd, _, _)| dd < bd) {
-                    best = Some((dd, a, vi));
+    // (2) Islands: a small land component ringed by a single body is bridged to
+    // the nearest OTHER landmass across it — lakes (short), then ocean islands
+    // to the nearest continent (longer gap, islands are seeded near land).
+    let island_kinds: [(Terrain, usize, f32); 2] = [
+        (Terrain::LakeShore, LAKE_ISLAND_MAX_CELLS, BRIDGE_MAX_SPAN),
+        (Terrain::Beach, OCEAN_ISLAND_MAX_CELLS, OCEAN_BRIDGE_MAX_SPAN),
+    ];
+    for (which, (shore_kind, max_cells, max_span)) in island_kinds.into_iter().enumerate() {
+        let ringed = |id: usize| if which == 0 {
+            touch_lake[id] && only_lake[id]
+        } else {
+            touch_ocean[id] && only_ocean[id]
+        };
+        for id in 0..n_comp {
+            if spans.len() >= BRIDGE_MAX_COUNT {
+                break;
+            }
+            if !(ringed(id) && sizes[id] <= max_cells) {
+                continue;
+            }
+            let shore = |vi: usize| bridge_walkable(cells[vi])
+                && grid.vert_adj[vi].iter().any(|&nb| cells[nb as usize] == shore_kind);
+            let island_shore: Vec<usize> = (0..grid.nv)
+                .filter(|&vi| comp[vi] == id as u32 && shore(vi))
+                .collect();
+            let mut best: Option<(f32, usize, usize)> = None;
+            for &a in &island_shore {
+                let pa = grid.vert_pos(a);
+                for vi in 0..grid.nv {
+                    if comp[vi] == id as u32 || comp[vi] == u32::MAX || !shore(vi) {
+                        continue;
+                    }
+                    let dd = pa.distance(grid.vert_pos(vi));
+                    if best.is_none_or(|(bd, _, _)| dd < bd) {
+                        best = Some((dd, a, vi));
+                    }
                 }
             }
-        }
-        if let Some((_, a, b)) = best {
-            let mid = (grid.verts[a] + grid.verts[b]) * 0.5;
-            let (g1, g2) = (inland(a, mid), inland(b, mid));
-            if good_anchor(g1) && good_anchor(g2) {
-                commit(g1, g2, &mut spans, &mut mids, painted);
+            if let Some((_, a, b)) = best {
+                let mid = (grid.verts[a] + grid.verts[b]) * 0.5;
+                let (g1, g2) = (inland(a, mid), inland(b, mid));
+                if good_anchor(g1) && good_anchor(g2) {
+                    commit(g1, g2, max_span, &mut spans, &mut mids, painted);
+                }
             }
         }
     }
