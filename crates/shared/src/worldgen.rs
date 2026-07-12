@@ -1615,9 +1615,12 @@ fn build_bridges(
     // Forbidden around an anchor: steep ground and the open sea/coast. The
     // crossing band itself (river/lake and their shores) is fine — that is what
     // the bridge spans.
+    // Forbidden around an anchor: mountains and the open sea/beach. Cliffs are
+    // now ALLOWED — a bridge may start on a clifftop (canyon rim), as long as
+    // the footing itself is gentle enough (checked below).
     let forbidden = |t: Terrain| matches!(
         t,
-        Terrain::Mountain | Terrain::Snow | Terrain::Cliff | Terrain::Glacier
+        Terrain::Mountain | Terrain::Snow | Terrain::Glacier
             | Terrain::Volcanic | Terrain::Ocean | Terrain::Beach
     );
     // The field is SOLVED by now, so gate on the REAL slope: a deck anchor

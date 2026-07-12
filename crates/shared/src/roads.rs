@@ -64,26 +64,27 @@ pub fn build_bridge_deck(
     let sr = ground.facet_radius(points[0].0, PLANET_RADIUS);
     let er = ground.facet_radius(points[points.len() - 1].0, PLANET_RADIUS);
 
-    // Resample the centreline at a fixed spacing for even planks.
-    let spacing = 2.0;
-    let mut dirs = Vec::new();
-    let mut pos = 0.0f32;
-    for seg in points.windows(2) {
-        let sl = seg[0].distance(seg[1]);
-        while pos <= sl + 1e-6 {
-            dirs.push(slerp(seg[0], seg[1], (pos / sl).min(1.0)).0);
-            if pos >= sl { break; }
-            pos = (pos + spacing).min(sl);
-        }
-        pos -= sl;
-    }
-    let last = points.last().unwrap().0;
-    if dirs.last().unwrap().dot(last).abs() < 0.999 {
-        dirs.push(last);
-    }
-    let n = dirs.len();
-    if n < 2 {
+    // Resample the centreline UNIFORMLY by arc length: perfectly even rings
+    // (no per-segment leftover, no tiny planks at joints), so the planks line
+    // up and the arch reads smooth.
+    let seglen: Vec<f32> = points.windows(2).map(|w| w[0].distance(w[1])).collect();
+    let total: f32 = seglen.iter().sum();
+    if total < 1e-3 {
         return tris;
+    }
+    let spacing = 1.5;
+    let n = ((total / spacing).round() as usize).max(2) + 1;
+    let mut dirs = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut want = total * i as f32 / (n - 1) as f32;
+        // Find the segment holding `want` and interpolate within it.
+        let mut si = 0;
+        while si + 1 < points.len() && want > seglen[si] {
+            want -= seglen[si];
+            si += 1;
+        }
+        let f = if seglen[si] > 1e-6 { (want / seglen[si]).clamp(0.0, 1.0) } else { 0.0 };
+        dirs.push(slerp(points[si], points[si + 1], f).0);
     }
 
     let span_len = points[0].distance(*points.last().unwrap());
@@ -100,7 +101,9 @@ pub fn build_bridge_deck(
         let arch = clearance * (4.0 * t * (1.0 - t));
         // End rings dip below the ground line so the deck grounds INTO the
         // terrain rather than floating over a slope.
-        let end_dip = embed * (1.0 - (4.0 * t * (1.0 - t))).powi(4);
+        // Smooth cosine dip only in the outer ~15% at each end.
+        let edge = (1.0 - (2.0 * t - 1.0).abs()).min(0.15) / 0.15; // 0 at ends, 1 inward
+        let end_dip = embed * (1.0 - edge) * (1.0 - edge);
         let top_r = ground_r + arch - end_dip;
         let fwd = if i == 0 {
             (dirs[1] - dirs[0]).normalize()

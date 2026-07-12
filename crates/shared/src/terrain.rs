@@ -6,8 +6,8 @@ use crate::planet::{unit_icosphere_tris, PlanetMesh};
 use crate::sphere::{slerp, SpherePos, PLANET_RADIUS};
 use crate::zones::{ZoneConfig, ZoneKind, Zones, COARSE_SUB};
 
-pub const MAX_MOUNTAIN: f32 = 500.0;
-pub const MAX_DEPTH: f32 = 500.0;
+pub const MAX_MOUNTAIN: f32 = 200.0;
+pub const MAX_DEPTH: f32 = 200.0;
 
 pub const HABITABLE_MIN_ALT: f32 = 1.0;
 pub const HABITABLE_MAX_ALT: f32 = 150.0;
