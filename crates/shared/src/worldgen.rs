@@ -909,19 +909,8 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
         if !cells[start].is_water() || cells[start] == Terrain::River || visited[start] {
             continue;
         }
-        let mut body = vec![start];
-        let mut q = VecDeque::from([start]);
-        visited[start] = true;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if cells[nb].is_water() && cells[nb] != Terrain::River && !visited[nb] {
-                    visited[nb] = true;
-                    body.push(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
+        let body = flood_cells(grid, start, &mut visited,
+            |nb| cells[nb].is_water() && cells[nb] != Terrain::River);
         // A body is an OCEAN only if it reaches ocean-zone cells AND is large
         // enough to be one: an isolated pocket of ocean-zone faces walled off
         // by land (a single coarse face — hence the tell-tale triangle shape)
@@ -1006,19 +995,7 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
         if cells[start] != Terrain::Lake || visited[start] {
             continue;
         }
-        let mut body = vec![start];
-        let mut q = VecDeque::from([start]);
-        visited[start] = true;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if cells[nb] == Terrain::Lake && !visited[nb] {
-                    visited[nb] = true;
-                    body.push(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
+        let body = flood_cells(grid, start, &mut visited, |nb| cells[nb] == Terrain::Lake);
         if body.len() < size_range(Terrain::Lake).0 {
             for &vi in &body {
                 cells[vi] = fill_kind(cells, vi);
@@ -1196,43 +1173,12 @@ fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
 const MIN_LANDFORM_CELLS: usize = 25;
 
 fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
-        if lf[start] == LANDFORM_WATER || visited[start] {
-            continue;
-        }
-        let kind = lf[start];
-        let mut cluster = vec![start];
-        let mut q = VecDeque::from([start]);
-        visited[start] = true;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if lf[nb] == kind && !visited[nb] {
-                    visited[nb] = true;
-                    cluster.push(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
-        if cluster.len() >= MIN_LANDFORM_CELLS {
-            continue;
-        }
-        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for &vi in &cluster {
-            for &nb in &grid.vert_adj[vi] {
-                let l = lf[nb as usize];
-                if l != LANDFORM_WATER && l != kind {
-                    *counts.entry(l).or_default() += 1;
-                }
-            }
-        }
-        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
-            for vi in cluster {
-                lf[vi] = k;
-            }
-        }
-    }
+    absorb_small_clusters(
+        grid, lf,
+        |l| l != LANDFORM_WATER,
+        |_| MIN_LANDFORM_CELLS,
+        |l| l != LANDFORM_WATER,
+    );
 }
 
 /// Cover per cell: the macro landform sets the base — high ground (mountains,
@@ -1310,17 +1256,15 @@ fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
                 }
             }
 
-            if worst < SLOPE_GENTLE_MAX {
-                SLOPE_FLAT
-            } else if worst < SLOPE_STEEP_MAX {
-                SLOPE_GENTLE
-            } else if worst < SLOPE_CLIFF_MAX {
-                SLOPE_STEEP
-            } else {
-                SLOPE_CLIFF
-            }
+            bucket(worst, &[SLOPE_GENTLE_MAX, SLOPE_STEEP_MAX, SLOPE_CLIFF_MAX])
         })
         .collect()
+}
+
+/// The number of ascending `thresholds` a value reaches — turns a measurement
+/// into an ordered class (flat/gentle/steep/cliff, shallow/deep/abyss).
+fn bucket(value: f32, thresholds: &[f32]) -> u8 {
+    thresholds.iter().filter(|&&t| value >= t).count() as u8
 }
 
 /// Per-water-cell depth class from the solved surface: shore-shallows deepen
@@ -1333,13 +1277,7 @@ fn classify_water_depth(grid: &Grid, cells: &[Terrain], terrain: &TerrainGen) ->
                 return DEPTH_SHALLOW;
             }
             let e = terrain.elevation_at(grid.vert_pos(vi));
-            if e > -0.20 {
-                DEPTH_SHALLOW
-            } else if e > -0.55 {
-                DEPTH_DEEP
-            } else {
-                DEPTH_ABYSS
-            }
+            bucket(-e, &[0.20, 0.55])
         })
         .collect()
 }
@@ -1999,6 +1937,65 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
 /// join their most common neighboring land kind. Transition bands (shore
 /// kinds) are thin by design and exempt; water minimums live in
 /// normalize_water_bodies.
+/// Collect the edge-connected component of cells reachable from `start` for
+/// which `member` holds, marking `visited`. The one BFS behind water bodies,
+/// lakes and speckle clusters.
+fn flood_cells(grid: &Grid, start: usize, visited: &mut [bool], member: impl Fn(usize) -> bool) -> Vec<usize> {
+    let mut out = vec![start];
+    let mut q = VecDeque::from([start]);
+    visited[start] = true;
+    while let Some(cur) = q.pop_front() {
+        for &nb in &grid.vert_adj[cur] {
+            let nb = nb as usize;
+            if !visited[nb] && member(nb) {
+                visited[nb] = true;
+                out.push(nb);
+                q.push_back(nb);
+            }
+        }
+    }
+    out
+}
+
+/// A contiguous cluster of equal values below its minimum size is speckle: it
+/// is absorbed into its most common eligible neighbor value. Generic over the
+/// value type (biome cover, landform, …). `eligible` selects which values
+/// participate, `min_size` gives each value's floor, `absorbable` says which
+/// neighbor values a speckle may merge into.
+fn absorb_small_clusters<T: Copy + Ord>(
+    grid: &Grid,
+    out: &mut [T],
+    eligible: impl Fn(T) -> bool,
+    min_size: impl Fn(T) -> usize,
+    absorbable: impl Fn(T) -> bool,
+) {
+    let mut visited = vec![false; grid.nv];
+    for start in 0..grid.nv {
+        if !eligible(out[start]) || visited[start] {
+            continue;
+        }
+        let kind = out[start];
+        let cluster = flood_cells(grid, start, &mut visited, |nb| out[nb] == kind);
+        if cluster.len() >= min_size(kind) {
+            continue;
+        }
+        let mut counts: BTreeMap<T, usize> = BTreeMap::new();
+        for &vi in &cluster {
+            for &nb in &grid.vert_adj[vi] {
+                let t = out[nb as usize];
+                if t != kind && absorbable(t) {
+                    *counts.entry(t).or_default() += 1;
+                }
+            }
+        }
+        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
+            for vi in cluster {
+                out[vi] = k;
+            }
+        }
+    }
+}
+
 fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
     let plain = |t: Terrain| matches!(
         t,
@@ -2007,43 +2004,7 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
             | Terrain::Swamp | Terrain::Jungle | Terrain::Savanna
             | Terrain::Volcanic | Terrain::Glacier
     );
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
-        if !plain(out[start]) || visited[start] {
-            continue;
-        }
-        let kind = out[start];
-        let mut cluster = vec![start];
-        let mut q = VecDeque::from([start]);
-        visited[start] = true;
-        while let Some(cur) = q.pop_front() {
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if out[nb] == kind && !visited[nb] {
-                    visited[nb] = true;
-                    cluster.push(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
-        if cluster.len() >= size_range(kind).0 {
-            continue;
-        }
-        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for &vi in &cluster {
-            for &nb in &grid.vert_adj[vi] {
-                let t = out[nb as usize];
-                if t.is_land() && t != kind {
-                    *counts.entry(t as u8).or_default() += 1;
-                }
-            }
-        }
-        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
-            for vi in cluster {
-                out[vi] = Terrain::ALL[k as usize];
-            }
-        }
-    }
+    absorb_small_clusters(grid, out, plain, |t| size_range(t).0, |t| t.is_land());
 }
 
 /// The coast band is PROACTIVE: Beach vs Cliff was already decided by the
@@ -2289,6 +2250,28 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 /// and beach, rock in the mountains and on steep ground, dirt on soil, gravel
 /// otherwise. Read from the underlying cover/landform/slope at the corners
 /// (roads are an overlay — the cells still hold the terrain beneath).
+/// Reduce a per-cell u8 to per-face by taking the max over the face's corner
+/// cells (used for slope/depth: a face is as steep/deep as its worst corner).
+pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+    (0..grid.n)
+        .map(|fi| grid.face_verts[fi].iter().map(|&vi| per_cell[vi as usize]).max().unwrap_or(0))
+        .collect()
+}
+
+/// Reduce a per-cell u8 to per-face by majority corner (used for landform: the
+/// massif a face sits in).
+pub fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+    (0..grid.n)
+        .map(|fi| {
+            let mut c: BTreeMap<u8, usize> = BTreeMap::new();
+            for &vi in &grid.face_verts[fi] {
+                *c.entry(per_cell[vi as usize]).or_default() += 1;
+            }
+            c.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k).unwrap_or(0)
+        })
+        .collect()
+}
+
 pub fn face_road_material(
     grid: &Grid,
     cells: &[Terrain],
@@ -2873,7 +2856,11 @@ fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
 /// Solver verts are a bit-exact subset of the grid's cell vertices (each
 /// subdivision keeps its parents), so tile ownership comes straight from the
 /// cell labels — no geometric face lookup, no fallback kind.
-fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terrain> {
+/// Per-solver-vertex value looked up from the per-CELL array: solver verts are
+/// a bit-exact subset of grid cells (each subdivision keeps its parents), so
+/// the map is exact, with a nearest-corner fallback for the (unexpected) miss.
+/// Backs both tile-kind ownership and landform ownership.
+fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default: T) -> Vec<T> {
     let index: BTreeMap<[u32; 3], u32> = grid.verts.iter().enumerate()
         .map(|(i, v)| ([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()], i as u32))
         .collect();
@@ -2882,48 +2869,27 @@ fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terr
             let d = terrain.vert_dir(vi);
             let key = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
             match index.get(&key) {
-                Some(&ci) => cells[ci as usize],
-                // Not bit-identical (should not happen): nearest corner of the
-                // face underneath.
-                None => grid.planet.face_at(d)
-                    .map(|fi| {
-                        let best = grid.face_verts[fi].iter().copied()
-                            .max_by(|&a, &b| {
-                                grid.verts[a as usize].dot(d)
-                                    .partial_cmp(&grid.verts[b as usize].dot(d)).unwrap()
-                            })
-                            .unwrap();
-                        cells[best as usize]
-                    })
-                    .unwrap_or(Terrain::Plains),
-            }
-        })
-        .collect()
-}
-
-/// Per-solver-vertex landform (bit-exact cell subset, like owner_cells).
-fn owner_landform(grid: &Grid, terrain: &TerrainGen, landform: &[u8]) -> Vec<u8> {
-    let index: BTreeMap<[u32; 3], u32> = grid.verts.iter().enumerate()
-        .map(|(i, v)| ([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()], i as u32))
-        .collect();
-    (0..terrain.vert_count())
-        .map(|vi| {
-            let d = terrain.vert_dir(vi);
-            let key = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
-            match index.get(&key) {
-                Some(&ci) => landform[ci as usize],
+                Some(&ci) => per_cell[ci as usize],
                 None => grid.planet.face_at(d)
                     .map(|fi| {
                         let best = grid.face_verts[fi].iter().copied()
                             .max_by(|&a, &b| grid.verts[a as usize].dot(d)
                                 .partial_cmp(&grid.verts[b as usize].dot(d)).unwrap())
                             .unwrap();
-                        landform[best as usize]
+                        per_cell[best as usize]
                     })
-                    .unwrap_or(LANDFORM_LOWLAND),
+                    .unwrap_or(default),
             }
         })
         .collect()
+}
+
+fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terrain> {
+    owner_of(grid, terrain, cells, Terrain::Plains)
+}
+
+fn owner_landform(grid: &Grid, terrain: &TerrainGen, landform: &[u8]) -> Vec<u8> {
+    owner_of(grid, terrain, landform, LANDFORM_LOWLAND)
 }
 
 fn solve_elevation(

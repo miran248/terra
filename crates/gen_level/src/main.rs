@@ -53,20 +53,9 @@ fn serialize(state: &GenState, out: &PathBuf) {
         structures: state.structures.clone(),
         // Per-FACE slope class = steepest corner cell (conservative for
         // walkability/rendering).
-        slope_class: (0..state.grid.n).map(|fi| {
-            state.grid.face_verts[fi].iter()
-                .map(|&vi| state.slope_class[vi as usize]).max().unwrap_or(0)
-        }).collect(),
-        water_depth: (0..state.grid.n).map(|fi| {
-            state.grid.face_verts[fi].iter()
-                .map(|&vi| state.water_depth[vi as usize]).max().unwrap_or(0)
-        }).collect(),
-        // Per-FACE landform = majority corner (the massif the face sits in).
-        landform: (0..state.grid.n).map(|fi| {
-            let mut c = std::collections::BTreeMap::<u8, usize>::new();
-            for &vi in &state.grid.face_verts[fi] { *c.entry(state.landform[vi as usize]).or_default() += 1; }
-            c.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k).unwrap_or(0)
-        }).collect(),
+        slope_class: shared::worldgen::face_max(&state.grid, &state.slope_class),
+        water_depth: shared::worldgen::face_max(&state.grid, &state.water_depth),
+        landform: shared::worldgen::face_majority(&state.grid, &state.landform),
         road_material: (0..state.grid.n).map(|fi| {
             let solid = state.grid.face_verts[fi].iter()
                 .filter(|&&vi| state.painted.roads.contains(vi as usize)).count() == 3;

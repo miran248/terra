@@ -17,7 +17,7 @@ pub const HABITABLE_MAX_TEMP: f32 = 30.0;
 
 // ---- biome types ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Terrain {
     Ocean,
     Lake,
