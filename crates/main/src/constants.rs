@@ -14,8 +14,8 @@ pub const SPAWN_RADIUS: f32 = 120.0; // m, just beyond the camera's footprint
 
 pub const PLANET_SEED: u32 = 1337;
 
-pub const CAMERA_HEIGHT: f32 = 6.0; // m above the player
-pub const CAMERA_BACK: f32 = 14.0; // m behind the heading
+pub const CAMERA_HEIGHT: f32 = 4.0; // m above the player
+pub const CAMERA_BACK: f32 = 9.0; // m behind the heading
 pub const CAMERA_LOOK_AHEAD: f32 = 45.0; // m ahead — low camera, aimed at the horizon
 
 pub const ATTACK_RANGE: f32 = 50.0; // m

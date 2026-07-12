@@ -468,8 +468,11 @@ fn update_terrain_hud(
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
+    // Combined into one tuple param to stay within Bevy's 16-param system limit.
+    sky: (Option<Res<crate::map::TimeOfDay>>, Option<Res<crate::weather::Weather>>),
     mut timer: ResMut<TerrainHudTimer>,
 ) {
+    let (tod, weather) = sky;
     let Ok(children) = hud_q.single() else { return };
     let Some(child) = children.first() else { return };
     let Ok((mut text, mut color)) = text_q.get_mut(*child) else { return };
@@ -544,10 +547,44 @@ fn update_terrain_hud(
         tile_line.push_str("  Habitable");
     }
 
+    let sky_line = format!(
+        "\n{}  {}",
+        clock_string(tod.as_deref(), tf.translation.normalize()),
+        weather_label(weather.as_deref(), temp),
+    );
+
     *text = Text::new(format!(
-        "{tile_line}{region_name}\nAlt: {altitude:.0}m  {landform}  Temp: {temp:.0}°C",
+        "{tile_line}{region_name}\nAlt: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
     ));
     *color = TextColor(hud_tile_color(tile));
+}
+
+/// Local solar clock at the player's position: derived from where the sun is
+/// relative to this spot, so it differs across the planet (no timezones).
+fn clock_string(tod: Option<&crate::map::TimeOfDay>, up: Vec3) -> String {
+    let Some(tod) = tod else { return String::new() };
+    let hours = tod.local_hours(up);
+    let h = hours.floor() as u32;
+    let m = ((hours - hours.floor()) * 60.0).floor() as u32;
+    format!("Day {}  {h:02}:{m:02}", tod.day)
+}
+
+/// Weather label for the player's location: precipitation type is resolved from
+/// the local temperature (snow when cold, rain when warm).
+fn weather_label(weather: Option<&crate::weather::Weather>, temp: f32) -> String {
+    let Some(weather) = weather else { return String::new() };
+    if weather.precip < 0.05 {
+        return "Clear".to_string();
+    }
+    let kind = if crate::weather::is_snow(temp) { "Snow" } else { "Rain" };
+    let sev = if weather.precip > 0.66 {
+        "Heavy "
+    } else if weather.precip > 0.33 {
+        ""
+    } else {
+        "Light "
+    };
+    format!("{sev}{kind}")
 }
 
 fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {

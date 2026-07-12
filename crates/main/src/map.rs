@@ -11,7 +11,6 @@ use shared::level::{
 };
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
-use shared::theme;
 use shared::planet::PlanetMesh;
 use crate::minimap::MinimapCamera;
 use crate::constants::*;
@@ -95,12 +94,15 @@ pub struct CullRange(pub f32);
 /// stops being drawn in the distance.
 fn flora_cull(kind: u8) -> f32 {
     use shared::level::*;
+    // ~1.6x the original ranges so props stay visible further out; the camera
+    // fog visibility (main.rs) is set beyond the largest of these so props fade
+    // into haze before this hard cull edge rather than popping.
     match kind {
-        FLORA_FLOWER | FLORA_GRASS | FLORA_MUSHROOM | FLORA_REED => 90.0,
-        FLORA_BUSH | FLORA_BERRY | FLORA_CACTUS | FLORA_ROCK => 180.0,
-        FLORA_LOG => 260.0,
-        FLORA_TREE | FLORA_DEADTREE => 550.0,
-        _ => 300.0,
+        FLORA_FLOWER | FLORA_GRASS | FLORA_MUSHROOM | FLORA_REED => 150.0,
+        FLORA_BUSH | FLORA_BERRY | FLORA_CACTUS | FLORA_ROCK => 300.0,
+        FLORA_LOG => 420.0,
+        FLORA_TREE | FLORA_DEADTREE => 880.0,
+        _ => 480.0,
     }
 }
 
@@ -139,6 +141,36 @@ pub struct LevelRegions {
 #[derive(Resource)]
 pub struct LevelBlends(pub std::collections::BTreeMap<u32, (u8, u8)>);
 
+/// Drives the world sun (see `drive_daynight`). The sun orbits the planet's Y
+/// axis, so day and night are real hemispheres: `angle` is the sun's longitude
+/// (advances over `day_length` seconds), and `sun_dir` is the resulting
+/// world-space direction toward the sun, cached for solar-time queries.
+#[derive(Resource)]
+pub struct TimeOfDay {
+    pub angle: f32,
+    pub day_length: f32,
+    pub sun_dir: Vec3,
+    pub day: u32,
+}
+
+impl Default for TimeOfDay {
+    fn default() -> Self {
+        Self { angle: 0.0, day_length: 240.0, sun_dir: Vec3::X, day: 1 }
+    }
+}
+
+impl TimeOfDay {
+    /// Local solar time (hours, 0..24) at a point with the given surface `up`.
+    /// Noon is when the sun is highest over that point; midnight the opposite.
+    /// Advances forward as the sun orbits.
+    pub fn local_hours(&self, up: Vec3) -> f32 {
+        let sun_long = self.sun_dir.z.atan2(self.sun_dir.x);
+        let point_long = up.z.atan2(up.x);
+        let hour_angle = (sun_long - point_long).rem_euclid(std::f32::consts::TAU);
+        (12.0 + hour_angle * (24.0 / std::f32::consts::TAU)).rem_euclid(24.0)
+    }
+}
+
 #[derive(Resource, Default)]
 struct PlayerInput {
     fwd: i8,
@@ -150,6 +182,7 @@ struct PlayerInput {
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerInput>()
+            .init_resource::<TimeOfDay>()
             .add_systems(OnEnter(AppState::Playing), setup_map)
             .add_systems(
                 Update,
@@ -161,7 +194,7 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                (orient_player, camera_follow, teleport_player, cull_props)
+                (orient_player, camera_follow, drive_daynight, teleport_player, cull_props)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -211,6 +244,11 @@ fn setup_map(
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::WHITE,
             perceptual_roughness: 0.95,
+            // The sun is re-aimed at the player's feet each frame, so its specular
+            // hotspot rides with the player; on the flat-shaded terrain that broad
+            // highlight aliases into moving grain. Near-zero reflectance removes
+            // the specular lobe (matte terrain) and kills the sparkle.
+            reflectance: 0.02,
             ..default()
         })),
         Transform::default(),
@@ -533,9 +571,15 @@ fn setup_map(
 
     // Water
     commands.spawn((
-        Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS - 0.5))),
+        // Sit the sea surface a couple units below the reference radius; a
+        // 0.5-unit gap z-fought with the shoreline terrain (flickering speckle).
+        Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS - 2.0))),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: theme::WATER_SURFACE,
+            // Lighter, less-saturated blue than theme::WATER_SURFACE so the far
+            // ocean reads closer to the sky, softening the sky/ocean horizon line
+            // (the horizon is only ~150 units away at eye level — too close for
+            // distance fog alone to blend).
+            base_color: Color::srgba(0.28, 0.5, 0.72, 0.6),
             alpha_mode: AlphaMode::Blend,
             cull_mode: None,
             perceptual_roughness: 0.3,
@@ -548,7 +592,7 @@ fn setup_map(
 
     // Sun
     commands.spawn((
-        DirectionalLight { illuminance: 12_000.0, ..default() },
+        DirectionalLight { illuminance: 8_000.0, ..default() },
         Transform::from_xyz(1.0, 1.0, 1.0).looking_at(Vec3::ZERO, Vec3::Y),
         Sun,
         Ground,
@@ -561,28 +605,38 @@ fn setup_map(
     let capsule_radius = PLAYER_SIZE * 0.4;
     let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
     let spawn_pos = up * (spawn_surface_r + capsule_half + 0.5);
-    commands.spawn((
-        Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
-        MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
-        RigidBody::Dynamic,
-        ColliderConstructor::Sphere { radius: PLAYER_SIZE * 0.5 },
-        // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
-        // tunneled through during fast falls.
-        SweptCcd::default(),
-        RadialGravity,
-        Mass(80.0),
-        ColliderDensity(1000.0),
-        LockedAxes::ROTATION_LOCKED,
-        Transform::from_translation(spawn_pos),
-        start,
-        Player {
-            hp: PLAYER_HP,
-            fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
-            damage: ATTACK_DAMAGE,
-            range: ATTACK_RANGE,
-            heading: start.tangent_basis().1,
-        },
-    ));
+    commands
+        .spawn((
+            RigidBody::Dynamic,
+            ColliderConstructor::Sphere { radius: PLAYER_SIZE * 0.5 },
+            // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
+            // tunneled through during fast falls.
+            SweptCcd::default(),
+            RadialGravity,
+            Mass(80.0),
+            ColliderDensity(1000.0),
+            LockedAxes::ROTATION_LOCKED,
+            Transform::from_translation(spawn_pos),
+            Visibility::default(),
+            start,
+            Player {
+                hp: PLAYER_HP,
+                fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
+                damage: ATTACK_DAMAGE,
+                range: ATTACK_RANGE,
+                heading: start.tangent_basis().1,
+            },
+        ))
+        // The visual capsule is taller than the sphere collider, so on the entity
+        // origin its base sank ~capsule_radius into the terrain — a z-fighting
+        // ring around the feet that flickered as the body micro-jittered. Lift the
+        // mesh onto a child so its base rests exactly on the collider's ground
+        // contact point.
+        .with_child((
+            Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
+            MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
+            Transform::from_xyz(0.0, capsule_radius, 0.0),
+        ));
 
     // Settlement markers
     for s in &level.settlements {
@@ -837,7 +891,6 @@ fn camera_follow(
     time: Res<Time>,
     mut player_q: Query<(&Player, &Transform), Without<MainCamera>>,
     mut camera_q: Query<&mut Transform, (With<MainCamera>, Without<MinimapCamera>)>,
-    mut light_q: Query<&mut Transform, (With<Sun>, Without<MainCamera>, Without<Player>, Without<MinimapCamera>)>,
 ) {
     let Ok((player, tf)) = player_q.single() else { return };
     let Ok(mut cam_tf) = camera_q.single_mut() else { return };
@@ -850,9 +903,37 @@ fn camera_follow(
     let t = 1.0 - (-6.0 * time.delta_secs()).exp();
     let current_look = cam_tf.rotation * -Vec3::Z + cam_tf.translation;
     cam_tf.look_at(current_look.lerp(look_target, t), up);
+}
 
-    if let Ok(mut light_tf) = light_q.single_mut() {
-        light_tf.translation = feet + up * 800.0;
-        light_tf.look_at(feet, player.heading);
+/// Advances the day and orbits the world sun around the planet's Y axis.
+///
+/// Because the sun is a single world-space direction (not player-relative), the
+/// hemisphere facing it is lit (day) and the far side is dark (night) purely
+/// from geometry — a directional light only lights surfaces whose normals face
+/// it, and the atmosphere darkens wherever the sun is below the local horizon.
+/// So illuminance stays constant; day/night comes from where you stand and where
+/// the sun is. Ambient is a low constant floor (see `main`) so the night side
+/// isn't pitch black.
+fn drive_daynight(
+    time: Res<Time>,
+    mut tod: ResMut<TimeOfDay>,
+    mut sun_q: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
+) {
+    let advanced = tod.angle + time.delta_secs() * std::f32::consts::TAU / tod.day_length;
+    if advanced >= std::f32::consts::TAU {
+        tod.day += 1;
     }
+    tod.angle = advanced.rem_euclid(std::f32::consts::TAU);
+
+    // Sun orbits the polar (Y) axis, tilted a little above the equatorial plane
+    // for a more natural light angle than a dead-flat sunrise/sunset.
+    let dir = Vec3::new(tod.angle.cos(), 0.35, tod.angle.sin()).normalize();
+    tod.sun_dir = dir;
+
+    let Ok((mut sun_tf, mut light)) = sun_q.single_mut() else { return };
+    // Directional light shines from the sun toward the planet centre.
+    sun_tf.translation = dir * 800.0;
+    sun_tf.look_at(Vec3::ZERO, Vec3::Y);
+    light.illuminance = 13_000.0;
+    light.color = Color::WHITE;
 }
