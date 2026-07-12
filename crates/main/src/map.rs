@@ -452,7 +452,7 @@ fn setup_map(
         let span: Vec<shared::sphere::SpherePos> = road.points.iter()
             .map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p)))
             .collect();
-        let deck = shared::roads::build_bridge_deck(&span, &ground, 20.0);
+        let deck = shared::roads::build_bridge_deck(&span, &ground, 4.0);
         if deck.is_empty() {
             continue;
         }

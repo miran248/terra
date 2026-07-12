@@ -57,9 +57,14 @@ pub fn build_bridge_deck(
     if points.len() < 2 {
         return tris;
     }
+    // Ground height at the two grounded ends; the deck is a SMOOTH CONVEX arch
+    // between them (a straight ground line + a parabola), sampling terrain only
+    // at the ends — so no per-face steps, no stair-stepped planks, and the top
+    // is convex by construction.
     let sr = ground.facet_radius(points[0].0, PLANET_RADIUS);
     let er = ground.facet_radius(points[points.len() - 1].0, PLANET_RADIUS);
-    let sea = PLANET_RADIUS;
+
+    // Resample the centreline at a fixed spacing for even planks.
     let spacing = 2.0;
     let mut dirs = Vec::new();
     let mut pos = 0.0f32;
@@ -73,33 +78,63 @@ pub fn build_bridge_deck(
         pos -= sl;
     }
     let last = points.last().unwrap().0;
-    if (dirs.last().unwrap().dot(last)).abs() < 0.999 {
+    if dirs.last().unwrap().dot(last).abs() < 0.999 {
         dirs.push(last);
     }
     let n = dirs.len();
-    let mut rings: Vec<(Vec3, Vec3)> = Vec::new();
+    if n < 2 {
+        return tris;
+    }
+
+    let span_len = points[0].distance(*points.last().unwrap());
+    let clearance = (span_len * 0.05).clamp(2.5, 10.0); // arch rise at mid-span
+    let thickness = 1.4; // deck slab depth (a solid, not a ribbon)
+    let embed = 1.5;     // sink the grounded ends into the terrain — no float
+
+    // Per-ring frame: top-left/right and bottom-left/right world points.
+    let mut rings: Vec<[Vec3; 4]> = Vec::with_capacity(n);
     for i in 0..n {
-        let dir = dirs[i];
-        let t = i as f32 / (n - 1).max(1) as f32;
-        let arch = 2.0 * (4.0 * t * (1.0 - t));
-        let base = sr + (er - sr) * t;
-        let tr = ground.facet_radius(dir.normalize(), sea).max(sea);
-        let r = base.max(tr) + arch;
-        let up = dir.normalize();
-        let fwd = if i == 0 { (dirs[1] - dirs[0]).normalize() }
-        else if i == n - 1 { (dirs[n - 1] - dirs[n - 2]).normalize() }
-        else {
-            let p = (dirs[i] - dirs[i - 1]).normalize();
-            let nx = (dirs[i + 1] - dirs[i]).normalize();
-            (p + nx).normalize_or((dirs[1] - dirs[0]).normalize())
+        let t = i as f32 / (n - 1) as f32;
+        let up = dirs[i].normalize();
+        let ground_r = sr + (er - sr) * t;
+        let arch = clearance * (4.0 * t * (1.0 - t));
+        // End rings dip below the ground line so the deck grounds INTO the
+        // terrain rather than floating over a slope.
+        let end_dip = embed * (1.0 - (4.0 * t * (1.0 - t))).powi(4);
+        let top_r = ground_r + arch - end_dip;
+        let fwd = if i == 0 {
+            (dirs[1] - dirs[0]).normalize()
+        } else if i == n - 1 {
+            (dirs[n - 1] - dirs[n - 2]).normalize()
+        } else {
+            ((dirs[i] - dirs[i - 1]).normalize() + (dirs[i + 1] - dirs[i]).normalize())
+                .normalize_or((dirs[1] - dirs[0]).normalize())
         };
-        let left = fwd.cross(up).normalize_or(Vec3::X) * (half_width / r);
-        rings.push(((dir + left).normalize() * r, (dir - left).normalize() * r));
+        let left = fwd.cross(up).normalize_or(Vec3::X) * (half_width / top_r);
+        let tl = (dirs[i] + left).normalize() * top_r;
+        let tr_ = (dirs[i] - left).normalize() * top_r;
+        let bl = (dirs[i] + left).normalize() * (top_r - thickness);
+        let br = (dirs[i] - left).normalize() * (top_r - thickness);
+        rings.push([tl, tr_, bl, br]);
     }
-    for p in rings.windows(2) {
-        tris.push([p[0].0.to_array(), p[0].1.to_array(), p[1].0.to_array()]);
-        tris.push([p[0].1.to_array(), p[1].1.to_array(), p[1].0.to_array()]);
+
+    let mut quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| {
+        tris.push([a.to_array(), b.to_array(), c.to_array()]);
+        tris.push([b.to_array(), d.to_array(), c.to_array()]);
+    };
+    for w in rings.windows(2) {
+        let (r0, r1) = (w[0], w[1]);
+        // top, bottom, and the two side walls — a solid slab.
+        quad(r0[0], r0[1], r1[0], r1[1]); // top
+        quad(r0[3], r0[2], r1[3], r1[2]); // bottom
+        quad(r0[1], r0[3], r1[1], r1[3]); // right side
+        quad(r0[2], r0[0], r1[2], r1[0]); // left side
     }
+    // End caps close the slab.
+    let f = &rings[0];
+    quad(f[1], f[0], f[3], f[2]);
+    let l = &rings[n - 1];
+    quad(l[0], l[1], l[2], l[3]);
     tris
 }
 
