@@ -79,10 +79,12 @@ pub fn build_bridge_deck(
         let mut want = total * i as f32 / (n - 1) as f32;
         // Find the segment holding `want` and interpolate within it.
         let mut si = 0;
-        while si + 1 < points.len() && want > seglen[si] {
+        while si + 1 < seglen.len() && want > seglen[si] {
             want -= seglen[si];
             si += 1;
         }
+        // Clamp to the last real segment (float rounding on the final sample).
+        let si = si.min(seglen.len() - 1);
         let f = if seglen[si] > 1e-6 { (want / seglen[si]).clamp(0.0, 1.0) } else { 0.0 };
         dirs.push(slerp(points[si], points[si + 1], f).0);
     }
@@ -145,6 +147,26 @@ pub fn build_bridge_deck(
 mod tests {
     use super::*;
     use crate::sphere::random_point;
+
+    #[test]
+    fn bridge_deck_builds_without_panicking() {
+        // Guards the resampling off-by-one that panicked at runtime.
+        let ground = crate::planet::PlanetMesh::new(crate::planet::unit_icosphere_tris(3));
+        for steps in [2usize, 3, 5, 17, 33, 50] {
+            let a = random_point(0.2, 0.3);
+            let b = random_point(0.25, 0.32);
+            let span: Vec<SpherePos> = (0..=steps)
+                .map(|k| slerp(a, b, k as f32 / steps as f32))
+                .collect();
+            let deck = build_bridge_deck(&span, &ground, 4.0);
+            assert!(!deck.is_empty(), "empty deck for {steps} steps");
+            for t in &deck {
+                for v in t {
+                    assert!(v.iter().all(|c| c.is_finite()), "non-finite deck vertex");
+                }
+            }
+        }
+    }
 
     #[test]
     fn road_path_hits_endpoints_and_stays_near_arc() {
