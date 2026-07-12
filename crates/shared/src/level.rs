@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 13;
+pub const LEVEL_FORMAT_VERSION: u32 = 14;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -81,6 +81,8 @@ pub struct LevelData {
     pub slope_class: Vec<u8>,
     /// Per-face water depth class (DEPTH_*) for water faces; 0 on land.
     pub water_depth: Vec<u8>,
+    /// Per-face macro landform (LANDFORM_*).
+    pub landform: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -111,6 +113,29 @@ pub fn slope_name(c: u8) -> &'static str {
 /// A cell is walkable/buildable when its slope class is flat or gentle.
 pub fn slope_walkable(c: u8) -> bool {
     c <= SLOPE_GENTLE
+}
+
+/// Macro LANDFORM (the terrain massif a cell belongs to), the base layer under
+/// biome cover and slope-class detail: lowlands, hills, mountains, plateaus,
+/// valleys — or water. Drives which biome COVER a cell gets and reads in the
+/// HUD as the landform word.
+pub const LANDFORM_WATER: u8 = 0;
+pub const LANDFORM_LOWLAND: u8 = 1;
+pub const LANDFORM_VALLEY: u8 = 2;
+pub const LANDFORM_HILLS: u8 = 3;
+pub const LANDFORM_MOUNTAINS: u8 = 4;
+pub const LANDFORM_PLATEAU: u8 = 5;
+
+pub fn landform_name(l: u8) -> &'static str {
+    match l {
+        LANDFORM_WATER => "Water",
+        LANDFORM_LOWLAND => "Lowland",
+        LANDFORM_VALLEY => "Valley",
+        LANDFORM_HILLS => "Hills",
+        LANDFORM_MOUNTAINS => "Mountains",
+        LANDFORM_PLATEAU => "Plateau",
+        _ => "?",
+    }
 }
 
 /// Per-cell/-face WATER DEPTH class (from the solved field). The depth analogue

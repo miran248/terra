@@ -61,6 +61,12 @@ fn serialize(state: &GenState, out: &PathBuf) {
             state.grid.face_verts[fi].iter()
                 .map(|&vi| state.water_depth[vi as usize]).max().unwrap_or(0)
         }).collect(),
+        // Per-FACE landform = majority corner (the massif the face sits in).
+        landform: (0..state.grid.n).map(|fi| {
+            let mut c = std::collections::BTreeMap::<u8, usize>::new();
+            for &vi in &state.grid.face_verts[fi] { *c.entry(state.landform[vi as usize]).or_default() += 1; }
+            c.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k).unwrap_or(0)
+        }).collect(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());

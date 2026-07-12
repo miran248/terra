@@ -463,6 +463,7 @@ fn update_terrain_hud(
     face_types: Option<Res<LevelFaceTypes>>,
     slope_class: Option<Res<LevelSlope>>,
     water_depth: Option<Res<crate::map::LevelWaterDepth>>,
+    landform_r: Option<Res<crate::map::LevelLandform>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
@@ -494,8 +495,11 @@ fn update_terrain_hud(
                 water_depth.as_ref().and_then(|wd| wd.0.get(fi).copied())
                     .map(|d| shared::level::depth_name(d).to_string()).unwrap_or_default()
             } else {
-                slope_class.as_ref().and_then(|sc| sc.0.get(fi).copied())
-                    .map(|c| shared::level::slope_name(c).to_string()).unwrap_or_default()
+                let lf = landform_r.as_ref().and_then(|l| l.0.get(fi).copied())
+                    .map(shared::level::landform_name).unwrap_or("");
+                let sl = slope_class.as_ref().and_then(|sc| sc.0.get(fi).copied())
+                    .map(shared::level::slope_name).unwrap_or("");
+                format!("{lf} ({sl})")
             }
         }).unwrap_or_default()
     } else { String::new() };

@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, LANDFORM_WATER, LANDFORM_LOWLAND, LANDFORM_VALLEY, LANDFORM_HILLS, LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -369,6 +369,8 @@ pub struct GenState {
     pub slope_class: Vec<u8>,
     /// Per-cell water depth class (DEPTH_*) for water cells.
     pub water_depth: Vec<u8>,
+    /// Per-cell macro landform (LANDFORM_*), from the proposed field.
+    pub landform: Vec<u8>,
 }
 
 impl GenState {
@@ -394,6 +396,7 @@ impl GenState {
             structures: Vec::new(),
             slope_class: Vec::new(),
             water_depth: Vec::new(),
+            landform: Vec::new(),
         }
     }
 
@@ -451,6 +454,8 @@ pub enum Command {
     PlaceStructures,
     /// Per-cell steepness from the solved field (slope class).
     ClassifySlope,
+    /// Per-cell macro landform from the proposed field (base layer).
+    ClassifyLandform,
 }
 
 pub enum Event {
@@ -474,6 +479,7 @@ pub enum Event {
     FloraPlaced(Vec<FloraData>),
     StructuresPlaced(Vec<StructureData>),
     SlopeClassified(Vec<u8>, Vec<u8>),
+    LandformClassified(Vec<u8>),
 }
 
 impl Event {
@@ -509,6 +515,10 @@ impl Event {
                 let abyss = wd.iter().filter(|&&d| d == DEPTH_ABYSS).count();
                 format!("relief classified: {cliffs} cliff cells, {abyss} abyss cells")
             }
+            Event::LandformClassified(lf) => {
+                let mtn = lf.iter().filter(|&&l| l == LANDFORM_MOUNTAINS || l == LANDFORM_PLATEAU).count();
+                format!("landform classified: {mtn} mountain/plateau cells")
+            }
         }
     }
 }
@@ -536,6 +546,9 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         Command::PlanRoads => {
             vec![Event::RoadsPlanned(state.terrain().plan_road_paths())]
         }
+        Command::ClassifyLandform => {
+            vec![Event::LandformClassified(classify_landform(&state.grid, state.terrain()))]
+        }
         Command::ClassifySlope => {
             let slope = classify_slope(&state.grid, state.terrain());
             let depth = classify_water_depth(&state.grid, &state.cells, state.terrain());
@@ -544,19 +557,12 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         Command::ClassifyTiles => {
             let terrain = state.terrain();
             let grid = &state.grid;
-            // Classify each CELL: sample at the vertex, majority over the fan's
-            // zones (fans can straddle a coarse zone boundary).
+            // Cover per CELL: the macro landform (already classified) sets the
+            // base — high ground gets rock/snow, low ground gets a climate
+            // biome — so a "Forest" is genuinely a forested LOWLAND, not a
+            // steep slope that merely isn't labelled Mountain.
             let cells = (0..grid.nv)
-                .map(|vi| {
-                    let pos = grid.vert_pos(vi);
-                    let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-                    for &fi in &grid.vert_faces[vi] {
-                        let t = terrain.base_classify_fine(fi as usize, pos);
-                        *counts.entry(t as u8).or_default() += 1;
-                    }
-                    let (&k, _) = counts.iter().max_by_key(|(_, c)| **c).unwrap();
-                    Terrain::ALL[k as usize]
-                })
+                .map(|vi| classify_cover(grid, terrain, &state.landform, vi))
                 .collect();
             vec![Event::TilesClassified(cells)]
         }
@@ -684,6 +690,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
             state.slope_class = sc;
             state.water_depth = wd;
         }
+        Event::LandformClassified(lf) => state.landform = lf,
     }
     state
 }
@@ -692,7 +699,8 @@ pub fn react(event: &Event) -> Vec<Command> {
     match event {
         Event::TerrainInitialized(_) => vec![Command::ProposeElevation],
         // Climate follows every field change; FIFO runs it before the next step.
-        Event::ElevationProposed(_) => vec![Command::ComputeClimate, Command::PlanRivers],
+        Event::ElevationProposed(_) => vec![Command::ComputeClimate, Command::ClassifyLandform],
+        Event::LandformClassified(_) => vec![Command::PlanRivers],
         Event::ClimateComputed(..) => vec![],
         Event::RiversPlanned(_) => vec![Command::PlaceSettlements],
         Event::SettlementsPlaced(_) => vec![Command::PlanRoads],
@@ -1139,6 +1147,135 @@ fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
 /// discrete 60° steps spaced apart (the lattice dictates the turning radius).
 /// Water cells are impassable — roads route around lakes on the lattice.
 /// Returns the chain including both endpoints, or empty if unreachable.
+/// Macro landform per cell from the PROPOSED field: elevation bands
+/// (lowland/hills/mountains) split by local relief (a flat high patch is a
+/// plateau), with low ground boxed in by higher ground marked as valley.
+/// Because it reads a smooth continuous field the bands are naturally ordered
+/// (no lowland directly against a peak). Speckle is absorbed into the
+/// surrounding landform so each is a coherent cluster.
+fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
+    let e: Vec<f32> = (0..grid.nv).map(|vi| terrain.elevation_at(grid.vert_pos(vi))).collect();
+    let mut lf = vec![LANDFORM_WATER; grid.nv];
+    for vi in 0..grid.nv {
+        if e[vi] < 0.0 {
+            continue; // water
+        }
+        let relief = grid.vert_adj[vi].iter()
+            .map(|&nb| (e[vi] - e[nb as usize]).abs())
+            .fold(0.0f32, f32::max);
+        lf[vi] = if e[vi] >= 0.35 {
+            if relief < 0.035 { LANDFORM_PLATEAU } else { LANDFORM_MOUNTAINS }
+        } else if e[vi] >= 0.14 {
+            LANDFORM_HILLS
+        } else {
+            LANDFORM_LOWLAND
+        };
+    }
+    // Valleys: low ground hemmed in by higher landform on most sides.
+    let higher = |l: u8| matches!(l, LANDFORM_HILLS | LANDFORM_MOUNTAINS | LANDFORM_PLATEAU);
+    let mut valleys = Vec::new();
+    for vi in 0..grid.nv {
+        if lf[vi] == LANDFORM_LOWLAND
+            && grid.vert_adj[vi].iter().filter(|&&nb| higher(lf[nb as usize])).count() >= 3
+        {
+            valleys.push(vi);
+        }
+    }
+    for vi in valleys {
+        lf[vi] = LANDFORM_VALLEY;
+    }
+    // Absorb speckle: a landform cluster below the min joins its most common
+    // land neighbor's landform, so each landform is a coherent region.
+    absorb_small_landforms(grid, &mut lf);
+    lf
+}
+
+const MIN_LANDFORM_CELLS: usize = 25;
+
+fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
+    let mut visited = vec![false; grid.nv];
+    for start in 0..grid.nv {
+        if lf[start] == LANDFORM_WATER || visited[start] {
+            continue;
+        }
+        let kind = lf[start];
+        let mut cluster = vec![start];
+        let mut q = VecDeque::from([start]);
+        visited[start] = true;
+        while let Some(cur) = q.pop_front() {
+            for &nb in &grid.vert_adj[cur] {
+                let nb = nb as usize;
+                if lf[nb] == kind && !visited[nb] {
+                    visited[nb] = true;
+                    cluster.push(nb);
+                    q.push_back(nb);
+                }
+            }
+        }
+        if cluster.len() >= MIN_LANDFORM_CELLS {
+            continue;
+        }
+        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        for &vi in &cluster {
+            for &nb in &grid.vert_adj[vi] {
+                let l = lf[nb as usize];
+                if l != LANDFORM_WATER && l != kind {
+                    *counts.entry(l).or_default() += 1;
+                }
+            }
+        }
+        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
+            for vi in cluster {
+                lf[vi] = k;
+            }
+        }
+    }
+}
+
+/// Cover per cell: the macro landform sets the base — high ground (mountains,
+/// plateaus) gets rock/snow/ice/volcanic, everything lower gets a climate
+/// biome. Water zones stay water. This is the landform → biome layering.
+fn classify_cover(grid: &Grid, terrain: &TerrainGen, landform: &[u8], vi: usize) -> Terrain {
+    let pos = grid.vert_pos(vi);
+    let e = terrain.elevation_at(pos);
+    match cell_zone(grid, terrain, vi) {
+        crate::zones::ZoneKind::Ocean => Terrain::Ocean,
+        crate::zones::ZoneKind::Lake => {
+            if e < 0.0 { Terrain::Lake } else { land_cover(terrain, landform[vi], pos) }
+        }
+        _ => {
+            if e < 0.0 { Terrain::Ocean } else { land_cover(terrain, landform[vi], pos) }
+        }
+    }
+}
+
+fn land_cover(terrain: &TerrainGen, landform: u8, pos: SpherePos) -> Terrain {
+    let t = terrain.temperature_at(pos);
+    let m = terrain.moisture_at(pos);
+    let e = terrain.elevation_at(pos);
+    // High ground: bare rock, capped by cold (snow/glacier) or heat (volcanic).
+    if matches!(landform, LANDFORM_MOUNTAINS | LANDFORM_PLATEAU) {
+        return if t < -20.0 {
+            Terrain::Glacier
+        } else if t < -5.0 {
+            Terrain::Snow
+        } else if t > 22.0 && e > 0.72 {
+            Terrain::Volcanic
+        } else {
+            Terrain::Mountain
+        };
+    }
+    // Low/rolling ground: climate biome cover.
+    if t < -28.0 { return Terrain::Glacier; }
+    if t < -15.0 { return Terrain::Snow; }
+    if t < 0.0 { return Terrain::Tundra; }
+    if e < 0.12 && m > 0.28 { return Terrain::Swamp; }
+    if t > 24.0 && m > 0.25 { return Terrain::Jungle; }
+    if t > 30.0 && m < -0.15 { return Terrain::Desert; }
+    if t > 22.0 && m < 0.05 { return Terrain::Savanna; }
+    if m > 0.10 { Terrain::Forest } else { Terrain::Plains }
+}
+
 /// Slope-class thresholds (rise/run ≈ tan angle) on the solved field.
 const SLOPE_GENTLE_MAX: f32 = 0.18; // ~10°: flat/gentle boundary
 const SLOPE_STEEP_MAX: f32 = 0.45;  // ~24°: gentle/steep (walkable) boundary
@@ -3492,6 +3629,7 @@ mod tests {
         assert!(a.structures.iter().zip(&b.structures).all(|(x, y)| x.pos == y.pos && x.kind == y.kind));
         assert_eq!(a.slope_class, b.slope_class);
         assert_eq!(a.water_depth, b.water_depth);
+        assert_eq!(a.landform, b.landform);
     }
 
     #[test]

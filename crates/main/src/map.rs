@@ -80,6 +80,9 @@ pub struct LevelSlope(pub Vec<u8>);
 #[derive(Resource)]
 pub struct LevelWaterDepth(pub Vec<u8>);
 
+#[derive(Resource)]
+pub struct LevelLandform(pub Vec<u8>);
+
 /// Region names + per-face region ids for the HUD.
 #[derive(Resource)]
 pub struct LevelRegions {
@@ -579,6 +582,7 @@ fn setup_map(
     commands.insert_resource(LevelFaceTypes(face_types));
     commands.insert_resource(LevelSlope(level.slope_class.clone()));
     commands.insert_resource(LevelWaterDepth(level.water_depth.clone()));
+    commands.insert_resource(LevelLandform(level.landform.clone()));
     commands.insert_resource(LevelRegions {
         regions: level.regions.clone(),
         face_region: level.face_region.clone(),
