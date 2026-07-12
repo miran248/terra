@@ -94,19 +94,19 @@ pub fn build_bridge_deck(
     let thickness = 1.4; // deck slab depth (a solid, not a ribbon)
     let embed = 1.5;     // sink the grounded ends into the terrain — no float
 
-    // Per-ring frame: top-left/right and bottom-left/right world points.
+    // Per-ring frame: top-left/right and bottom-left/right world points. The
+    // middle is the pure smooth arch; near the two ends each CORNER is grounded
+    // independently into its own local terrain (so an entrance never clips
+    // above sloped ground), fading out by ~18% in so no stairs reappear.
     let mut rings: Vec<[Vec3; 4]> = Vec::with_capacity(n);
     for i in 0..n {
         let t = i as f32 / (n - 1) as f32;
         let up = dirs[i].normalize();
         let ground_r = sr + (er - sr) * t;
         let arch = clearance * (4.0 * t * (1.0 - t));
-        // End rings dip below the ground line so the deck grounds INTO the
-        // terrain rather than floating over a slope.
-        // Smooth cosine dip only in the outer ~15% at each end.
-        let edge = (1.0 - (2.0 * t - 1.0).abs()).min(0.15) / 0.15; // 0 at ends, 1 inward
-        let end_dip = embed * (1.0 - edge) * (1.0 - edge);
-        let top_r = ground_r + arch - end_dip;
+        let top_r = ground_r + arch;
+        // Entrance factor: 1 at the very ends, 0 by ~18% in.
+        let ef = ((0.18 - (0.5 - (t - 0.5).abs()).min(0.18)) / 0.18).clamp(0.0, 1.0);
         let fwd = if i == 0 {
             (dirs[1] - dirs[0]).normalize()
         } else if i == n - 1 {
@@ -116,11 +116,19 @@ pub fn build_bridge_deck(
                 .normalize_or((dirs[1] - dirs[0]).normalize())
         };
         let left = fwd.cross(up).normalize_or(Vec3::X) * (half_width / top_r);
-        let tl = (dirs[i] + left).normalize() * top_r;
-        let tr_ = (dirs[i] - left).normalize() * top_r;
-        let bl = (dirs[i] + left).normalize() * (top_r - thickness);
-        let br = (dirs[i] - left).normalize() * (top_r - thickness);
-        rings.push([tl, tr_, bl, br]);
+        // Radius for one corner: the arch, pulled DOWN into the local terrain
+        // near the ends (never up — the arch over water is untouched).
+        let corner = |cdir: Vec3| -> Vec3 {
+            let lt = ground.facet_radius(cdir, PLANET_RADIUS);
+            let grounded = lt - embed;
+            let r = top_r - ef * (top_r - grounded).max(0.0);
+            cdir * r
+        };
+        let ld = (dirs[i] + left).normalize();
+        let rd = (dirs[i] - left).normalize();
+        let tl = corner(ld);
+        let tr_ = corner(rd);
+        rings.push([tl, tr_, ld * (tl.length() - thickness), rd * (tr_.length() - thickness)]);
     }
 
     let mut quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| {
