@@ -464,6 +464,7 @@ fn update_terrain_hud(
     slope_class: Option<Res<LevelSlope>>,
     water_depth: Option<Res<crate::map::LevelWaterDepth>>,
     landform_r: Option<Res<crate::map::LevelLandform>>,
+    road_mat: Option<Res<crate::map::LevelRoadMaterial>>,
     hud_q: Query<&Children, With<TerrainHud>>,
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
@@ -523,6 +524,13 @@ fn update_terrain_hud(
                 for &tag in tags.0.of(fi) {
                     tile_line.push_str("  ");
                     tile_line.push_str(shared::level::tag_name(tag));
+                    if tag == shared::level::TAG_ROAD {
+                        if let Some(m) = road_mat.as_ref().and_then(|r| r.0.get(fi).copied()) {
+                            tile_line.push_str(" (");
+                            tile_line.push_str(shared::level::road_material_name(m));
+                            tile_line.push(')');
+                        }
+                    }
                 }
             }
             if let Some(regions) = regions {

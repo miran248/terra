@@ -67,6 +67,11 @@ fn serialize(state: &GenState, out: &PathBuf) {
             for &vi in &state.grid.face_verts[fi] { *c.entry(state.landform[vi as usize]).or_default() += 1; }
             c.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k).unwrap_or(0)
         }).collect(),
+        road_material: (0..state.grid.n).map(|fi| {
+            let solid = state.grid.face_verts[fi].iter()
+                .filter(|&&vi| state.painted.roads.contains(vi as usize)).count() == 3;
+            if solid { shared::worldgen::face_road_material(&state.grid, &state.cells, &state.landform, &state.slope_class, fi) } else { 0 }
+        }).collect(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());

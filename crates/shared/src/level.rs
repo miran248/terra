@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 14;
+pub const LEVEL_FORMAT_VERSION: u32 = 15;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -83,6 +83,8 @@ pub struct LevelData {
     pub water_depth: Vec<u8>,
     /// Per-face macro landform (LANDFORM_*).
     pub landform: Vec<u8>,
+    /// Per-face road surface material (ROAD_MAT_*); 0 on non-road faces.
+    pub road_material: Vec<u8>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -125,6 +127,23 @@ pub const LANDFORM_VALLEY: u8 = 2;
 pub const LANDFORM_HILLS: u8 = 3;
 pub const LANDFORM_MOUNTAINS: u8 = 4;
 pub const LANDFORM_PLATEAU: u8 = 5;
+
+/// Road SURFACE material, from the ground the road crosses (sand in deserts
+/// and on beaches, rock in the mountains, dirt on soil, gravel otherwise).
+pub const ROAD_MAT_GRAVEL: u8 = 0;
+pub const ROAD_MAT_DIRT: u8 = 1;
+pub const ROAD_MAT_SAND: u8 = 2;
+pub const ROAD_MAT_ROCK: u8 = 3;
+
+pub fn road_material_name(m: u8) -> &'static str {
+    match m {
+        ROAD_MAT_GRAVEL => "Gravel",
+        ROAD_MAT_DIRT => "Dirt",
+        ROAD_MAT_SAND => "Sand",
+        ROAD_MAT_ROCK => "Rock",
+        _ => "?",
+    }
+}
 
 pub fn landform_name(l: u8) -> &'static str {
     match l {

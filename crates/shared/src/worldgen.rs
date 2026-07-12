@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, LANDFORM_WATER, LANDFORM_LOWLAND, LANDFORM_VALLEY, LANDFORM_HILLS, LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, LANDFORM_WATER, LANDFORM_LOWLAND, LANDFORM_VALLEY, LANDFORM_HILLS, LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, ROAD_MAT_DIRT, ROAD_MAT_GRAVEL, ROAD_MAT_ROCK, ROAD_MAT_SAND, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -2282,6 +2282,42 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 
 // ---- mesh ----
 
+/// Road surface material from the ground a road face crosses: sand on desert
+/// and beach, rock in the mountains and on steep ground, dirt on soil, gravel
+/// otherwise. Read from the underlying cover/landform/slope at the corners
+/// (roads are an overlay — the cells still hold the terrain beneath).
+pub fn face_road_material(
+    grid: &Grid,
+    cells: &[Terrain],
+    landform: &[u8],
+    slope_class: &[u8],
+    fi: usize,
+) -> u8 {
+    let mut sand = false;
+    let mut rock = false;
+    let mut soil = false;
+    for &vi in &grid.face_verts[fi] {
+        let vi = vi as usize;
+        match cells[vi] {
+            Terrain::Desert | Terrain::Beach | Terrain::Savanna => sand = true,
+            Terrain::Mountain | Terrain::Volcanic | Terrain::Cliff => rock = true,
+            Terrain::Forest | Terrain::Plains | Terrain::Swamp
+                | Terrain::Jungle | Terrain::Tundra => soil = true,
+            _ => {}
+        }
+        if matches!(landform[vi], LANDFORM_MOUNTAINS | LANDFORM_PLATEAU)
+            || slope_class[vi] >= SLOPE_STEEP
+        {
+            rock = true;
+        }
+    }
+    // Rock wins on hard/steep ground, then sand, then dirt, else gravel.
+    if rock { ROAD_MAT_ROCK }
+    else if sand { ROAD_MAT_SAND }
+    else if soil { ROAD_MAT_DIRT }
+    else { ROAD_MAT_GRAVEL }
+}
+
 /// Pure projection of the solved field, with PER-CORNER colors: each corner
 /// takes its cell's color, so a biome boundary renders as a smooth gradient
 /// across its boundary faces — a hard color seam or single-vertex color pinch
@@ -2301,6 +2337,14 @@ fn build_mesh(
         .collect();
 
     let road_color = bevy::prelude::Color::srgb(0.5, 0.42, 0.3).to_linear().to_f32_array();
+    let road_mat_color = |m: u8| -> [f32; 4] {
+        match m {
+            ROAD_MAT_DIRT => bevy::prelude::Color::srgb(0.45, 0.33, 0.22),
+            ROAD_MAT_SAND => bevy::prelude::Color::srgb(0.78, 0.70, 0.50),
+            ROAD_MAT_ROCK => bevy::prelude::Color::srgb(0.40, 0.38, 0.36),
+            _ => bevy::prelude::Color::srgb(0.52, 0.50, 0.47), // gravel
+        }.to_linear().to_f32_array()
+    };
     let town_color = crate::theme::WARNING.to_linear().to_f32_array();
     let entry_color = bevy::prelude::Color::srgb(0.42, 0.33, 0.24).to_linear().to_f32_array();
     let mut tris = Vec::with_capacity(grid.n);
@@ -2361,7 +2405,7 @@ fn build_mesh(
         } else if face_solid(grid, &painted.towns, fi) {
             [town_color; 3]
         } else if face_solid(grid, &painted.roads, fi) {
-            [road_color; 3]
+            [road_mat_color(face_road_material(grid, cells, landform, slope_class, fi)); 3]
         } else {
             // Boundary faces render ONE flat color — the equal-weight average
             // of the distinct corner colors (50/50 for a pair) — so band
