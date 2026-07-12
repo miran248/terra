@@ -86,6 +86,48 @@ pub struct LevelLandform(pub Vec<u8>);
 #[derive(Resource)]
 pub struct LevelRoadMaterial(pub Vec<u8>);
 
+/// Distance-based render culling for scatter props: beyond `0` metres the
+/// entity is hidden. Tiny ground cover culls close, trees stay visible far.
+#[derive(Component, Copy, Clone)]
+pub struct CullRange(pub f32);
+
+/// Per-flora-kind cull distance (metres) — the smaller the prop, the sooner it
+/// stops being drawn in the distance.
+fn flora_cull(kind: u8) -> f32 {
+    use shared::level::*;
+    match kind {
+        FLORA_FLOWER | FLORA_GRASS | FLORA_MUSHROOM | FLORA_REED => 90.0,
+        FLORA_BUSH | FLORA_BERRY | FLORA_CACTUS | FLORA_ROCK => 180.0,
+        FLORA_LOG => 260.0,
+        FLORA_TREE | FLORA_DEADTREE => 550.0,
+        _ => 300.0,
+    }
+}
+
+/// Hide props past their cull range from the camera (throttled — the set only
+/// changes as the player moves). Frustum culling is on top of this, in Bevy.
+fn cull_props(
+    time: Res<Time>,
+    mut timer: Local<f32>,
+    camera: Query<&Transform, With<MainCamera>>,
+    mut props: Query<(&CullRange, &GlobalTransform, &mut Visibility)>,
+) {
+    *timer += time.delta_secs();
+    if *timer < 0.2 {
+        return;
+    }
+    *timer = 0.0;
+    let Ok(cam) = camera.single() else { return };
+    let eye = cam.translation;
+    for (range, tf, mut vis) in &mut props {
+        let far = tf.translation().distance_squared(eye) > range.0 * range.0;
+        let want = if far { Visibility::Hidden } else { Visibility::Inherited };
+        if *vis != want {
+            *vis = want;
+        }
+    }
+}
+
 /// Region names + per-face region ids for the HUD.
 #[derive(Resource)]
 pub struct LevelRegions {
@@ -119,7 +161,7 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                (orient_player, camera_follow, teleport_player)
+                (orient_player, camera_follow, teleport_player, cull_props)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -230,9 +272,11 @@ fn setup_map(
             let scale = 0.7 + (h & 0xff) as f32 / 255.0 * 0.6;
             let yaw = (h >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
             let rot = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
+            let cull = flora_cull(f.kind);
             match f.kind {
                 FLORA_TREE => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(trunk_mesh.clone()),
                         MeshMaterial3d(trunk_mat.clone()),
                         RigidBody::Static,
@@ -242,6 +286,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(canopy_mesh.clone()),
                         MeshMaterial3d(canopy_mats[(h >> 16) as usize % canopy_mats.len()].clone()),
                         Transform::from_translation(pos + up * 5.2 * scale)
@@ -251,6 +296,7 @@ fn setup_map(
                 }
                 FLORA_BUSH => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(bush_mesh.clone()),
                         MeshMaterial3d(bush_mat.clone()),
                         Transform::from_translation(pos + up * 0.45 * scale)
@@ -260,6 +306,7 @@ fn setup_map(
                 }
                 FLORA_FLOWER => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(flower_mesh.clone()),
                         MeshMaterial3d(flower_mats[(h >> 16) as usize % flower_mats.len()].clone()),
                         Transform::from_translation(pos + up * 0.22)
@@ -274,6 +321,7 @@ fn setup_map(
                     let boulder = scale > 1.05;
                     let size = if boulder { scale * 1.8 } else { scale };
                     let mut e = commands.spawn((
+                        CullRange(cull),
                         Mesh3d(rock_mesh.clone()),
                         MeshMaterial3d(rock_mats[(h >> 16) as usize % rock_mats.len()].clone()),
                         Transform::from_translation(pos + up * 0.25 * size)
@@ -289,6 +337,7 @@ fn setup_map(
                 }
                 FLORA_GRASS => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(grass_mesh.clone()),
                         MeshMaterial3d(grass_mat.clone()),
                         Transform::from_translation(pos + up * 0.18 * scale)
@@ -300,6 +349,7 @@ fn setup_map(
                     // Fallen: lie along the ground (trunk axis tangent to up).
                     let lie = rot * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(log_mesh.clone()),
                         MeshMaterial3d(log_mat.clone()),
                         RigidBody::Static,
@@ -311,6 +361,7 @@ fn setup_map(
                 }
                 FLORA_MUSHROOM => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(mush_mesh.clone()),
                         MeshMaterial3d(mush_mat.clone()),
                         Transform::from_translation(pos + up * 0.16 * scale)
@@ -320,6 +371,7 @@ fn setup_map(
                 }
                 FLORA_CACTUS => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(cactus_mesh.clone()),
                         MeshMaterial3d(cactus_mat.clone()),
                         RigidBody::Static,
@@ -331,6 +383,7 @@ fn setup_map(
                 }
                 FLORA_BERRY => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(berry_mesh.clone()),
                         MeshMaterial3d(berry_mat.clone()),
                         Transform::from_translation(pos + up * 0.4 * scale)
@@ -340,6 +393,7 @@ fn setup_map(
                 }
                 FLORA_DEADTREE => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(dead_mesh.clone()),
                         MeshMaterial3d(dead_mat.clone()),
                         RigidBody::Static,
@@ -351,6 +405,7 @@ fn setup_map(
                 }
                 FLORA_REED => {
                     commands.spawn((
+                        CullRange(cull),
                         Mesh3d(reed_mesh.clone()),
                         MeshMaterial3d(reed_mat.clone()),
                         Transform::from_translation(pos + up * 0.65 * scale)
