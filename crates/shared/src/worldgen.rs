@@ -614,7 +614,10 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::BuildMesh => {
             let (tris, cols) =
-                build_mesh(&state.grid, state.terrain(), &state.cells, &state.painted, &state.water_depth);
+                build_mesh(
+                &state.grid, state.terrain(), &state.cells, &state.painted,
+                &state.water_depth, &state.landform, &state.slope_class,
+            );
             vec![Event::MeshBuilt(tris, cols)]
         }
         Command::BuildTags => {
@@ -1253,14 +1256,19 @@ fn land_cover(terrain: &TerrainGen, landform: u8, pos: SpherePos) -> Terrain {
     let t = terrain.temperature_at(pos);
     let m = terrain.moisture_at(pos);
     let e = terrain.elevation_at(pos);
-    // High ground: bare rock, capped by cold (snow/glacier) or heat (volcanic).
+    // A mountain is not one thing: snow caps the high cells (above the snow
+    // line), forest clothes the warm/wet lower flanks, bare rock fills the
+    // rugged middle, ice covers the cold ranges, and hot high peaks are
+    // volcanic. So a single range shows rock AND snow AND (sometimes) forest.
     if matches!(landform, LANDFORM_MOUNTAINS | LANDFORM_PLATEAU) {
-        return if t < -20.0 {
+        return if t < -12.0 {
             Terrain::Glacier
-        } else if t < -5.0 {
+        } else if e > 0.70 {
+            if t > 24.0 { Terrain::Volcanic } else { Terrain::Snow }
+        } else if t < -2.0 {
             Terrain::Snow
-        } else if t > 22.0 && e > 0.72 {
-            Terrain::Volcanic
+        } else if m > 0.15 && e < 0.55 {
+            Terrain::Forest
         } else {
             Terrain::Mountain
         };
@@ -2285,6 +2293,8 @@ fn build_mesh(
     cells: &[Terrain],
     painted: &Painted,
     water_depth: &[u8],
+    landform: &[u8],
+    slope_class: &[u8],
 ) -> (Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>) {
     let vert_r: Vec<f32> = grid.verts.iter()
         .map(|dir| terrain.render_radius(SpherePos::new(*dir)))
@@ -2311,10 +2321,8 @@ fn build_mesh(
                 road_color
             } else {
                 let mut c = cells[vi].color().to_linear().to_f32_array();
-                // Water darkens with depth (shallow shore → dark abyss), so the
-                // sea reads as a smooth depth gradient across the per-corner
-                // colors instead of a hard tile line.
                 if cells[vi].is_water() {
+                    // Water darkens with depth (shallow shore → dark abyss).
                     let f = match water_depth[vi] {
                         DEPTH_SHALLOW => 1.0,
                         DEPTH_DEEP => 0.62,
@@ -2322,6 +2330,27 @@ fn build_mesh(
                     };
                     for ch in c.iter_mut().take(3) {
                         *ch *= f;
+                    }
+                } else {
+                    // Land: the SHAPE reads through the cover. Higher landforms
+                    // darken (ruggedness), and a steep/cliff cell bleeds toward
+                    // bare rock — so a forested hill, a forested mountain and a
+                    // cliff face all look distinct even under the same biome.
+                    let shade = match landform[vi] {
+                        LANDFORM_MOUNTAINS => 0.82,
+                        LANDFORM_PLATEAU => 0.90,
+                        LANDFORM_HILLS => 0.96,
+                        _ => 1.0,
+                    };
+                    for ch in c.iter_mut().take(3) {
+                        *ch *= shade;
+                    }
+                    if slope_class[vi] >= SLOPE_STEEP {
+                        let rock = [0.24, 0.21, 0.19];
+                        let k = if slope_class[vi] == SLOPE_CLIFF { 0.6 } else { 0.3 };
+                        for i in 0..3 {
+                            c[i] = c[i] * (1.0 - k) + rock[i] * k;
+                        }
                     }
                 }
                 c
