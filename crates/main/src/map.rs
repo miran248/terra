@@ -206,6 +206,7 @@ fn setup_map(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
 ) {
     let level_bytes = include_bytes!("../assets/level_1337.bin");
     let level: LevelData = postcard::from_bytes(level_bytes).expect("deserialize level");
@@ -569,23 +570,13 @@ fn setup_map(
         ));
     }
 
-    // Water
+    // Water: a global sea sphere with the depth-fading, rippling water material
+    // (see crate::water). Per-body lakes/rivers are later phases.
     commands.spawn((
         // Sit the sea surface a couple units below the reference radius; a
         // 0.5-unit gap z-fought with the shoreline terrain (flickering speckle).
         Mesh3d(meshes.add(Sphere::new(PLANET_RADIUS - 2.0))),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            // Lighter, less-saturated blue than theme::WATER_SURFACE so the far
-            // ocean reads closer to the sky, softening the sky/ocean horizon line
-            // (the horizon is only ~150 units away at eye level — too close for
-            // distance fog alone to blend).
-            base_color: Color::srgba(0.28, 0.5, 0.72, 0.6),
-            alpha_mode: AlphaMode::Blend,
-            cull_mode: None,
-            perceptual_roughness: 0.3,
-            reflectance: 0.1,
-            ..default()
-        })),
+        MeshMaterial3d(water_mats.add(crate::water::water_material())),
         Transform::default(),
         Ground,
     ));

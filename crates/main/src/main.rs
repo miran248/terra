@@ -7,18 +7,21 @@ mod physics;
 mod prestige;
 mod turret;
 mod ui;
+mod water;
 mod wave;
 mod weather;
 mod zombie;
 
 use avian3d::prelude::*;
-use bevy::camera::Hdr;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
+use bevy::camera::Hdr;
 use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
-use bevy::light::atmosphere::ScatteringMedium;
 use bevy::light::Atmosphere;
+use bevy::light::AtmosphereEnvironmentMapLight;
+use bevy::light::atmosphere::ScatteringMedium;
 use bevy::pbr::AtmosphereSettings;
+use bevy::post_process::bloom::{Bloom, BloomPrefilter};
 use bevy::prelude::*;
 use shared::sphere::PLANET_RADIUS;
 use shared::state::AppState;
@@ -27,7 +30,9 @@ fn main() {
     App::new()
         .add_plugins((
             DefaultPlugins,
-            PhysicsPlugins::default().build().disable::<PhysicsInterpolationPlugin>(),
+            PhysicsPlugins::default()
+                .build()
+                .disable::<PhysicsInterpolationPlugin>(),
             PhysicsDiagnosticsPlugin,
             PhysicsDiagnosticsUiPlugin,
             FrameTimeDiagnosticsPlugin::default(),
@@ -37,7 +42,10 @@ fn main() {
             // PhysicsDebugPlugin,
         ))
         .insert_resource(SubstepCount(12))
-        .insert_resource(PhysicsDiagnosticsUiSettings { enabled: false, ..default() })
+        .insert_resource(PhysicsDiagnosticsUiSettings {
+            enabled: false,
+            ..default()
+        })
         // Soft sky-blue fill so the shadowed sides of terrain and flora read as
         // lit rather than pure black. The sun (map.rs) still does the key light.
         // Cool constant fill that reads as moonlight on the night hemisphere
@@ -65,6 +73,7 @@ fn main() {
             prestige::PrestigePlugin,
             physics::PhysicsPlugin,
             weather::WeatherPlugin,
+            water::WaterPlugin,
         ))
         .add_systems(Startup, setup_camera)
         .run();
@@ -84,14 +93,17 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
     // A full 60_000/SHELL match oversaturates into gray/brown haze that swallows
     // the whole planet at the horizon; a low, flat multiplier keeps a blue sky
     // and lets distant land stay visible rather than washing out to sky.
-    let medium = media.add(
-        ScatteringMedium::earth(256, 256).with_density_multiplier(50.0),
-    );
+    let medium = media.add(ScatteringMedium::earth(256, 256).with_density_multiplier(50.0));
     // Planet is centred at the world origin (unlike the default surface-relative
     // placement), so pin the Atmosphere entity there with an identity Transform.
     commands.spawn((
         Atmosphere {
-            inner_radius: PLANET_RADIUS,
+            // Drop the atmosphere's "ground" below the water surface so the sky
+            // dome engulfs the planet down past the visible horizon instead of
+            // ending in a band above it. This is deep (-96) to hide a band that a
+            // proper water material would otherwise hide itself (depth-limited
+            // visibility); it can rise toward ~-32 once water shades correctly.
+            inner_radius: PLANET_RADIUS - 24.0,
             outer_radius: PLANET_RADIUS + SHELL,
             // Low albedo → less white multiscattered light bouncing back up, so
             // the sky reads as a deeper blue rather than a pale/gray blue.
@@ -110,19 +122,29 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
         // surfaces (the capsule + nearby ground); disable it. HDR + atmosphere
         // already have enough tonal range to avoid banding.
         DebandDither::Disabled,
-        // Bloom (threshold 0) glows the sun-lit ground — and the sun is re-aimed
-        // at the player's feet each frame, so the brightest patch is always a
-        // disc around the player. Bloom's mip up/downsampling turned that into a
-        // grainy, flickering glow (and it runs after TAA, so TAA couldn't fix
-        // it). Disabled for now; re-add a thresholded/subtle bloom later if the
-        // emissive campfire/projectiles need the glow.
-        // Bloom::NATURAL,
+        // Thresholded bloom: only genuinely bright pixels (emissive campfire,
+        // projectiles) glow, not the whole daylit scene. The old player-centred
+        // grain was the sun hotspot riding the player, which is gone now that the
+        // sun is a fixed world body — so bloom is safe to run again.
+        Bloom {
+            intensity: 0.18,
+            prefilter: BloomPrefilter {
+                threshold: 0.7,
+                threshold_softness: 0.4,
+            },
+            ..Bloom::NATURAL
+        },
         // The dense flora packed around the player is a field of sub-pixel
         // triangles that shimmer (grain) as the camera moves — a temporal
         // problem MSAA can't fix. TAA resolves it over frames. TAA requires MSAA
         // off (they don't combine).
         Msaa::Off,
         TemporalAntiAliasing::default(),
+        // Generates a sky environment cubemap from the atmosphere for image-based
+        // lighting — gives the water (and all PBR surfaces) real sky reflections
+        // and ambient that tracks the day/night sky. The engine auto-creates the
+        // cubemap image.
+        AtmosphereEnvironmentMapLight::default(),
         AtmosphereSettings {
             // The whole world spans ~2000 units; shrink the aerial-perspective
             // range from Earth's 32 km so distance haze reads at this scale, but
