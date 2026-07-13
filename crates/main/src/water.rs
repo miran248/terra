@@ -14,6 +14,19 @@ use shared::terrain::Terrain;
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 
+/// Per-face centroids `(v0+v1+v2)/3`, computed once and shared by every water
+/// builder (and river flow). Using a face's centroid radius to place its water
+/// skin — instead of each raw corner radius — divides a single outlier corner's
+/// influence by three and spreads it evenly across the face, so a lone spiking
+/// vertex no longer tents the surface.
+pub fn face_centroids(tris: &[[[f32; 3]; 3]]) -> Vec<Vec3> {
+    tris.iter()
+        .map(|t| {
+            (Vec3::from_array(t[0]) + Vec3::from_array(t[1]) + Vec3::from_array(t[2])) / 3.0
+        })
+        .collect()
+}
+
 /// Extension uniforms (group 2, binding 100). Colours are linear.
 #[derive(Clone, Copy, ShaderType, Reflect, Debug)]
 pub struct WaterParams {
@@ -82,138 +95,23 @@ pub fn river_material() -> WaterMaterial {
     m
 }
 
-/// Build a flat water-surface mesh for each connected lake (Phase 2). Lakes on
-/// high ground aren't covered by the sea sphere (which sits at sea level), so
-/// they get their own surface at the lake's waterline. `tris` are the baked,
-/// displaced terrain triangles; `face_types` are per-face `Terrain` discriminants.
-pub fn build_lake_surfaces(tris: &[[[f32; 3]; 3]], face_types: &[u8]) -> Option<Mesh> {
-    use std::collections::{HashMap, HashSet};
-    let lake = Terrain::Lake as u8;
-    let n = tris.len();
-    let vtris: Vec<[Vec3; 3]> = tris
-        .iter()
-        .map(|t| [Vec3::from_array(t[0]), Vec3::from_array(t[1]), Vec3::from_array(t[2])])
-        .collect();
-    // Quantise a vertex position to a key so shared corners map together. Coarse
-    // (~1 unit) since distinct grid vertices are ~35 units apart, so this reliably
-    // merges shared corners despite any float wobble.
-    let vkey = |v: Vec3| [v.x.round() as i64, v.y.round() as i64, v.z.round() as i64];
-
-    fn find(p: &mut [usize], mut x: usize) -> usize {
-        while p[x] != x {
-            p[x] = p[p[x]];
-            x = p[x];
-        }
-        x
-    }
-
-    // Every face touching each vertex (used for both grouping and expansion).
-    let mut vk_faces: HashMap<[i64; 3], Vec<usize>> = HashMap::new();
-    for fi in 0..n {
-        for k in 0..3 {
-            vk_faces.entry(vkey(vtris[fi][k])).or_default().push(fi);
-        }
-    }
-
-    // Group Lake faces into bodies by SHARED VERTICES (union-find). Vertex
-    // connectivity means a lake that's only pinched at a corner still counts as
-    // one body, so it can't fragment into detached pieces at different heights.
-    let mut parent: Vec<usize> = (0..n).collect();
-    for faces in vk_faces.values() {
-        let lakes: Vec<usize> = faces.iter().copied().filter(|&f| face_types.get(f).copied() == Some(lake)).collect();
-        for w in lakes.windows(2) {
-            let (a, b) = (find(&mut parent, w[0]), find(&mut parent, w[1]));
-            parent[a] = b;
-        }
-    }
-
-    // Per body: the Lake faces, and the radii of ALL their vertices — the altitude
-    // is measured from Lake tiles ONLY.
-    let mut body_faces: HashMap<usize, Vec<usize>> = HashMap::new();
-    let mut body_radii: HashMap<usize, Vec<f32>> = HashMap::new();
-    for fi in 0..n {
-        if face_types.get(fi).copied() == Some(lake) {
-            let rep = find(&mut parent, fi);
-            body_faces.entry(rep).or_default().push(fi);
-            let e = body_radii.entry(rep).or_default();
-            for k in 0..3 {
-                e.push(vtris[fi][k].length());
-            }
-        }
-    }
-
-    let mut positions = Vec::new();
-    let mut normals = Vec::new();
-    let mut uvs = Vec::new();
-    for (rep, faces) in &body_faces {
-        // Single altitude for the whole body: a high percentile of the Lake tiles'
-        // vertex radii (the shallow rim ≈ waterline; the worldgen keeps lakes below
-        // their shore). Absolute radius from the planet centre → curvature-correct
-        // and identical for every vertex.
-        let mut radii = body_radii[rep].clone();
-        radii.sort_by(f32::total_cmp);
-        let fill_r = radii[radii.len() * 9 / 10];
-
-        // Render the Lake faces, then EXPAND one ring into neighbouring faces to
-        // fill the gaps up to the true waterline. All rendered at the same fill_r,
-        // ignoring the neighbours' own altitude; where their terrain rises above
-        // fill_r they're simply hidden behind it (depth test).
-        let mut render: HashSet<usize> = faces.iter().copied().collect();
-        for &f in faces {
-            for k in 0..3 {
-                if let Some(neigh) = vk_faces.get(&vkey(vtris[f][k])) {
-                    for &nf in neigh {
-                        render.insert(nf);
-                    }
-                }
-            }
-        }
-        for f in render {
-            for k in 0..3 {
-                let dir = vtris[f][k].normalize();
-                positions.push((dir * fill_r).to_array());
-                normals.push(dir.to_array());
-                uvs.push([0.0, 0.0]);
-            }
-        }
-    }
-    if positions.is_empty() {
-        return None;
-    }
-    let mut mesh = Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
-    Some(mesh)
-}
-
-/// Build a single flat ocean-surface mesh at `sea_r` over every face that dips
-/// below sea level — i.e. real ocean *and* the submerged part of the coast (beach
-/// tiles below 0 m). Selecting by height rather than only `Ocean` faces closes
-/// the gap that appeared between the ocean edge and the beach. Lake/River faces
-/// are excluded (they have their own surfaces).
-pub fn build_ocean_surface(tris: &[[[f32; 3]; 3]], face_types: &[u8], sea_r: f32) -> Option<Mesh> {
-    let lake = Terrain::Lake as u8;
-    let river = Terrain::River as u8;
+/// Build the flat water-surface mesh — sea and lakes together. The clustering
+/// into connected bodies + per-body waterline is done at gen time
+/// (`worldgen::water_surface_radii`); `water_r[fi]` is that per-face radius, 0.0
+/// for non-surface faces. Each face is simply drawn flat at its radius, so the
+/// sea can't flood an inland basin and a lake can't spill onto land.
+pub fn build_water_surface(tris: &[[[f32; 3]; 3]], water_r: &[f32]) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     for (fi, t) in tris.iter().enumerate() {
-        let kind = face_types.get(fi).copied();
-        if kind == Some(lake) || kind == Some(river) {
-            continue;
-        }
-        // Underwater if any corner is below sea level (covers the coastline).
-        let underwater = t.iter().any(|c| Vec3::from_array(*c).length() < sea_r);
-        if !underwater {
+        let r = water_r.get(fi).copied().unwrap_or(0.0);
+        if r <= 0.0 {
             continue;
         }
         for k in 0..3 {
             let dir = Vec3::from_array(t[k]).normalize();
-            positions.push((dir * sea_r).to_array());
+            positions.push((dir * r).to_array());
             normals.push(dir.to_array());
             uvs.push([0.0, 0.0]);
         }
@@ -235,8 +133,33 @@ pub fn build_ocean_surface(tris: &[[[f32; 3]; 3]], face_types: &[u8], sea_r: f32
 /// height. Each face carries its downhill flow direction (from its highest to
 /// lowest corner, projected onto the surface) encoded in vertex colour, which the
 /// water shader reads to scroll ripples downstream.
-pub fn build_river_surfaces(tris: &[[[f32; 3]; 3]], face_types: &[u8]) -> Option<Mesh> {
+pub fn build_river_surfaces(
+    tris: &[[[f32; 3]; 3]],
+    centroids: &[Vec3],
+    face_types: &[u8],
+) -> Option<Mesh> {
+    use std::collections::HashMap;
     let river = Terrain::River as u8;
+    let vkey = |v: Vec3| [v.x.round() as i64, v.y.round() as i64, v.z.round() as i64];
+
+    // Per shared vertex: mean of the centroid radii of the river faces touching
+    // it. Sampling this at each corner gives ONE continuous surface — adjacent
+    // faces agree on their shared corner's height, so there are no steps — while
+    // the centroid-radius average still keeps any single outlier corner from
+    // tenting the water.
+    let mut vsum: HashMap<[i64; 3], (f32, u32)> = HashMap::new();
+    for (fi, t) in tris.iter().enumerate() {
+        if face_types.get(fi).copied() != Some(river) {
+            continue;
+        }
+        let cr = centroids[fi].length();
+        for k in 0..3 {
+            let e = vsum.entry(vkey(Vec3::from_array(t[k]))).or_insert((0.0, 0));
+            e.0 += cr;
+            e.1 += 1;
+        }
+    }
+
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
@@ -254,13 +177,15 @@ pub fn build_river_surfaces(tris: &[[[f32; 3]; 3]], face_types: &[u8]) -> Option
         // Downhill across the face: highest corner → lowest corner, made tangent.
         let hi = (0..3).max_by(|&a, &b| r[a].total_cmp(&r[b])).unwrap();
         let lo = (0..3).min_by(|&a, &b| r[a].total_cmp(&r[b])).unwrap();
-        let face_dir = ((c[0] + c[1] + c[2]) / 3.0).normalize();
+        let face_dir = centroids[fi].normalize();
         let mut flow = c[lo] - c[hi];
         flow -= face_dir * flow.dot(face_dir);
         let flow = flow.normalize_or_zero() * 0.5 + Vec3::splat(0.5); // encode to 0..1
         for k in 0..3 {
             let dir = c[k].normalize();
-            positions.push((dir * (r[k] + 0.5)).to_array());
+            let (sum, cnt) = vsum[&vkey(c[k])];
+            let fill_r = sum / cnt as f32 + 0.5;
+            positions.push((dir * fill_r).to_array());
             normals.push(dir.to_array());
             uvs.push([0.0, 0.0]);
             colors.push([flow.x, flow.y, flow.z, 1.0]);
@@ -337,8 +262,11 @@ mod tests {
 
     #[test]
     fn lake_surface_is_connected_and_level() {
-        let (tris, ft) = hex_lake();
-        let mesh = build_lake_surfaces(&tris, &ft).expect("a lake mesh");
+        let (tris, _ft) = hex_lake();
+        // Gen bakes one rim-locked radius per body; here the whole hex is one
+        // body, so every face shares a single waterline radius.
+        let water_r = vec![100.0f32; tris.len()];
+        let mesh = build_water_surface(&tris, &water_r).expect("a lake mesh");
         let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
             panic!("no positions");

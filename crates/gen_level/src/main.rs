@@ -42,6 +42,7 @@ fn serialize(state: &GenState, out: &PathBuf) {
         terrain_colors: state.mesh_colors.clone(),
         unit_tris: unit_tris_arr,
         face_types: state.tiles.iter().map(|t| *t as u8).collect(),
+        face_water_r: shared::worldgen::water_surface_radii(&state.grid, terrain, &state.cells),
         face_blend: state.blends.clone(),
         face_tag_off: state.tag_off.clone(),
         face_tag_data: state.tag_data.clone(),

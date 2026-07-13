@@ -582,16 +582,15 @@ fn setup_map(
         ));
     }
 
-    // Water (see crate::water): the ocean is a flat surface over ocean faces at
-    // sea level — NOT a full sphere, which used to poke up inside lakes whose bed
-    // dips below sea level. Sea sits a couple units below the reference radius so
-    // it doesn't z-fight the shoreline.
+    // Water (see crate::water): sea + lakes are one mesh, built from the
+    // gen-time per-face waterline (`face_water_r`) which clusters water into
+    // connected bodies — so the sea can't flood an inland lake basin and lakes
+    // can't spill onto land. Rivers are their own flowing mesh.
+    let centroids = crate::water::face_centroids(&level.terrain_tris);
     let water_mat = water_mats.add(crate::water::water_material());
-    if let Some(ocean) =
-        crate::water::build_ocean_surface(&level.terrain_tris, &level.face_types, PLANET_RADIUS - 2.0)
-    {
+    if let Some(water) = crate::water::build_water_surface(&level.terrain_tris, &level.face_water_r) {
         commands.spawn((
-            Mesh3d(meshes.add(ocean)),
+            Mesh3d(meshes.add(water)),
             MeshMaterial3d(water_mat.clone()),
             Transform::default(),
             Ground,
@@ -599,21 +598,10 @@ fn setup_map(
     }
 
     // River surfaces (Phase 3): render River faces as downstream-flowing water.
-    if let Some(river) = crate::water::build_river_surfaces(&level.terrain_tris, &level.face_types) {
+    if let Some(river) = crate::water::build_river_surfaces(&level.terrain_tris, &centroids, &level.face_types) {
         commands.spawn((
             Mesh3d(meshes.add(river)),
             MeshMaterial3d(water_mats.add(crate::water::river_material())),
-            Transform::default(),
-            Ground,
-        ));
-    }
-
-    // Lake water surfaces (Phase 2): a thin water skin over lake faces (lakes
-    // above sea level were never covered by the ocean).
-    if let Some(lake_mesh) = crate::water::build_lake_surfaces(&level.terrain_tris, &level.face_types) {
-        commands.spawn((
-            Mesh3d(meshes.add(lake_mesh)),
-            MeshMaterial3d(water_mat.clone()),
             Transform::default(),
             Ground,
         ));

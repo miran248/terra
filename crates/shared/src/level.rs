@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 15;
+pub const LEVEL_FORMAT_VERSION: u32 = 17;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -53,6 +53,11 @@ pub struct LevelData {
     pub unit_tris: Vec<[[f32; 3]; 3]>,
     /// Per-face terrain type (precomputed, matches terrain_colors).
     pub face_types: Vec<u8>,
+    /// Per-face lake waterline radius (0.0 = not a lake-surface face). Computed
+    /// at gen time by clustering `Lake ∪ LakeShore` into bodies and pinning one
+    /// rim-locked radius per body (see `worldgen::lake_surface_radii`). The
+    /// runtime just draws each face at this radius — no runtime clustering.
+    pub face_water_r: Vec<f32>,
     /// Variable-length tag lists per face: face fi's tags are
     /// `face_tag_data[face_tag_off[fi] as usize..face_tag_off[fi + 1] as usize]`.
     pub face_tag_off: Vec<u32>,

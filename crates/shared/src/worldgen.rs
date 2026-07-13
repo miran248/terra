@@ -2304,6 +2304,101 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 /// (roads are an overlay — the cells still hold the terrain beneath).
 /// Reduce a per-cell u8 to per-face by taking the max over the face's corner
 /// cells (used for slope/depth: a face is as steep/deep as its worst corner).
+/// Label EVERY member vertex with its connected-component id (-1 for non-members),
+/// walking shared-edge adjacency — the full-partition form of [`flood_cells`].
+/// The one clustering primitive: run it with any membership predicate (a single
+/// type, a set of types, water bodies, biome masses, …) and query membership by
+/// "same id ⇒ same cluster". Run it with different predicates and a vertex can
+/// land in several (overlapping) clusterings.
+pub fn cluster_vertices(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32>, usize) {
+    let mut comp = vec![-1i32; grid.nv];
+    let mut visited = vec![false; grid.nv];
+    let mut count = 0usize;
+    for start in 0..grid.nv {
+        if visited[start] || !member(start) {
+            continue;
+        }
+        let id = count as i32;
+        count += 1;
+        for v in flood_cells(grid, start, &mut visited, &member) {
+            comp[v] = id;
+        }
+    }
+    (comp, count)
+}
+
+/// Per-face water-surface radius (0.0 = no water). Sea and lakes are clustered
+/// SEPARATELY — one `cluster_vertices` pass each, with its own membership of the
+/// water type plus every tile that can neighbour it (its transition tiles):
+///   • lakes: `Lake` + `LakeShore` + `Cliff`;
+///   • ocean: `Ocean` + `Beach` + `Cliff`.
+/// Keeping the passes independent means a lake with a Cliff shore can't fuse
+/// into the sea; the shared transition types (Cliff) are just the seams. Each
+/// body gets ONE waterline: sea bodies sit at sea level, lake bodies at their
+/// `LakeShore` rim (a low percentile of the shore radii — the shore, not the
+/// deep bed). A sea face is drawn wherever it touches the sea body (coast hidden
+/// below terrain by the depth test); a lake face only when ALL THREE corners
+/// share the body, so lake water never spills onto land.
+pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
+    let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
+    // A water type plus the tiles that can border it (transition tiles).
+    let lake_member = |t: Terrain| matches!(t, Terrain::Lake | Terrain::LakeShore | Terrain::Cliff);
+    let ocean_member = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::Beach | Terrain::Cliff);
+
+    let vert_r: Vec<f32> =
+        grid.verts.iter().map(|d| terrain.render_radius(SpherePos::new(*d))).collect();
+    let (lake_c, nlake) = cluster_vertices(grid, |v| lake_member(cells[v]));
+    let (ocean_c, nocean) = cluster_vertices(grid, |v| ocean_member(cells[v]));
+
+    // A body only counts if it actually holds its water type (a pure-transition
+    // island of Cliff isn't a lake). Lake bodies also collect their rim radii.
+    let mut is_lake = vec![false; nlake];
+    let mut rim: Vec<Vec<f32>> = vec![Vec::new(); nlake];
+    let mut peak = vec![f32::MIN; nlake];
+    let mut is_sea = vec![false; nocean];
+    for v in 0..grid.nv {
+        if lake_c[v] >= 0 {
+            let c = lake_c[v] as usize;
+            peak[c] = peak[c].max(vert_r[v]);
+            match cells[v] {
+                Terrain::Lake => is_lake[c] = true,
+                Terrain::LakeShore => rim[c].push(vert_r[v]),
+                _ => {}
+            }
+        }
+        if ocean_c[v] >= 0 && cells[v] == Terrain::Ocean {
+            is_sea[ocean_c[v] as usize] = true;
+        }
+    }
+    let lake_r: Vec<f32> = (0..nlake)
+        .map(|c| {
+            if rim[c].is_empty() {
+                peak[c]
+            } else {
+                rim[c].sort_by(f32::total_cmp);
+                rim[c][rim[c].len() / 10]
+            }
+        })
+        .collect();
+
+    (0..grid.n)
+        .map(|fi| {
+            let idx = grid.face_verts[fi];
+            // Sea: any corner in a real sea body (coast overdraw hidden by depth).
+            let oc = [ocean_c[idx[0] as usize], ocean_c[idx[1] as usize], ocean_c[idx[2] as usize]];
+            if oc.iter().any(|&c| c >= 0 && is_sea[c as usize]) {
+                return sea_r;
+            }
+            // Lake: strict — all three corners in the same real lake body.
+            let lc = [lake_c[idx[0] as usize], lake_c[idx[1] as usize], lake_c[idx[2] as usize]];
+            if lc[0] >= 0 && lc[1] == lc[0] && lc[2] == lc[0] && is_lake[lc[0] as usize] {
+                return lake_r[lc[0] as usize];
+            }
+            0.0
+        })
+        .collect()
+}
+
 pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.n)
         .map(|fi| grid.face_verts[fi].iter().map(|&vi| per_cell[vi as usize]).max().unwrap_or(0))

@@ -78,6 +78,20 @@ impl Terrain {
     }
 
     pub fn is_land(&self) -> bool { !self.is_water() }
+
+    /// A shore/transition kind — the band where water meets land. Not water
+    /// itself, but not a solid land biome either.
+    pub fn is_shore(&self) -> bool {
+        matches!(
+            self,
+            Terrain::LakeShore | Terrain::RiverBank | Terrain::Beach | Terrain::Cliff
+        )
+    }
+
+    /// A solid land biome — land that is neither water nor a shore transition.
+    pub fn is_land_biome(&self) -> bool {
+        self.is_land() && !self.is_shore()
+    }
 }
 
 // ---- terrain generation ----
