@@ -1,12 +1,14 @@
+use avian3d::prelude::LinearVelocity;
 use bevy::asset::RenderAssetUsages;
-use bevy::camera::RenderTarget;
+use bevy::camera::{RenderTarget, ScalingMode};
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureUsages,
 };
-use shared::sphere::PLANET_RADIUS;
+use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
+use shared::terrain::TerrainGen;
 use shared::theme;
 use crate::loot::{LootMaterial, LootWeapon};
 use crate::map::{Settlement, Player};
@@ -46,14 +48,179 @@ impl Default for MinimapTimer {
     fn default() -> Self { Self(Timer::from_seconds(0.05, TimerMode::Repeating)) }
 }
 
+/// Full-screen teleport map (toggled with `M`).
+#[derive(Resource, Default)]
+struct WorldMapOpen(bool);
+
+#[derive(Component)]
+struct WorldMapCamera;
+
+#[derive(Component)]
+struct WorldMapRoot;
+
+/// Render-target resolution for the full-screen map.
+const MAP_TEX: u32 = 1024;
+/// How high above the player the map camera sits, meters.
+const MAP_HEIGHT: f32 = 3000.0;
+/// Half the world width the map covers (orthographic), meters.
+const MAP_HALF_EXTENT: f32 = 1200.0;
+/// The map image is a centred square this fraction of the viewport height.
+const MAP_VH: f32 = 96.0;
+
 impl Plugin for MinimapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MinimapTimer>()
-            .add_systems(Startup, setup_minimap)
+            .init_resource::<WorldMapOpen>()
+            .add_systems(Startup, (setup_minimap, setup_world_map))
             .add_systems(
                 Update,
                 (track_minimap_camera, draw_overlay).run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                Update,
+                (toggle_world_map, sync_world_map, track_world_map_camera, world_map_click)
+                    .run_if(in_state(AppState::Playing)),
             );
+    }
+}
+
+fn setup_world_map(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let mut image = Image::new_fill(
+        Extent3d { width: MAP_TEX, height: MAP_TEX, depth_or_array_layers: 1 },
+        TextureDimension::D2,
+        &[0, 0, 0, 255],
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::default(),
+    );
+    image.texture_descriptor.usage =
+        TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT;
+    let handle = images.add(image);
+
+    commands.spawn((
+        Camera3d::default(),
+        Camera { order: -2, is_active: false, ..default() },
+        RenderTarget::from(handle.clone()),
+        Msaa::Off,
+        Projection::from(OrthographicProjection {
+            scaling_mode: ScalingMode::Fixed {
+                width: 2.0 * MAP_HALF_EXTENT,
+                height: 2.0 * MAP_HALF_EXTENT,
+            },
+            // The camera sits MAP_HEIGHT above the surface, so the default far
+            // plane (~1000) clips the whole planet away (black map). Reach past it.
+            near: 1.0,
+            far: MAP_HEIGHT + 2.0 * PLANET_RADIUS,
+            ..OrthographicProjection::default_3d()
+        }),
+        Transform::from_xyz(0.0, PLANET_RADIUS + MAP_HEIGHT, 0.0).looking_at(Vec3::ZERO, Vec3::Z),
+        WorldMapCamera,
+    ));
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                width: Val::Percent(100.0),
+                height: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.6)),
+            GlobalZIndex(50),
+            Visibility::Hidden,
+            WorldMapRoot,
+        ))
+        .with_child((
+            ImageNode::new(handle),
+            Node { width: Val::Vh(MAP_VH), height: Val::Vh(MAP_VH), ..default() },
+        ));
+}
+
+fn toggle_world_map(keys: Res<ButtonInput<KeyCode>>, mut open: ResMut<WorldMapOpen>) {
+    if keys.just_pressed(KeyCode::KeyM) {
+        open.0 = !open.0;
+    }
+}
+
+/// Mirror the open flag onto the camera + overlay visibility.
+fn sync_world_map(
+    open: Res<WorldMapOpen>,
+    mut cam: Query<&mut Camera, With<WorldMapCamera>>,
+    mut root: Query<&mut Visibility, With<WorldMapRoot>>,
+) {
+    if !open.is_changed() {
+        return;
+    }
+    if let Ok(mut c) = cam.single_mut() {
+        c.is_active = open.0;
+    }
+    if let Ok(mut v) = root.single_mut() {
+        *v = if open.0 { Visibility::Visible } else { Visibility::Hidden };
+    }
+}
+
+/// Keep the map camera high above the player, looking straight down, north-up.
+fn track_world_map_camera(
+    player_q: Query<&Transform, (With<Player>, Without<WorldMapCamera>)>,
+    mut cam_q: Query<&mut Transform, With<WorldMapCamera>>,
+) {
+    let Ok(player_tf) = player_q.single() else { return };
+    let Ok(mut cam_tf) = cam_q.single_mut() else { return };
+    let up = player_tf.translation.normalize();
+    let mut north = WORLD_NORTH - up * WORLD_NORTH.dot(up);
+    north = if north.length_squared() < 1e-4 { up.any_orthonormal_vector() } else { north.normalize() };
+    cam_tf.translation = up * (PLANET_RADIUS + MAP_HEIGHT);
+    cam_tf.look_at(up * PLANET_RADIUS, north);
+}
+
+/// Click on the open map to teleport to that surface location.
+fn world_map_click(
+    mut open: ResMut<WorldMapOpen>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    windows: Query<&Window>,
+    cam_q: Query<&Transform, (With<WorldMapCamera>, Without<Player>)>,
+    terrain: Option<Res<TerrainGen>>,
+    mut player_q: Query<(&mut Transform, &mut LinearVelocity, &mut SpherePos), (With<Player>, Without<WorldMapCamera>)>,
+) {
+    if !open.0 || !mouse.just_pressed(MouseButton::Left) {
+        return;
+    }
+    let Ok(win) = windows.single() else { return };
+    let Some(cursor) = win.cursor_position() else { return };
+    let (w, h) = (win.width(), win.height());
+    // Click position within the centred square map image.
+    let side = h * (MAP_VH / 100.0);
+    let left = (w - side) / 2.0;
+    let top = (h - side) / 2.0;
+    let lx = (cursor.x - left) / side;
+    let ly = (cursor.y - top) / side;
+    if !(0.0..=1.0).contains(&lx) || !(0.0..=1.0).contains(&ly) {
+        return; // clicked outside the map
+    }
+    let ndc = Vec2::new(lx * 2.0 - 1.0, 1.0 - ly * 2.0);
+
+    let Ok(cam_tf) = cam_q.single() else { return };
+    let right = cam_tf.rotation * Vec3::X;
+    let up_v = cam_tf.rotation * Vec3::Y;
+    let up = match player_q.single() {
+        Ok((tf, ..)) => tf.translation.normalize(),
+        Err(_) => return,
+    };
+    // Tangent-plane offset from the player, projected back onto the sphere.
+    let offset = right * ndc.x * MAP_HALF_EXTENT + up_v * ndc.y * MAP_HALF_EXTENT;
+    let dir = (up * PLANET_RADIUS + offset).normalize();
+    open.0 = false;
+
+    // Place the player just above the surface at the target, velocity zeroed.
+    let Some(terrain) = terrain else { return };
+    let r = terrain.surface_radius(SpherePos::new(dir)).max(PLANET_RADIUS);
+    if let Ok((mut tf, mut vel, mut sp)) = player_q.single_mut() {
+        tf.translation = dir * (r + 2.0);
+        *sp = SpherePos::new(dir);
+        vel.0 = Vec3::ZERO;
     }
 }
 

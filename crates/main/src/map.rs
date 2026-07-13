@@ -18,7 +18,7 @@ use crate::constants::*;
 /// Speculative collision skin added to the thin terrain trimesh so fast movement
 /// doesn't tunnel through it. The player mesh is dropped by this much to hide the
 /// float it would otherwise cause.
-const TERRAIN_MARGIN: f32 = 0.3;
+const TERRAIN_MARGIN: f32 = 0.5;
 
 #[derive(Component)]
 pub struct Ground;
@@ -188,6 +188,7 @@ impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerInput>()
             .init_resource::<TimeOfDay>()
+            .init_resource::<SunLock>()
             .add_systems(OnEnter(AppState::Playing), setup_map)
             .add_systems(
                 Update,
@@ -199,7 +200,7 @@ impl Plugin for MapPlugin {
             )
             .add_systems(
                 Update,
-                (orient_player, camera_follow, drive_daynight, drive_fog, teleport_player, cull_props)
+                (orient_player, camera_follow, drive_daynight, drive_fog, toggle_sun_lock, cull_props)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -873,40 +874,6 @@ fn move_player(
     }
 }
 
-/// `[` / `]` step through the teleport ring; `T` jumps to the next bridge.
-/// The player is placed just above the ground at the target and its velocity
-/// zeroed so it settles cleanly instead of launching.
-fn teleport_player(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut tp: ResMut<Teleports>,
-    mut q: Query<(&mut Transform, &mut LinearVelocity, &mut shared::sphere::SpherePos), With<Player>>,
-) {
-    if tp.targets.is_empty() {
-        return;
-    }
-    let n = tp.targets.len();
-    let step = if keys.just_pressed(KeyCode::BracketRight) {
-        1
-    } else if keys.just_pressed(KeyCode::BracketLeft) {
-        n - 1
-    } else if keys.just_pressed(KeyCode::KeyT) {
-        // Jump to the next bridge in the ring (bridges are named "Bridge N").
-        let mut k = 1;
-        while k <= n && !tp.targets[(tp.idx + k) % n].0.starts_with("Bridge") {
-            k += 1;
-        }
-        k % n
-    } else {
-        return;
-    };
-    tp.idx = (tp.idx + step) % n;
-    let (name, world) = tp.targets[tp.idx].clone();
-    let Ok((mut tf, mut vel, mut sp)) = q.single_mut() else { return };
-    tf.translation = world;
-    *sp = shared::sphere::SpherePos::new(world.normalize());
-    vel.0 = Vec3::ZERO;
-    info!("Teleported to {name} ({}/{n})", tp.idx + 1);
-}
 
 fn orient_player(mut q: Query<(&Player, &mut Transform), With<RigidBody>>) {
     for (player, mut tf) in &mut q {
@@ -944,26 +911,48 @@ fn camera_follow(
 /// So illuminance stays constant; day/night comes from where you stand and where
 /// the sun is. Ambient is a low constant floor (see `main`) so the night side
 /// isn't pitch black.
+/// When on, the sun stays overhead the player (permanent day). Toggled with `1`.
+#[derive(Resource)]
+pub struct SunLock(pub bool);
+
+impl Default for SunLock {
+    fn default() -> Self {
+        Self(true)
+    }
+}
+
+fn toggle_sun_lock(keys: Res<ButtonInput<KeyCode>>, mut lock: ResMut<SunLock>) {
+    if keys.just_pressed(KeyCode::Digit1) {
+        lock.0 = !lock.0;
+    }
+}
+
 fn drive_daynight(
     time: Res<Time>,
     mut tod: ResMut<TimeOfDay>,
+    lock: Res<SunLock>,
+    player_q: Query<&Transform, (With<Player>, Without<Sun>)>,
     mut sun_q: Query<(&mut Transform, &mut DirectionalLight), With<Sun>>,
 ) {
-    let advanced = tod.angle + time.delta_secs() * std::f32::consts::TAU / tod.day_length;
-    if advanced >= std::f32::consts::TAU {
-        tod.day += 1;
-    }
-    tod.angle = advanced.rem_euclid(std::f32::consts::TAU);
-
-    // Sun orbits the polar (Y) axis, tilted a little above the equatorial plane
-    // for a more natural light angle than a dead-flat sunrise/sunset.
-    let dir = Vec3::new(tod.angle.cos(), 0.35, tod.angle.sin()).normalize();
+    let dir = if lock.0 {
+        // Locked: sun overhead the player — permanent day (time is frozen).
+        player_q.single().map(|p| p.translation.normalize()).unwrap_or(Vec3::Y)
+    } else {
+        // Sun orbits the polar (Y) axis, tilted above the equatorial plane.
+        let advanced = tod.angle + time.delta_secs() * std::f32::consts::TAU / tod.day_length;
+        if advanced >= std::f32::consts::TAU {
+            tod.day += 1;
+        }
+        tod.angle = advanced.rem_euclid(std::f32::consts::TAU);
+        Vec3::new(tod.angle.cos(), 0.35, tod.angle.sin()).normalize()
+    };
     tod.sun_dir = dir;
 
     let Ok((mut sun_tf, mut light)) = sun_q.single_mut() else { return };
     // Directional light shines from the sun toward the planet centre.
     sun_tf.translation = dir * 800.0;
-    sun_tf.look_at(Vec3::ZERO, Vec3::Y);
+    let up_ref = if dir.dot(Vec3::Y).abs() > 0.99 { Vec3::X } else { Vec3::Y };
+    sun_tf.look_at(Vec3::ZERO, up_ref);
     light.illuminance = 13_000.0;
     light.color = Color::WHITE;
 }

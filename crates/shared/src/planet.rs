@@ -139,7 +139,9 @@ pub fn build_face_adjacency(tris: &[[Vec3; 3]], n: usize) -> Vec<[u32; 3]> {
         let fi = fi as u32;
         for (x, y) in [(0, 1), (1, 2), (2, 0)] {
             let (ka, kb) = (hv(tri[x]), hv(tri[y]));
-            em.entry(if ka <= kb { [ka, kb] } else { [kb, ka] }).or_default().push(fi);
+            em.entry(if ka <= kb { [ka, kb] } else { [kb, ka] })
+                .or_default()
+                .push(fi);
         }
     }
     let mut adj = vec![[u32::MAX; 3]; n];
@@ -148,7 +150,13 @@ pub fn build_face_adjacency(tris: &[[Vec3; 3]], n: usize) -> Vec<[u32; 3]> {
         for (x, y) in [(0, 1), (1, 2), (2, 0)] {
             let (ka, kb) = (hv(tri[x]), hv(tri[y]));
             if let Some(ns) = em.get(&if ka <= kb { [ka, kb] } else { [kb, ka] }) {
-                for &n in ns { if n as usize != fi && k < 3 { adj[fi][k] = n; k += 1; break; } }
+                for &n in ns {
+                    if n as usize != fi && k < 3 {
+                        adj[fi][k] = n;
+                        k += 1;
+                        break;
+                    }
+                }
             }
         }
     }
@@ -167,16 +175,48 @@ pub fn unit_icosphere_tris(subdivisions: usize) -> Vec<[Vec3; 3]> {
     // Simple recursive icosahedron subdivision, scaled to PLANET_RADIUS.
     let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
     let mut verts = [
-        Vec3::new(-1.0, t, 0.0), Vec3::new(1.0, t, 0.0), Vec3::new(-1.0, -t, 0.0), Vec3::new(1.0, -t, 0.0),
-        Vec3::new(0.0, -1.0, t), Vec3::new(0.0, 1.0, t), Vec3::new(0.0, -1.0, -t), Vec3::new(0.0, 1.0, -t),
-        Vec3::new(t, 0.0, -1.0), Vec3::new(t, 0.0, 1.0), Vec3::new(-t, 0.0, -1.0), Vec3::new(-t, 0.0, 1.0),
+        Vec3::new(-1.0, t, 0.0),
+        Vec3::new(1.0, t, 0.0),
+        Vec3::new(-1.0, -t, 0.0),
+        Vec3::new(1.0, -t, 0.0),
+        Vec3::new(0.0, -1.0, t),
+        Vec3::new(0.0, 1.0, t),
+        Vec3::new(0.0, -1.0, -t),
+        Vec3::new(0.0, 1.0, -t),
+        Vec3::new(t, 0.0, -1.0),
+        Vec3::new(t, 0.0, 1.0),
+        Vec3::new(-t, 0.0, -1.0),
+        Vec3::new(-t, 0.0, 1.0),
     ];
-    for v in &mut verts { *v = v.normalize(); }
+    for v in &mut verts {
+        *v = v.normalize();
+    }
     let faces: [[usize; 3]; 20] = [
-        [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],[5,11,4],[11,10,2],[10,7,6],[7,1,8],
-        [3,9,4],[3,4,2],[3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],[8,6,7],[9,8,1],
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
-    let mut tris: Vec<[Vec3; 3]> = faces.iter().map(|f| [verts[f[0]], verts[f[1]], verts[f[2]]]).collect();
+    let mut tris: Vec<[Vec3; 3]> = faces
+        .iter()
+        .map(|f| [verts[f[0]], verts[f[1]], verts[f[2]]])
+        .collect();
     for _ in 0..subdivisions {
         let mut next = Vec::with_capacity(tris.len() * 4);
         for [a, b, c] in tris {
@@ -191,7 +231,9 @@ pub fn unit_icosphere_tris(subdivisions: usize) -> Vec<[Vec3; 3]> {
         tris = next;
     }
     for tri in &mut tris {
-        for v in tri.iter_mut() { *v *= PLANET_RADIUS; }
+        for v in tri.iter_mut() {
+            *v *= PLANET_RADIUS;
+        }
     }
     tris
 }
@@ -214,7 +256,10 @@ mod tests {
             let dir = Vec3::new(r * theta.cos(), z, r * theta.sin());
 
             let grid = mesh.facet_radius(dir, -1.0);
-            let brute = tris.iter().find_map(|t| ray_triangle_radius(dir, t)).unwrap_or(-1.0);
+            let brute = tris
+                .iter()
+                .find_map(|t| ray_triangle_radius(dir, t))
+                .unwrap_or(-1.0);
             assert!((grid - brute).abs() < 1e-2, "grid {grid} != brute {brute}");
         }
     }

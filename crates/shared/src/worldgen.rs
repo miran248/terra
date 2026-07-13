@@ -2765,8 +2765,11 @@ fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
 /// non-bed kinds. (Rivers cut sharper than lake basins.)
 fn water_concavity(t: Terrain) -> Option<f32> {
     match t {
-        Terrain::Lake => Some(0.005),
-        Terrain::River => Some(0.020),
+        // Per-iteration push below the neighbour average — the deeper this, the
+        // deeper the basin bowls (depth still grows with basin size). Lakes were
+        // near-flat plates (0.005); deepen them so water pools with real depth.
+        Terrain::Lake => Some(0.050),
+        Terrain::River => Some(0.035),
         _ => None,
     }
 }
@@ -2863,7 +2866,13 @@ fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     let peak = |t: Terrain| matches!(t, Mountain | Snow | Volcanic | Glacier);
     // Rivers are canyons: their walls may be steep wherever they cut through.
     // Caps are per vertex edge (~35m at field sub=6).
-    let base: f32 = if matches!(a, River | RiverBank) || matches!(b, River | RiverBank) {
+    let base: f32 = if a == LakeShore && b == LakeShore {
+        // The shore ring is the waterline: keep it nearly level so the flat lake
+        // surface meets it evenly all the way round (an uneven rim floats the
+        // surface at the low end). The land rising above a hillside lake is other
+        // terrain, not the shore, so this doesn't flatten the surroundings.
+        0.005
+    } else if matches!(a, River | RiverBank) || matches!(b, River | RiverBank) {
         0.22
     } else if a == Cliff || b == Cliff {
         // The whole cliff drop can happen across one vertex edge (toe → crest).
@@ -3187,6 +3196,29 @@ fn solve_elevation(
                 e[vi] = cap;
             }
         }
+        // 3a) a lake never rises above its shore: clamp every lake vertex that
+        // touches the shore to just below its lowest shore neighbour. The
+        // concavity above then keeps the interior below the edge, so the whole
+        // basin stays under its rim (otherwise the flat water surface floats over
+        // ground where a lake tile pokes up past the shore).
+        for vi in 0..nv {
+            if owner[vi] != Terrain::Lake {
+                continue;
+            }
+            let mut min_shore = f32::MAX;
+            for &nb in terrain.adj_of(vi) {
+                if owner[nb] == Terrain::LakeShore {
+                    min_shore = min_shore.min(e[nb]);
+                }
+            }
+            if min_shore != f32::MAX {
+                let cap = min_shore - 0.01;
+                if e[vi] > cap {
+                    residual += e[vi] - cap;
+                    e[vi] = cap;
+                }
+            }
+        }
         // 3b) cliff crest tracking: the crest equals the hinterland edge.
         for vi in 0..nv {
             if cliff_crest[vi] {
@@ -3376,6 +3408,23 @@ mod tests {
         }
         assert!(worst_cross <= 0.30, "waterline wall: {worst_cross}");
         assert!(worst_any <= 0.60, "extreme edge: {worst_any}");
+
+        // A lake never rises above its shore (solver step 3a) — otherwise the flat
+        // water surface floats over ground where a lake tile pokes up past the rim.
+        for vi in 0..terrain.vert_count() {
+            if owners[vi] != Terrain::Lake {
+                continue;
+            }
+            for &nb in terrain.adj_of(vi) {
+                if owners[nb] == Terrain::LakeShore {
+                    assert!(
+                        e[vi] <= e[nb] + 1e-3,
+                        "lake vert {vi} ({}) above its shore {nb} ({})",
+                        e[vi], e[nb]
+                    );
+                }
+            }
+        }
 
         // No enclosed water body smaller than the minimum (no 1-cell lakes).
         let mut visited = vec![false; state.grid.nv];
