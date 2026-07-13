@@ -356,6 +356,8 @@ pub struct GenState {
     pub blends: Vec<(u32, u8, u8)>,
     pub regions: Vec<RegionData>,
     pub face_region: Vec<u32>,
+    /// Water bodies (sea + lakes) clustered once; per-face body id + waterline.
+    pub water: WaterBodies,
     pub mesh_tris: Vec<[[f32; 3]; 3]>,
     pub mesh_colors: Vec<[[f32; 4]; 3]>,
     pub tag_off: Vec<u32>,
@@ -388,6 +390,7 @@ impl GenState {
             blends: Vec::new(),
             regions: Vec::new(),
             face_region: Vec::new(),
+            water: WaterBodies::default(),
             mesh_tris: Vec::new(),
             mesh_colors: Vec::new(),
             tag_off: Vec::new(),
@@ -439,6 +442,8 @@ pub enum Command {
     /// per-tile elevation ranges + per-pair gradient caps + river descent +
     /// road corridor caps, solved to a fixed point.
     SolveElevation,
+    /// Cluster water into connected bodies (sea + lakes), one waterline each.
+    ClusterWater,
     /// Named feature clusters.
     BuildRegions,
     /// Bridge spans between landmasses (needs regions).
@@ -472,6 +477,7 @@ pub enum Event {
     TransitionsResolved(Vec<Terrain>),
     BlendsMarked(Vec<(u32, u8, u8)>),
     ElevationSolved { field: Vec<f32>, iters: usize, residual: f32 },
+    WaterClustered(WaterBodies),
     RegionsBuilt(Vec<RegionData>, Vec<u32>),
     BridgesSelected(Vec<Vec<SpherePos>>, Painted),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
@@ -503,6 +509,9 @@ impl Event {
             Event::BlendsMarked(b) => format!("blends marked: {}", b.len()),
             Event::ElevationSolved { iters, residual, .. } => {
                 format!("elevation solved: {iters} iterations, residual {residual:.4}")
+            }
+            Event::WaterClustered(w) => {
+                format!("water clustered: {} faces", w.body.iter().filter(|&&b| b >= 0).count())
             }
             Event::RegionsBuilt(r, _) => format!("regions built: {}", r.len()),
             Event::BridgesSelected(b, _) => format!("bridges selected: {}", b.len()),
@@ -598,6 +607,9 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             );
             vec![Event::ElevationSolved { field, iters, residual }]
         }
+        Command::ClusterWater => {
+            vec![Event::WaterClustered(water_bodies(&state.grid, state.terrain(), &state.cells))]
+        }
         Command::BuildRegions => {
             let (regions, face_region) =
                 build_regions(&state.grid, state.terrain(), &state.tiles, &state.painted);
@@ -671,6 +683,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
         Event::ElevationSolved { field, .. } => {
             state.terrain.as_mut().expect("terrain exists").set_vert_elevations(field);
         }
+        Event::WaterClustered(w) => state.water = w,
         Event::RegionsBuilt(r, fr) => {
             state.regions = r;
             state.face_region = fr;
@@ -719,7 +732,10 @@ pub fn react(event: &Event) -> Vec<Command> {
         // a road or bridge never lands on a slope, whatever the tile is
         // labelled. Regions/blends follow so they see the final footprints.
         Event::TransitionsResolved(_) => vec![Command::SolveElevation],
-        Event::ElevationSolved { .. } => vec![Command::ComputeClimate, Command::ClassifySlope],
+        Event::ElevationSolved { .. } => {
+            vec![Command::ComputeClimate, Command::ClassifySlope, Command::ClusterWater]
+        }
+        Event::WaterClustered(_) => vec![],
         Event::SlopeClassified(..) => vec![Command::PaintFeatures],
         Event::FeaturesPainted(..) => vec![Command::BuildRegions],
         Event::RegionsBuilt(..) => vec![Command::SelectBridges],
@@ -1679,39 +1695,25 @@ fn build_bridges(
 
     // (2) Lake islands: a land component ringed only by lake water, small
     // enough to be an island, bridged to the nearest mainland lake shore.
-    let mut comp = vec![u32::MAX; grid.nv];
-    let mut sizes: Vec<usize> = Vec::new();
-    for start in 0..grid.nv {
-        if !cells[start].is_land() || comp[start] != u32::MAX {
-            continue;
+    let (comp, n_comp) = cluster_vertices(grid, |v| cells[v].is_land());
+    let mut sizes = vec![0usize; n_comp];
+    for &c in &comp {
+        if c >= 0 {
+            sizes[c as usize] += 1;
         }
-        let id = sizes.len() as u32;
-        let mut n = 0usize;
-        let mut q = VecDeque::from([start]);
-        comp[start] = id;
-        while let Some(cur) = q.pop_front() {
-            n += 1;
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
-                if cells[nb].is_land() && comp[nb] == u32::MAX {
-                    comp[nb] = id;
-                    q.push_back(nb);
-                }
-            }
-        }
-        sizes.push(n);
     }
     // Per-component water adjacency: is every water cell it touches Lake?
     // Ocean? (an island ringed by exactly one body is bridgeable to the
     // mainland). Rivers touching don't disqualify — they cross separately.
-    let n_comp = sizes.len();
     let mut touch_lake = vec![false; n_comp];
     let mut touch_ocean = vec![false; n_comp];
     let mut only_lake = vec![true; n_comp];
     let mut only_ocean = vec![true; n_comp];
     for vi in 0..grid.nv {
-        let Some(&id) = (cells[vi].is_land()).then(|| &comp[vi]) else { continue };
-        let id = id as usize;
+        if comp[vi] < 0 {
+            continue;
+        }
+        let id = comp[vi] as usize;
         for &nb in &grid.vert_adj[vi] {
             match cells[nb as usize] {
                 Terrain::Lake => { touch_lake[id] = true; only_ocean[id] = false; }
@@ -1745,13 +1747,13 @@ fn build_bridges(
             let shore = |vi: usize| bridge_walkable(cells[vi])
                 && grid.vert_adj[vi].iter().any(|&nb| cells[nb as usize] == shore_kind);
             let island_shore: Vec<usize> = (0..grid.nv)
-                .filter(|&vi| comp[vi] == id as u32 && shore(vi))
+                .filter(|&vi| comp[vi] == id as i32 && shore(vi))
                 .collect();
             let mut best: Option<(f32, usize, usize)> = None;
             for &a in &island_shore {
                 let pa = grid.vert_pos(a);
                 for vi in 0..grid.nv {
-                    if comp[vi] == id as u32 || comp[vi] == u32::MAX || !shore(vi) {
+                    if comp[vi] == id as i32 || comp[vi] < 0 || !shore(vi) {
                         continue;
                     }
                     let dd = pa.distance(grid.vert_pos(vi));
@@ -1989,16 +1991,22 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
 /// join their most common neighboring land kind. Transition bands (shore
 /// kinds) are thin by design and exempt; water minimums live in
 /// normalize_water_bodies.
-/// Collect the edge-connected component of cells reachable from `start` for
-/// which `member` holds, marking `visited`. The one BFS behind water bodies,
-/// lakes and speckle clusters.
-fn flood_cells(grid: &Grid, start: usize, visited: &mut [bool], member: impl Fn(usize) -> bool) -> Vec<usize> {
+/// The one connected-component BFS, over any adjacency: `neighbors(i)` yields
+/// i's neighbours, `member` selects participating nodes, `visited` is threaded
+/// so callers can walk one component at a time. Returns the component reached
+/// from `start`. Everything that clusters the grid — water bodies, lakes,
+/// speckle, islands, regions — goes through this (via the wrappers below).
+fn flood<I: IntoIterator<Item = usize>>(
+    start: usize,
+    visited: &mut [bool],
+    neighbors: impl Fn(usize) -> I,
+    member: impl Fn(usize) -> bool,
+) -> Vec<usize> {
     let mut out = vec![start];
     let mut q = VecDeque::from([start]);
     visited[start] = true;
     while let Some(cur) = q.pop_front() {
-        for &nb in &grid.vert_adj[cur] {
-            let nb = nb as usize;
+        for nb in neighbors(cur) {
             if !visited[nb] && member(nb) {
                 visited[nb] = true;
                 out.push(nb);
@@ -2007,6 +2015,48 @@ fn flood_cells(grid: &Grid, start: usize, visited: &mut [bool], member: impl Fn(
         }
     }
     out
+}
+
+/// Neighbours over the two grid adjacencies, as `usize` iterators.
+fn vert_nbrs(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
+    grid.vert_adj[v].iter().map(|&x| x as usize)
+}
+fn face_nbrs(grid: &Grid, f: usize) -> impl Iterator<Item = usize> + '_ {
+    grid.adj[f].iter().map(|&x| x as usize)
+}
+
+/// Single-component flood over the VERTEX grid (the common case).
+fn flood_cells(grid: &Grid, start: usize, visited: &mut [bool], member: impl Fn(usize) -> bool) -> Vec<usize> {
+    flood(start, visited, |c| vert_nbrs(grid, c), member)
+}
+
+/// Full-partition clustering over an arbitrary adjacency: labels every member
+/// node with its component id (-1 otherwise). `cluster_vertices` / `cluster_faces`
+/// are the grid-specific wrappers.
+fn clusters<I: IntoIterator<Item = usize>>(
+    n: usize,
+    neighbors: impl Fn(usize) -> I,
+    member: impl Fn(usize) -> bool,
+) -> (Vec<i32>, usize) {
+    let mut comp = vec![-1i32; n];
+    let mut visited = vec![false; n];
+    let mut count = 0usize;
+    for start in 0..n {
+        if visited[start] || !member(start) {
+            continue;
+        }
+        let id = count as i32;
+        count += 1;
+        for v in flood(start, &mut visited, &neighbors, &member) {
+            comp[v] = id;
+        }
+    }
+    (comp, count)
+}
+
+/// Cluster grid FACES into connected components (shared-edge adjacency).
+pub fn cluster_faces(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32>, usize) {
+    clusters(grid.n, |f| face_nbrs(grid, f), member)
 }
 
 /// A contiguous cluster of equal values below its minimum size is speckle: it
@@ -2311,35 +2361,33 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 /// "same id ⇒ same cluster". Run it with different predicates and a vertex can
 /// land in several (overlapping) clusterings.
 pub fn cluster_vertices(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32>, usize) {
-    let mut comp = vec![-1i32; grid.nv];
-    let mut visited = vec![false; grid.nv];
-    let mut count = 0usize;
-    for start in 0..grid.nv {
-        if visited[start] || !member(start) {
-            continue;
-        }
-        let id = count as i32;
-        count += 1;
-        for v in flood_cells(grid, start, &mut visited, &member) {
-            comp[v] = id;
-        }
-    }
-    (comp, count)
+    clusters(grid.nv, |v| vert_nbrs(grid, v), member)
 }
 
-/// Per-face water-surface radius (0.0 = no water). Sea and lakes are clustered
-/// SEPARATELY — one `cluster_vertices` pass each, with its own membership of the
-/// water type plus every tile that can neighbour it (its transition tiles):
+/// Water bodies of the whole planet, clustered once and reused everywhere
+/// (surface mesh, HUD query, integrity tests). Per-face parallel arrays:
+/// `body[fi]` is the body id a face belongs to (-1 = dry), `radius[fi]` its
+/// waterline (0.0 = dry). Sea and lake bodies share one id space.
+#[derive(Clone, Default)]
+pub struct WaterBodies {
+    pub body: Vec<i32>,
+    pub radius: Vec<f32>,
+}
+
+/// Cluster the planet's water into connected bodies and give each ONE waterline.
+/// Sea and lakes are clustered SEPARATELY — one `cluster_vertices` pass each,
+/// with its own membership of the water type plus the tiles that can neighbour
+/// it (its transition tiles):
 ///   • lakes: `Lake` + `LakeShore` + `Cliff`;
 ///   • ocean: `Ocean` + `Beach` + `Cliff`.
 /// Keeping the passes independent means a lake with a Cliff shore can't fuse
-/// into the sea; the shared transition types (Cliff) are just the seams. Each
-/// body gets ONE waterline: sea bodies sit at sea level, lake bodies at their
-/// `LakeShore` rim (a low percentile of the shore radii — the shore, not the
-/// deep bed). A sea face is drawn wherever it touches the sea body (coast hidden
-/// below terrain by the depth test); a lake face only when ALL THREE corners
-/// share the body, so lake water never spills onto land.
-pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
+/// into the sea; the shared transition types (Cliff) are just the seams. Sea
+/// bodies sit at sea level, lake bodies at their `LakeShore` rim (a low
+/// percentile of the shore radii — the shore, not the deep bed). A sea face is
+/// tagged wherever it touches the sea body (coast hidden below terrain by the
+/// depth test); a lake face only when ALL THREE corners share the body, so lake
+/// water never spills onto land.
+pub fn water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> WaterBodies {
     let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
     // A water type plus the tiles that can border it (transition tiles).
     let lake_member = |t: Terrain| matches!(t, Terrain::Lake | Terrain::LakeShore | Terrain::Cliff);
@@ -2381,22 +2429,27 @@ pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain])
         })
         .collect();
 
-    (0..grid.n)
-        .map(|fi| {
-            let idx = grid.face_verts[fi];
-            // Sea: any corner in a real sea body (coast overdraw hidden by depth).
-            let oc = [ocean_c[idx[0] as usize], ocean_c[idx[1] as usize], ocean_c[idx[2] as usize]];
-            if oc.iter().any(|&c| c >= 0 && is_sea[c as usize]) {
-                return sea_r;
-            }
-            // Lake: strict — all three corners in the same real lake body.
-            let lc = [lake_c[idx[0] as usize], lake_c[idx[1] as usize], lake_c[idx[2] as usize]];
-            if lc[0] >= 0 && lc[1] == lc[0] && lc[2] == lc[0] && is_lake[lc[0] as usize] {
-                return lake_r[lc[0] as usize];
-            }
-            0.0
-        })
-        .collect()
+    // One id space: sea bodies keep their ocean-cluster id; lakes are offset
+    // past them so the two never collide.
+    let mut body = vec![-1i32; grid.n];
+    let mut radius = vec![0.0f32; grid.n];
+    for fi in 0..grid.n {
+        let idx = grid.face_verts[fi];
+        // Sea: any corner in a real sea body (coast overdraw hidden by depth).
+        let oc = [ocean_c[idx[0] as usize], ocean_c[idx[1] as usize], ocean_c[idx[2] as usize]];
+        if let Some(&c) = oc.iter().find(|&&c| c >= 0 && is_sea[c as usize]) {
+            body[fi] = c;
+            radius[fi] = sea_r;
+            continue;
+        }
+        // Lake: strict — all three corners in the same real lake body.
+        let lc = [lake_c[idx[0] as usize], lake_c[idx[1] as usize], lake_c[idx[2] as usize]];
+        if lc[0] >= 0 && lc[1] == lc[0] && lc[2] == lc[0] && is_lake[lc[0] as usize] {
+            body[fi] = nocean as i32 + lc[0];
+            radius[fi] = lake_r[lc[0] as usize];
+        }
+    }
+    WaterBodies { body, radius }
 }
 
 pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
@@ -3522,31 +3575,26 @@ mod tests {
         }
 
         // No enclosed water body smaller than the minimum (no 1-cell lakes).
-        let mut visited = vec![false; state.grid.nv];
-        for start in 0..state.grid.nv {
-            if !state.cells[start].is_water() || state.cells[start] == Terrain::River || visited[start] {
+        let (comp, ncomp) = cluster_vertices(&state.grid, |v| {
+            state.cells[v].is_water() && state.cells[v] != Terrain::River
+        });
+        let mut sizes = vec![0usize; ncomp];
+        let mut is_ocean = vec![false; ncomp];
+        for v in 0..state.grid.nv {
+            if comp[v] < 0 {
                 continue;
             }
-            let mut body = vec![start];
-            let mut q = VecDeque::from([start]);
-            visited[start] = true;
-            while let Some(cur) = q.pop_front() {
-                for &nb in &state.grid.vert_adj[cur] {
-                    let nb = nb as usize;
-                    if state.cells[nb].is_water() && state.cells[nb] != Terrain::River && !visited[nb] {
-                        visited[nb] = true;
-                        body.push(nb);
-                        q.push_back(nb);
-                    }
-                }
+            let c = comp[v] as usize;
+            sizes[c] += 1;
+            if cell_zone(&state.grid, terrain, v) == crate::zones::ZoneKind::Ocean {
+                is_ocean[c] = true;
             }
-            let is_ocean = body.iter().any(|&vi| {
-                cell_zone(&state.grid, terrain, vi) == crate::zones::ZoneKind::Ocean
-            });
+        }
+        for c in 0..ncomp {
             assert!(
-                is_ocean || body.len() >= size_range(Terrain::Lake).0,
+                is_ocean[c] || sizes[c] >= size_range(Terrain::Lake).0,
                 "enclosed water body of only {} cells survived",
-                body.len()
+                sizes[c]
             );
         }
 
@@ -3794,34 +3842,29 @@ mod tests {
         // leaked to the sea along coarse-face edges and became ocean inlets).
         let state = run(1337, |_| {});
         let terrain = state.terrain.as_ref().unwrap();
-        let mut lake_faces = 0;
-        let mut visited = vec![false; state.grid.n];
-        for start in 0..state.grid.n {
-            if !state.tiles[start].is_water() || state.tiles[start] == Terrain::River || visited[start] {
+        let (comp, ncomp) = cluster_faces(&state.grid, |f| {
+            state.tiles[f].is_water() && state.tiles[f] != Terrain::River
+        });
+        let mut sizes = vec![0usize; ncomp];
+        let mut has_lake = vec![false; ncomp];
+        let mut has_ocean = vec![false; ncomp];
+        for fi in 0..state.grid.n {
+            if comp[fi] < 0 {
                 continue;
             }
-            let mut body = vec![start];
-            let mut q = VecDeque::from([start]);
-            visited[start] = true;
-            while let Some(cur) = q.pop_front() {
-                for &nb in &state.grid.adj[cur] {
-                    let nb = nb as usize;
-                    if state.tiles[nb].is_water() && state.tiles[nb] != Terrain::River && !visited[nb] {
-                        visited[nb] = true;
-                        body.push(nb);
-                        q.push_back(nb);
-                    }
-                }
+            let c = comp[fi] as usize;
+            sizes[c] += 1;
+            match terrain.zones().kind_at_fine(fi) {
+                crate::zones::ZoneKind::Lake => has_lake[c] = true,
+                crate::zones::ZoneKind::Ocean => has_ocean[c] = true,
+                _ => {}
             }
-            let has_lake_zone = body.iter().any(|&fi| {
-                terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Lake
-            });
-            let has_ocean_zone = body.iter().any(|&fi| {
-                terrain.zones().kind_at_fine(fi) == crate::zones::ZoneKind::Ocean
-            });
-            if has_lake_zone {
-                lake_faces += body.len();
-                assert!(!has_ocean_zone, "lake body of {} faces connects to the ocean", body.len());
+        }
+        let mut lake_faces = 0;
+        for c in 0..ncomp {
+            if has_lake[c] {
+                lake_faces += sizes[c];
+                assert!(!has_ocean[c], "lake body of {} faces connects to the ocean", sizes[c]);
             }
         }
         assert!(lake_faces > 100, "lakes nearly vanished: {lake_faces} faces");

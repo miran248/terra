@@ -540,6 +540,12 @@ fn update_terrain_hud(
                 if let Some(ri) = regions.face_region.get(fi).copied().and_then(shared::level::region_index) {
                     region_name = format!("\n{}", regions.regions[ri].name);
                 }
+                // Water-body identity (sea/lake cluster) from the gen-time clustering.
+                if let Some(&body) = regions.face_water_body.get(fi) {
+                    if body >= 0 {
+                        tile_line.push_str(&format!("  body #{body}"));
+                    }
+                }
             }
         }
     }
