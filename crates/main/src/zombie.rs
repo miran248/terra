@@ -1,11 +1,11 @@
+use crate::constants::*;
+use crate::map::{GameAssets, Player, PlayerHp};
+use crate::physics::RadialGravity;
+use crate::wave::WaveManager;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::Rng;
 use shared::sphere::PLANET_RADIUS;
-use crate::constants::*;
-use crate::physics::RadialGravity;
-use crate::map::{GameAssets, Player, PlayerHp};
-use crate::wave::WaveManager;
 use shared::state::AppState;
 
 #[derive(Component)]
@@ -19,8 +19,14 @@ pub struct ZombiePlugin;
 impl Plugin for ZombiePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, spawn_zombies.run_if(in_state(AppState::Playing)))
-            .add_systems(FixedUpdate, move_zombies.run_if(in_state(AppState::Playing)))
-            .add_systems(Update, zombie_hit_player.run_if(in_state(AppState::Playing)));
+            .add_systems(
+                FixedUpdate,
+                move_zombies.run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                Update,
+                zombie_hit_player.run_if(in_state(AppState::Playing)),
+            );
     }
 }
 
@@ -31,12 +37,19 @@ fn spawn_zombies(
     assets: Res<GameAssets>,
     player_q: Query<&Transform, With<Player>>,
 ) {
-    if wave.zombies_spawned_this_wave >= wave.zombies_per_wave { return; }
+    if wave.zombies_spawned_this_wave >= wave.zombies_per_wave {
+        return;
+    }
 
     wave.spawn_timer.tick(time.delta());
-    if !wave.spawn_timer.just_finished() { return; }
+    if !wave.spawn_timer.just_finished() {
+        return;
+    }
 
-    let center_pos = player_q.single().map(|t| t.translation.normalize()).unwrap_or(Vec3::Y);
+    let center_pos = player_q
+        .single()
+        .map(|t| t.translation.normalize())
+        .unwrap_or(Vec3::Y);
     let mut rng = rand::thread_rng();
     let angle = rng.gen_range(0.0..std::f32::consts::TAU);
     let perp = Vec3::new(center_pos.z, 0.0, -center_pos.x).normalize_or(Vec3::X);
@@ -71,7 +84,9 @@ fn move_zombies(
     player_q: Query<&Transform, With<Player>>,
     mut q: Query<(&Zombie, &Transform, Forces), Without<Player>>,
 ) {
-    let Ok(player_tf) = player_q.single() else { return };
+    let Ok(player_tf) = player_q.single() else {
+        return;
+    };
 
     for (zombie, tf, mut forces) in &mut q {
         let dir = (player_tf.translation - tf.translation).normalize_or_zero();
@@ -88,11 +103,14 @@ fn zombie_hit_player(
     zombies: Query<(Entity, &Transform), With<Zombie>>,
     mut next_state: ResMut<NextState<AppState>>,
 ) {
-    let Ok((_p_entity, player_tf)) = player_q.single() else { return };
+    let Ok((_p_entity, player_tf)) = player_q.single() else {
+        return;
+    };
     let mut total_hp = player_hp.0;
 
     for (z_entity, z_tf) in &zombies {
-        if z_tf.translation.distance(player_tf.translation) <= PLAYER_SIZE / 2.0 + ZOMBIE_SIZE / 2.0 {
+        if z_tf.translation.distance(player_tf.translation) <= PLAYER_SIZE / 2.0 + ZOMBIE_SIZE / 2.0
+        {
             commands.entity(z_entity).despawn();
             total_hp -= DAMAGE_PER_HIT;
         }

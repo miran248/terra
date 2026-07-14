@@ -1,19 +1,17 @@
+use crate::loot::{LootMaterial, LootWeapon};
+use crate::map::{Player, Settlement};
+use crate::ui::UiFont;
+use crate::zombie::Zombie;
 use avian3d::prelude::LinearVelocity;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::{RenderTarget, ScalingMode};
 use bevy::image::Image;
 use bevy::prelude::*;
-use bevy::render::render_resource::{
-    Extent3d, TextureDimension, TextureFormat, TextureUsages,
-};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
 use shared::theme;
-use crate::loot::{LootMaterial, LootWeapon};
-use crate::map::{Settlement, Player};
-use crate::ui::UiFont;
-use crate::zombie::Zombie;
 
 const MINIMAP_SIZE: f32 = 160.0;
 /// Render-target resolution (square, downscaled into the circular UI node).
@@ -45,7 +43,9 @@ pub struct MinimapPlugin;
 struct MinimapTimer(Timer);
 
 impl Default for MinimapTimer {
-    fn default() -> Self { Self(Timer::from_seconds(0.05, TimerMode::Repeating)) }
+    fn default() -> Self {
+        Self(Timer::from_seconds(0.05, TimerMode::Repeating))
+    }
 }
 
 /// Full-screen teleport map (toggled with `M`).
@@ -78,7 +78,12 @@ impl Plugin for MinimapPlugin {
             )
             .add_systems(
                 Update,
-                (toggle_world_map, sync_world_map, track_world_map_camera, world_map_click)
+                (
+                    toggle_world_map,
+                    sync_world_map,
+                    track_world_map_camera,
+                    world_map_click,
+                )
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -86,7 +91,11 @@ impl Plugin for MinimapPlugin {
 
 fn setup_world_map(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     let mut image = Image::new_fill(
-        Extent3d { width: MAP_TEX, height: MAP_TEX, depth_or_array_layers: 1 },
+        Extent3d {
+            width: MAP_TEX,
+            height: MAP_TEX,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         &[0, 0, 0, 255],
         TextureFormat::Rgba8UnormSrgb,
@@ -98,7 +107,11 @@ fn setup_world_map(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
     commands.spawn((
         Camera3d::default(),
-        Camera { order: -2, is_active: false, ..default() },
+        Camera {
+            order: -2,
+            is_active: false,
+            ..default()
+        },
         RenderTarget::from(handle.clone()),
         Msaa::Off,
         Projection::from(OrthographicProjection {
@@ -135,7 +148,11 @@ fn setup_world_map(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         ))
         .with_child((
             ImageNode::new(handle),
-            Node { width: Val::Vh(MAP_VH), height: Val::Vh(MAP_VH), ..default() },
+            Node {
+                width: Val::Vh(MAP_VH),
+                height: Val::Vh(MAP_VH),
+                ..default()
+            },
         ));
 }
 
@@ -158,7 +175,11 @@ fn sync_world_map(
         c.is_active = open.0;
     }
     if let Ok(mut v) = root.single_mut() {
-        *v = if open.0 { Visibility::Visible } else { Visibility::Hidden };
+        *v = if open.0 {
+            Visibility::Visible
+        } else {
+            Visibility::Hidden
+        };
     }
 }
 
@@ -167,11 +188,19 @@ fn track_world_map_camera(
     player_q: Query<&Transform, (With<Player>, Without<WorldMapCamera>)>,
     mut cam_q: Query<&mut Transform, With<WorldMapCamera>>,
 ) {
-    let Ok(player_tf) = player_q.single() else { return };
-    let Ok(mut cam_tf) = cam_q.single_mut() else { return };
+    let Ok(player_tf) = player_q.single() else {
+        return;
+    };
+    let Ok(mut cam_tf) = cam_q.single_mut() else {
+        return;
+    };
     let up = player_tf.translation.normalize();
     let mut north = WORLD_NORTH - up * WORLD_NORTH.dot(up);
-    north = if north.length_squared() < 1e-4 { up.any_orthonormal_vector() } else { north.normalize() };
+    north = if north.length_squared() < 1e-4 {
+        up.any_orthonormal_vector()
+    } else {
+        north.normalize()
+    };
     cam_tf.translation = up * (PLANET_RADIUS + MAP_HEIGHT);
     cam_tf.look_at(up * PLANET_RADIUS, north);
 }
@@ -183,13 +212,18 @@ fn world_map_click(
     windows: Query<&Window>,
     cam_q: Query<&Transform, (With<WorldMapCamera>, Without<Player>)>,
     terrain: Option<Res<TerrainGen>>,
-    mut player_q: Query<(&mut Transform, &mut LinearVelocity, &mut SpherePos), (With<Player>, Without<WorldMapCamera>)>,
+    mut player_q: Query<
+        (&mut Transform, &mut LinearVelocity, &mut SpherePos),
+        (With<Player>, Without<WorldMapCamera>),
+    >,
 ) {
     if !open.0 || !mouse.just_pressed(MouseButton::Left) {
         return;
     }
     let Ok(win) = windows.single() else { return };
-    let Some(cursor) = win.cursor_position() else { return };
+    let Some(cursor) = win.cursor_position() else {
+        return;
+    };
     let (w, h) = (win.width(), win.height());
     // Click position within the centred square map image.
     let side = h * (MAP_VH / 100.0);
@@ -216,7 +250,9 @@ fn world_map_click(
 
     // Place the player just above the surface at the target, velocity zeroed.
     let Some(terrain) = terrain else { return };
-    let r = terrain.surface_radius(SpherePos::new(dir)).max(PLANET_RADIUS);
+    let r = terrain
+        .surface_radius(SpherePos::new(dir))
+        .max(PLANET_RADIUS);
     if let Ok((mut tf, mut vel, mut sp)) = player_q.single_mut() {
         tf.translation = dir * (r + 2.0);
         *sp = SpherePos::new(dir);
@@ -227,7 +263,11 @@ fn world_map_click(
 fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
     // Render target the minimap camera draws into.
     let mut image = Image::new_fill(
-        Extent3d { width: TEX, height: TEX, depth_or_array_layers: 1 },
+        Extent3d {
+            width: TEX,
+            height: TEX,
+            depth_or_array_layers: 1,
+        },
         TextureDimension::D2,
         &[0, 0, 0, 0],
         TextureFormat::Rgba8UnormSrgb,
@@ -248,7 +288,10 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         RenderTarget::from(handle.clone()),
         // Render target is single-sampled; matching MSAA avoids a blank/gray main view.
         Msaa::Off,
-        Projection::from(PerspectiveProjection { fov: 0.6, ..default() }),
+        Projection::from(PerspectiveProjection {
+            fov: 0.6,
+            ..default()
+        }),
         Transform::from_xyz(0.0, PLANET_RADIUS + CAM_HEIGHT, 0.0).looking_at(Vec3::ZERO, Vec3::Z),
         MinimapCamera,
     ));
@@ -295,8 +338,12 @@ fn track_minimap_camera(
     player_q: Query<(&Transform, &Player), (With<Player>, Without<MinimapCamera>)>,
     mut cam_q: Query<&mut Transform, With<MinimapCamera>>,
 ) {
-    let Ok((player_tf, player)) = player_q.single() else { return };
-    let Ok(mut cam_tf) = cam_q.single_mut() else { return };
+    let Ok((player_tf, player)) = player_q.single() else {
+        return;
+    };
+    let Ok(mut cam_tf) = cam_q.single_mut() else {
+        return;
+    };
 
     let up = player_tf.translation.normalize();
     let eye = up * (PLANET_RADIUS + CAM_HEIGHT);
@@ -321,9 +368,15 @@ fn draw_overlay(
     time: Res<Time>,
     mut timer: ResMut<MinimapTimer>,
 ) {
-    if !timer.0.tick(time.delta()).just_finished() { return; }
-    let Ok(map_entity) = minimap_q.single() else { return };
-    let Ok((player_tf, player)) = player_q.single() else { return };
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
+    let Ok(map_entity) = minimap_q.single() else {
+        return;
+    };
+    let Ok((player_tf, player)) = player_q.single() else {
+        return;
+    };
 
     for e in &stale {
         commands.entity(e).despawn();
@@ -364,12 +417,20 @@ fn draw_overlay(
         ));
     };
 
-    for tf in &materials { dot(&mut commands, tf.translation, theme::TEXT_WEAK, DOT); }
-    for tf in &weapons { dot(&mut commands, tf.translation, theme::SUCCESS, DOT); }
-    for tf in &zombies { dot(&mut commands, tf.translation, theme::ERROR, DOT); }
+    for tf in &materials {
+        dot(&mut commands, tf.translation, theme::TEXT_WEAK, DOT);
+    }
+    for tf in &weapons {
+        dot(&mut commands, tf.translation, theme::SUCCESS, DOT);
+    }
+    for tf in &zombies {
+        dot(&mut commands, tf.translation, theme::ERROR, DOT);
+    }
 
     for (tf, settlement) in &settlements {
-        let Some(pt) = place(tf.translation) else { continue };
+        let Some(pt) = place(tf.translation) else {
+            continue;
+        };
         let s = 6.0;
         commands.spawn((
             Node {
@@ -388,7 +449,11 @@ fn draw_overlay(
         ));
         commands.spawn((
             Text::new(settlement.name.clone()),
-            TextFont { font: font.0.clone().into(), font_size: FontSize::Px(9.0), ..default() },
+            TextFont {
+                font: font.0.clone().into(),
+                font_size: FontSize::Px(9.0),
+                ..default()
+            },
             TextColor(theme::INK),
             Node {
                 position_type: PositionType::Absolute,
@@ -416,10 +481,18 @@ fn draw_overlay(
         let a = base + i as f32 * std::f32::consts::FRAC_PI_2;
         let sx = radius + a.cos() * ring;
         let sy = radius - a.sin() * ring;
-        let color = if i == 0 { theme::PRIMARY } else { theme::TEXT_WEAK };
+        let color = if i == 0 {
+            theme::PRIMARY
+        } else {
+            theme::TEXT_WEAK
+        };
         commands.spawn((
             Text::new(*letter),
-            TextFont { font: font.0.clone().into(), font_size: FontSize::Px(11.0), ..default() },
+            TextFont {
+                font: font.0.clone().into(),
+                font_size: FontSize::Px(11.0),
+                ..default()
+            },
             TextColor(color),
             Node {
                 position_type: PositionType::Absolute,

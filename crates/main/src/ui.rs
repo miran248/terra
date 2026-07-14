@@ -1,14 +1,14 @@
-use bevy::prelude::*;
-use bevy::input::mouse::MouseWheel;
-use shared::items::Recipe;
-use shared::theme;
-use shared::upgrades::Upgrade;
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{LevelTags, LevelFaceTypes, LevelSlope, LevelRegions, Player, PlayerHp};
-use shared::terrain::Terrain;
-use shared::planet::PlanetMesh;
+use crate::map::{LevelFaceTypes, LevelRegions, LevelSlope, LevelTags, Player, PlayerHp};
 use crate::wave::WaveManager;
+use bevy::input::mouse::MouseWheel;
+use bevy::prelude::*;
+use shared::items::Recipe;
+use shared::planet::PlanetMesh;
+use shared::terrain::Terrain;
+use shared::theme;
+use shared::upgrades::Upgrade;
 
 #[derive(Resource, Default)]
 pub struct UpgradeLevels {
@@ -44,7 +44,9 @@ struct TerrainHud;
 struct TerrainHudTimer(Timer);
 
 impl Default for TerrainHudTimer {
-    fn default() -> Self { Self(Timer::from_seconds(0.5, TimerMode::Repeating)) }
+    fn default() -> Self {
+        Self(Timer::from_seconds(0.5, TimerMode::Repeating))
+    }
 }
 
 #[derive(Component)]
@@ -58,16 +60,22 @@ impl Plugin for UiPlugin {
             .init_resource::<TerrainHudTimer>()
             .add_systems(Startup, (load_font, spawn_terrain_hud).chain())
             // .add_systems(Startup, (setup_sidebar, setup_crafting).chain())
-            .add_systems(OnEnter(shared::state::AppState::Playing), reset_upgrade_buttons)
-            .add_systems(Update, (
-                update_stats,
-                update_terrain_hud,
-                handle_upgrade_clicks,
-                apply_upgrades,
-                scroll_upgrades,
-                handle_craft_clicks,
-                update_craft_status,
-            ));
+            .add_systems(
+                OnEnter(shared::state::AppState::Playing),
+                reset_upgrade_buttons,
+            )
+            .add_systems(
+                Update,
+                (
+                    update_stats,
+                    update_terrain_hud,
+                    handle_upgrade_clicks,
+                    apply_upgrades,
+                    scroll_upgrades,
+                    handle_craft_clicks,
+                    update_craft_status,
+                ),
+            );
     }
 }
 
@@ -76,7 +84,11 @@ fn load_font(mut commands: Commands, assets: Res<AssetServer>) {
 }
 
 fn text_font(font: &UiFont, size: f32) -> TextFont {
-    TextFont { font: font.0.clone().into(), font_size: FontSize::Px(size), ..default() }
+    TextFont {
+        font: font.0.clone().into(),
+        font_size: FontSize::Px(size),
+        ..default()
+    }
 }
 
 fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
@@ -103,7 +115,10 @@ fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
                 Text::new("Scrap: 0\nWave: 1\nHP: 500\n\nDPS: 0.0\nAPS: 0.0"),
                 text_font(&font, 14.0),
                 TextColor(theme::INK),
-                Node { flex_shrink: 0.0, ..default() },
+                Node {
+                    flex_shrink: 0.0,
+                    ..default()
+                },
                 StatsText,
             ));
 
@@ -141,26 +156,29 @@ fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
                         let label = format!(
                             "{} Lv.0\n{} -> {} (+{:.0}%)\nCost: {}",
                             upgrade.name(),
-                            cur, nxt,
+                            cur,
+                            nxt,
                             upgrade.value(1) / upgrade.value(0) * 100.0 - 100.0,
                             upgrade.cost(0),
                         );
 
-                        scroll.spawn((
-                            Button,
-                            Node {
-                                padding: UiRect::all(Val::Px(6.0)),
-                                flex_shrink: 0.0,
-                                ..default()
-                            },
-                            BorderColor::all(theme::PRIMARY),
-                            BackgroundColor(theme::SURFACE),
-                            ShopButton { upgrade: *upgrade },
-                        )).with_child((
-                            Text::new(label),
-                            text_font(&font, 11.0),
-                            TextColor(theme::INK),
-                        ));
+                        scroll
+                            .spawn((
+                                Button,
+                                Node {
+                                    padding: UiRect::all(Val::Px(6.0)),
+                                    flex_shrink: 0.0,
+                                    ..default()
+                                },
+                                BorderColor::all(theme::PRIMARY),
+                                BackgroundColor(theme::SURFACE),
+                                ShopButton { upgrade: *upgrade },
+                            ))
+                            .with_child((
+                                Text::new(label),
+                                text_font(&font, 11.0),
+                                TextColor(theme::INK),
+                            ));
                     }
                 });
         });
@@ -175,19 +193,21 @@ fn update_stats(
 ) {
     let Ok(mut t) = q.single_mut() else { return };
 
-    let dmg_idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::TurretDamage).unwrap();
-    let spd_idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::TurretSpeed).unwrap();
+    let dmg_idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::TurretDamage)
+        .unwrap();
+    let spd_idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::TurretSpeed)
+        .unwrap();
     let dmg = Upgrade::TurretDamage.value(levels.levels[dmg_idx]);
     let aps = Upgrade::TurretSpeed.value(levels.levels[spd_idx]);
     let dps = dmg * aps;
 
     t.0 = format!(
         "Scrap: {}\nWave: {}  ({}/{})\nHP: {:.0}\nDPS: {:.1}\nAPS: {:.2}",
-        scrap.0,
-        wave.wave, wave.zombies_spawned_this_wave, wave.zombies_per_wave,
-        hp.0,
-        dps,
-        aps,
+        scrap.0, wave.wave, wave.zombies_spawned_this_wave, wave.zombies_per_wave, hp.0, dps, aps,
     );
 }
 
@@ -214,7 +234,10 @@ fn setup_crafting(mut commands: Commands, font: Res<UiFont>) {
                 Text::new("CRAFTING\nMetal 0  Wood 0\nRope 0  Cloth 0\nWeapon: none"),
                 text_font(&font, 12.0),
                 TextColor(theme::INK),
-                Node { flex_shrink: 0.0, ..default() },
+                Node {
+                    flex_shrink: 0.0,
+                    ..default()
+                },
                 CraftStatusText,
             ));
 
@@ -290,10 +313,7 @@ fn handle_craft_clicks(
     }
 }
 
-fn update_craft_status(
-    loot: Res<LootState>,
-    mut q: Query<&mut Text, With<CraftStatusText>>,
-) {
+fn update_craft_status(loot: Res<LootState>, mut q: Query<&mut Text, With<CraftStatusText>>) {
     if !loot.is_changed() {
         return;
     }
@@ -324,7 +344,10 @@ fn handle_upgrade_clicks(
         if *interaction != Interaction::Pressed {
             continue;
         }
-        let idx = Upgrade::ALL.iter().position(|u| *u == button.upgrade).unwrap();
+        let idx = Upgrade::ALL
+            .iter()
+            .position(|u| *u == button.upgrade)
+            .unwrap();
         let level = levels.levels[idx];
         let cost = button.upgrade.cost(level);
 
@@ -345,12 +368,22 @@ fn handle_upgrade_clicks(
             if let Ok(mut t) = text_q.get_mut(child) {
                 let cur = button.upgrade.format_value(button.upgrade.value(new_level));
                 let (next_str, arrow) = if new_level < 99 {
-                    (button.upgrade.format_value(button.upgrade.value(new_level + 1)), "->".to_string())
+                    (
+                        button
+                            .upgrade
+                            .format_value(button.upgrade.value(new_level + 1)),
+                        "->".to_string(),
+                    )
                 } else {
                     ("MAX".to_string(), "".to_string())
                 };
                 let delta = if new_level < 99 {
-                    format!("+{:.0}%", button.upgrade.value(new_level + 1) / button.upgrade.value(new_level) * 100.0 - 100.0)
+                    format!(
+                        "+{:.0}%",
+                        button.upgrade.value(new_level + 1) / button.upgrade.value(new_level)
+                            * 100.0
+                            - 100.0
+                    )
                 } else {
                     String::new()
                 };
@@ -378,24 +411,28 @@ fn scroll_upgrades(
         for (entity, scroll, computed) in &scroll_q {
             let max_scroll = (computed.size.y - 400.0).max(0.0);
             let new_y = (scroll.0.y - ev.y * 50.0).max(0.0).min(max_scroll);
-            commands.entity(entity).insert(ScrollPosition(Vec2::new(0.0, new_y)));
+            commands
+                .entity(entity)
+                .insert(ScrollPosition(Vec2::new(0.0, new_y)));
         }
     }
 }
 
-fn reset_upgrade_buttons(
-    buttons: Query<(&ShopButton, &Children)>,
-    mut text_q: Query<&mut Text>,
-) {
+fn reset_upgrade_buttons(buttons: Query<(&ShopButton, &Children)>, mut text_q: Query<&mut Text>) {
     for (button, children) in &buttons {
         let lvl0 = button.upgrade.value(0);
         let cur = button.upgrade.format_value(lvl0);
         let nxt = button.upgrade.format_value(button.upgrade.value(1));
-        let delta = format!("+{:.0}%", button.upgrade.value(1) / button.upgrade.value(0) * 100.0 - 100.0);
+        let delta = format!(
+            "+{:.0}%",
+            button.upgrade.value(1) / button.upgrade.value(0) * 100.0 - 100.0
+        );
         let label = format!(
             "{} Lv.0\n{} -> {} ({})\nCost: {}",
             button.upgrade.name(),
-            cur, nxt, delta,
+            cur,
+            nxt,
+            delta,
             button.upgrade.cost(0),
         );
         for &child in children {
@@ -415,10 +452,22 @@ fn apply_upgrades(
         return;
     }
 
-    let dmg_idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::TurretDamage).unwrap();
-    let spd_idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::TurretSpeed).unwrap();
-    let rng_idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::TurretRange).unwrap();
-    let proj_idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::ProjectileSpeed).unwrap();
+    let dmg_idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::TurretDamage)
+        .unwrap();
+    let spd_idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::TurretSpeed)
+        .unwrap();
+    let rng_idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::TurretRange)
+        .unwrap();
+    let proj_idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::ProjectileSpeed)
+        .unwrap();
 
     let damage = Upgrade::TurretDamage.value(levels.levels[dmg_idx]);
     let speed = Upgrade::TurretSpeed.value(levels.levels[spd_idx]);
@@ -435,22 +484,20 @@ fn apply_upgrades(
 // ---- terrain HUD ----
 
 fn spawn_terrain_hud(mut commands: Commands, font: Res<UiFont>) {
-    commands.spawn((
-        Node {
-            position_type: PositionType::Absolute,
-            right: Val::Px(8.0),
-            top: Val::Px(8.0),
-            padding: UiRect::all(Val::Px(6.0)),
-            ..default()
-        },
-        BackgroundColor(theme::PANEL_BG),
-        GlobalZIndex(10),
-        TerrainHud,
-    )).with_child((
-        Text::new(""),
-        text_font(&font, 12.0),
-        TextColor(theme::INK),
-    ));
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(8.0),
+                top: Val::Px(8.0),
+                padding: UiRect::all(Val::Px(6.0)),
+                ..default()
+            },
+            BackgroundColor(theme::PANEL_BG),
+            GlobalZIndex(10),
+            TerrainHud,
+        ))
+        .with_child((Text::new(""), text_font(&font, 12.0), TextColor(theme::INK)));
 }
 
 fn update_terrain_hud(
@@ -469,21 +516,37 @@ fn update_terrain_hud(
     mut text_q: Query<(&mut Text, &mut TextColor)>,
     time: Res<Time>,
     // Combined into one tuple param to stay within Bevy's 16-param system limit.
-    sky: (Option<Res<crate::map::TimeOfDay>>, Option<Res<crate::weather::Weather>>),
+    sky: (
+        Option<Res<crate::map::TimeOfDay>>,
+        Option<Res<crate::weather::Weather>>,
+    ),
     mut timer: ResMut<TerrainHudTimer>,
 ) {
     let (tod, weather) = sky;
     let Ok(children) = hud_q.single() else { return };
-    let Some(child) = children.first() else { return };
-    let Ok((mut text, mut color)) = text_q.get_mut(*child) else { return };
-    let Some(terrain) = terrain else { text.0.clear(); return; };
-    let Ok(tf) = player_q.single() else { text.0.clear(); return; };
+    let Some(child) = children.first() else {
+        return;
+    };
+    let Ok((mut text, mut color)) = text_q.get_mut(*child) else {
+        return;
+    };
+    let Some(terrain) = terrain else {
+        text.0.clear();
+        return;
+    };
+    let Ok(tf) = player_q.single() else {
+        text.0.clear();
+        return;
+    };
 
-    if !timer.0.tick(time.delta()).just_finished() { return; }
+    if !timer.0.tick(time.delta()).just_finished() {
+        return;
+    }
     let pos = shared::sphere::SpherePos::new(tf.translation);
     // Read precomputed face type from level data — guaranteed to match terrain colors.
     let tile = if let (Some(planet), Some(ft)) = (planet.as_ref(), face_types.as_ref()) {
-        planet.face_at(tf.translation.normalize())
+        planet
+            .face_at(tf.translation.normalize())
             .map(|fi| ft.0.get(fi).copied().unwrap_or(Terrain::Plains))
             .unwrap_or(Terrain::Plains)
     } else {
@@ -494,19 +557,33 @@ fn update_terrain_hud(
     let _slope = terrain.slope(pos);
     let hab = terrain.is_habitable(pos);
     let landform: String = if let Some(planet) = planet.as_ref() {
-        planet.face_at(tf.translation.normalize()).map(|fi| {
-            if tile.is_water() {
-                water_depth.as_ref().and_then(|wd| wd.0.get(fi).copied())
-                    .map(|d| shared::level::depth_name(d).to_string()).unwrap_or_default()
-            } else {
-                let lf = landform_r.as_ref().and_then(|l| l.0.get(fi).copied())
-                    .map(shared::level::landform_name).unwrap_or("");
-                let sl = slope_class.as_ref().and_then(|sc| sc.0.get(fi).copied())
-                    .map(shared::level::slope_name).unwrap_or("");
-                format!("{lf} ({sl})")
-            }
-        }).unwrap_or_default()
-    } else { String::new() };
+        planet
+            .face_at(tf.translation.normalize())
+            .map(|fi| {
+                if tile.is_water() {
+                    water_depth
+                        .as_ref()
+                        .and_then(|wd| wd.0.get(fi).copied())
+                        .map(|d| shared::level::depth_name(d).to_string())
+                        .unwrap_or_default()
+                } else {
+                    let lf = landform_r
+                        .as_ref()
+                        .and_then(|l| l.0.get(fi).copied())
+                        .map(shared::level::landform_name)
+                        .unwrap_or("");
+                    let sl = slope_class
+                        .as_ref()
+                        .and_then(|sc| sc.0.get(fi).copied())
+                        .map(shared::level::slope_name)
+                        .unwrap_or("");
+                    format!("{lf} ({sl})")
+                }
+            })
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
 
     // Tile line: everything about the ground under the player, in one place —
     // type (both types when the face is a blend), built tags, habitability.
@@ -523,7 +600,11 @@ fn update_terrain_hud(
                     let other = if a == tile as u8 { b } else { a };
                     tile_line = match shared::level::blend_feature_name(other) {
                         Some(name) => format!("{} + {name}", tile_name(tile)),
-                        None => format!("{} + {}", tile_name(tile), tile_name(Terrain::ALL[other as usize])),
+                        None => format!(
+                            "{} + {}",
+                            tile_name(tile),
+                            tile_name(Terrain::ALL[other as usize])
+                        ),
                     };
                 }
             }
@@ -541,7 +622,12 @@ fn update_terrain_hud(
                 }
             }
             if let Some(regions) = regions {
-                if let Some(ri) = regions.face_region.get(fi).copied().and_then(shared::level::region_index) {
+                if let Some(ri) = regions
+                    .face_region
+                    .get(fi)
+                    .copied()
+                    .and_then(shared::level::region_index)
+                {
                     region_name = format!("\n{}", regions.regions[ri].name);
                 }
             }
@@ -576,11 +662,17 @@ fn clock_string(tod: Option<&crate::map::TimeOfDay>, up: Vec3) -> String {
 /// Weather label for the player's location: precipitation type is resolved from
 /// the local temperature (snow when cold, rain when warm).
 fn weather_label(weather: Option<&crate::weather::Weather>, temp: f32) -> String {
-    let Some(weather) = weather else { return String::new() };
+    let Some(weather) = weather else {
+        return String::new();
+    };
     if weather.precip < 0.05 {
         return "Clear".to_string();
     }
-    let kind = if crate::weather::is_snow(temp) { "Snow" } else { "Rain" };
+    let kind = if crate::weather::is_snow(temp) {
+        "Snow"
+    } else {
+        "Rain"
+    };
     let sev = if weather.precip > 0.66 {
         "Heavy "
     } else if weather.precip > 0.33 {
@@ -593,17 +685,18 @@ fn weather_label(weather: Option<&crate::weather::Weather>, temp: f32) -> String
 
 fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
     match tile {
-        shared::terrain::Terrain::Ocean |
-        shared::terrain::Terrain::Lake |
-        shared::terrain::Terrain::River |
-        shared::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
-        shared::terrain::Terrain::Beach |
-        shared::terrain::Terrain::Cliff |
-        shared::terrain::Terrain::LakeShore |
-        shared::terrain::Terrain::RiverBank => Color::srgb(0.9, 0.85, 0.6),
+        shared::terrain::Terrain::Ocean
+        | shared::terrain::Terrain::Lake
+        | shared::terrain::Terrain::River
+        | shared::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
+        shared::terrain::Terrain::Beach
+        | shared::terrain::Terrain::Cliff
+        | shared::terrain::Terrain::LakeShore
+        | shared::terrain::Terrain::RiverBank => Color::srgb(0.9, 0.85, 0.6),
         shared::terrain::Terrain::Desert => Color::srgb(0.85, 0.75, 0.5),
-        shared::terrain::Terrain::Plains |
-        shared::terrain::Terrain::Forest => Color::srgb(0.3, 0.7, 0.3),
+        shared::terrain::Terrain::Plains | shared::terrain::Terrain::Forest => {
+            Color::srgb(0.3, 0.7, 0.3)
+        }
         shared::terrain::Terrain::Tundra => Color::srgb(0.6, 0.65, 0.6),
         shared::terrain::Terrain::Mountain => Color::srgb(0.5, 0.45, 0.4),
         shared::terrain::Terrain::Snow => Color::srgb(0.95, 0.97, 1.0),

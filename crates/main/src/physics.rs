@@ -13,9 +13,7 @@ impl Plugin for PhysicsPlugin {
     }
 }
 
-fn apply_radial_gravity(
-    mut bodies: Query<(Forces, &Position), With<RadialGravity>>,
-) {
+fn apply_radial_gravity(mut bodies: Query<(Forces, &Position), With<RadialGravity>>) {
     for (mut forces, pos) in &mut bodies {
         let dir = pos.0.normalize_or_zero();
         if dir.length_squared() > 0.0 {

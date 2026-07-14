@@ -119,10 +119,7 @@ pub fn build_water_surface(tris: &[[[f32; 3]; 3]], water_r: &[f32]) -> Option<Me
 /// carries its downhill flow direction (from its highest to lowest corner,
 /// projected onto the surface) encoded in vertex colour, which the water shader
 /// reads to scroll ripples downstream.
-pub fn build_river_surfaces(
-    tris: &[[[f32; 3]; 3]],
-    river_r: &[[f32; 3]],
-) -> Option<Mesh> {
+pub fn build_river_surfaces(tris: &[[[f32; 3]; 3]], river_r: &[[f32; 3]]) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
@@ -296,7 +293,8 @@ mod tests {
         ];
         let river_r = vec![[100.5, 100.0, 99.5], [100.0, 101.0, 99.5], [0.0; 3]];
         let mesh = build_river_surfaces(&tris, &river_r).expect("river mesh");
-        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        let Some(VertexAttributeValues::Float32x3(positions)) =
+            mesh.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
             panic!("no river positions");
         };
@@ -314,11 +312,17 @@ mod tests {
             let height = Vec3::from_array(*position).length();
             let existing = heights.insert(key(position), height);
             if let Some(previous) = existing {
-                assert!((previous - height).abs() < 1e-3, "shared river vertex stepped");
+                assert!(
+                    (previous - height).abs() < 1e-3,
+                    "shared river vertex stepped"
+                );
             }
         }
         let min_height = heights.values().copied().reduce(f32::min).unwrap();
         let max_height = heights.values().copied().reduce(f32::max).unwrap();
-        assert!(max_height - min_height > 0.1, "river surface should follow terrain relief");
+        assert!(
+            max_height - min_height > 0.1,
+            "river surface should follow terrain relief"
+        );
     }
 }

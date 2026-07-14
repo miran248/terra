@@ -1,8 +1,8 @@
+use crate::ui::UiFont;
+use crate::wave::WaveManager;
 use bevy::prelude::*;
 use shared::state::AppState;
 use shared::theme;
-use crate::ui::UiFont;
-use crate::wave::WaveManager;
 
 #[derive(Resource, Default)]
 pub struct PrestigeLevel(pub u32);
@@ -84,7 +84,16 @@ fn restart_game(
     game_over_ui: Query<Entity, With<GameOverUi>>,
     game_entities: Query<Entity, (With<crate::zombie::Zombie>, Without<GameOverUi>)>,
     projectile_entities: Query<Entity, (With<crate::turret::Projectile>, Without<GameOverUi>)>,
-    loot_entities: Query<Entity, (Or<(With<crate::loot::LootMaterial>, With<crate::loot::LootWeapon>)>, Without<GameOverUi>)>,
+    loot_entities: Query<
+        Entity,
+        (
+            Or<(
+                With<crate::loot::LootMaterial>,
+                With<crate::loot::LootWeapon>,
+            )>,
+            Without<GameOverUi>,
+        ),
+    >,
     player_entities: Query<Entity, (With<crate::map::Player>, Without<GameOverUi>)>,
     ground_entities: Query<Entity, (With<crate::map::Ground>, Without<GameOverUi>)>,
     mut player_hp: ResMut<crate::map::PlayerHp>,

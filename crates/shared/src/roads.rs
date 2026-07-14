@@ -1,6 +1,6 @@
 use bevy::prelude::Vec3;
 
-use crate::sphere::{slerp, SpherePos, PLANET_RADIUS};
+use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
 
 /// Spacing between sampled points along a road, meters.
 pub const SAMPLE_SPACING: f32 = 40.0;
@@ -8,17 +8,32 @@ pub const SAMPLE_SPACING: f32 = 40.0;
 /// Deterministic settlement name: a fixed syllable table indexed by settlement number,
 /// so the same seed/order always yields the same names.
 pub fn settlement_name(i: usize) -> String {
-    const PRE: [&str; 8] = ["Ash", "Oak", "Stone", "River", "Fair", "Wind", "Cold", "Green"];
+    const PRE: [&str; 8] = [
+        "Ash", "Oak", "Stone", "River", "Fair", "Wind", "Cold", "Green",
+    ];
     const SUF: [&str; 6] = ["ford", "haven", "bury", "wick", "dale", "hollow"];
     format!("{}{}", PRE[i % PRE.len()], SUF[(i / PRE.len()) % SUF.len()])
 }
 
 /// A gently wobbled great-circle polyline between two points — the shape of a road.
-pub fn build_land_road_path(a: SpherePos, b: SpherePos, steps: usize, seed: Vec3) -> Vec<SpherePos> {
-    (0..=steps).map(|k| {
-        let t = k as f32 / steps as f32;
-        if k == 0 { a } else if k == steps { b } else { wobbled_slerp(a, b, t, seed, 40.0) }
-    }).collect()
+pub fn build_land_road_path(
+    a: SpherePos,
+    b: SpherePos,
+    steps: usize,
+    seed: Vec3,
+) -> Vec<SpherePos> {
+    (0..=steps)
+        .map(|k| {
+            let t = k as f32 / steps as f32;
+            if k == 0 {
+                a
+            } else if k == steps {
+                b
+            } else {
+                wobbled_slerp(a, b, t, seed, 40.0)
+            }
+        })
+        .collect()
 }
 
 /// Great-circle interpolation with a multi-frequency lateral wobble for organic curve,
@@ -78,14 +93,18 @@ pub fn build_bridge_deck(
         }
         // Clamp to the last real segment (float rounding on the final sample).
         let si = si.min(seglen.len() - 1);
-        let f = if seglen[si] > 1e-6 { (want / seglen[si]).clamp(0.0, 1.0) } else { 0.0 };
+        let f = if seglen[si] > 1e-6 {
+            (want / seglen[si]).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         dirs.push(slerp(points[si], points[si + 1], f).0);
     }
 
     let span_len = points[0].distance(*points.last().unwrap());
     let clearance = (span_len * 0.05).clamp(2.5, 10.0); // arch rise at mid-span
     let thickness = 1.4; // deck slab depth (a solid, not a ribbon)
-    let embed = 1.5;     // sink the grounded ends into the terrain — no float
+    let embed = 1.5; // sink the grounded ends into the terrain — no float
 
     // Per-ring lateral frame (fwd → left offset), reused for the end grounding.
     let ring_left = |i: usize, r: f32| -> Vec3 {
@@ -108,7 +127,8 @@ pub fn build_bridge_deck(
         let l = ring_left(i, PLANET_RADIUS);
         let ld = (dirs[i] + l).normalize();
         let rd = (dirs[i] - l).normalize();
-        ground.facet_radius(ld, PLANET_RADIUS)
+        ground
+            .facet_radius(ld, PLANET_RADIUS)
             .min(ground.facet_radius(rd, PLANET_RADIUS))
             .min(ground.facet_radius(dirs[i], PLANET_RADIUS))
             - embed
@@ -181,7 +201,10 @@ mod tests {
         for (k, p) in path.iter().enumerate() {
             let t = k as f32 / (path.len() - 1) as f32;
             let straight = slerp(a, b, t);
-            assert!(p.distance(straight) < 60.0, "wobble exceeded amplitude bound");
+            assert!(
+                p.distance(straight) < 60.0,
+                "wobble exceeded amplitude bound"
+            );
         }
     }
 }

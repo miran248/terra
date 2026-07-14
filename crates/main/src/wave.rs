@@ -1,7 +1,7 @@
-use bevy::prelude::*;
-use shared::upgrades::Upgrade;
 use crate::ui::UpgradeLevels;
 use crate::zombie::Zombie;
+use bevy::prelude::*;
+use shared::upgrades::Upgrade;
 
 #[derive(Resource)]
 pub struct WaveManager {
@@ -18,7 +18,10 @@ impl Default for WaveManager {
             wave: 1,
             zombies_per_wave: 5,
             zombies_spawned_this_wave: 0,
-            spawn_timer: Timer::from_seconds(1.0 / Upgrade::SpawnRate.value(0), TimerMode::Repeating),
+            spawn_timer: Timer::from_seconds(
+                1.0 / Upgrade::SpawnRate.value(0),
+                TimerMode::Repeating,
+            ),
             between_wave_timer: Timer::from_seconds(2.0, TimerMode::Once),
         }
     }
@@ -33,14 +36,14 @@ impl Plugin for WavePlugin {
     }
 }
 
-fn apply_spawn_rate_upgrade(
-    levels: Res<UpgradeLevels>,
-    mut wave: ResMut<WaveManager>,
-) {
+fn apply_spawn_rate_upgrade(levels: Res<UpgradeLevels>, mut wave: ResMut<WaveManager>) {
     if !levels.is_changed() {
         return;
     }
-    let idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::SpawnRate).unwrap();
+    let idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::SpawnRate)
+        .unwrap();
     let interval = 1.0 / Upgrade::SpawnRate.value(levels.levels[idx]);
     wave.spawn_timer = Timer::from_seconds(interval, TimerMode::Repeating);
 }

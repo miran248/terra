@@ -2,9 +2,9 @@ use bevy::prelude::{Color, Resource, Vec3};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 use std::collections::BTreeMap;
 
-use crate::planet::{unit_icosphere_tris, PlanetMesh};
-use crate::sphere::{slerp, SpherePos, PLANET_RADIUS};
-use crate::zones::{ZoneConfig, ZoneKind, Zones, COARSE_SUB};
+use crate::planet::{PlanetMesh, unit_icosphere_tris};
+use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
+use crate::zones::{COARSE_SUB, ZoneConfig, ZoneKind, Zones};
 
 pub const MAX_MOUNTAIN: f32 = 200.0;
 pub const MAX_DEPTH: f32 = 200.0;
@@ -44,12 +44,25 @@ pub enum Terrain {
 
 impl Terrain {
     pub const ALL: [Terrain; 19] = [
-        Terrain::Ocean, Terrain::Lake, Terrain::LakeShore,
-        Terrain::River, Terrain::RiverBank, Terrain::Beach, Terrain::Cliff,
-        Terrain::Desert, Terrain::Plains, Terrain::Forest, Terrain::Tundra,
-        Terrain::Mountain, Terrain::Snow,
-        Terrain::Swamp, Terrain::Jungle, Terrain::Savanna, Terrain::Volcanic,
-        Terrain::Glacier, Terrain::RiverSpring,
+        Terrain::Ocean,
+        Terrain::Lake,
+        Terrain::LakeShore,
+        Terrain::River,
+        Terrain::RiverBank,
+        Terrain::Beach,
+        Terrain::Cliff,
+        Terrain::Desert,
+        Terrain::Plains,
+        Terrain::Forest,
+        Terrain::Tundra,
+        Terrain::Mountain,
+        Terrain::Snow,
+        Terrain::Swamp,
+        Terrain::Jungle,
+        Terrain::Savanna,
+        Terrain::Volcanic,
+        Terrain::Glacier,
+        Terrain::RiverSpring,
     ];
 
     pub fn color(&self) -> Color {
@@ -77,10 +90,15 @@ impl Terrain {
     }
 
     pub fn is_water(&self) -> bool {
-        matches!(self, Terrain::Ocean | Terrain::Lake | Terrain::River | Terrain::RiverSpring)
+        matches!(
+            self,
+            Terrain::Ocean | Terrain::Lake | Terrain::River | Terrain::RiverSpring
+        )
     }
 
-    pub fn is_land(&self) -> bool { !self.is_water() }
+    pub fn is_land(&self) -> bool {
+        !self.is_water()
+    }
 
     /// A shore/transition kind — the band where water meets land. Not water
     /// itself, but not a solid land biome either.
@@ -180,10 +198,18 @@ impl TerrainGen {
 
         Self {
             height,
-            detail: Fbm::<Perlin>::new(sub_seed(1)).set_octaves(3).set_frequency(7.0),
-            moisture: Fbm::<Perlin>::new(sub_seed(2)).set_octaves(4).set_frequency(2.5),
-            temp_noise: Fbm::<Perlin>::new(sub_seed(3)).set_octaves(3).set_frequency(2.0),
-            warp: Fbm::<Perlin>::new(sub_seed(4)).set_octaves(3).set_frequency(2.8),
+            detail: Fbm::<Perlin>::new(sub_seed(1))
+                .set_octaves(3)
+                .set_frequency(7.0),
+            moisture: Fbm::<Perlin>::new(sub_seed(2))
+                .set_octaves(4)
+                .set_frequency(2.5),
+            temp_noise: Fbm::<Perlin>::new(sub_seed(3))
+                .set_octaves(3)
+                .set_frequency(2.0),
+            warp: Fbm::<Perlin>::new(sub_seed(4))
+                .set_octaves(3)
+                .set_frequency(2.8),
             vert_elev: vec![0.0; verts.len()],
             vert_moist: vec![0.0; verts.len()],
             vert_temp: vec![0.0; verts.len()],
@@ -202,9 +228,15 @@ impl TerrainGen {
 
     // ---- solver access (worldgen::SolveElevation) ----
 
-    pub fn vert_count(&self) -> usize { self.verts.len() }
-    pub fn vert_dir(&self, vi: usize) -> Vec3 { self.verts[vi] }
-    pub fn vert_elevations(&self) -> &[f32] { &self.vert_elev }
+    pub fn vert_count(&self) -> usize {
+        self.verts.len()
+    }
+    pub fn vert_dir(&self, vi: usize) -> Vec3 {
+        self.verts[vi]
+    }
+    pub fn vert_elevations(&self) -> &[f32] {
+        &self.vert_elev
+    }
     /// Plain setter — temperature depends on altitude, so the orchestrator
     /// must follow any field change with ComputeClimate → set_climate.
     pub fn set_vert_elevations(&mut self, v: Vec<f32>) {
@@ -219,10 +251,16 @@ impl TerrainGen {
         self.vert_temp = temp;
     }
     /// The 6-vertex interpolation kernel at a position (indices + cos-distance).
-    pub fn kernel(&self, pos: SpherePos) -> [(usize, f32); 6] { self.bary_kernel(pos) }
+    pub fn kernel(&self, pos: SpherePos) -> [(usize, f32); 6] {
+        self.bary_kernel(pos)
+    }
 
-    pub fn seed(&self) -> u32 { self.seed }
-    pub fn zones(&self) -> &Zones { &self.zones }
+    pub fn seed(&self) -> u32 {
+        self.seed
+    }
+    pub fn zones(&self) -> &Zones {
+        &self.zones
+    }
 
     // ---- zone lookup ----
 
@@ -238,7 +276,10 @@ impl TerrainGen {
         let mut best_dot = f32::NEG_INFINITY;
         for (i, c) in self.zones.centroids.iter().enumerate() {
             let d = c.dot(dir);
-            if d > best_dot { best_dot = d; best = i; }
+            if d > best_dot {
+                best_dot = d;
+                best = i;
+            }
         }
         self.zones.kind_of_face(best)
     }
@@ -259,21 +300,30 @@ impl TerrainGen {
         }
     }
 
-    pub fn render_radius(&self, pos: SpherePos) -> f32 { self.surface_radius(pos) }
-    pub fn altitude(&self, pos: SpherePos) -> f32 { self.surface_radius(pos) - PLANET_RADIUS }
+    pub fn render_radius(&self, pos: SpherePos) -> f32 {
+        self.surface_radius(pos)
+    }
+    pub fn altitude(&self, pos: SpherePos) -> f32 {
+        self.surface_radius(pos) - PLANET_RADIUS
+    }
 
     pub fn slope(&self, pos: SpherePos) -> f32 {
         let step = 3.0;
         let c = self.altitude(pos);
         let (east, north) = pos.tangent_basis();
-        let ne = self.altitude(SpherePos::new((pos.0 + north * (step / PLANET_RADIUS)).normalize()));
-        let ea = self.altitude(SpherePos::new((pos.0 + east * (step / PLANET_RADIUS)).normalize()));
+        let ne = self.altitude(SpherePos::new(
+            (pos.0 + north * (step / PLANET_RADIUS)).normalize(),
+        ));
+        let ea = self.altitude(SpherePos::new(
+            (pos.0 + east * (step / PLANET_RADIUS)).normalize(),
+        ));
         ((ne - c).abs() + (ea - c).abs()) / (2.0 * step)
     }
 
     pub fn is_habitable(&self, pos: SpherePos) -> bool {
         let a = self.altitude(pos);
-        a >= HABITABLE_MIN_ALT && a <= HABITABLE_MAX_ALT
+        a >= HABITABLE_MIN_ALT
+            && a <= HABITABLE_MAX_ALT
             && self.slope(pos) < HABITABLE_MAX_SLOPE
             && self.temperature_at(pos) >= HABITABLE_MIN_TEMP
             && self.temperature_at(pos) <= HABITABLE_MAX_TEMP
@@ -307,17 +357,36 @@ impl TerrainGen {
         let e = self.interp_elevation(pos);
         match kind {
             ZoneKind::Ocean => Terrain::Ocean,
-            ZoneKind::Lake => if e < 0.0 { Terrain::Lake } else { self.land_biome(pos, e) },
+            ZoneKind::Lake => {
+                if e < 0.0 {
+                    Terrain::Lake
+                } else {
+                    self.land_biome(pos, e)
+                }
+            }
             ZoneKind::MountainRange => {
                 let temp = self.interp_temperature(pos);
-                if e < 0.0 { Terrain::Ocean }
-                else if temp < -20.0 { Terrain::Glacier }
-                else if temp < -5.0 { Terrain::Snow }
+                if e < 0.0 {
+                    Terrain::Ocean
+                } else if temp < -20.0 {
+                    Terrain::Glacier
+                } else if temp < -5.0 {
+                    Terrain::Snow
+                }
                 // Hot high peaks are volcanic rock.
-                else if temp > 22.0 && e > 0.72 { Terrain::Volcanic }
-                else { Terrain::Mountain }
+                else if temp > 22.0 && e > 0.72 {
+                    Terrain::Volcanic
+                } else {
+                    Terrain::Mountain
+                }
             }
-            _ => if e < 0.0 { Terrain::Ocean } else { self.land_biome(pos, e) },
+            _ => {
+                if e < 0.0 {
+                    Terrain::Ocean
+                } else {
+                    self.land_biome(pos, e)
+                }
+            }
         }
     }
 
@@ -325,18 +394,38 @@ impl TerrainGen {
         let t = self.interp_temperature(pos);
         let m = self.interp_moisture(pos);
         // Coldest first.
-        if t < -28.0 { return Terrain::Glacier; }
-        if t < -15.0 { return Terrain::Snow; }
-        if t < 0.0 { return Terrain::Tundra; }
-        if e > 0.50 { return Terrain::Mountain; }
+        if t < -28.0 {
+            return Terrain::Glacier;
+        }
+        if t < -15.0 {
+            return Terrain::Snow;
+        }
+        if t < 0.0 {
+            return Terrain::Tundra;
+        }
+        if e > 0.50 {
+            return Terrain::Mountain;
+        }
         // Warm-climate biomes, most specific first.
         // Low, very wet ground is swamp (whatever the heat); hot wet ground
         // above the flats is jungle.
-        if e < 0.12 && m > 0.28 { return Terrain::Swamp; }
-        if t > 24.0 && m > 0.25 { return Terrain::Jungle; }
-        if t > 30.0 && m < -0.15 { return Terrain::Desert; }
-        if t > 22.0 && m < 0.05 { return Terrain::Savanna; }
-        if m > 0.10 { Terrain::Forest } else { Terrain::Plains }
+        if e < 0.12 && m > 0.28 {
+            return Terrain::Swamp;
+        }
+        if t > 24.0 && m > 0.25 {
+            return Terrain::Jungle;
+        }
+        if t > 30.0 && m < -0.15 {
+            return Terrain::Desert;
+        }
+        if t > 22.0 && m < 0.05 {
+            return Terrain::Savanna;
+        }
+        if m > 0.10 {
+            Terrain::Forest
+        } else {
+            Terrain::Plains
+        }
     }
 
     /// Point classification without face data (HUD fallback).
@@ -344,7 +433,9 @@ impl TerrainGen {
         self.base_classify(pos)
     }
 
-    pub fn color_at(&self, pos: SpherePos) -> Color { self.classify(pos).color() }
+    pub fn color_at(&self, pos: SpherePos) -> Color {
+        self.classify(pos).color()
+    }
 
     // ---- L3 stage 1: zone-remapped base elevation ----
 
@@ -365,7 +456,11 @@ impl TerrainGen {
             let w = self.warped(pos);
             let raw = self.height.get(w) as f32;
             let (min, max, curve, land) = self.blended_profile(pos.0);
-            let detail = if land { self.detail.get(w) as f32 * 0.06 } else { 0.0 };
+            let detail = if land {
+                self.detail.get(w) as f32 * 0.06
+            } else {
+                0.0
+            };
             let t = ((raw + detail + 1.0) / 2.0).clamp(0.0, 1.0);
             out[i] = (min + (max - min) * t.powf(curve)).clamp(-1.0, 1.0);
         }
@@ -380,7 +475,10 @@ impl TerrainGen {
             let mut best_dot = f32::NEG_INFINITY;
             for (i, c) in self.zones.centroids.iter().enumerate() {
                 let d = c.dot(dir);
-                if d > best_dot { best_dot = d; best = i; }
+                if d > best_dot {
+                    best_dot = d;
+                    best = i;
+                }
             }
             best
         });
@@ -388,7 +486,12 @@ impl TerrainGen {
         let mut max = 0.0f32;
         let mut curve = 0.0f32;
         let mut wsum = 0.0f32;
-        let consider = |fi: usize, dir: Vec3, min: &mut f32, max: &mut f32, curve: &mut f32, wsum: &mut f32| {
+        let consider = |fi: usize,
+                        dir: Vec3,
+                        min: &mut f32,
+                        max: &mut f32,
+                        curve: &mut f32,
+                        wsum: &mut f32| {
             let angle = self.zones.centroids[fi].dot(dir).clamp(-1.0, 1.0).acos();
             let kind = self.zones.kind_of_face(fi);
             // Small features (lakes, ranges, settlement pads) blend sharper so
@@ -457,31 +560,47 @@ impl TerrainGen {
     fn clamp_zone_identity(&self, e: &mut [f32]) {
         let n = self.zones.centroids.len();
         #[derive(Clone, Copy)]
-        enum Rule { Wet, Dry, Coast }
-        let rules: Vec<Rule> = (0..n).map(|fi| {
-            let kind = self.zones.kind_of_face(fi);
-            let ring_has = |pred: &dyn Fn(ZoneKind) -> bool| {
-                self.zones.adj[fi].iter().any(|&nb| pred(self.zones.kind_of_face(nb as usize)))
-            };
-            match kind {
-                ZoneKind::Lake => Rule::Wet,
-                ZoneKind::Ocean => {
-                    if ring_has(&|k| !k.is_water()) { Rule::Coast } else { Rule::Wet }
-                }
-                _ => {
-                    // Ocean-adjacent land is coastline and may dip — UNLESS it
-                    // also borders a lake: a face wedged between lake and sea
-                    // must stay dry or the lake drains into an ocean inlet.
-                    if ring_has(&|k| k == ZoneKind::Ocean) && !ring_has(&|k| k == ZoneKind::Lake) {
-                        Rule::Coast
-                    } else {
-                        Rule::Dry
+        enum Rule {
+            Wet,
+            Dry,
+            Coast,
+        }
+        let rules: Vec<Rule> = (0..n)
+            .map(|fi| {
+                let kind = self.zones.kind_of_face(fi);
+                let ring_has = |pred: &dyn Fn(ZoneKind) -> bool| {
+                    self.zones.adj[fi]
+                        .iter()
+                        .any(|&nb| pred(self.zones.kind_of_face(nb as usize)))
+                };
+                match kind {
+                    ZoneKind::Lake => Rule::Wet,
+                    ZoneKind::Ocean => {
+                        if ring_has(&|k| !k.is_water()) {
+                            Rule::Coast
+                        } else {
+                            Rule::Wet
+                        }
+                    }
+                    _ => {
+                        // Ocean-adjacent land is coastline and may dip — UNLESS it
+                        // also borders a lake: a face wedged between lake and sea
+                        // must stay dry or the lake drains into an ocean inlet.
+                        if ring_has(&|k| k == ZoneKind::Ocean)
+                            && !ring_has(&|k| k == ZoneKind::Lake)
+                        {
+                            Rule::Coast
+                        } else {
+                            Rule::Dry
+                        }
                     }
                 }
-            }
-        }).collect();
+            })
+            .collect();
         for vi in 0..self.verts.len() {
-            let Some(fi) = self.coarse_mesh.face_at(self.verts[vi]) else { continue };
+            let Some(fi) = self.coarse_mesh.face_at(self.verts[vi]) else {
+                continue;
+            };
             match rules[fi] {
                 Rule::Wet => e[vi] = e[vi].min(-0.02),
                 Rule::Dry => e[vi] = e[vi].max(0.02),
@@ -493,8 +612,11 @@ impl TerrainGen {
     // ---- L2: river path planning (channels are dug by the elevation solver) ----
 
     pub fn plan_river_paths(&self) -> Vec<Vec<SpherePos>> {
-        let mountain_zones: Vec<u16> =
-            self.zones.zones_of_kind(ZoneKind::MountainRange).map(|(id, _)| id).collect();
+        let mountain_zones: Vec<u16> = self
+            .zones
+            .zones_of_kind(ZoneKind::MountainRange)
+            .map(|(id, _)| id)
+            .collect();
         let river_count = ZoneConfig::default().rivers;
         let mut rng = fastrand::Rng::with_seed(self.seed as u64 ^ RIVER_RNG_SALT);
         let mut paths: Vec<Vec<SpherePos>> = Vec::new();
@@ -503,7 +625,9 @@ impl TerrainGen {
         // flowing uphill past the other, so rivers keep ≥1 coarse face apart.
         let mut river_faces = std::collections::BTreeSet::new();
         for k in 0..river_count {
-            let Some(&zid) = mountain_zones.get(k % mountain_zones.len().max(1)) else { break };
+            let Some(&zid) = mountain_zones.get(k % mountain_zones.len().max(1)) else {
+                break;
+            };
             let faces = &self.zones.zones[zid as usize].faces;
             let src = faces[rng.usize(..faces.len())] as usize;
             if river_faces.contains(&src) {
@@ -541,9 +665,15 @@ impl TerrainGen {
             if self.zones.kind_of_face(cur).is_water() {
                 let mut path = vec![cur];
                 let mut c = cur;
-                while c != src { c = prev[c]; path.push(c); }
+                while c != src {
+                    c = prev[c];
+                    path.push(c);
+                }
                 path.reverse();
-                let way = path.iter().map(|&f| SpherePos::new(self.zones.centroids[f])).collect();
+                let way = path
+                    .iter()
+                    .map(|&f| SpherePos::new(self.zones.centroids[f]))
+                    .collect();
                 return Some((way, path));
             }
             for &nb in &self.zones.adj[cur] {
@@ -567,19 +697,25 @@ impl TerrainGen {
     pub fn plan_settlement_anchors(&self) -> Vec<SpherePos> {
         let mut anchors = Vec::new();
         for (_, zone) in self.zones.zones_of_kind(ZoneKind::Settlement) {
-            let cands: Vec<SpherePos> = zone.faces.iter()
+            let cands: Vec<SpherePos> = zone
+                .faces
+                .iter()
                 .map(|&f| SpherePos::new(self.zones.centroids[f as usize]))
                 .collect();
             // Flattest dry candidate; coastal blending can pull zone edges below
             // sea level, so fall back to the highest point if all are wet.
-            let best = cands.iter()
+            let best = cands
+                .iter()
                 .filter(|p| self.interp_elevation(**p) > 0.02)
                 .min_by(|a, b| self.slope(**a).partial_cmp(&self.slope(**b)).unwrap())
                 .copied()
                 .unwrap_or_else(|| {
-                    cands.iter()
+                    cands
+                        .iter()
                         .max_by(|a, b| {
-                            self.interp_elevation(**a).partial_cmp(&self.interp_elevation(**b)).unwrap()
+                            self.interp_elevation(**a)
+                                .partial_cmp(&self.interp_elevation(**b))
+                                .unwrap()
                         })
                         .copied()
                         .unwrap_or(SpherePos::new(zone.centroid))
@@ -593,7 +729,9 @@ impl TerrainGen {
 
     /// Reads `settlement_anchors` — evolve must fold SettlementsPlaced first.
     pub fn plan_road_paths(&self) -> Vec<Vec<SpherePos>> {
-        let hosts: Vec<u16> = self.zones.zones_of_kind(ZoneKind::Settlement)
+        let hosts: Vec<u16> = self
+            .zones
+            .zones_of_kind(ZoneKind::Settlement)
             .map(|(_, z)| z.host.expect("settlement zone has host"))
             .collect();
         let anchors = self.settlement_anchors.clone();
@@ -601,7 +739,9 @@ impl TerrainGen {
         let mut paths: Vec<Vec<SpherePos>> = Vec::new();
 
         for (ai, a) in anchors.iter().enumerate() {
-            let mut nbrs: Vec<(usize, f32)> = anchors.iter().enumerate()
+            let mut nbrs: Vec<(usize, f32)> = anchors
+                .iter()
+                .enumerate()
                 .filter(|(bi, _)| *bi != ai && hosts[*bi] == hosts[ai])
                 .map(|(bi, b)| (bi, a.distance(*b)))
                 .collect();
@@ -612,7 +752,8 @@ impl TerrainGen {
                 }
                 let b = anchors[bi];
                 let steps = (dist / crate::roads::SAMPLE_SPACING).ceil().max(1.0) as usize;
-                let path = crate::roads::build_land_road_path(*a, b, steps, (a.0 + b.0).normalize());
+                let path =
+                    crate::roads::build_land_road_path(*a, b, steps, (a.0 + b.0).normalize());
                 let on_land = path.iter().all(|p| self.interp_elevation(*p) > 0.02);
                 if on_land {
                     paths.push(path);
@@ -643,7 +784,11 @@ impl TerrainGen {
         let wx = self.warp.get([d.x + 5.2, d.y + 1.3, d.z]);
         let wy = self.warp.get([d.x, d.y + 9.7, d.z + 2.1]);
         let wz = self.warp.get([d.x + 3.4, d.y, d.z + 6.8]);
-        [base[0] + wx * 0.18, base[1] + wy * 0.18, base[2] + wz * 0.18]
+        [
+            base[0] + wx * 0.18,
+            base[1] + wy * 0.18,
+            base[2] + wz * 0.18,
+        ]
     }
 
     const VERT_GRID_LATS: usize = 64;
@@ -651,7 +796,11 @@ impl TerrainGen {
 
     pub fn adj_of(&self, vi: usize) -> &[usize] {
         let start = self.adj_off[vi];
-        let end = self.adj_off.get(vi + 1).copied().unwrap_or(self.adj_data.len());
+        let end = self
+            .adj_off
+            .get(vi + 1)
+            .copied()
+            .unwrap_or(self.adj_data.len());
         &self.adj_data[start..end]
     }
 
@@ -670,7 +819,10 @@ impl TerrainGen {
                 let idx = lat * Self::VERT_GRID_LONS + lon;
                 for &vi in &self.vert_grid[idx] {
                     let d = self.verts[vi].dot(pos.0);
-                    if d > best_dot { best_dot = d; best = vi; }
+                    if d > best_dot {
+                        best_dot = d;
+                        best = vi;
+                    }
                 }
             }
         }
@@ -678,7 +830,10 @@ impl TerrainGen {
             // Fallback: should never happen, but linear scan as safety.
             for (i, v) in self.verts.iter().enumerate() {
                 let d = v.dot(pos.0);
-                if d > best_dot { best_dot = d; best = i; }
+                if d > best_dot {
+                    best_dot = d;
+                    best = i;
+                }
             }
         }
         best
@@ -750,7 +905,11 @@ impl TerrainGen {
             weighted += values[vi] * w;
             sum += w;
         }
-        if sum > 0.0 { weighted / sum } else { values[kernel[0].0] }
+        if sum > 0.0 {
+            weighted / sum
+        } else {
+            values[kernel[0].0]
+        }
     }
 }
 
@@ -790,19 +949,43 @@ fn build_vert_grid(verts: &[Vec3], lats: usize, lons: usize) -> Vec<Vec<usize>> 
 fn build_ico_grid(sub: usize) -> (Vec<Vec3>, Vec<usize>, Vec<usize>) {
     let t = (1.0 + 5.0_f32.sqrt()) / 2.0;
     let mut verts = vec![
-        Vec3::new(-1.0, t, 0.0), Vec3::new(1.0, t, 0.0),
-        Vec3::new(-1.0, -t, 0.0), Vec3::new(1.0, -t, 0.0),
-        Vec3::new(0.0, -1.0, t), Vec3::new(0.0, 1.0, t),
-        Vec3::new(0.0, -1.0, -t), Vec3::new(0.0, 1.0, -t),
-        Vec3::new(t, 0.0, -1.0), Vec3::new(t, 0.0, 1.0),
-        Vec3::new(-t, 0.0, -1.0), Vec3::new(-t, 0.0, 1.0),
+        Vec3::new(-1.0, t, 0.0),
+        Vec3::new(1.0, t, 0.0),
+        Vec3::new(-1.0, -t, 0.0),
+        Vec3::new(1.0, -t, 0.0),
+        Vec3::new(0.0, -1.0, t),
+        Vec3::new(0.0, 1.0, t),
+        Vec3::new(0.0, -1.0, -t),
+        Vec3::new(0.0, 1.0, -t),
+        Vec3::new(t, 0.0, -1.0),
+        Vec3::new(t, 0.0, 1.0),
+        Vec3::new(-t, 0.0, -1.0),
+        Vec3::new(-t, 0.0, 1.0),
     ];
-    for v in &mut verts { *v = v.normalize(); }
+    for v in &mut verts {
+        *v = v.normalize();
+    }
     let faces: [[usize; 3]; 20] = [
-        [0,11,5],[0,5,1],[0,1,7],[0,7,10],[0,10,11],[1,5,9],
-        [5,11,4],[11,10,2],[10,7,6],[7,1,8],[3,9,4],[3,4,2],
-        [3,2,6],[3,6,8],[3,8,9],[4,9,5],[2,4,11],[6,2,10],
-        [8,6,7],[9,8,1],
+        [0, 11, 5],
+        [0, 5, 1],
+        [0, 1, 7],
+        [0, 7, 10],
+        [0, 10, 11],
+        [1, 5, 9],
+        [5, 11, 4],
+        [11, 10, 2],
+        [10, 7, 6],
+        [7, 1, 8],
+        [3, 9, 4],
+        [3, 4, 2],
+        [3, 2, 6],
+        [3, 6, 8],
+        [3, 8, 9],
+        [4, 9, 5],
+        [2, 4, 11],
+        [6, 2, 10],
+        [8, 6, 7],
+        [9, 8, 1],
     ];
     let mut tris: Vec<[usize; 3]> = faces.to_vec();
 
@@ -825,9 +1008,16 @@ fn build_ico_grid(sub: usize) -> (Vec<Vec3>, Vec<usize>, Vec<usize>) {
     (verts, adj_off, adj_data)
 }
 
-fn mid_edge(verts: &mut Vec<Vec3>, map: &mut BTreeMap<(usize, usize), usize>, a: usize, b: usize) -> usize {
+fn mid_edge(
+    verts: &mut Vec<Vec3>,
+    map: &mut BTreeMap<(usize, usize), usize>,
+    a: usize,
+    b: usize,
+) -> usize {
     let key = (a.min(b), a.max(b));
-    if let Some(&idx) = map.get(&key) { return idx; }
+    if let Some(&idx) = map.get(&key) {
+        return idx;
+    }
     let idx = verts.len();
     verts.push(((verts[a] + verts[b]) / 2.0).normalize());
     map.insert(key, idx);
@@ -837,9 +1027,12 @@ fn mid_edge(verts: &mut Vec<Vec3>, map: &mut BTreeMap<(usize, usize), usize>, a:
 fn build_vert_adj(tris: &[[usize; 3]], n_verts: usize) -> (Vec<usize>, Vec<usize>) {
     let mut buckets = vec![Vec::new(); n_verts];
     for &[a, b, c] in tris {
-        buckets[a].push(b); buckets[a].push(c);
-        buckets[b].push(a); buckets[b].push(c);
-        buckets[c].push(a); buckets[c].push(b);
+        buckets[a].push(b);
+        buckets[a].push(c);
+        buckets[b].push(a);
+        buckets[b].push(c);
+        buckets[c].push(a);
+        buckets[c].push(b);
     }
     let mut off = Vec::with_capacity(n_verts + 1);
     let mut data = Vec::new();

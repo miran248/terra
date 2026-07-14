@@ -116,7 +116,11 @@ fn advance_weather(time: Res<Time>, mut w: ResMut<Weather>) {
     if w.front_timer <= 0.0 {
         // ~45% of fronts are clearing; the rest bring some precipitation.
         let r = w.next_f32();
-        w.target_precip = if r < 0.45 { 0.0 } else { 0.3 + w.next_f32() * 0.7 };
+        w.target_precip = if r < 0.45 {
+            0.0
+        } else {
+            0.3 + w.next_f32() * 0.7
+        };
         let ang = w.next_f32() * std::f32::consts::TAU;
         let strength = 2.0 + w.next_f32() * 10.0;
         w.target_wind = Vec3::new(ang.cos(), 0.0, ang.sin()) * strength;
@@ -167,7 +171,9 @@ fn apply_precip(
 
     // Local temperature under the player decides rain vs snow.
     let snow = match (player_q.single(), terrain.as_ref()) {
-        (Ok(p), Some(t)) => is_snow(t.temperature_at(shared::sphere::SpherePos::new(p.translation))),
+        (Ok(p), Some(t)) => {
+            is_snow(t.temperature_at(shared::sphere::SpherePos::new(p.translation)))
+        }
         _ => false,
     };
 

@@ -1,5 +1,5 @@
-use criterion::{criterion_group, criterion_main, Criterion};
-use shared::planet::{ray_triangle_radius, unit_icosphere_tris, PlanetMesh};
+use criterion::{Criterion, criterion_group, criterion_main};
+use shared::planet::{PlanetMesh, ray_triangle_radius, unit_icosphere_tris};
 use shared::sphere::PLANET_RADIUS;
 use std::hint::black_box;
 

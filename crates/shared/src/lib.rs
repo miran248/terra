@@ -1,4 +1,3 @@
-pub mod worldgen;
 pub mod items;
 pub mod level;
 pub mod planet;
@@ -10,4 +9,5 @@ pub mod theme;
 pub mod topology;
 pub mod upgrades;
 pub mod wfc;
+pub mod worldgen;
 pub mod zones;

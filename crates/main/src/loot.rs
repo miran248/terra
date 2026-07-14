@@ -1,14 +1,14 @@
+use crate::combat::ScrapCounter;
+use crate::constants::*;
+use crate::map::Player;
+use crate::ui::UpgradeLevels;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::Rng;
 use shared::items::{Material, WeaponKind};
-use shared::sphere::{random_point, PLANET_RADIUS};
+use shared::sphere::{PLANET_RADIUS, random_point};
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
-use crate::constants::*;
-use crate::combat::ScrapCounter;
-use crate::map::Player;
-use crate::ui::UpgradeLevels;
 
 const MAGNET_SPEED: f32 = 70.0;
 const COLLECT_RADIUS: f32 = 2.0;
@@ -65,10 +65,18 @@ impl Plugin for LootPlugin {
         app.init_resource::<LootState>()
             .init_resource::<MagnetRadius>()
             .add_message::<WeaponFired>()
-            .add_systems(OnEnter(AppState::Playing), (setup_loot_assets, scatter_loot).chain())
+            .add_systems(
+                OnEnter(AppState::Playing),
+                (setup_loot_assets, scatter_loot).chain(),
+            )
             .add_systems(
                 Update,
-                (collect_loot, apply_magnet_upgrade, drain_durability, apply_weapon_fire_rate)
+                (
+                    collect_loot,
+                    apply_magnet_upgrade,
+                    drain_durability,
+                    apply_weapon_fire_rate,
+                )
                     .run_if(in_state(AppState::Playing)),
             )
             .add_systems(FixedUpdate, magnet_loot.run_if(in_state(AppState::Playing)));
@@ -85,8 +93,13 @@ impl Default for MagnetRadius {
 }
 
 fn apply_magnet_upgrade(levels: Res<UpgradeLevels>, mut magnet: ResMut<MagnetRadius>) {
-    if !levels.is_changed() { return; }
-    let idx = Upgrade::ALL.iter().position(|u| *u == Upgrade::MagnetRange).unwrap();
+    if !levels.is_changed() {
+        return;
+    }
+    let idx = Upgrade::ALL
+        .iter()
+        .position(|u| *u == Upgrade::MagnetRange)
+        .unwrap();
     magnet.0 = Upgrade::MagnetRange.value(levels.levels[idx]);
 }
 
@@ -181,9 +194,14 @@ fn magnet_loot(
     magnet: Res<MagnetRadius>,
     player_q: Query<&Transform, With<Player>>,
     mut materials_q: Query<(Forces, &Transform), (With<LootMaterial>, Without<Player>)>,
-    mut weapons_q: Query<(Forces, &Transform), (With<LootWeapon>, Without<LootMaterial>, Without<Player>)>,
+    mut weapons_q: Query<
+        (Forces, &Transform),
+        (With<LootWeapon>, Without<LootMaterial>, Without<Player>),
+    >,
 ) {
-    let Ok(player_tf) = player_q.single() else { return };
+    let Ok(player_tf) = player_q.single() else {
+        return;
+    };
     let radius = magnet.0;
     let center_world = player_tf.translation;
 
@@ -215,7 +233,9 @@ fn collect_loot(
     mut loot: ResMut<LootState>,
     mut scrap: ResMut<ScrapCounter>,
 ) {
-    let Ok((player_entity, player_tf)) = player_q.single() else { return };
+    let Ok((player_entity, player_tf)) = player_q.single() else {
+        return;
+    };
 
     for (entity, tf, mat) in &materials_q {
         if tf.translation.distance(player_tf.translation) <= COLLECT_RADIUS {
@@ -236,12 +256,11 @@ fn collect_loot(
     }
 }
 
-fn drain_durability(
-    mut fired: MessageReader<WeaponFired>,
-    mut loot: ResMut<LootState>,
-) {
+fn drain_durability(mut fired: MessageReader<WeaponFired>, mut loot: ResMut<LootState>) {
     for _ in fired.read() {
-        let Some((kind, dur)) = loot.equipped else { continue };
+        let Some((kind, dur)) = loot.equipped else {
+            continue;
+        };
         if dur <= 1 {
             loot.weapons.retain(|w| *w != kind);
             loot.equipped = loot.weapons.first().map(|w| (*w, w.stats().durability));
@@ -251,12 +270,13 @@ fn drain_durability(
     }
 }
 
-fn apply_weapon_fire_rate(
-    loot: Res<LootState>,
-    mut player_q: Query<&mut Player>,
-) {
-    if !loot.is_changed() { return; }
-    let Ok(mut player) = player_q.single_mut() else { return };
+fn apply_weapon_fire_rate(loot: Res<LootState>, mut player_q: Query<&mut Player>) {
+    if !loot.is_changed() {
+        return;
+    }
+    let Ok(mut player) = player_q.single_mut() else {
+        return;
+    };
     if let Some((kind, _)) = loot.equipped {
         let rate = kind.stats().fire_rate;
         player.fire_timer = Timer::from_seconds(1.0 / rate, TimerMode::Repeating);

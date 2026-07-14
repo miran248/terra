@@ -1,11 +1,11 @@
-use avian3d::prelude::*;
-use bevy::prelude::*;
-use shared::upgrades::Upgrade;
 use crate::constants::*;
 use crate::turret::Projectile;
 use crate::ui::UpgradeLevels;
 use crate::zombie::Zombie;
+use avian3d::prelude::*;
+use bevy::prelude::*;
 use shared::state::AppState;
+use shared::upgrades::Upgrade;
 
 #[derive(Resource, Default)]
 pub struct ScrapCounter(pub u32);
@@ -14,8 +14,10 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ScrapCounter>()
-            .add_systems(Update, projectiles_hit_zombies.run_if(in_state(AppState::Playing)));
+        app.init_resource::<ScrapCounter>().add_systems(
+            Update,
+            projectiles_hit_zombies.run_if(in_state(AppState::Playing)),
+        );
     }
 }
 
@@ -84,7 +86,9 @@ fn projectiles_hit_zombies(
             }
         }
         if behavior.splits > 0 {
-            for (e, _) in find_n_closest_zombies(&zombies, last_target, last_pos, 45.0, behavior.splits) {
+            for (e, _) in
+                find_n_closest_zombies(&zombies, last_target, last_pos, 45.0, behavior.splits)
+            {
                 handle_pierce(&mut commands, &loot_assets, &mut zombies, e, damage * 0.5);
             }
         }
@@ -116,7 +120,9 @@ fn find_closest_zombie(
 ) -> Option<(Entity, Vec3)> {
     let mut best: Option<(Entity, f32, Vec3)> = None;
     for (e, tf, _) in zombies {
-        if e == exclude { continue; }
+        if e == exclude {
+            continue;
+        }
         let d = from.distance(tf.translation);
         if d <= max_dist && d < best.map(|b| b.1).unwrap_or(f32::MAX) {
             best = Some((e, d, tf.translation));

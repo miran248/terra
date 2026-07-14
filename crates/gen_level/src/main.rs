@@ -6,7 +6,10 @@ use std::path::PathBuf;
 /// this binary just runs it for a seed, prints the event log + stats, and packs
 /// the result into the level binary.
 fn main() {
-    let seed: u32 = std::env::var("PLANET_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(1337);
+    let seed: u32 = std::env::var("PLANET_SEED")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1337);
     let out = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| {
         let dir = std::env!("CARGO_MANIFEST_DIR");
         format!("{dir}/../main/assets/level_{seed}.bin")
@@ -38,6 +41,12 @@ fn print_stats(world: &CompletedWorld) {
         stats.water_faces as f32 / stats.face_count as f32 * 100.0,
         stats.terrain_faces,
     );
-    println!("flora: {}  structures: {}", stats.flora_count, stats.structure_count);
-    println!("regions: {}  bridges: {}", stats.region_count, stats.bridge_count);
+    println!(
+        "flora: {}  structures: {}",
+        stats.flora_count, stats.structure_count
+    );
+    println!(
+        "regions: {}  bridges: {}",
+        stats.region_count, stats.bridge_count
+    );
 }

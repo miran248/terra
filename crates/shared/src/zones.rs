@@ -41,17 +41,41 @@ impl ZoneKind {
     /// -0.30, Mountain at 0.50 — see `Terrain`).
     pub fn elevation_profile(self) -> ElevationProfile {
         match self {
-            ZoneKind::Ocean => ElevationProfile { min: -0.85, max: -0.12, curve: 1.0 },
-            ZoneKind::Continent => ElevationProfile { min: 0.02, max: 0.45, curve: 1.2 },
+            ZoneKind::Ocean => ElevationProfile {
+                min: -0.85,
+                max: -0.12,
+                curve: 1.0,
+            },
+            ZoneKind::Continent => ElevationProfile {
+                min: 0.02,
+                max: 0.45,
+                curve: 1.2,
+            },
             // High enough that 2-ring blending against deep ocean can't sink a
             // small island below sea level.
-            ZoneKind::Island => ElevationProfile { min: 0.12, max: 0.35, curve: 1.0 },
+            ZoneKind::Island => ElevationProfile {
+                min: 0.12,
+                max: 0.35,
+                curve: 1.0,
+            },
             // Deep enough that 2-ring blending against the host continent still
             // leaves the zone under water.
-            ZoneKind::Lake => ElevationProfile { min: -0.45, max: -0.20, curve: 1.0 },
-            ZoneKind::MountainRange => ElevationProfile { min: 0.45, max: 1.40, curve: 0.9 },
+            ZoneKind::Lake => ElevationProfile {
+                min: -0.45,
+                max: -0.20,
+                curve: 1.0,
+            },
+            ZoneKind::MountainRange => ElevationProfile {
+                min: 0.45,
+                max: 1.40,
+                curve: 0.9,
+            },
             // Deliberately gentle so the whole zone stays buildable.
-            ZoneKind::Settlement => ElevationProfile { min: 0.03, max: 0.10, curve: 1.0 },
+            ZoneKind::Settlement => ElevationProfile {
+                min: 0.03,
+                max: 0.10,
+                curve: 1.0,
+            },
         }
     }
 }
@@ -112,15 +136,45 @@ impl Default for ZoneConfig {
             // Three smaller continents beat one big one + empty ocean: more
             // coastline, more bridges, more distinct places to travel between.
             land: vec![
-                FeatureSpec { kind: ZoneKind::Continent, count: 3, target_area_m2: 5.5e6, min_area_m2: 2.5e6, min_distance_m: 2200.0 },
-                FeatureSpec { kind: ZoneKind::Island, count: 3, target_area_m2: 3.2e5, min_area_m2: 5.0e4, min_distance_m: 800.0 },
+                FeatureSpec {
+                    kind: ZoneKind::Continent,
+                    count: 3,
+                    target_area_m2: 5.5e6,
+                    min_area_m2: 2.5e6,
+                    min_distance_m: 2200.0,
+                },
+                FeatureSpec {
+                    kind: ZoneKind::Island,
+                    count: 3,
+                    target_area_m2: 3.2e5,
+                    min_area_m2: 5.0e4,
+                    min_distance_m: 800.0,
+                },
             ],
             // Settlements first: 12 seeds at 900m spacing is the tightest packing
             // problem, so it gets the pristine continents to choose from.
             interior: vec![
-                FeatureSpec { kind: ZoneKind::Settlement, count: 12, target_area_m2: 8.0e4, min_area_m2: 4.0e4, min_distance_m: 900.0 },
-                FeatureSpec { kind: ZoneKind::MountainRange, count: 3, target_area_m2: 8.0e5, min_area_m2: 2.0e5, min_distance_m: 1200.0 },
-                FeatureSpec { kind: ZoneKind::Lake, count: 3, target_area_m2: 2.5e5, min_area_m2: 1.0e5, min_distance_m: 600.0 },
+                FeatureSpec {
+                    kind: ZoneKind::Settlement,
+                    count: 12,
+                    target_area_m2: 8.0e4,
+                    min_area_m2: 4.0e4,
+                    min_distance_m: 900.0,
+                },
+                FeatureSpec {
+                    kind: ZoneKind::MountainRange,
+                    count: 3,
+                    target_area_m2: 8.0e5,
+                    min_area_m2: 2.0e5,
+                    min_distance_m: 1200.0,
+                },
+                FeatureSpec {
+                    kind: ZoneKind::Lake,
+                    count: 3,
+                    target_area_m2: 2.5e5,
+                    min_area_m2: 1.0e5,
+                    min_distance_m: 600.0,
+                },
             ],
             rivers: 4,
         }
@@ -164,7 +218,9 @@ impl Zones {
     }
 
     pub fn zones_of_kind(&self, kind: ZoneKind) -> impl Iterator<Item = (u16, &Zone)> {
-        self.zones.iter().enumerate()
+        self.zones
+            .iter()
+            .enumerate()
             .filter(move |(_, z)| z.kind == kind)
             .map(|(i, z)| (i as u16, z))
     }
@@ -184,8 +240,10 @@ impl Zones {
         let tris = unit_icosphere_tris(COARSE_SUB);
         let n = tris.len();
         let adj = build_face_adjacency(&tris, n);
-        let centroids: Vec<Vec3> =
-            tris.iter().map(|t| ((t[0] + t[1] + t[2]) / 3.0).normalize()).collect();
+        let centroids: Vec<Vec3> = tris
+            .iter()
+            .map(|t| ((t[0] + t[1] + t[2]) / 3.0).normalize())
+            .collect();
         let face_area = 4.0 * std::f32::consts::PI * PLANET_RADIUS * PLANET_RADIUS / n as f32;
 
         for attempt in 0..MAX_ATTEMPTS {
@@ -216,7 +274,12 @@ struct Builder<'a> {
 impl Builder<'_> {
     fn push_zone(&mut self, kind: ZoneKind, seed_face: usize, host: Option<u16>) -> u16 {
         let id = self.zones.len() as u16;
-        self.zones.push(Zone { kind, faces: vec![seed_face as u32], centroid: self.centroids[seed_face], host });
+        self.zones.push(Zone {
+            kind,
+            faces: vec![seed_face as u32],
+            centroid: self.centroids[seed_face],
+            host,
+        });
         self.zone_of[seed_face] = id;
         id
     }
@@ -229,7 +292,11 @@ impl Builder<'_> {
             z == id
                 || coarse_compat(
                     kind,
-                    if z == UNASSIGNED { ZoneKind::Ocean } else { self.zones[z as usize].kind },
+                    if z == UNASSIGNED {
+                        ZoneKind::Ocean
+                    } else {
+                        self.zones[z as usize].kind
+                    },
                 )
         })
     }
@@ -263,7 +330,12 @@ fn try_generate(
     rng: &mut fastrand::Rng,
 ) -> Option<Zones> {
     let n = centroids.len();
-    let mut b = Builder { centroids, adj, zone_of: vec![UNASSIGNED; n], zones: Vec::new() };
+    let mut b = Builder {
+        centroids,
+        adj,
+        zone_of: vec![UNASSIGNED; n],
+        zones: Vec::new(),
+    };
 
     // --- top-level land: continents first, then islands into remaining ocean ---
     let mut continent_ids: Vec<u16> = Vec::new();
@@ -279,7 +351,10 @@ fn try_generate(
                 && b.claim_ok(fi, NO_ZONE, kind)
                 && (kind != ZoneKind::Island || near_assigned(b, fi, ISLAND_OFFSHORE_MAX_M))
         })?;
-        let ids: Vec<u16> = seeds.iter().map(|&s| b.push_zone(spec.kind, s, None)).collect();
+        let ids: Vec<u16> = seeds
+            .iter()
+            .map(|&s| b.push_zone(spec.kind, s, None))
+            .collect();
         grow_simultaneous(&mut b, &ids, target, rng, |b, fi, id| {
             b.zone_of[fi] == UNASSIGNED && b.claim_ok(fi, id, kind)
         });
@@ -330,15 +405,22 @@ fn try_generate(
 
     // --- everything left is ocean ---
     let ocean_id = b.zones.len() as u16;
-    let ocean_faces: Vec<u32> =
-        (0..n).filter(|&fi| b.zone_of[fi] == UNASSIGNED).map(|fi| fi as u32).collect();
+    let ocean_faces: Vec<u32> = (0..n)
+        .filter(|&fi| b.zone_of[fi] == UNASSIGNED)
+        .map(|fi| fi as u32)
+        .collect();
     if ocean_faces.is_empty() {
         return None;
     }
     for &fi in &ocean_faces {
         b.zone_of[fi as usize] = ocean_id;
     }
-    b.zones.push(Zone { kind: ZoneKind::Ocean, faces: ocean_faces, centroid: Vec3::Y, host: None });
+    b.zones.push(Zone {
+        kind: ZoneKind::Ocean,
+        faces: ocean_faces,
+        centroid: Vec3::Y,
+        host: None,
+    });
 
     // Final invariant: every coarse edge satisfies the adjacency matrix.
     for fi in 0..n {
@@ -351,7 +433,12 @@ fn try_generate(
     }
 
     b.finish_centroids();
-    Some(Zones { centroids: centroids.to_vec(), adj: adj.to_vec(), zone_of: b.zone_of, zones: b.zones })
+    Some(Zones {
+        centroids: centroids.to_vec(),
+        adj: adj.to_vec(),
+        zone_of: b.zone_of,
+        zones: b.zones,
+    })
 }
 
 /// Rejection-sample `spec.count` seed faces that satisfy `ok` and pairwise separation.
@@ -373,7 +460,10 @@ fn place_seeds(
         if !ok(b, fi) {
             continue;
         }
-        if seeds.iter().any(|&s| arc_m(b.centroids[s], b.centroids[fi]) < spec.min_distance_m) {
+        if seeds
+            .iter()
+            .any(|&s| arc_m(b.centroids[s], b.centroids[fi]) < spec.min_distance_m)
+        {
             continue;
         }
         seeds.push(fi);
@@ -388,7 +478,11 @@ fn pick_interior_seed(
     placed: &[Vec3],
     rng: &mut fastrand::Rng,
 ) -> Option<usize> {
-    let host_faces: Vec<usize> = b.zones[host as usize].faces.iter().map(|&f| f as usize).collect();
+    let host_faces: Vec<usize> = b.zones[host as usize]
+        .faces
+        .iter()
+        .map(|&f| f as usize)
+        .collect();
     // Lakes must start deep inland (2 rings) so they have room to grow without ever
     // touching ocean. Settlement seeds stay 1 ring from the coast so shoreline
     // elevation blending can't pull the whole zone under water.
@@ -409,7 +503,10 @@ fn pick_interior_seed(
         {
             continue;
         }
-        if placed.iter().any(|p| arc_m(*p, b.centroids[fi]) < spec.min_distance_m) {
+        if placed
+            .iter()
+            .any(|p| arc_m(*p, b.centroids[fi]) < spec.min_distance_m)
+        {
             continue;
         }
         return Some(fi);
@@ -422,15 +519,17 @@ fn pick_interior_seed(
 const ISLAND_OFFSHORE_MAX_M: f32 = 600.0;
 
 fn near_assigned(b: &Builder, fi: usize, max_m: f32) -> bool {
-    b.zone_of.iter().enumerate().any(|(other, &z)| {
-        z != UNASSIGNED && arc_m(b.centroids[other], b.centroids[fi]) <= max_m
-    })
+    b.zone_of
+        .iter()
+        .enumerate()
+        .any(|(other, &z)| z != UNASSIGNED && arc_m(b.centroids[other], b.centroids[fi]) <= max_m)
 }
 
 /// Carving `fi` out of `host` must not disconnect it: all of fi's host neighbors
 /// must remain mutually reachable through the host without going through fi.
 fn carve_safe(b: &Builder, fi: usize, host: u16) -> bool {
-    let host_nbs: Vec<usize> = b.adj[fi].iter()
+    let host_nbs: Vec<usize> = b.adj[fi]
+        .iter()
         .map(|&nb| nb as usize)
         .filter(|&nb| b.zone_of[nb] == host)
         .collect();
@@ -505,9 +604,8 @@ fn grow_simultaneous(
     rng: &mut fastrand::Rng,
     allowed: impl Fn(&Builder, usize, u16) -> bool,
 ) {
-    let mut frontiers: Vec<Vec<usize>> = ids.iter()
-        .map(|&id| frontier_of(b, id, &allowed))
-        .collect();
+    let mut frontiers: Vec<Vec<usize>> =
+        ids.iter().map(|&id| frontier_of(b, id, &allowed)).collect();
     loop {
         let mut progressed = false;
         for (k, &id) in ids.iter().enumerate() {
@@ -539,7 +637,11 @@ fn grow_simultaneous(
     }
 }
 
-fn frontier_of(b: &Builder, id: u16, allowed: &impl Fn(&Builder, usize, u16) -> bool) -> Vec<usize> {
+fn frontier_of(
+    b: &Builder,
+    id: u16,
+    allowed: &impl Fn(&Builder, usize, u16) -> bool,
+) -> Vec<usize> {
     let mut f = Vec::new();
     for &face in &b.zones[id as usize].faces {
         for &nb in &b.adj[face as usize] {
@@ -585,7 +687,11 @@ mod tests {
             let z = make(seed);
             assert!(z.zone_of.iter().all(|&id| (id as usize) < z.zones.len()));
             let total: usize = z.zones.iter().map(|zn| zn.faces.len()).sum();
-            assert_eq!(total, z.face_count(), "faces assigned exactly once (seed {seed})");
+            assert_eq!(
+                total,
+                z.face_count(),
+                "faces assigned exactly once (seed {seed})"
+            );
         }
     }
 
@@ -606,7 +712,12 @@ mod tests {
             }
             // The single ocean zone may legitimately be split by land; all others must connect.
             if zone.kind != ZoneKind::Ocean {
-                assert_eq!(seen.len(), zone.faces.len(), "zone {id} ({:?}) fragmented", zone.kind);
+                assert_eq!(
+                    seen.len(),
+                    zone.faces.len(),
+                    "zone {id} ({:?}) fragmented",
+                    zone.kind
+                );
             }
         }
     }
@@ -622,7 +733,10 @@ mod tests {
         let _ = cfg;
         // Interior features name a continent host; lakes never touch ocean.
         for (id, zone) in z.zones.iter().enumerate() {
-            if matches!(zone.kind, ZoneKind::Lake | ZoneKind::Settlement | ZoneKind::MountainRange) {
+            if matches!(
+                zone.kind,
+                ZoneKind::Lake | ZoneKind::Settlement | ZoneKind::MountainRange
+            ) {
                 let host = zone.host.expect("interior feature has host");
                 assert_eq!(z.zones[host as usize].kind, ZoneKind::Continent);
             }
@@ -672,7 +786,10 @@ mod tests {
             let cent = ((fine[fi][0] + fine[fi][1] + fine[fi][2]) / 3.0).normalize();
             let parent = fi / FINE_FACES_PER_COARSE;
             let hit = coarse.face_at(cent).expect("centroid hits coarse mesh");
-            assert_eq!(hit, parent, "fine face {fi}: geometric parent {hit} != computed {parent}");
+            assert_eq!(
+                hit, parent,
+                "fine face {fi}: geometric parent {hit} != computed {parent}"
+            );
         }
     }
 }

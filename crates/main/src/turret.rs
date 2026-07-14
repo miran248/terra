@@ -1,10 +1,10 @@
-use avian3d::prelude::*;
-use bevy::prelude::*;
-use shared::state::AppState;
 use crate::constants::*;
 use crate::loot::LootState;
 use crate::map::{GameAssets, Player};
 use crate::zombie::Zombie;
+use avian3d::prelude::*;
+use bevy::prelude::*;
+use shared::state::AppState;
 
 #[derive(Message)]
 pub struct WeaponFired;
@@ -25,7 +25,10 @@ impl Plugin for TurretPlugin {
         app.add_message::<WeaponFired>()
             .insert_resource(ProjectileSpeed(50.0))
             .add_systems(Update, player_shoot.run_if(in_state(AppState::Playing)))
-            .add_systems(FixedUpdate, move_projectiles.run_if(in_state(AppState::Playing)));
+            .add_systems(
+                FixedUpdate,
+                move_projectiles.run_if(in_state(AppState::Playing)),
+            );
     }
 }
 
@@ -38,9 +41,13 @@ fn player_shoot(
     mut player_q: Query<(&Transform, &mut Player)>,
     zombies: Query<(Entity, &Transform), (With<Zombie>, Without<Player>)>,
 ) {
-    let Ok((tf, mut player)) = player_q.single_mut() else { return };
+    let Ok((tf, mut player)) = player_q.single_mut() else {
+        return;
+    };
     player.fire_timer.tick(time.delta());
-    if !player.fire_timer.just_finished() { return; }
+    if !player.fire_timer.just_finished() {
+        return;
+    }
 
     let (damage, range, has_weapon) = match equipped.equipped {
         Some((kind, _)) => {

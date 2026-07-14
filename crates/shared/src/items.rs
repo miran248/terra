@@ -7,7 +7,12 @@ pub enum Material {
 }
 
 impl Material {
-    pub const ALL: [Material; 4] = [Material::Metal, Material::Wood, Material::Rope, Material::Cloth];
+    pub const ALL: [Material; 4] = [
+        Material::Metal,
+        Material::Wood,
+        Material::Rope,
+        Material::Cloth,
+    ];
 
     pub fn name(&self) -> &'static str {
         match self {
@@ -69,11 +74,36 @@ impl WeaponKind {
     /// damage, range, shots per second, max durability (shots before breaking)
     pub fn stats(&self) -> WeaponStats {
         match self {
-            WeaponKind::Knife => WeaponStats { damage: 15.0, range: 20.0, fire_rate: 2.0, durability: 40 },
-            WeaponKind::Spear => WeaponStats { damage: 30.0, range: 30.0, fire_rate: 1.5, durability: 60 },
-            WeaponKind::Pistol => WeaponStats { damage: 20.0, range: 65.0, fire_rate: 2.5, durability: 80 },
-            WeaponKind::Sling => WeaponStats { damage: 12.0, range: 50.0, fire_rate: 1.8, durability: 50 },
-            WeaponKind::Rifle => WeaponStats { damage: 40.0, range: 100.0, fire_rate: 3.0, durability: 120 },
+            WeaponKind::Knife => WeaponStats {
+                damage: 15.0,
+                range: 20.0,
+                fire_rate: 2.0,
+                durability: 40,
+            },
+            WeaponKind::Spear => WeaponStats {
+                damage: 30.0,
+                range: 30.0,
+                fire_rate: 1.5,
+                durability: 60,
+            },
+            WeaponKind::Pistol => WeaponStats {
+                damage: 20.0,
+                range: 65.0,
+                fire_rate: 2.5,
+                durability: 80,
+            },
+            WeaponKind::Sling => WeaponStats {
+                damage: 12.0,
+                range: 50.0,
+                fire_rate: 1.8,
+                durability: 50,
+            },
+            WeaponKind::Rifle => WeaponStats {
+                damage: 40.0,
+                range: 100.0,
+                fire_rate: 3.0,
+                durability: 120,
+            },
         }
     }
 }
@@ -95,11 +125,26 @@ pub struct Recipe {
 
 impl Recipe {
     pub const ALL: [Recipe; 5] = [
-        Recipe { output: WeaponKind::Knife, cost: [(Material::Metal, 2), (Material::Cloth, 1)] },
-        Recipe { output: WeaponKind::Spear, cost: [(Material::Wood, 2), (Material::Metal, 1)] },
-        Recipe { output: WeaponKind::Sling, cost: [(Material::Rope, 2), (Material::Cloth, 2)] },
-        Recipe { output: WeaponKind::Pistol, cost: [(Material::Metal, 3), (Material::Wood, 1)] },
-        Recipe { output: WeaponKind::Rifle, cost: [(Material::Metal, 4), (Material::Wood, 2)] },
+        Recipe {
+            output: WeaponKind::Knife,
+            cost: [(Material::Metal, 2), (Material::Cloth, 1)],
+        },
+        Recipe {
+            output: WeaponKind::Spear,
+            cost: [(Material::Wood, 2), (Material::Metal, 1)],
+        },
+        Recipe {
+            output: WeaponKind::Sling,
+            cost: [(Material::Rope, 2), (Material::Cloth, 2)],
+        },
+        Recipe {
+            output: WeaponKind::Pistol,
+            cost: [(Material::Metal, 3), (Material::Wood, 1)],
+        },
+        Recipe {
+            output: WeaponKind::Rifle,
+            cost: [(Material::Metal, 4), (Material::Wood, 2)],
+        },
     ];
 }
 

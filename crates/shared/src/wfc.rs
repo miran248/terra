@@ -102,7 +102,14 @@ pub fn solve(
 
     // Initial propagation from all cells.
     let mut queue: std::collections::VecDeque<usize> = (0..n).collect();
-    propagate(compat, &mut dom, neighbors, &mut result, fallback, &mut queue);
+    propagate(
+        compat,
+        &mut dom,
+        neighbors,
+        &mut result,
+        fallback,
+        &mut queue,
+    );
 
     loop {
         // Min-entropy: the unsolved cell with the fewest remaining options.
@@ -123,7 +130,14 @@ pub fn solve(
         dom[pick] = vec![(choice, 1.0)];
         let mut queue: std::collections::VecDeque<usize> =
             neighbor_cells(&neighbors[pick]).collect();
-        propagate(compat, &mut dom, neighbors, &mut result, fallback, &mut queue);
+        propagate(
+            compat,
+            &mut dom,
+            neighbors,
+            &mut result,
+            fallback,
+            &mut queue,
+        );
     }
 
     result.into_iter().map(|r| r.unwrap()).collect()
@@ -251,17 +265,25 @@ mod tests {
     #[test]
     fn deterministic_for_seed() {
         let compat = Compat::default();
-        let domains: Vec<_> = (0..50).map(|i| boundary_domain(if i % 2 == 0 { Plains } else { Forest })).collect();
+        let domains: Vec<_> = (0..50)
+            .map(|i| boundary_domain(if i % 2 == 0 { Plains } else { Forest }))
+            .collect();
         let neighbors: Vec<Vec<Neighbor>> = (0..50)
             .map(|i: usize| {
                 let mut v = Vec::new();
-                if i > 0 { v.push(Neighbor::Cell(i - 1)); }
-                if i < 49 { v.push(Neighbor::Cell(i + 1)); }
+                if i > 0 {
+                    v.push(Neighbor::Cell(i - 1));
+                }
+                if i < 49 {
+                    v.push(Neighbor::Cell(i + 1));
+                }
                 v.push(Neighbor::Fixed(Ocean));
                 v
             })
             .collect();
-        let fallback: Vec<_> = (0..50).map(|i| if i % 2 == 0 { Plains } else { Forest }).collect();
+        let fallback: Vec<_> = (0..50)
+            .map(|i| if i % 2 == 0 { Plains } else { Forest })
+            .collect();
         let a = solve(&compat, &domains, &neighbors, &fallback, 42);
         let b = solve(&compat, &domains, &neighbors, &fallback, 42);
         assert_eq!(a, b);
