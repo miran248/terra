@@ -31,6 +31,8 @@ use crate::topology::{CellComponentId, ComponentLabels, TerrainTopology};
 use crate::wfc;
 use crate::zones::FINE_SUB;
 
+mod router;
+
 const TOWN_RADIUS: f32 = 55.0;
 
 // ---- fine grid ----
@@ -327,17 +329,17 @@ fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize)
             if r < 2 {
                 continue;
             }
-            for i in 0..n {
-                if bits.contains(ring[i]) || !passable(ring[i]) {
+            for &candidate in ring.iter().take(n) {
+                if bits.contains(candidate) || !passable(candidate) {
                     continue;
                 }
-                bits.insert(ring[i]);
+                bits.insert(candidate);
                 if runs(bits) < r {
                     changed = true;
                     break;
                 }
                 // BitSet has no remove; rebuild the bit by clearing the word bit.
-                bits.0[ring[i] >> 6] &= !(1u64 << (ring[i] & 63));
+                bits.0[candidate >> 6] &= !(1u64 << (candidate & 63));
             }
         }
         if !changed {
@@ -1146,22 +1148,20 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
                     .iter()
                     .any(|nb| sea(cells[nb.index()]))
         });
-        if !reaches {
-            if let Some(end) = chain.last().and_then(|&index| grid.topology.cell(index)) {
-                if let Some(extension) = grid
-                    .topology
-                    .cell_shortest_path_to(end, 60, |cell| sea(cells[cell.index()]))
-                {
-                    let interior = extension.len().saturating_sub(2);
-                    chain.extend(
-                        extension
-                            .into_iter()
-                            .skip(1)
-                            .take(interior)
-                            .map(|cell| cell.index()),
-                    );
-                }
-            }
+        if !reaches
+            && let Some(end) = chain.last().and_then(|&index| grid.topology.cell(index))
+            && let Some(extension) = grid
+                .topology
+                .cell_shortest_path_to(end, 60, |cell| sea(cells[cell.index()]))
+        {
+            let interior = extension.len().saturating_sub(2);
+            chain.extend(
+                extension
+                    .into_iter()
+                    .skip(1)
+                    .take(interior)
+                    .map(|cell| cell.index()),
+            );
         }
         for vi in widen_band_sym(grid, &chain) {
             if cells[vi].is_land() {
@@ -1171,14 +1171,14 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
         // A triangular three-cell source patch survives face derivation while
         // keeping each Spring face edge-connected (a thinner patch pinches).
         let mut spring_cells: Vec<usize> = chain.iter().take(2).copied().collect();
-        if let [a, b, ..] = spring_cells.as_slice() {
-            if let Some(third) = grid.cell_neighbors(*a).iter().find(|candidate| {
+        if let [a, b, ..] = spring_cells.as_slice()
+            && let Some(third) = grid.cell_neighbors(*a).iter().find(|candidate| {
                 candidate.index() != *a
                     && candidate.index() != *b
                     && grid.cell_neighbors(*b).contains(candidate)
-            }) {
-                spring_cells.push(third.index());
-            }
+            })
+        {
+            spring_cells.push(third.index());
         }
         for source in spring_cells {
             if cells[source] == Terrain::River {
@@ -1212,14 +1212,13 @@ fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
             if c.last() == Some(&vi) {
                 continue;
             }
-            if let Some(&prev) = c.last() {
-                if !grid
+            if let Some(&prev) = c.last()
+                && !grid
                     .cell_neighbors(prev)
                     .iter()
                     .any(|neighbor| neighbor.index() == vi)
-                {
-                    c.extend(shortest_cell_path(grid, prev, vi));
-                }
+            {
+                c.extend(shortest_cell_path(grid, prev, vi));
             }
             if c.last() != Some(&vi) {
                 c.push(vi);
@@ -1720,75 +1719,6 @@ fn classify_water_depth(grid: &Grid, cells: &[Terrain], terrain: &TerrainGen) ->
 /// Route on the cell lattice, refusing `blocked` cells and paying `extra` per
 /// cell entered (so roads can be steered toward gentle ground without being
 /// walled off it).
-fn lattice_path(
-    grid: &Grid,
-    blocked: impl Fn(usize) -> bool,
-    extra: impl Fn(usize) -> u64,
-    from: usize,
-    to: usize,
-) -> Vec<usize> {
-    use std::cmp::Reverse;
-    use std::collections::BinaryHeap;
-    if from == to {
-        return vec![from];
-    }
-    // Costs in milli-steps. One 60° turn ≈ 1.25 extra steps keeps runs long.
-    const STEP: u64 = 1000;
-    let turn_cost = |pd: Vec3, d: Vec3| ((1.0 - pd.dot(d)).max(0.0) * 2500.0) as u64;
-    let edge_angle = grid
-        .cell_direction(0)
-        .angle_between(grid.cell_direction(grid.cell_neighbors(0)[0].index()));
-    let h = |vi: usize| {
-        (grid
-            .cell_direction(vi)
-            .angle_between(grid.cell_direction(to))
-            / edge_angle
-            * 990.0) as u64
-    };
-    let dir = |a: usize, b: usize| (grid.cell_direction(b) - grid.cell_direction(a)).normalize();
-
-    // State: (cell, slot of the edge we arrived through; 6 = start).
-    let mut best: BTreeMap<(usize, usize), u64> = BTreeMap::new();
-    let mut came: BTreeMap<(usize, usize), (usize, usize)> = BTreeMap::new();
-    let mut heap: BinaryHeap<Reverse<(u64, u64, usize, usize)>> = BinaryHeap::new();
-    best.insert((from, 6), 0);
-    heap.push(Reverse((h(from), 0, from, 6)));
-    while let Some(Reverse((_, g, vi, slot))) = heap.pop() {
-        if best.get(&(vi, slot)).is_some_and(|&b| b < g) {
-            continue;
-        }
-        if vi == to {
-            let mut path = vec![vi];
-            let mut cur = (vi, slot);
-            while let Some(&prev) = came.get(&cur) {
-                path.push(prev.0);
-                cur = prev;
-            }
-            path.reverse();
-            return path;
-        }
-        let pd = (slot < 6).then(|| dir(grid.cell_neighbors(vi)[slot].index(), vi));
-        for nb in cell_neighbor_indices(grid, vi) {
-            if blocked(nb) && nb != to {
-                continue;
-            }
-            let d = dir(vi, nb);
-            let ng = g + STEP + extra(nb) + pd.map_or(0, |pd| turn_cost(pd, d));
-            let nslot = grid
-                .cell_neighbors(nb)
-                .iter()
-                .position(|cell| cell.index() == vi)
-                .unwrap();
-            if best.get(&(nb, nslot)).is_none_or(|&b| ng < b) {
-                best.insert((nb, nslot), ng);
-                came.insert((nb, nslot), (vi, slot));
-                heap.push(Reverse((ng + h(nb), ng, nb, nslot)));
-            }
-        }
-    }
-    Vec::new()
-}
-
 /// A band needs TWO parallel lattice lines: a single chain's quads only touch
 /// at the chain vertices. Widen the chain with each edge's left partner so
 /// every face between the two lines has ≥2 painted corners — a gap-free strip
@@ -1844,8 +1774,10 @@ fn paint_features(
     // Roads may not cross water or a cliff, and are steered strongly toward
     // gentle ground (steep cells cost extra), so they follow valleys and
     // passes but can still climb a slope when they must.
-    let blocked = |vi: usize| cells[vi].is_water() || slope_class[vi] == SLOPE_CLIFF;
-    let extra = |vi: usize| match slope_class[vi] {
+    let blocked = |cell: crate::topology::CellId| {
+        cells[cell.index()].is_water() || slope_class[cell.index()] == SLOPE_CLIFF
+    };
+    let extra = |cell: crate::topology::CellId| match slope_class[cell.index()] {
         SLOPE_FLAT => 0,
         SLOPE_GENTLE => 400,
         _ => 4000, // steep
@@ -1854,7 +1786,12 @@ fn paint_features(
         let mut chain: Vec<usize> = Vec::new();
         let waypoints: Vec<usize> = path.iter().filter_map(|p| nearest_cell(grid, *p)).collect();
         for leg in waypoints.windows(2) {
-            let seg = lattice_path(grid, blocked, extra, leg[0], leg[1]);
+            let from = grid.topology.cell(leg[0]).expect("waypoint cell id");
+            let to = grid.topology.cell(leg[1]).expect("waypoint cell id");
+            let seg: Vec<usize> = router::lattice_path(grid, blocked, extra, from, to)
+                .into_iter()
+                .map(|cell| cell.index())
+                .collect();
             if seg.is_empty() {
                 continue 'paths;
             }
@@ -1874,9 +1811,9 @@ fn paint_features(
         kept.push(path.clone());
     }
     // Towns sit on walkable ground within the settlement radius.
-    for vi in 0..grid.cell_count() {
+    for (vi, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
         let pos = grid.cell_position(vi);
-        if slope_walkable(slope_class[vi])
+        if slope_walkable(slope)
             && terrain
                 .settlement_anchors
                 .iter()
@@ -2234,11 +2171,11 @@ fn build_bridges(
                 touch_ocean[id] && only_ocean[id]
             }
         };
-        for id in 0..components.count() {
+        for (id, &size) in sizes.iter().enumerate().take(components.count()) {
             if spans.len() >= BRIDGE_MAX_COUNT {
                 break;
             }
-            if !(ringed(id) && sizes[id] <= max_cells) {
+            if !(ringed(id) && size <= max_cells) {
                 continue;
             }
             let shore = |vi: usize| {
@@ -2506,8 +2443,8 @@ fn mark_blends(
             || face_solid(grid, &painted.bridge_entries, fi)
     };
     let mut out = Vec::new();
-    for fi in 0..grid.face_count() {
-        if !plain(tiles[fi]) || overlay(fi) {
+    for (fi, &tile) in tiles.iter().enumerate().take(grid.face_count()) {
+        if !plain(tile) || overlay(fi) {
             continue;
         }
         // Feature flanks (a painted corner without ownership) blend toward the
@@ -3233,7 +3170,7 @@ fn river_surface_radii(
                 continue;
             }
             for (k, &corner) in mesh_tris[fi].iter().enumerate() {
-                if mesh_tris[neighbor as usize]
+                if mesh_tris[neighbor]
                     .iter()
                     .any(|&other| key(other) == key(corner))
                 {
@@ -3260,7 +3197,7 @@ fn river_surface_radii(
                 continue;
             }
             for (k, &corner) in mesh_tris[fi].iter().enumerate() {
-                if mesh_tris[neighbor as usize]
+                if mesh_tris[neighbor]
                     .iter()
                     .any(|&other| key(other) == key(corner))
                 {
@@ -3448,6 +3385,9 @@ fn face_road_material(
 /// across its boundary faces — a hard color seam or single-vertex color pinch
 /// cannot exist. Built features override per face (they are solid structures),
 /// and feature flanks fade each corner halfway toward the feature color.
+type TerrainTriangles = Vec<[[f32; 3]; 3]>;
+type TerrainColors = Vec<[[f32; 4]; 3]>;
+
 fn build_mesh(
     grid: &Grid,
     terrain: &TerrainGen,
@@ -3456,7 +3396,7 @@ fn build_mesh(
     water_depth: &[u8],
     landform: &[u8],
     slope_class: &[u8],
-) -> (Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>) {
+) -> (TerrainTriangles, TerrainColors) {
     let vert_r: Vec<f32> = grid
         .topology
         .cells()
@@ -3490,7 +3430,7 @@ fn build_mesh(
         // corner are the flank band and fade via the corner gradient. Total:
         // blend band / solid strip / blend band, for every feature.
         let corner = |k: usize| {
-            let vi = idx[k] as usize;
+            let vi = idx[k];
             if painted.bridge_entries.contains(vi) {
                 entry_color
             } else if painted.towns.contains(vi) {
@@ -3756,7 +3696,7 @@ fn place_flora(
     out
 }
 
-const STRUCT_RNG_SALT: u64 = 0x5374_7563_7572_65;
+const STRUCT_RNG_SALT: u64 = 0x0053_7475_6375_7265;
 
 /// Contextual structures, placed like towns/bridges: wells, campfires and
 /// farms cluster in and around towns; walls ring town edges; docks reach out
@@ -5132,13 +5072,13 @@ mod tests {
 
         let mut spring_corners = 0usize;
         let mut outlet_corners = 0usize;
-        for fi in 0..state.grid.face_count() {
+        for (fi, face_river_r) in river_r.iter().enumerate().take(state.grid.face_count()) {
             if state.tiles[fi] == Terrain::RiverSpring {
-                for corner in 0..3 {
+                for (corner, &radius) in face_river_r.iter().enumerate() {
                     spring_corners += 1;
                     let ground = Vec3::from_array(state.mesh_tris[fi][corner]).length();
                     assert!(
-                        (river_r[fi][corner] - (ground - RIVER_TERRAIN_CLIP)).abs() < 1e-3,
+                        (radius - (ground - RIVER_TERRAIN_CLIP)).abs() < 1e-3,
                         "spring water must start embedded in the terrain"
                     );
                 }
@@ -5154,14 +5094,14 @@ mod tests {
                 if waterline <= 0.0 {
                     continue;
                 }
-                for corner in 0..3 {
-                    if state.mesh_tris[neighbor as usize]
+                for (corner, &radius) in face_river_r.iter().enumerate() {
+                    if state.mesh_tris[neighbor]
                         .iter()
                         .any(|&other| key(other) == key(state.mesh_tris[fi][corner]))
                     {
                         outlet_corners += 1;
                         assert!(
-                            (river_r[fi][corner] - waterline).abs() < 1e-3,
+                            (radius - waterline).abs() < 1e-3,
                             "river outlet must share its neighboring waterline"
                         );
                     }
@@ -5384,6 +5324,25 @@ mod tests {
         assert_eq!(a.slope_class, b.slope_class);
         assert_eq!(a.water_depth, b.water_depth);
         assert_eq!(a.landform, b.landform);
+    }
+
+    fn serialized_fingerprint(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
+    }
+
+    #[test]
+    fn locked_serialized_worlds() {
+        let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
+        assert_eq!(
+            seed_1337.as_slice(),
+            include_bytes!("../../main/assets/level_1337.bin")
+        );
+        assert_eq!(serialized_fingerprint(&seed_1337), 0xefb3_6ef5_28ab_ac4e);
+
+        let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
+        assert_eq!(serialized_fingerprint(&seed_42), 0x713a_71fe_65e0_c310);
     }
 
     #[test]

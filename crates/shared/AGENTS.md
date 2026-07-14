@@ -31,3 +31,5 @@ Shared library crate for rs-zombies. Common types, utilities, and shared Bevy co
 `cargo test -p shared` and `cargo clippy -p shared` from workspace root.
 
 # Child DOX Index
+
+- `src/worldgen/` — private specialized generation algorithms: [AGENTS.md](src/worldgen/AGENTS.md)
