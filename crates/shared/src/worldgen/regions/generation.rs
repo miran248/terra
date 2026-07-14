@@ -1,21 +1,21 @@
-use super::*;
+use super::super::*;
 
 // ---- named regions: contiguous feature clusters (edge-connected) ----
 
 /// Which nameable feature a face belongs to. Tags win over terrain so towns and
 /// roads cluster as themselves; LakeShore/RiverBank separate regions and stay
 /// unnamed.
-pub(super) fn region_class(
+pub(in crate::worldgen) fn region_class(
     grid: &Grid,
     face_types: &[Terrain],
     painted: Option<&Painted>,
     face_index: usize,
 ) -> Option<RegionKind> {
     if let Some(p) = painted {
-        if face_solid(grid, &p.towns, face_index) {
+        if face_solid(grid, &p.towns, FaceId::new(face_index)) {
             return Some(RegionKind::Town);
         }
-        if face_solid(grid, &p.roads, face_index) {
+        if face_solid(grid, &p.roads, FaceId::new(face_index)) {
             return Some(RegionKind::Road);
         }
     }
@@ -42,7 +42,7 @@ pub(super) fn region_class(
 /// Flood-fill same-class faces into clusters via edge adjacency (tiles sharing
 /// only a single vertex are NOT linked), name each cluster, and record the
 /// per-face region id for HUD lookup.
-pub(super) fn build_regions(
+pub(in crate::worldgen) fn build_regions(
     grid: &Grid,
     terrain: &TerrainGen,
     face_types: &[Terrain],
@@ -61,7 +61,7 @@ pub(super) fn build_regions(
 
     let mut face_region = vec![None; grid.face_count()];
     let mut regions: Vec<RegionData> = Vec::new();
-    let mut kind_counts: BTreeMap<u8, usize> = BTreeMap::new();
+    let mut kind_counts = [0usize; 17];
 
     let partitioner = regions::RegionPartitioner::new(grid, &class, &terrain_class);
     for start in grid.topology.faces() {
@@ -99,10 +99,8 @@ pub(super) fn build_regions(
             .map(|face| grid.centroid(*face).0)
             .sum::<Vec3>()
             .normalize_or(Vec3::Y);
-        let idx = *kind_counts
-            .entry(kind as u8)
-            .and_modify(|c| *c += 1)
-            .or_insert(0);
+        let idx = kind_counts[kind.rank()];
+        kind_counts[kind.rank()] += 1;
         let name = region_name(kind, idx, cent, terrain);
         regions.push(RegionData {
             name,
@@ -113,7 +111,7 @@ pub(super) fn build_regions(
     (regions, face_region)
 }
 
-pub(super) fn region_name(
+pub(in crate::worldgen) fn region_name(
     kind: RegionKind,
     idx: usize,
     cent: Vec3,

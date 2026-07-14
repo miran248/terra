@@ -1,3 +1,5 @@
+pub(super) mod generation;
+
 /// Hard per-solver-vertex elevation intervals constructed from terrain,
 /// landform, shelf, river, and feature constraints.
 pub(super) struct ElevationConstraints {

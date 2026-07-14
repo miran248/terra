@@ -21,21 +21,23 @@ pub(in crate::worldgen) fn face_road_material(
             | Terrain::Tundra => soil = true,
             _ => {}
         }
-        if matches!(landform[cell_index], LANDFORM_MOUNTAINS | LANDFORM_PLATEAU)
-            || slope_class[cell_index].severity() >= SLOPE_STEEP.severity()
+        if matches!(
+            landform[cell_index],
+            Landform::Mountains | Landform::Plateau
+        ) || slope_class[cell_index].severity() >= SlopeClass::Steep.severity()
         {
             rock = true;
         }
     }
     // Rock wins on hard/steep ground, then sand, then dirt, else gravel.
     if rock {
-        ROAD_MAT_ROCK
+        RoadMaterial::Rock
     } else if sand {
-        ROAD_MAT_SAND
+        RoadMaterial::Sand
     } else if soil {
-        ROAD_MAT_DIRT
+        RoadMaterial::Dirt
     } else {
-        ROAD_MAT_GRAVEL
+        RoadMaterial::Gravel
     }
 }
 
@@ -67,9 +69,9 @@ pub(in crate::worldgen) fn build_mesh(
         .to_f32_array();
     let road_mat_color = |m: RoadMaterial| -> [f32; 4] {
         match m {
-            ROAD_MAT_DIRT => bevy::prelude::Color::srgb(0.45, 0.33, 0.22),
-            ROAD_MAT_SAND => bevy::prelude::Color::srgb(0.78, 0.70, 0.50),
-            ROAD_MAT_ROCK => bevy::prelude::Color::srgb(0.40, 0.38, 0.36),
+            RoadMaterial::Dirt => bevy::prelude::Color::srgb(0.45, 0.33, 0.22),
+            RoadMaterial::Sand => bevy::prelude::Color::srgb(0.78, 0.70, 0.50),
+            RoadMaterial::Rock => bevy::prelude::Color::srgb(0.40, 0.38, 0.36),
             _ => bevy::prelude::Color::srgb(0.52, 0.50, 0.47), // gravel
         }
         .to_linear()
@@ -101,8 +103,8 @@ pub(in crate::worldgen) fn build_mesh(
                 if cells[cell_index].is_water() {
                     // Water darkens with depth (shallow shore → dark abyss).
                     let f = match water_depth[cell_index] {
-                        Some(DEPTH_SHALLOW) => 1.0,
-                        Some(DEPTH_DEEP) => 0.62,
+                        Some(WaterDepth::Shallow) => 1.0,
+                        Some(WaterDepth::Deep) => 0.62,
                         _ => 0.35,
                     };
                     for ch in c.iter_mut().take(3) {
@@ -114,17 +116,17 @@ pub(in crate::worldgen) fn build_mesh(
                     // bare rock — so a forested hill, a forested mountain and a
                     // cliff face all look distinct even under the same biome.
                     let shade = match landform[cell_index] {
-                        LANDFORM_MOUNTAINS => 0.82,
-                        LANDFORM_PLATEAU => 0.90,
-                        LANDFORM_HILLS => 0.96,
+                        Landform::Mountains => 0.82,
+                        Landform::Plateau => 0.90,
+                        Landform::Hills => 0.96,
                         _ => 1.0,
                     };
                     for ch in c.iter_mut().take(3) {
                         *ch *= shade;
                     }
-                    if slope_class[cell_index].severity() >= SLOPE_STEEP.severity() {
+                    if slope_class[cell_index].severity() >= SlopeClass::Steep.severity() {
                         let rock = [0.24, 0.21, 0.19];
-                        let k = if slope_class[cell_index] == SLOPE_CLIFF {
+                        let k = if slope_class[cell_index] == SlopeClass::Cliff {
                             0.6
                         } else {
                             0.3
@@ -137,11 +139,12 @@ pub(in crate::worldgen) fn build_mesh(
                 c
             }
         };
-        let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, face_index) {
+        let face = FaceId::new(face_index);
+        let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, face) {
             [entry_color; 3]
-        } else if face_solid(grid, &painted.towns, face_index) {
+        } else if face_solid(grid, &painted.towns, face) {
             [town_color; 3]
-        } else if face_solid(grid, &painted.roads, face_index) {
+        } else if face_solid(grid, &painted.roads, face) {
             [road_mat_color(face_road_material(
                 grid,
                 cells,

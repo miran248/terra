@@ -1,4 +1,6 @@
-use super::*;
+use std::collections::VecDeque;
+
+use super::super::*;
 
 // ---- elevation synthesis (SolveElevation) ----
 //
@@ -14,7 +16,7 @@ use super::*;
 /// How far below its neighbors' average a water bed vertex is pushed each
 /// solver step — a concave basin/channel instead of a flat plate. `None` for
 /// non-bed kinds. (Rivers cut sharper than lake basins.)
-pub(super) fn water_concavity(t: Terrain) -> Option<f32> {
+pub(in crate::worldgen) fn water_concavity(t: Terrain) -> Option<f32> {
     match t {
         // Per-iteration push below the neighbour average — the deeper this, the
         // deeper the basin bowls (depth still grows with basin size). Lakes were
@@ -27,7 +29,7 @@ pub(super) fn water_concavity(t: Terrain) -> Option<f32> {
 
 /// The water kinds a shore/bank vertex must sit strictly above (its adjacent
 /// body). Empty for non-bank kinds.
-pub(super) fn bank_water(t: Terrain) -> &'static [Terrain] {
+pub(in crate::worldgen) fn bank_water(t: Terrain) -> &'static [Terrain] {
     match t {
         Terrain::RiverBank => &[Terrain::River, Terrain::RiverSpring],
         Terrain::LakeShore => &[Terrain::Lake],
@@ -39,7 +41,7 @@ pub(super) fn bank_water(t: Terrain) -> &'static [Terrain] {
 /// A cover biome whose ELEVATION comes from its landform, not itself (a snowy
 /// lowland stays low; snow doesn't imply a mountain). Water, shore bands and
 /// rivers keep their own ranges — they aren't landforms.
-pub(super) fn is_cover(t: Terrain) -> bool {
+pub(in crate::worldgen) fn is_cover(t: Terrain) -> bool {
     use Terrain::*;
     matches!(
         t,
@@ -60,33 +62,33 @@ pub(super) fn is_cover(t: Terrain) -> bool {
 /// Elevation range a LANDFORM's ground may occupy — the base layer that drives
 /// height (cover only colors it). Bands overlap so adjacent landforms
 /// (ordered lowland→hills→mountains) meet without an impossible jump.
-pub(super) fn landform_range(lf: Landform) -> (f32, f32) {
+pub(in crate::worldgen) fn landform_range(lf: Landform) -> (f32, f32) {
     match lf {
-        LANDFORM_VALLEY => (0.0, 0.16),
-        LANDFORM_LOWLAND => (0.02, 0.20),
-        LANDFORM_HILLS => (0.14, 0.45),
-        LANDFORM_MOUNTAINS => (0.40, 1.0),
-        LANDFORM_PLATEAU => (0.36, 0.74),
+        Landform::Valley => (0.0, 0.16),
+        Landform::Lowland => (0.02, 0.20),
+        Landform::Hills => (0.14, 0.45),
+        Landform::Mountains => (0.40, 1.0),
+        Landform::Plateau => (0.36, 0.74),
         _ => (0.02, 0.50),
     }
 }
 
 /// How steep a land edge may be, from the steeper of the two landforms:
 /// lowlands are gentle, mountains steep, hills between.
-pub(super) fn landform_edge_cap(lfa: Landform, lfb: Landform) -> f32 {
+pub(in crate::worldgen) fn landform_edge_cap(lfa: Landform, lfb: Landform) -> f32 {
     let one = |lf: Landform| -> f32 {
         match lf {
-            LANDFORM_VALLEY | LANDFORM_LOWLAND => 0.04,
-            LANDFORM_HILLS => 0.14,
-            LANDFORM_PLATEAU => 0.20,
-            LANDFORM_MOUNTAINS => 0.40,
+            Landform::Valley | Landform::Lowland => 0.04,
+            Landform::Hills => 0.14,
+            Landform::Plateau => 0.20,
+            Landform::Mountains => 0.40,
             _ => 0.10,
         }
     };
     one(lfa).max(one(lfb))
 }
 
-pub(super) fn elev_range(t: Terrain) -> (f32, f32) {
+pub(in crate::worldgen) fn elev_range(t: Terrain) -> (f32, f32) {
     use Terrain::*;
     // Ranges of kinds that may sit next to each other must overlap (or lie
     // within one edge's gradient cap) or the constraint set is unsatisfiable.
@@ -123,7 +125,7 @@ pub(super) fn elev_range(t: Terrain) -> (f32, f32) {
 
 /// Max elevation change across one vertex edge (~70m) between two tile kinds.
 /// Small at shores (continental shelf), large into mountains and at cliffs.
-pub(super) fn max_gradient(a: Terrain, b: Terrain) -> f32 {
+pub(in crate::worldgen) fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     use Terrain::*;
     let water = |t: Terrain| matches!(t, Ocean | Lake);
     let peak = |t: Terrain| matches!(t, Mountain | Snow | Volcanic | Glacier);
@@ -162,11 +164,11 @@ pub(super) fn max_gradient(a: Terrain, b: Terrain) -> f32 {
 }
 
 /// Tight cap along road corridors so roads stay walkable.
-pub(super) const ROAD_EDGE_GRADIENT: f32 = 0.01;
-pub(super) const SOLVER_MAX_ITERS: usize = 250;
-pub(super) const SOLVER_EPS: f32 = 0.002;
+pub(in crate::worldgen) const ROAD_EDGE_GRADIENT: f32 = 0.01;
+pub(in crate::worldgen) const SOLVER_MAX_ITERS: usize = 250;
+pub(in crate::worldgen) const SOLVER_EPS: f32 = 0.002;
 
-pub(super) fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
+pub(in crate::worldgen) fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
     let mut sum = 0.0f32;
     let mut weighted = 0.0f32;
     for &(solver_vertex, dot) in kernel {
@@ -188,7 +190,7 @@ pub(super) fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
 /// a bit-exact subset of grid cells (each subdivision keeps its parents), so
 /// the map is exact, with a nearest-corner fallback for the (unexpected) miss.
 /// Backs both tile-kind ownership and landform ownership.
-pub(super) fn owner_of<T: Copy>(
+pub(in crate::worldgen) fn owner_of<T: Copy>(
     grid: &Grid,
     terrain: &TerrainGen,
     per_cell: &[T],
@@ -238,19 +240,23 @@ pub(super) fn owner_of<T: Copy>(
         .collect()
 }
 
-pub(super) fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terrain> {
+pub(in crate::worldgen) fn owner_cells(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    cells: &[Terrain],
+) -> Vec<Terrain> {
     owner_of(grid, terrain, cells, Terrain::Plains)
 }
 
-pub(super) fn owner_landform(
+pub(in crate::worldgen) fn owner_landform(
     grid: &Grid,
     terrain: &TerrainGen,
     landform: &[Landform],
 ) -> Vec<Landform> {
-    owner_of(grid, terrain, landform, LANDFORM_LOWLAND)
+    owner_of(grid, terrain, landform, Landform::Lowland)
 }
 
-pub(super) fn solve_elevation(
+pub(in crate::worldgen) fn solve_elevation(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],

@@ -91,7 +91,7 @@ pub struct LevelData {
     /// Contextual built structures (ruins, docks, walls, …), placed at gen
     /// time and spawned as runtime entities like bridges.
     pub structures: Vec<StructureData>,
-    /// Per-face slope class (SLOPE_*), from the solved field.
+    /// Per-face slope class from the solved field.
     pub slope_class: Vec<SlopeClass>,
     /// Per-face water depth class; `None` on dry faces.
     pub water_depth: Vec<Option<WaterDepth>>,

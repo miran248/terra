@@ -4,6 +4,8 @@ use super::Grid;
 use crate::level::RegionKind;
 use crate::topology::FaceId;
 
+pub(super) mod generation;
+
 /// Typed face partitioner for named region overlays.
 pub(super) struct RegionPartitioner<'a> {
     grid: &'a Grid,

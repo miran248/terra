@@ -25,88 +25,88 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
     // (base, scale, kind). Kept sparse: only the kinds that grow on this tile.
     let v: &[(f32, FloraScale, FloraKind)] = match t {
         Terrain::Forest => &[
-            (0.40, Wet, FLORA_TREE),
-            (0.10, Wet, FLORA_BUSH),
-            (0.012, WetSq, FLORA_FLOWER),
-            (0.008, Dry, FLORA_ROCK),
-            (0.075, Wet, FLORA_GRASS),
-            (0.03, Flat, FLORA_LOG),
-            (0.06, Wet, FLORA_MUSHROOM),
-            (0.04, Wet, FLORA_BERRY),
-            (0.01, Flat, FLORA_DEADTREE),
+            (0.40, Wet, FloraKind::Tree),
+            (0.10, Wet, FloraKind::Bush),
+            (0.012, WetSq, FloraKind::Flower),
+            (0.008, Dry, FloraKind::Rock),
+            (0.075, Wet, FloraKind::Grass),
+            (0.03, Flat, FloraKind::Log),
+            (0.06, Wet, FloraKind::Mushroom),
+            (0.04, Wet, FloraKind::Berry),
+            (0.01, Flat, FloraKind::DeadTree),
         ],
         Terrain::Jungle => &[
-            (0.55, Wet, FLORA_TREE),
-            (0.18, Wet, FLORA_BUSH),
-            (0.02, WetSq, FLORA_FLOWER),
-            (0.004, Dry, FLORA_ROCK),
-            (0.10, Wet, FLORA_GRASS),
-            (0.05, Flat, FLORA_LOG),
-            (0.09, Wet, FLORA_MUSHROOM),
-            (0.05, Wet, FLORA_BERRY),
-            (0.02, Wet, FLORA_REED),
+            (0.55, Wet, FloraKind::Tree),
+            (0.18, Wet, FloraKind::Bush),
+            (0.02, WetSq, FloraKind::Flower),
+            (0.004, Dry, FloraKind::Rock),
+            (0.10, Wet, FloraKind::Grass),
+            (0.05, Flat, FloraKind::Log),
+            (0.09, Wet, FloraKind::Mushroom),
+            (0.05, Wet, FloraKind::Berry),
+            (0.02, Wet, FloraKind::Reed),
         ],
         Terrain::Swamp => &[
-            (0.05, Wet, FLORA_TREE),
-            (0.12, Wet, FLORA_BUSH),
-            (0.03, WetSq, FLORA_FLOWER),
-            (0.004, Dry, FLORA_ROCK),
-            (0.10, Wet, FLORA_GRASS),
-            (0.05, Flat, FLORA_LOG),
-            (0.05, Wet, FLORA_MUSHROOM),
-            (0.06, Flat, FLORA_DEADTREE),
-            (0.18, Wet, FLORA_REED),
+            (0.05, Wet, FloraKind::Tree),
+            (0.12, Wet, FloraKind::Bush),
+            (0.03, WetSq, FloraKind::Flower),
+            (0.004, Dry, FloraKind::Rock),
+            (0.10, Wet, FloraKind::Grass),
+            (0.05, Flat, FloraKind::Log),
+            (0.05, Wet, FloraKind::Mushroom),
+            (0.06, Flat, FloraKind::DeadTree),
+            (0.18, Wet, FloraKind::Reed),
         ],
         Terrain::Plains => &[
-            (0.01, Wet, FLORA_TREE),
-            (0.025, Wet, FLORA_BUSH),
-            (0.075, WetSq, FLORA_FLOWER),
-            (0.005, Dry, FLORA_ROCK),
-            (0.088, Wet, FLORA_GRASS),
-            (0.004, Flat, FLORA_LOG),
-            (0.02, Wet, FLORA_BERRY),
+            (0.01, Wet, FloraKind::Tree),
+            (0.025, Wet, FloraKind::Bush),
+            (0.075, WetSq, FloraKind::Flower),
+            (0.005, Dry, FloraKind::Rock),
+            (0.088, Wet, FloraKind::Grass),
+            (0.004, Flat, FloraKind::Log),
+            (0.02, Wet, FloraKind::Berry),
         ],
         Terrain::Savanna => &[
-            (0.02, Wet, FLORA_TREE),
-            (0.04, Wet, FLORA_BUSH),
-            (0.04, WetSq, FLORA_FLOWER),
-            (0.008, Dry, FLORA_ROCK),
-            (0.11, Wet, FLORA_GRASS),
-            (0.008, Flat, FLORA_LOG),
-            (0.015, Dry, FLORA_CACTUS),
-            (0.01, Wet, FLORA_BERRY),
-            (0.02, Flat, FLORA_DEADTREE),
+            (0.02, Wet, FloraKind::Tree),
+            (0.04, Wet, FloraKind::Bush),
+            (0.04, WetSq, FloraKind::Flower),
+            (0.008, Dry, FloraKind::Rock),
+            (0.11, Wet, FloraKind::Grass),
+            (0.008, Flat, FloraKind::Log),
+            (0.015, Dry, FloraKind::Cactus),
+            (0.01, Wet, FloraKind::Berry),
+            (0.02, Flat, FloraKind::DeadTree),
         ],
         Terrain::Tundra => &[
-            (0.003, Wet, FLORA_TREE),
-            (0.015, Wet, FLORA_BUSH),
-            (0.005, WetSq, FLORA_FLOWER),
-            (0.03, Dry, FLORA_ROCK),
-            (0.012, Wet, FLORA_GRASS),
-            (0.01, Flat, FLORA_LOG),
-            (0.008, Wet, FLORA_BERRY),
-            (0.03, Flat, FLORA_DEADTREE),
+            (0.003, Wet, FloraKind::Tree),
+            (0.015, Wet, FloraKind::Bush),
+            (0.005, WetSq, FloraKind::Flower),
+            (0.03, Dry, FloraKind::Rock),
+            (0.012, Wet, FloraKind::Grass),
+            (0.01, Flat, FloraKind::Log),
+            (0.008, Wet, FloraKind::Berry),
+            (0.03, Flat, FloraKind::DeadTree),
         ],
         Terrain::Desert => &[
-            (0.012, Wet, FLORA_BUSH),
-            (0.025, Dry, FLORA_ROCK),
-            (0.06, Dry, FLORA_CACTUS),
-            (0.02, Flat, FLORA_DEADTREE),
+            (0.012, Wet, FloraKind::Bush),
+            (0.025, Dry, FloraKind::Rock),
+            (0.06, Dry, FloraKind::Cactus),
+            (0.02, Flat, FloraKind::DeadTree),
         ],
         Terrain::RiverBank | Terrain::LakeShore => &[
-            (0.02, Wet, FLORA_TREE),
-            (0.05, Wet, FLORA_BUSH),
-            (0.062, WetSq, FLORA_FLOWER),
-            (0.008, Dry, FLORA_ROCK),
-            (0.075, Wet, FLORA_GRASS),
-            (0.01, Flat, FLORA_LOG),
-            (0.12, Wet, FLORA_REED),
+            (0.02, Wet, FloraKind::Tree),
+            (0.05, Wet, FloraKind::Bush),
+            (0.062, WetSq, FloraKind::Flower),
+            (0.008, Dry, FloraKind::Rock),
+            (0.075, Wet, FloraKind::Grass),
+            (0.01, Flat, FloraKind::Log),
+            (0.12, Wet, FloraKind::Reed),
         ],
-        Terrain::Mountain => &[(0.005, Wet, FLORA_BUSH), (0.05, Dry, FLORA_ROCK)],
-        Terrain::Cliff => &[(0.038, Dry, FLORA_ROCK)],
-        Terrain::Beach => &[(0.01, Dry, FLORA_ROCK)],
-        Terrain::Volcanic => &[(0.06, Dry, FLORA_ROCK)],
-        Terrain::Glacier => &[(0.01, Dry, FLORA_ROCK)],
+        Terrain::Mountain => &[(0.005, Wet, FloraKind::Bush), (0.05, Dry, FloraKind::Rock)],
+        Terrain::Cliff => &[(0.038, Dry, FloraKind::Rock)],
+        Terrain::Beach => &[(0.01, Dry, FloraKind::Rock)],
+        Terrain::Volcanic => &[(0.06, Dry, FloraKind::Rock)],
+        Terrain::Glacier => &[(0.01, Dry, FloraKind::Rock)],
         _ => &[],
     };
     v.to_vec()
@@ -122,10 +122,11 @@ pub(in crate::worldgen) fn place_flora(
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ FLORA_RNG_SALT);
     let mut out = Vec::new();
     for face_index in 0..grid.face_count() {
-        let clear = painted_corners(grid, &painted.roads, face_index) > 0
-            || painted_corners(grid, &painted.towns, face_index) > 0
-            || painted_corners(grid, &painted.bridge_entries, face_index) > 0
-            || painted_corners(grid, &painted.bridges, face_index) > 0;
+        let face = FaceId::new(face_index);
+        let clear = painted_corners(grid, &painted.roads, face) > 0
+            || painted_corners(grid, &painted.towns, face) > 0
+            || painted_corners(grid, &painted.bridge_entries, face) > 0
+            || painted_corners(grid, &painted.bridges, face) > 0;
         if clear {
             continue;
         }
@@ -194,13 +195,13 @@ pub(in crate::worldgen) fn place_structures(
         let t = &mesh_tris[face_index];
         (Vec3::from_array(t[0]) + Vec3::from_array(t[1]) + Vec3::from_array(t[2])) / 3.0
     };
-    let town = |face_index: usize| face_solid(grid, &painted.towns, face_index);
-    let road = |face_index: usize| face_solid(grid, &painted.roads, face_index);
+    let town = |face_index: usize| face_solid(grid, &painted.towns, FaceId::new(face_index));
+    let road = |face_index: usize| face_solid(grid, &painted.roads, FaceId::new(face_index));
     let feature = |face_index: usize| {
         town(face_index)
             || road(face_index)
-            || painted_corners(grid, &painted.bridges, face_index) > 0
-            || painted_corners(grid, &painted.bridge_entries, face_index) > 0
+            || painted_corners(grid, &painted.bridges, FaceId::new(face_index)) > 0
+            || painted_corners(grid, &painted.bridge_entries, FaceId::new(face_index)) > 0
     };
     // Face-step distance from any town (capped) — cheap context for the rest.
     let town_sources: Vec<_> = grid
@@ -255,9 +256,9 @@ pub(in crate::worldgen) fn place_structures(
         if town(face_index) {
             let r = rng.f32();
             if r < 0.010 {
-                push(&mut rng, face_index, STRUCT_WELL);
+                push(&mut rng, face_index, StructureKind::Well);
             } else if r < 0.045 {
-                push(&mut rng, face_index, STRUCT_CAMPFIRE);
+                push(&mut rng, face_index, StructureKind::Campfire);
             }
             continue;
         }
@@ -274,9 +275,9 @@ pub(in crate::worldgen) fn place_structures(
                 .into_iter()
                 .any(|neighbor| tiles[neighbor].is_water());
             if coastal && rng.f32() < 0.5 {
-                push(&mut rng, face_index, STRUCT_DOCK);
+                push(&mut rng, face_index, StructureKind::Dock);
             } else if rng.f32() < 0.4 {
-                push(&mut rng, face_index, STRUCT_WALL);
+                push(&mut rng, face_index, StructureKind::Wall);
             }
             continue;
         }
@@ -291,7 +292,7 @@ pub(in crate::worldgen) fn place_structures(
             )
             && rng.f32() < 0.10
         {
-            push(&mut rng, face_index, STRUCT_FARM);
+            push(&mut rng, face_index, StructureKind::Farm);
             continue;
         }
         // Watchtower: high ground overlooking a road.
@@ -299,7 +300,7 @@ pub(in crate::worldgen) fn place_structures(
             && terrain.elevation_at(grid.centroid(FaceId::new(face_index))) > 0.25
             && rng.f32() < 0.03
         {
-            push(&mut rng, face_index, STRUCT_WATCHTOWER);
+            push(&mut rng, face_index, StructureKind::Watchtower);
             continue;
         }
         // Ruins: rare, deep in the wilderness (far from any town).
@@ -310,7 +311,7 @@ pub(in crate::worldgen) fn place_structures(
             )
             && rng.f32() < 0.0006
         {
-            push(&mut rng, face_index, STRUCT_RUIN);
+            push(&mut rng, face_index, StructureKind::Ruin);
         }
     }
     out
@@ -320,16 +321,17 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
     let mut tags = Vec::with_capacity(grid.face_count());
     for face_index in 0..grid.face_count() {
         let mut face_tags = Vec::new();
-        if face_solid(grid, &painted.roads, face_index) {
+        let face = FaceId::new(face_index);
+        if face_solid(grid, &painted.roads, face) {
             face_tags.push(FaceTag::Road);
         }
-        if face_solid(grid, &painted.towns, face_index) {
+        if face_solid(grid, &painted.towns, face) {
             face_tags.push(FaceTag::Town);
         }
-        if face_solid(grid, &painted.bridges, face_index) {
+        if face_solid(grid, &painted.bridges, face) {
             face_tags.push(FaceTag::Bridge);
         }
-        if face_solid(grid, &painted.bridge_entries, face_index) {
+        if face_solid(grid, &painted.bridge_entries, face) {
             face_tags.push(FaceTag::BridgeEntry);
         }
         tags.push(face_tags);

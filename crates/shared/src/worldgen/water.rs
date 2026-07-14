@@ -15,51 +15,42 @@ pub(super) fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terra
         // may have moved the coast since. If the channel no longer meets open
         // water, extend it from its end along the shortest cell path to the
         // nearest sea/lake cell — a river always reaches a larger body.
-        let reaches = chain.iter().any(|&cell_index| {
-            sea(cells[cell_index])
+        let reaches = chain.iter().any(|&cell| {
+            sea(cells[cell.index()])
                 || grid
-                    .cell_neighbors(CellId::new(cell_index))
+                    .cell_neighbors(cell)
                     .iter()
                     .any(|nb| sea(cells[nb.index()]))
         });
         if !reaches
-            && let Some(end) = chain.last().and_then(|&index| grid.topology.cell(index))
+            && let Some(&end) = chain.last()
             && let Some(extension) = grid
                 .topology
                 .cell_shortest_path_to(end, 60, |cell| sea(cells[cell.index()]))
         {
             let interior = extension.len().saturating_sub(2);
-            chain.extend(
-                extension
-                    .into_iter()
-                    .skip(1)
-                    .take(interior)
-                    .map(|cell| cell.index()),
-            );
+            chain.extend(extension.into_iter().skip(1).take(interior));
         }
-        for cell_index in widen_band_sym(grid, &chain) {
-            if cells[cell_index].is_land() {
-                cells[cell_index] = Terrain::River;
+        for cell in features::widen_band(grid, &chain, true) {
+            if cells[cell.index()].is_land() {
+                cells[cell.index()] = Terrain::River;
             }
         }
         // A triangular three-cell source patch survives face derivation while
         // keeping each Spring face edge-connected (a thinner patch pinches).
-        let mut spring_cells: Vec<usize> = chain.iter().take(2).copied().collect();
+        let mut spring_cells: Vec<CellId> = chain.iter().take(2).copied().collect();
         if let [a, b, ..] = spring_cells.as_slice()
-            && let Some(third) = grid
-                .cell_neighbors(CellId::new(*a))
-                .iter()
-                .find(|candidate| {
-                    candidate.index() != *a
-                        && candidate.index() != *b
-                        && grid.cell_neighbors(CellId::new(*b)).contains(candidate)
-                })
+            && let Some(third) = grid.cell_neighbors(*a).iter().find(|candidate| {
+                **candidate != *a
+                    && **candidate != *b
+                    && grid.cell_neighbors(*b).contains(candidate)
+            })
         {
-            spring_cells.push(third.index());
+            spring_cells.push(*third);
         }
         for source in spring_cells {
-            if cells[source] == Terrain::River {
-                cells[source] = Terrain::RiverSpring;
+            if cells[source.index()] == Terrain::River {
+                cells[source.index()] = Terrain::RiverSpring;
             }
         }
     }
@@ -67,8 +58,8 @@ pub(super) fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terra
 
 /// The gap-free chain of cells a polyline passes over: nearest corner per
 /// sample, gaps bridged along cell adjacency.
-pub(super) fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
-    let mut c: Vec<usize> = Vec::new();
+pub(super) fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<CellId> {
+    let mut c: Vec<CellId> = Vec::new();
     for seg in points.windows(2) {
         let steps = (seg[0].distance(seg[1]) / 2.0).ceil().max(1.0) as usize;
         for k in 0..=steps {
@@ -76,52 +67,38 @@ pub(super) fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
             let Some(face_index) = grid.planet.face_at(p) else {
                 continue;
             };
-            let cell_index = grid
+            let cell = grid
                 .face_cells(FaceId::new(face_index))
-                .map(CellId::index)
                 .into_iter()
-                .max_by(|&a, &b| {
-                    grid.cell_direction(CellId::new(a))
+                .max_by(|a, b| {
+                    grid.cell_direction(*a)
                         .dot(p)
-                        .partial_cmp(&grid.cell_direction(CellId::new(b)).dot(p))
+                        .partial_cmp(&grid.cell_direction(*b).dot(p))
                         .unwrap()
                 })
                 .unwrap();
-            if c.last() == Some(&cell_index) {
+            if c.last() == Some(&cell) {
                 continue;
             }
             if let Some(&prev) = c.last()
-                && !grid
-                    .cell_neighbors(CellId::new(prev))
-                    .iter()
-                    .any(|neighbor| neighbor.index() == cell_index)
+                && !grid.cell_neighbors(prev).contains(&cell)
             {
-                c.extend(shortest_cell_path(grid, prev, cell_index));
+                c.extend(shortest_cell_path(grid, prev, cell));
             }
-            if c.last() != Some(&cell_index) {
-                c.push(cell_index);
+            if c.last() != Some(&cell) {
+                c.push(cell);
             }
         }
     }
     c
 }
 
-pub(super) fn shortest_cell_path(grid: &Grid, from: usize, to: usize) -> Vec<usize> {
-    let Some(from) = grid.topology.cell(from) else {
-        return Vec::new();
-    };
-    let Some(to) = grid.topology.cell(to) else {
-        return Vec::new();
-    };
+pub(super) fn shortest_cell_path(grid: &Grid, from: CellId, to: CellId) -> Vec<CellId> {
     let Some(path) = grid.topology.cell_shortest_path(from, to, 4) else {
         return Vec::new();
     };
     let interior = path.len().saturating_sub(2);
-    path.into_iter()
-        .skip(1)
-        .take(interior)
-        .map(|cell| cell.index())
-        .collect()
+    path.into_iter().skip(1).take(interior).collect()
 }
 
 /// Majority coarse zone over a cell's face fan (deterministic tie-break).
@@ -130,19 +107,55 @@ pub(super) fn cell_zone(
     terrain: &TerrainGen,
     cell_index: usize,
 ) -> crate::zones::ZoneKind {
-    let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+    use crate::zones::ZoneKind;
+    let kinds = [
+        ZoneKind::Ocean,
+        ZoneKind::Continent,
+        ZoneKind::Island,
+        ZoneKind::Lake,
+        ZoneKind::MountainRange,
+        ZoneKind::Settlement,
+    ];
+    let mut counts = [0usize; 6];
     let cell = grid
         .topology
         .cell(cell_index)
         .expect("cell index from topology range");
     for &face in grid.topology.cell_faces(cell) {
-        *counts
-            .entry(terrain.zones().kind_at_fine(face.index()) as u8)
-            .or_default() += 1;
+        let kind = terrain.zones().kind_at_fine(face.index());
+        counts[kinds
+            .iter()
+            .position(|candidate| *candidate == kind)
+            .unwrap()] += 1;
     }
-    let (&k, _) = counts.iter().max_by_key(|(_, c)| **c).unwrap();
-    use crate::zones::ZoneKind::*;
-    [Ocean, Continent, Island, Lake, MountainRange, Settlement][k as usize]
+    kinds[counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| **count)
+        .unwrap()
+        .0]
+}
+
+fn most_common_land(
+    grid: &Grid,
+    cells: &[Terrain],
+    members: impl IntoIterator<Item = CellId>,
+) -> Terrain {
+    let mut counts = [0usize; Terrain::ALL.len()];
+    for cell in members {
+        for &neighbor in grid.cell_neighbors(cell) {
+            let terrain = cells[neighbor.index()];
+            if terrain.is_land() {
+                counts[classification::terrain_rank(terrain) as usize] += 1;
+            }
+        }
+    }
+    counts
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| **count)
+        .filter(|(_, count)| **count > 0)
+        .map_or(Terrain::Plains, |(rank, _)| Terrain::ALL[rank])
 }
 
 /// Water-body identity comes from connectivity, not per-face depth: any face can
@@ -159,92 +172,68 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
     let lake_zone: Vec<bool> = (0..grid.cell_count())
         .map(|cell_index| cell_zone(grid, terrain, cell_index) == crate::zones::ZoneKind::Lake)
         .collect();
-    let dams: Vec<usize> = (0..grid.cell_count())
-        .filter(|&cell_index| {
-            cells[cell_index].is_water()
-                && !lake_zone[cell_index]
-                && grid
-                    .cell_neighbors(CellId::new(cell_index))
-                    .iter()
-                    .any(|nb| {
-                        let nb = nb.index();
-                        cells[nb].is_water() && lake_zone[nb]
-                    })
+    let dams: Vec<CellId> = grid
+        .topology
+        .cells()
+        .filter(|&cell| {
+            cells[cell.index()].is_water()
+                && !lake_zone[cell.index()]
+                && grid.cell_neighbors(cell).iter().any(|nb| {
+                    let nb = nb.index();
+                    cells[nb].is_water() && lake_zone[nb]
+                })
         })
         .collect();
-    for cell_index in dams {
-        cells[cell_index] = Terrain::LakeShore;
+    for cell in dams {
+        cells[cell.index()] = Terrain::LakeShore;
     }
 
     enforce_water_shape(grid, cells);
 
     let mut visited = vec![false; grid.cell_count()];
-    for start in 0..grid.cell_count() {
-        if !cells[start].is_water()
-            || matches!(cells[start], Terrain::River | Terrain::RiverSpring)
-            || visited[start]
+    for start in grid.topology.cells() {
+        if !cells[start.index()].is_water()
+            || matches!(cells[start.index()], Terrain::River | Terrain::RiverSpring)
+            || visited[start.index()]
         {
             continue;
         }
-        let body: Vec<usize> = grid
+        let body: Vec<CellId> = grid
             .topology
-            .cell_component(
-                grid.topology
-                    .cell(start)
-                    .expect("cell index from topology range"),
-                |cell| {
-                    cells[cell.index()].is_water()
-                        && !matches!(cells[cell.index()], Terrain::River | Terrain::RiverSpring)
-                },
-            )
+            .cell_component(start, |cell| {
+                cells[cell.index()].is_water()
+                    && !matches!(cells[cell.index()], Terrain::River | Terrain::RiverSpring)
+            })
             .into_iter()
-            .map(|cell| cell.index())
             .collect();
         for &cell in &body {
-            visited[cell] = true
+            visited[cell.index()] = true
         }
         // A body is an OCEAN only if it reaches ocean-zone cells AND is large
         // enough to be one: an isolated pocket of ocean-zone faces walled off
         // by land (a single coarse face — hence the tell-tale triangle shape)
         // is a lake, not a sea. Min ocean size sits well above any lake.
         let is_ocean = body.len() >= size_range(Terrain::Ocean).0
-            && body.iter().any(|&cell_index| {
-                cell_zone(grid, terrain, cell_index) == crate::zones::ZoneKind::Ocean
+            && body.iter().any(|&cell| {
+                cell_zone(grid, terrain, cell.index()) == crate::zones::ZoneKind::Ocean
             });
         if !is_ocean && body.len() < size_range(Terrain::Lake).0 {
             // A puddle isn't a lake: fill it with the most common surrounding
             // land kind so no 1-cell water ever survives.
-            let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-            for &cell_index in &body {
-                for nb in grid
-                    .cell_neighbors(CellId::new(cell_index))
-                    .iter()
-                    .map(|cell| cell.index())
-                {
-                    let t = cells[nb];
-                    if t.is_land() {
-                        *counts.entry(t as u8).or_default() += 1;
-                    }
-                }
-            }
-            let fill = counts
-                .iter()
-                .max_by_key(|(_, c)| **c)
-                .map(|(&k, _)| Terrain::ALL[k as usize])
-                .unwrap_or(Terrain::Plains);
-            for &cell_index in &body {
-                cells[cell_index] = fill;
+            let fill = most_common_land(grid, cells, body.iter().copied());
+            for &cell in &body {
+                cells[cell.index()] = fill;
             }
             continue;
         }
-        for &cell_index in &body {
-            cells[cell_index] = if !is_ocean {
+        for &cell in &body {
+            cells[cell.index()] = if !is_ocean {
                 Terrain::Lake
-            } else if cells[cell_index] == Terrain::Lake {
+            } else if cells[cell.index()] == Terrain::Lake {
                 // A lake cell swallowed by the ocean body is just shallow ocean.
                 Terrain::Ocean
             } else {
-                cells[cell_index]
+                cells[cell.index()]
             };
         }
     }
@@ -259,22 +248,7 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
         .collect();
     let ocean_dist = grid.topology.cell_distances(&ocean_sources, 7);
     let fill_kind = |cells: &[Terrain], cell_index: usize| -> Terrain {
-        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for nb in grid
-            .cell_neighbors(CellId::new(cell_index))
-            .iter()
-            .map(|cell| cell.index())
-        {
-            let t = cells[nb];
-            if t.is_land() {
-                *counts.entry(t as u8).or_default() += 1;
-            }
-        }
-        counts
-            .iter()
-            .max_by_key(|(_, c)| **c)
-            .map(|(&k, _)| Terrain::ALL[k as usize])
-            .unwrap_or(Terrain::Plains)
+        most_common_land(grid, cells, [CellId::new(cell_index)])
     };
     for cell_index in 0..grid.cell_count() {
         let cell = grid
@@ -286,27 +260,21 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
         }
     }
     let mut visited = vec![false; grid.cell_count()];
-    for start in 0..grid.cell_count() {
-        if cells[start] != Terrain::Lake || visited[start] {
+    for start in grid.topology.cells() {
+        if cells[start.index()] != Terrain::Lake || visited[start.index()] {
             continue;
         }
-        let body: Vec<usize> = grid
+        let body: Vec<CellId> = grid
             .topology
-            .cell_component(
-                grid.topology
-                    .cell(start)
-                    .expect("cell index from topology range"),
-                |cell| cells[cell.index()] == Terrain::Lake,
-            )
+            .cell_component(start, |cell| cells[cell.index()] == Terrain::Lake)
             .into_iter()
-            .map(|cell| cell.index())
             .collect();
         for &cell in &body {
-            visited[cell] = true
+            visited[cell.index()] = true
         }
         if body.len() < size_range(Terrain::Lake).0 {
-            for &cell_index in &body {
-                cells[cell_index] = fill_kind(cells, cell_index);
+            for &cell in &body {
+                cells[cell.index()] = fill_kind(cells, cell.index());
             }
         }
     }
@@ -319,22 +287,7 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
 /// can only meet along an edge.) Iterated because fills can expose new slivers.
 pub(super) fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
     let fill_kind = |cells: &[Terrain], cell_index: usize| -> Terrain {
-        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for nb in grid
-            .cell_neighbors(CellId::new(cell_index))
-            .iter()
-            .map(|cell| cell.index())
-        {
-            let t = cells[nb];
-            if t.is_land() {
-                *counts.entry(t as u8).or_default() += 1;
-            }
-        }
-        counts
-            .iter()
-            .max_by_key(|(_, c)| **c)
-            .map(|(&k, _)| Terrain::ALL[k as usize])
-            .unwrap_or(Terrain::Plains)
+        most_common_land(grid, cells, [CellId::new(cell_index)])
     };
     let wet = |t: Terrain| t.is_water() && !matches!(t, Terrain::River | Terrain::RiverSpring);
 
@@ -388,15 +341,14 @@ pub(super) fn size_range(t: Terrain) -> (usize, usize) {
 }
 
 /// Nearest cell to a point: the closest corner of the face under it.
-pub(super) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
+pub(super) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<CellId> {
     let face_index = grid.planet.face_at(p.0)?;
     grid.face_cells(FaceId::new(face_index))
-        .map(CellId::index)
         .into_iter()
         .max_by(|&a, &b| {
-            grid.cell_direction(CellId::new(a))
+            grid.cell_direction(a)
                 .dot(p.0)
-                .partial_cmp(&grid.cell_direction(CellId::new(b)).dot(p.0))
+                .partial_cmp(&grid.cell_direction(b).dot(p.0))
                 .unwrap()
         })
 }
@@ -416,7 +368,7 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<Landfo
     let e: Vec<f32> = (0..grid.cell_count())
         .map(|cell_index| terrain.elevation_at(grid.cell_position(CellId::new(cell_index))))
         .collect();
-    let mut lf = vec![LANDFORM_WATER; grid.cell_count()];
+    let mut lf = vec![Landform::Water; grid.cell_count()];
     for cell_index in 0..grid.cell_count() {
         if e[cell_index] < 0.0 {
             continue; // water
@@ -429,21 +381,21 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<Landfo
             .fold(0.0f32, f32::max);
         lf[cell_index] = if e[cell_index] >= 0.35 {
             if relief < 0.035 {
-                LANDFORM_PLATEAU
+                Landform::Plateau
             } else {
-                LANDFORM_MOUNTAINS
+                Landform::Mountains
             }
         } else if e[cell_index] >= 0.14 {
-            LANDFORM_HILLS
+            Landform::Hills
         } else {
-            LANDFORM_LOWLAND
+            Landform::Lowland
         };
     }
     // Valleys: low ground hemmed in by higher landform on most sides.
     let higher = |l: Landform| l.is_highland();
     let mut valleys = Vec::new();
     for cell_index in 0..grid.cell_count() {
-        if lf[cell_index] == LANDFORM_LOWLAND
+        if lf[cell_index] == Landform::Lowland
             && grid
                 .cell_neighbors(CellId::new(cell_index))
                 .iter()
@@ -456,7 +408,7 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<Landfo
         }
     }
     for cell_index in valleys {
-        lf[cell_index] = LANDFORM_VALLEY;
+        lf[cell_index] = Landform::Valley;
     }
     // Absorb speckle: a landform cluster below the min joins its most common
     // land neighbor's landform, so each landform is a coherent region.
@@ -470,9 +422,10 @@ pub(super) fn absorb_small_landforms(grid: &Grid, lf: &mut [Landform]) {
     absorb_small_clusters(
         grid,
         lf,
-        |l| l != LANDFORM_WATER,
+        |l| l != Landform::Water,
         |_| MIN_LANDFORM_CELLS,
-        |l| l != LANDFORM_WATER,
+        |l| l != Landform::Water,
+        Landform::rank,
     );
 }
 
@@ -514,7 +467,7 @@ pub(super) fn land_cover(terrain: &TerrainGen, landform: Landform, pos: SpherePo
     // line), forest clothes the warm/wet lower flanks, bare rock fills the
     // rugged middle, ice covers the cold ranges, and hot high peaks are
     // volcanic. So a single range shows rock AND snow AND (sometimes) forest.
-    if matches!(landform, LANDFORM_MOUNTAINS | LANDFORM_PLATEAU) {
+    if matches!(landform, Landform::Mountains | Landform::Plateau) {
         return if t < -12.0 {
             Terrain::Glacier
         } else if e > 0.70 {
@@ -608,7 +561,7 @@ pub(super) fn bucket(value: f32, thresholds: &[f32]) -> u8 {
 
 /// Per-water-cell depth class from the solved surface: shore-shallows deepen
 /// to abyss offshore (and lake/river beds shallow-to-deep by their concavity).
-/// Land cells are DEPTH_SHALLOW (unused). The depth analogue of slope class.
+/// Land cells are WaterDepth::Shallow (unused). The depth analogue of slope class.
 pub(super) fn classify_water_depth(
     grid: &Grid,
     cells: &[Terrain],

@@ -16,16 +16,16 @@ Private implementation modules for deterministic world generation.
 
 - `classification.rs` — terrain/face classification primitives and ordered buckets.
 - `domain.rs` — typed dense `CellField`, `FaceField`, and `CellSet` storage.
-- `elevation.rs` — constraint storage, ordered relaxation, result classification, and typed solver-vertex graph.
-- `features.rs` — typed feature ownership and face projection rules.
+- `grid.rs` — fine generation lattice and typed cell/face geometry access.
+- `pipeline.rs` — command/event orchestration and FIFO reaction order.
+- `elevation/` — constraint storage, ordered relaxation, typed solver-vertex graph, and elevation generation.
+- `features/` — typed feature ownership, widening, bridge selection, and transition resolution.
 - `projection.rs` — deterministic cell-to-face reductions.
-- `regions.rs` — typed overlay-aware face partitioning with connector pass-through.
+- `regions/` — typed overlay-aware face partitioning, naming, and connector pass-through.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
 - `water.rs` — classification, river painting, and water normalization pipeline.
-- `feature_pipeline.rs` and `feature_pipeline/` — feature painting, bridge selection, and transition resolution.
-- `region_pipeline.rs` — region classification and deterministic naming.
-- `surface.rs` and `surface/` — water surfaces, mesh construction, flora, and structure placement.
-- `elevation_pipeline.rs` — elevation constraint construction and ordered solver passes.
+- `surface/` — water surfaces, mesh construction, flora, and structure placement.
+- `tests.rs` — private facade-level deterministic generation and invariant tests.
 
 # Verification
 

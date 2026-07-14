@@ -1,5 +1,29 @@
 use crate::terrain::Terrain;
 
+pub(super) const fn terrain_rank(terrain: Terrain) -> u8 {
+    match terrain {
+        Terrain::Ocean => 0,
+        Terrain::Lake => 1,
+        Terrain::LakeShore => 2,
+        Terrain::River => 3,
+        Terrain::RiverBank => 4,
+        Terrain::Beach => 5,
+        Terrain::Cliff => 6,
+        Terrain::Desert => 7,
+        Terrain::Plains => 8,
+        Terrain::Forest => 9,
+        Terrain::Tundra => 10,
+        Terrain::Mountain => 11,
+        Terrain::Snow => 12,
+        Terrain::Swamp => 13,
+        Terrain::Jungle => 14,
+        Terrain::Savanna => 15,
+        Terrain::Volcanic => 16,
+        Terrain::Glacier => 17,
+        Terrain::RiverSpring => 18,
+    }
+}
+
 /// Face render type from its three authoritative corner cells.
 pub(super) fn derive_face(a: Terrain, b: Terrain, c: Terrain) -> Terrain {
     let priority = |terrain: Terrain| match terrain {
@@ -20,12 +44,12 @@ pub(super) fn derive_face(a: Terrain, b: Terrain, c: Terrain) -> Terrain {
         [a, b, c]
             .into_iter()
             .filter(|terrain| terrain.is_water())
-            .min_by_key(|terrain| *terrain as u8)
+            .min_by_key(|terrain| terrain_rank(*terrain))
             .unwrap()
     } else {
         [a, b, c]
             .into_iter()
-            .min_by_key(|terrain| (priority(*terrain), *terrain as u8))
+            .min_by_key(|terrain| (priority(*terrain), terrain_rank(*terrain)))
             .unwrap()
     }
 }

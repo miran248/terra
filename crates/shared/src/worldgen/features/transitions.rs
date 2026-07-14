@@ -75,8 +75,9 @@ pub(in crate::worldgen) fn resolve_transitions(
         .collect();
     let base = &out;
     let mut cell_of = vec![usize::MAX; grid.cell_count()];
-    let mut wfc_cells: Vec<usize> = Vec::new();
-    for cell_index in 0..grid.cell_count() {
+    let mut wfc_cells: Vec<CellId> = Vec::new();
+    for cell in grid.topology.cells() {
+        let cell_index = cell.index();
         if base[cell_index].is_water() || in_band[cell_index] {
             continue;
         }
@@ -86,7 +87,7 @@ pub(in crate::worldgen) fn resolve_transitions(
             .any(|nb| base[nb.index()] != base[cell_index])
         {
             cell_of[cell_index] = wfc_cells.len();
-            wfc_cells.push(cell_index);
+            wfc_cells.push(cell);
         }
     }
 
@@ -98,7 +99,8 @@ pub(in crate::worldgen) fn resolve_transitions(
     ];
     let domains: Vec<Vec<(Terrain, f32)>> = wfc_cells
         .iter()
-        .map(|&cell_index| {
+        .map(|&cell| {
+            let cell_index = cell.index();
             let mut d = vec![(base[cell_index], 1.0)];
             for t in transition_tiles {
                 if t != base[cell_index] {
@@ -110,8 +112,8 @@ pub(in crate::worldgen) fn resolve_transitions(
         .collect();
     let neighbors: Vec<Vec<wfc::Neighbor>> = wfc_cells
         .iter()
-        .map(|&cell_index| {
-            grid.cell_neighbors(CellId::new(cell_index))
+        .map(|&cell| {
+            grid.cell_neighbors(cell)
                 .iter()
                 .map(|cell| cell.index())
                 .map(|nb| match cell_of[nb] {
@@ -121,10 +123,7 @@ pub(in crate::worldgen) fn resolve_transitions(
                 .collect()
         })
         .collect();
-    let fallback: Vec<Terrain> = wfc_cells
-        .iter()
-        .map(|&cell_index| base[cell_index])
-        .collect();
+    let fallback: Vec<Terrain> = wfc_cells.iter().map(|&cell| base[cell.index()]).collect();
 
     let solved = wfc::solve(
         &wfc::Compat::default(),
@@ -135,8 +134,8 @@ pub(in crate::worldgen) fn resolve_transitions(
     );
 
     let mut resolved = base.clone();
-    for (ci, &cell_index) in wfc_cells.iter().enumerate() {
-        resolved[cell_index] = solved[ci];
+    for (ci, &cell) in wfc_cells.iter().enumerate() {
+        resolved[cell.index()] = solved[ci];
     }
     smooth_coast_band(grid, &mut resolved);
     absorb_small_patches(grid, &mut resolved);
@@ -222,9 +221,9 @@ pub(in crate::worldgen) fn mark_blends(
 ) -> Vec<FaceBlend> {
     let plain = |t: Terrain| t.is_land();
     let overlay = |face_index: usize| {
-        face_solid(grid, &painted.roads, face_index)
-            || face_solid(grid, &painted.towns, face_index)
-            || face_solid(grid, &painted.bridge_entries, face_index)
+        face_solid(grid, &painted.roads, FaceId::new(face_index))
+            || face_solid(grid, &painted.towns, FaceId::new(face_index))
+            || face_solid(grid, &painted.bridge_entries, FaceId::new(face_index))
     };
     let mut out = Vec::new();
     for (face_index, &tile) in tiles.iter().enumerate().take(grid.face_count()) {
@@ -233,11 +232,12 @@ pub(in crate::worldgen) fn mark_blends(
         }
         // Feature flanks (a painted corner without ownership) blend toward the
         // feature; most specific wins (entry pad < town blob < road network).
-        let feature = if painted_corners(grid, &painted.bridge_entries, face_index) > 0 {
+        let feature = if painted_corners(grid, &painted.bridge_entries, FaceId::new(face_index)) > 0
+        {
             Some(BlendTarget::BridgeEntry)
-        } else if painted_corners(grid, &painted.towns, face_index) > 0 {
+        } else if painted_corners(grid, &painted.towns, FaceId::new(face_index)) > 0 {
             Some(BlendTarget::Town)
-        } else if painted_corners(grid, &painted.roads, face_index) > 0 {
+        } else if painted_corners(grid, &painted.roads, FaceId::new(face_index)) > 0 {
             Some(BlendTarget::Road)
         } else {
             None
@@ -283,52 +283,48 @@ pub(in crate::worldgen) fn mark_blends(
 /// value type (biome cover, landform, …). `eligible` selects which values
 /// participate, `min_size` gives each value's floor, `absorbable` says which
 /// neighbor values a speckle may merge into.
-pub(in crate::worldgen) fn absorb_small_clusters<T: Copy + Ord>(
+pub(in crate::worldgen) fn absorb_small_clusters<T: Copy + Eq>(
     grid: &Grid,
     out: &mut [T],
     eligible: impl Fn(T) -> bool,
     min_size: impl Fn(T) -> usize,
     absorbable: impl Fn(T) -> bool,
+    rank: impl Fn(T) -> u8,
 ) {
     let mut visited = vec![false; grid.cell_count()];
-    for start in 0..grid.cell_count() {
-        if !eligible(out[start]) || visited[start] {
+    for start in grid.topology.cells() {
+        if !eligible(out[start.index()]) || visited[start.index()] {
             continue;
         }
-        let kind = out[start];
-        let cluster: Vec<usize> = grid
+        let kind = out[start.index()];
+        let cluster: Vec<CellId> = grid
             .topology
-            .cell_component(
-                grid.topology
-                    .cell(start)
-                    .expect("cell index from topology range"),
-                |cell| out[cell.index()] == kind && !visited[cell.index()],
-            )
+            .cell_component(start, |cell| {
+                out[cell.index()] == kind && !visited[cell.index()]
+            })
             .into_iter()
-            .map(|cell| cell.index())
             .collect();
         for &cell in &cluster {
-            visited[cell] = true
+            visited[cell.index()] = true
         }
         if cluster.len() >= min_size(kind) {
             continue;
         }
-        let mut counts: BTreeMap<T, usize> = BTreeMap::new();
-        for &cell_index in &cluster {
-            for nb in grid
-                .cell_neighbors(CellId::new(cell_index))
-                .iter()
-                .map(|cell| cell.index())
-            {
-                let t = out[nb];
+        let mut counts: BTreeMap<u8, (T, usize)> = BTreeMap::new();
+        for &cell in &cluster {
+            for &neighbor in grid.cell_neighbors(cell) {
+                let t = out[neighbor.index()];
                 if t != kind && absorbable(t) {
-                    *counts.entry(t).or_default() += 1;
+                    counts
+                        .entry(rank(t))
+                        .and_modify(|(_, count)| *count += 1)
+                        .or_insert((t, 1));
                 }
             }
         }
-        if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
-            for cell_index in cluster {
-                out[cell_index] = k;
+        if let Some((_, &(kind, _))) = counts.iter().max_by_key(|(_, (_, count))| *count) {
+            for cell in cluster {
+                out[cell.index()] = kind;
             }
         }
     }
@@ -351,7 +347,14 @@ pub(in crate::worldgen) fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]
                 | Terrain::Glacier
         )
     };
-    absorb_small_clusters(grid, out, plain, |t| size_range(t).0, |t| t.is_land());
+    absorb_small_clusters(
+        grid,
+        out,
+        plain,
+        |terrain| size_range(terrain).0,
+        |terrain| terrain.is_land(),
+        classification::terrain_rank,
+    );
 }
 
 /// The coast band is PROACTIVE: Beach vs Cliff was already decided by the

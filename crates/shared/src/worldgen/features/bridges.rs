@@ -1,18 +1,5 @@
 use super::super::*;
 
-/// A band needs two parallel lattice lines. Widen the chain with each edge's
-/// side partner so faces between the lines form a gap-free feature strip.
-pub(in crate::worldgen) fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
-    features::widen_band(grid, chain, false)
-}
-
-/// Three lattice lines: the chain plus BOTH side partners (~105m) — wide
-/// enough that the elevation solver owns distinct channel and bank verts and
-/// can actually carve a cross-section (rivers).
-pub(in crate::worldgen) fn widen_band_sym(grid: &Grid, chain: &[usize]) -> Vec<usize> {
-    features::widen_band(grid, chain, true)
-}
-
 /// Roads may not cross water: a planned path whose cell chain touches a water
 /// cell is dropped entirely (crossing there needs a bridge, not a road).
 pub(in crate::worldgen) fn paint_features(
@@ -30,37 +17,32 @@ pub(in crate::worldgen) fn paint_features(
     // gentle ground (steep cells cost extra), so they follow valleys and
     // passes but can still climb a slope when they must.
     let blocked = |cell: crate::topology::CellId| {
-        cells[cell.index()].is_water() || slope_class[cell.index()] == SLOPE_CLIFF
+        cells[cell.index()].is_water() || slope_class[cell.index()] == SlopeClass::Cliff
     };
     let extra = |cell: crate::topology::CellId| match slope_class[cell.index()] {
-        SLOPE_FLAT => 0,
-        SLOPE_GENTLE => 400,
+        SlopeClass::Flat => 0,
+        SlopeClass::Gentle => 400,
         _ => 4000, // steep
     };
     'paths: for path in &terrain.road_paths {
-        let mut chain: Vec<usize> = Vec::new();
-        let waypoints: Vec<usize> = path.iter().filter_map(|p| nearest_cell(grid, *p)).collect();
+        let mut chain: Vec<CellId> = Vec::new();
+        let waypoints: Vec<CellId> = path.iter().filter_map(|p| nearest_cell(grid, *p)).collect();
         for leg in waypoints.windows(2) {
-            let from = grid.topology.cell(leg[0]).expect("waypoint cell id");
-            let to = grid.topology.cell(leg[1]).expect("waypoint cell id");
-            let seg: Vec<usize> = router::lattice_path(grid, blocked, extra, from, to)
-                .into_iter()
-                .map(|cell| cell.index())
-                .collect();
+            let seg = router::lattice_path(grid, blocked, extra, leg[0], leg[1]);
             if seg.is_empty() {
                 continue 'paths;
             }
             let skip = usize::from(chain.last() == seg.first());
             chain.extend(&seg[skip..]);
         }
-        let band = widen_band(grid, &chain);
-        if band.iter().any(|&cell_index| {
-            cells[cell_index].is_water() || slope_class[cell_index] == SLOPE_CLIFF
+        let band = features::widen_band(grid, &chain, false);
+        if band.iter().any(|&cell| {
+            cells[cell.index()].is_water() || slope_class[cell.index()] == SlopeClass::Cliff
         }) {
             continue;
         }
-        for cell_index in band {
-            painted.roads.insert(CellId::new(cell_index));
+        for cell in band {
+            painted.roads.insert(cell);
         }
         kept.push(path.clone());
     }
@@ -76,8 +58,8 @@ pub(in crate::worldgen) fn paint_features(
             painted.towns.insert(CellId::new(cell_index));
         }
     }
-    link_feature_pinches(grid, &mut painted.roads, |cell_index| {
-        cells[cell_index].is_land()
+    link_feature_pinches(grid, &mut painted.roads, |cell| {
+        cells[cell.index()].is_land()
     });
     link_feature_pinches(grid, &mut painted.towns, |_| true);
     (painted, kept)
@@ -106,12 +88,6 @@ pub(in crate::worldgen) const OCEAN_BRIDGE_MAX_SPAN: f32 = 700.0;
 /// flat footing on top.
 pub(in crate::worldgen) const BRIDGE_MAX_FOOTING_SLOPE: f32 = 0.25;
 
-/// Terrain a bridge may land on: gentle, walkable ground — never a mountain,
-/// cliff, snowfield, glacier or volcanic slope.
-pub(in crate::worldgen) fn bridge_walkable(t: Terrain) -> bool {
-    features::bridge_walkable(t)
-}
-
 /// Walk straight across a water band from walkable ground `land`, entering the
 /// band at `first`, following the initial heading cell-to-cell until walkable
 /// ground is reached on the FAR side. `band` says which kinds are the crossing
@@ -121,45 +97,41 @@ pub(in crate::worldgen) fn bridge_walkable(t: Terrain) -> bool {
 pub(in crate::worldgen) fn cross_band(
     grid: &Grid,
     cells: &[Terrain],
-    land: usize,
-    first: usize,
+    land: CellId,
+    first: CellId,
     max: usize,
     band: impl Fn(Terrain) -> bool,
     is_end: impl Fn(Terrain) -> bool,
-) -> Option<usize> {
+) -> Option<CellId> {
     let tangent = |from: Vec3, step: Vec3| {
         let s = step - from * step.dot(from);
         s.normalize_or_zero()
     };
     let heading = tangent(
-        grid.cell_direction(CellId::new(land)),
-        grid.cell_direction(CellId::new(first)) - grid.cell_direction(CellId::new(land)),
+        grid.cell_direction(land),
+        grid.cell_direction(first) - grid.cell_direction(land),
     );
     if heading == Vec3::ZERO {
         return None;
     }
     let (mut prev, mut cur) = (land, first);
     for _ in 0..max {
-        if is_end(cells[cur]) {
+        if is_end(cells[cur.index()]) {
             return Some(cur);
         }
         // Only cross the intended band; anything else (open ocean, a mountain
         // foot) aborts — no bridge there.
-        if !band(cells[cur]) {
+        if !band(cells[cur.index()]) {
             return None;
         }
-        let cpos = grid.cell_direction(CellId::new(cur));
+        let cpos = grid.cell_direction(cur);
         let mut best = None;
         let mut best_dot = -2.0;
-        for nb in grid
-            .cell_neighbors(CellId::new(cur))
-            .iter()
-            .map(|cell| cell.index())
-        {
+        for &nb in grid.cell_neighbors(cur) {
             if nb == prev {
                 continue;
             }
-            let d = tangent(cpos, grid.cell_direction(CellId::new(nb)) - cpos).dot(heading);
+            let d = tangent(cpos, grid.cell_direction(nb) - cpos).dot(heading);
             if d > best_dot {
                 best_dot = d;
                 best = Some(nb);
@@ -191,18 +163,18 @@ pub(in crate::worldgen) fn build_bridges(
     // One walkable cell further from `away`, so the deck grounds inland of the
     // steep bank edge (the pad there sits on flat ground, clear of the carved
     // channel). Falls back to the cell itself if no inland walkable neighbor.
-    let inland1 = |cell_index: usize, away: Vec3| {
-        grid.cell_neighbors(CellId::new(cell_index))
+    let inland1 = |cell: CellId, away: Vec3| {
+        grid.cell_neighbors(cell)
             .iter()
-            .map(|cell| cell.index())
-            .filter(|&nb| bridge_walkable(cells[nb]))
+            .copied()
+            .filter(|&neighbor| features::bridge_walkable(cells[neighbor.index()]))
             .max_by(|&a, &b| {
-                grid.cell_direction(CellId::new(a))
+                grid.cell_direction(a)
                     .distance(away)
-                    .partial_cmp(&grid.cell_direction(CellId::new(b)).distance(away))
+                    .partial_cmp(&grid.cell_direction(b).distance(away))
                     .unwrap()
             })
-            .unwrap_or(cell_index)
+            .unwrap_or(cell)
     };
     let inland = inland1;
     // A deck grounds cleanly only on an open, gentle patch: the anchor cell
@@ -235,27 +207,24 @@ pub(in crate::worldgen) fn build_bridges(
     // even though the cell is steep toward the channel) and no marine/steep
     // tile in the ring. slope_class is unused here (bridges use footing scale).
     let _ = slope_class;
-    let good_anchor = |cell_index: usize| {
-        bridge_walkable(cells[cell_index])
-            && terrain.slope(grid.cell_position(CellId::new(cell_index))) < BRIDGE_MAX_FOOTING_SLOPE
+    let good_anchor = |cell: CellId| {
+        features::bridge_walkable(cells[cell.index()])
+            && terrain.slope(grid.cell_position(cell)) < BRIDGE_MAX_FOOTING_SLOPE
             && grid
-                .cell_neighbors(CellId::new(cell_index))
+                .cell_neighbors(cell)
                 .iter()
                 .all(|nb| !forbidden(cells[nb.index()]))
     };
 
     // Commit a bridge between two bank cells if it clears the spacing rule.
-    let commit = |a: usize,
-                  b: usize,
+    let commit = |a: CellId,
+                  b: CellId,
                   max_span: f32,
                   spans: &mut Vec<Vec<SpherePos>>,
                   mids: &mut Vec<SpherePos>,
                   painted: &mut Painted|
      -> bool {
-        let (pa, pb) = (
-            grid.cell_position(CellId::new(a)),
-            grid.cell_position(CellId::new(b)),
-        );
+        let (pa, pb) = (grid.cell_position(a), grid.cell_position(b));
         let d = pa.distance(pb);
         if d < 1.0 || d > max_span {
             return false;
@@ -272,22 +241,18 @@ pub(in crate::worldgen) fn build_bridges(
             })
             .collect();
         for cell_index in cell_chain(grid, &span) {
-            painted.bridges.insert(CellId::new(cell_index));
+            painted.bridges.insert(cell_index);
         }
         for end in [span.first(), span.last()] {
             let Some(face_index) = end.and_then(|p| grid.planet.face_at(p.0)) else {
                 continue;
             };
-            for cell_index in grid.face_cells(FaceId::new(face_index)).map(CellId::index) {
-                if cells[cell_index].is_land() {
-                    painted.bridge_entries.insert(CellId::new(cell_index));
-                    for nb in grid
-                        .cell_neighbors(CellId::new(cell_index))
-                        .iter()
-                        .map(|cell| cell.index())
-                    {
-                        if cells[nb].is_land() {
-                            painted.bridge_entries.insert(CellId::new(nb));
+            for cell in grid.face_cells(FaceId::new(face_index)) {
+                if cells[cell.index()].is_land() {
+                    painted.bridge_entries.insert(cell);
+                    for &neighbor in grid.cell_neighbors(cell) {
+                        if cells[neighbor.index()].is_land() {
+                            painted.bridge_entries.insert(neighbor);
                         }
                     }
                 }
@@ -302,15 +267,15 @@ pub(in crate::worldgen) fn build_bridges(
     // across the band (bank → channel → bank) to walkable ground on the far
     // side. The endpoints are the walkable ground next to the banks.
     let river_band = |t: Terrain| matches!(t, Terrain::River | Terrain::RiverBank);
-    for l1 in 0..grid.cell_count() {
+    for l1 in grid.topology.cells() {
         if spans.len() >= BRIDGE_MAX_COUNT {
             break;
         }
-        if !bridge_walkable(cells[l1]) {
+        if !features::bridge_walkable(cells[l1.index()]) {
             continue;
         }
         let Some(entry) = grid
-            .cell_neighbors(CellId::new(l1))
+            .cell_neighbors(l1)
             .iter()
             .find(|nb| cells[nb.index()] == Terrain::RiverBank)
         else {
@@ -320,16 +285,15 @@ pub(in crate::worldgen) fn build_bridges(
             grid,
             cells,
             l1,
-            entry.index(),
+            *entry,
             9,
             river_band,
-            bridge_walkable,
+            features::bridge_walkable,
         ) {
             if l2 == l1 {
                 continue;
             }
-            let mid =
-                (grid.cell_direction(CellId::new(l1)) + grid.cell_direction(CellId::new(l2))) * 0.5;
+            let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
                 commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
@@ -341,27 +305,26 @@ pub(in crate::worldgen) fn build_bridges(
     // the swamp band to dry walkable ground on the far side — same rules, with
     // the swamp itself as the crossable band.
     let swamp_band = |t: Terrain| t == Terrain::Swamp;
-    let dry_end = |t: Terrain| bridge_walkable(t) && t != Terrain::Swamp;
-    for l1 in 0..grid.cell_count() {
+    let dry_end = |t: Terrain| features::bridge_walkable(t) && t != Terrain::Swamp;
+    for l1 in grid.topology.cells() {
         if spans.len() >= BRIDGE_MAX_COUNT {
             break;
         }
-        if !dry_end(cells[l1]) {
+        if !dry_end(cells[l1.index()]) {
             continue;
         }
         let Some(entry) = grid
-            .cell_neighbors(CellId::new(l1))
+            .cell_neighbors(l1)
             .iter()
             .find(|nb| cells[nb.index()] == Terrain::Swamp)
         else {
             continue;
         };
-        if let Some(l2) = cross_band(grid, cells, l1, entry.index(), 9, swamp_band, dry_end) {
+        if let Some(l2) = cross_band(grid, cells, l1, *entry, 9, swamp_band, dry_end) {
             if l2 == l1 {
                 continue;
             }
-            let mid =
-                (grid.cell_direction(CellId::new(l1)) + grid.cell_direction(CellId::new(l2))) * 0.5;
+            let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
                 commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
@@ -387,20 +350,12 @@ pub(in crate::worldgen) fn build_bridges(
     let mut touch_ocean = vec![false; components.count()];
     let mut only_lake = vec![true; components.count()];
     let mut only_ocean = vec![true; components.count()];
-    for cell_index in 0..grid.cell_count() {
-        let cell = grid
-            .topology
-            .cell(cell_index)
-            .expect("cell index from topology range");
+    for cell in grid.topology.cells() {
         let Some(id) = components.cell(cell).map(|component| component.index()) else {
             continue;
         };
-        for nb in grid
-            .cell_neighbors(CellId::new(cell_index))
-            .iter()
-            .map(|cell| cell.index())
-        {
-            match cells[nb] {
+        for &neighbor in grid.cell_neighbors(cell) {
+            match cells[neighbor.index()] {
                 Terrain::Lake => {
                     touch_lake[id] = true;
                     only_ocean[id] = false;
@@ -444,49 +399,41 @@ pub(in crate::worldgen) fn build_bridges(
             if !(ringed(id) && size <= max_cells) {
                 continue;
             }
-            let shore = |cell_index: usize| {
-                bridge_walkable(cells[cell_index])
+            let shore = |cell: CellId| {
+                features::bridge_walkable(cells[cell.index()])
                     && grid
-                        .cell_neighbors(CellId::new(cell_index))
+                        .cell_neighbors(cell)
                         .iter()
                         .any(|nb| cells[nb.index()] == shore_kind)
             };
-            let island_shore: Vec<usize> = (0..grid.cell_count())
-                .filter(|&cell_index| {
-                    let cell = grid
-                        .topology
-                        .cell(cell_index)
-                        .expect("cell index from topology range");
+            let island_shore: Vec<CellId> = grid
+                .topology
+                .cells()
+                .filter(|&cell| {
                     components
                         .cell(cell)
                         .is_some_and(|component| component.index() == id)
-                        && shore(cell_index)
+                        && shore(cell)
                 })
                 .collect();
-            let mut best: Option<(f32, usize, usize)> = None;
+            let mut best: Option<(f32, CellId, CellId)> = None;
             for &a in &island_shore {
-                let pa = grid.cell_position(CellId::new(a));
-                for cell_index in 0..grid.cell_count() {
-                    let cell = grid
-                        .topology
-                        .cell(cell_index)
-                        .expect("cell index from topology range");
+                let pa = grid.cell_position(a);
+                for cell in grid.topology.cells() {
                     let Some(other) = components.cell(cell) else {
                         continue;
                     };
-                    if other.index() == id || !shore(cell_index) {
+                    if other.index() == id || !shore(cell) {
                         continue;
                     }
-                    let dd = pa.distance(grid.cell_position(CellId::new(cell_index)));
+                    let dd = pa.distance(grid.cell_position(cell));
                     if best.is_none_or(|(bd, _, _)| dd < bd) {
-                        best = Some((dd, a, cell_index));
+                        best = Some((dd, a, cell));
                     }
                 }
             }
             if let Some((_, a, b)) = best {
-                let mid = (grid.cell_direction(CellId::new(a))
-                    + grid.cell_direction(CellId::new(b)))
-                    * 0.5;
+                let mid = (grid.cell_direction(a) + grid.cell_direction(b)) * 0.5;
                 let (g1, g2) = (inland(a, mid), inland(b, mid));
                 if good_anchor(g1) && good_anchor(g2) {
                     commit(g1, g2, max_span, &mut spans, &mut mids, painted);
@@ -496,7 +443,7 @@ pub(in crate::worldgen) fn build_bridges(
     }
 
     link_feature_pinches(grid, &mut painted.bridge_entries, |cell_index| {
-        cells[cell_index].is_land()
+        cells[cell_index.index()].is_land()
     });
     spans
 }
