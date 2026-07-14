@@ -14,6 +14,7 @@ Private implementation modules for deterministic world generation.
 
 # Work Guidance
 
+- `domain.rs` — typed dense `CellField`, `FaceField`, and `CellSet` storage.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
 
 # Verification
