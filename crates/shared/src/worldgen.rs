@@ -356,8 +356,8 @@ pub struct GenState {
     pub blends: Vec<(u32, u8, u8)>,
     pub regions: Vec<RegionData>,
     pub face_region: Vec<u32>,
-    /// Water bodies (sea + lakes) clustered once; per-face body id + waterline.
-    pub water: WaterBodies,
+    /// Per-face water-surface radius (0.0 = dry), clustered once (sea + lakes).
+    pub water_r: Vec<f32>,
     pub mesh_tris: Vec<[[f32; 3]; 3]>,
     pub mesh_colors: Vec<[[f32; 4]; 3]>,
     pub tag_off: Vec<u32>,
@@ -390,7 +390,7 @@ impl GenState {
             blends: Vec::new(),
             regions: Vec::new(),
             face_region: Vec::new(),
-            water: WaterBodies::default(),
+            water_r: Vec::new(),
             mesh_tris: Vec::new(),
             mesh_colors: Vec::new(),
             tag_off: Vec::new(),
@@ -477,7 +477,7 @@ pub enum Event {
     TransitionsResolved(Vec<Terrain>),
     BlendsMarked(Vec<(u32, u8, u8)>),
     ElevationSolved { field: Vec<f32>, iters: usize, residual: f32 },
-    WaterClustered(WaterBodies),
+    WaterClustered(Vec<f32>),
     RegionsBuilt(Vec<RegionData>, Vec<u32>),
     BridgesSelected(Vec<Vec<SpherePos>>, Painted),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
@@ -510,8 +510,8 @@ impl Event {
             Event::ElevationSolved { iters, residual, .. } => {
                 format!("elevation solved: {iters} iterations, residual {residual:.4}")
             }
-            Event::WaterClustered(w) => {
-                format!("water clustered: {} faces", w.body.iter().filter(|&&b| b >= 0).count())
+            Event::WaterClustered(r) => {
+                format!("water clustered: {} faces", r.iter().filter(|&&x| x > 0.0).count())
             }
             Event::RegionsBuilt(r, _) => format!("regions built: {}", r.len()),
             Event::BridgesSelected(b, _) => format!("bridges selected: {}", b.len()),
@@ -608,7 +608,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::ElevationSolved { field, iters, residual }]
         }
         Command::ClusterWater => {
-            vec![Event::WaterClustered(water_bodies(&state.grid, state.terrain(), &state.cells))]
+            vec![Event::WaterClustered(water_surface_radii(&state.grid, state.terrain(), &state.cells))]
         }
         Command::BuildRegions => {
             let (regions, face_region) =
@@ -683,7 +683,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
         Event::ElevationSolved { field, .. } => {
             state.terrain.as_mut().expect("terrain exists").set_vert_elevations(field);
         }
-        Event::WaterClustered(w) => state.water = w,
+        Event::WaterClustered(r) => state.water_r = r,
         Event::RegionsBuilt(r, fr) => {
             state.regions = r;
             state.face_region = fr;
@@ -2364,43 +2364,33 @@ pub fn cluster_vertices(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32
     clusters(grid.nv, |v| vert_nbrs(grid, v), member)
 }
 
-/// Water bodies of the whole planet, clustered once and reused everywhere
-/// (surface mesh, HUD query, integrity tests). Per-face parallel arrays:
-/// `body[fi]` is the body id a face belongs to (-1 = dry), `radius[fi]` its
-/// waterline (0.0 = dry). Sea and lake bodies share one id space.
-#[derive(Clone, Default)]
-pub struct WaterBodies {
-    pub body: Vec<i32>,
-    pub radius: Vec<f32>,
-}
-
-/// Cluster the planet's water into connected bodies and give each ONE waterline.
-/// Sea and lakes are clustered SEPARATELY — one `cluster_vertices` pass each,
-/// with its own membership of the water type plus the tiles that can neighbour
-/// it (its transition tiles):
-///   • lakes: `Lake` + `LakeShore` + `Cliff`;
-///   • ocean: `Ocean` + `Beach` + `Cliff`.
-/// Keeping the passes independent means a lake with a Cliff shore can't fuse
-/// into the sea; the shared transition types (Cliff) are just the seams. Sea
-/// bodies sit at sea level, lake bodies at their `LakeShore` rim (a low
-/// percentile of the shore radii — the shore, not the deep bed). A sea face is
-/// tagged wherever it touches the sea body (coast hidden below terrain by the
-/// depth test); a lake face only when ALL THREE corners share the body, so lake
-/// water never spills onto land.
-pub fn water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> WaterBodies {
+/// Per-face water-surface radius (0.0 = dry) — the GEOMETRY of the water sheet.
+/// Body IDENTITY/naming lives in the region clustering (`build_regions`: a lake
+/// is a `RegionKind::Lake` cluster, an ocean a `RegionKind::Ocean` one); this
+/// only decides where the sheet sits.
+///
+/// Two `cluster_vertices` passes:
+///   • lakes cluster on `Lake` tiles ONLY — transition tiles (LakeShore/Cliff)
+///     are NOT members, so a shore/cliff chain between two lakes can't fuse them
+///     into one body (that fusion put three lakes on one waterline);
+///   • ocean clusters `Ocean` + `Beach` + `Cliff` — the sea is one body anyway,
+///     and the coast tiles let the sheet cover the shoreline.
+/// A lake body's waterline is its `LakeShore` RIM (a low percentile of the shore
+/// radii adjacent to its Lake tiles) — the shore, not the deep bed. A face joins
+/// the sheet only if it has no solid-land corner, so water never spills onto
+/// land; lake faces are any face touching the body's Lake tiles (fills to shore
+/// without drawing the outer shore band).
+pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
     let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
-    // A water type plus the tiles that can border it (transition tiles).
-    let lake_member = |t: Terrain| matches!(t, Terrain::Lake | Terrain::LakeShore | Terrain::Cliff);
     let ocean_member = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::Beach | Terrain::Cliff);
 
     let vert_r: Vec<f32> =
         grid.verts.iter().map(|d| terrain.render_radius(SpherePos::new(*d))).collect();
-    let (lake_c, nlake) = cluster_vertices(grid, |v| lake_member(cells[v]));
+    let (lake_c, nlake) = cluster_vertices(grid, |v| cells[v] == Terrain::Lake);
     let (ocean_c, nocean) = cluster_vertices(grid, |v| ocean_member(cells[v]));
 
-    // A body only counts if it actually holds its water type (a pure-transition
-    // island of Cliff isn't a lake). Lake bodies also collect their rim radii.
-    let mut is_lake = vec![false; nlake];
+    // Per lake body: waterline from the LakeShore RIM adjacent to its Lake tiles
+    // (low percentile ≈ spill point). Sea bodies: only real ones (hold Ocean).
     let mut rim: Vec<Vec<f32>> = vec![Vec::new(); nlake];
     let mut peak = vec![f32::MIN; nlake];
     let mut is_sea = vec![false; nocean];
@@ -2408,10 +2398,10 @@ pub fn water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Wat
         if lake_c[v] >= 0 {
             let c = lake_c[v] as usize;
             peak[c] = peak[c].max(vert_r[v]);
-            match cells[v] {
-                Terrain::Lake => is_lake[c] = true,
-                Terrain::LakeShore => rim[c].push(vert_r[v]),
-                _ => {}
+            for nb in vert_nbrs(grid, v) {
+                if cells[nb] == Terrain::LakeShore {
+                    rim[c].push(vert_r[nb]);
+                }
             }
         }
         if ocean_c[v] >= 0 && cells[v] == Terrain::Ocean {
@@ -2429,27 +2419,25 @@ pub fn water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Wat
         })
         .collect();
 
-    // One id space: sea bodies keep their ocean-cluster id; lakes are offset
-    // past them so the two never collide.
-    let mut body = vec![-1i32; grid.n];
-    let mut radius = vec![0.0f32; grid.n];
-    for fi in 0..grid.n {
-        let idx = grid.face_verts[fi];
-        // Sea: any corner in a real sea body (coast overdraw hidden by depth).
-        let oc = [ocean_c[idx[0] as usize], ocean_c[idx[1] as usize], ocean_c[idx[2] as usize]];
-        if let Some(&c) = oc.iter().find(|&&c| c >= 0 && is_sea[c as usize]) {
-            body[fi] = c;
-            radius[fi] = sea_r;
-            continue;
-        }
-        // Lake: strict — all three corners in the same real lake body.
-        let lc = [lake_c[idx[0] as usize], lake_c[idx[1] as usize], lake_c[idx[2] as usize]];
-        if lc[0] >= 0 && lc[1] == lc[0] && lc[2] == lc[0] && is_lake[lc[0] as usize] {
-            body[fi] = nocean as i32 + lc[0];
-            radius[fi] = lake_r[lc[0] as usize];
-        }
-    }
-    WaterBodies { body, radius }
+    (0..grid.n)
+        .map(|fi| {
+            let idx = grid.face_verts[fi];
+            // Sea: any corner in a real sea body (coast overdraw hidden by depth).
+            let oc = [ocean_c[idx[0] as usize], ocean_c[idx[1] as usize], ocean_c[idx[2] as usize]];
+            if oc.iter().any(|&c| c >= 0 && is_sea[c as usize]) {
+                return sea_r;
+            }
+            // Lake: any corner on a lake body's Lake tiles, and no solid-land
+            // corner (so it fills to the shore but never spills onto land).
+            if idx.iter().any(|&vi| cells[vi as usize].is_land_biome()) {
+                return 0.0;
+            }
+            match idx.iter().find_map(|&vi| (lake_c[vi as usize] >= 0).then(|| lake_c[vi as usize])) {
+                Some(c) => lake_r[c as usize],
+                None => 0.0,
+            }
+        })
+        .collect()
 }
 
 pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {

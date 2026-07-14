@@ -135,12 +135,11 @@ fn cull_props(
     }
 }
 
-/// Region names + per-face region ids + per-face water-body ids for the HUD.
+/// Region names + per-face region ids for the HUD.
 #[derive(Resource)]
 pub struct LevelRegions {
     pub regions: Vec<shared::level::RegionData>,
     pub face_region: Vec<u32>,
-    pub face_water_body: Vec<i32>,
 }
 
 /// Blend-marked boundary faces: the pair of terrain kinds each links.
@@ -719,7 +718,6 @@ fn setup_map(
     commands.insert_resource(LevelRegions {
         regions: level.regions.clone(),
         face_region: level.face_region.clone(),
-        face_water_body: level.face_water_body.clone(),
     });
     commands.insert_resource(LevelBlends(
         level.face_blend.iter().map(|&(fi, a, b)| (fi, (a, b))).collect(),
