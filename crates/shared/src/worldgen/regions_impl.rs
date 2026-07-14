@@ -7,17 +7,17 @@ fn region_class(
     grid: &Grid,
     face_types: &[Terrain],
     painted: Option<&Painted>,
-    fi: usize,
+    face_index: usize,
 ) -> Option<RegionKind> {
     if let Some(p) = painted {
-        if face_solid(grid, &p.towns, fi) {
+        if face_solid(grid, &p.towns, face_index) {
             return Some(RegionKind::Town);
         }
-        if face_solid(grid, &p.roads, fi) {
+        if face_solid(grid, &p.roads, face_index) {
             return Some(RegionKind::Road);
         }
     }
-    match face_types[fi] {
+    match face_types[face_index] {
         Terrain::Ocean => Some(RegionKind::Ocean),
         Terrain::Lake => Some(RegionKind::Lake),
         Terrain::River | Terrain::RiverSpring => Some(RegionKind::River),
@@ -47,14 +47,14 @@ fn build_regions(
     painted: &Painted,
 ) -> (Vec<RegionData>, Vec<u32>) {
     let class: Vec<Option<RegionKind>> = (0..grid.face_count())
-        .map(|fi| region_class(grid, face_types, Some(painted), fi))
+        .map(|face_index| region_class(grid, face_types, Some(painted), face_index))
         .collect();
     // Terrain-derived class ignoring the road/town overlay: a road slicing
     // through a desert must not split it into two regions, so terrain clusters
     // may flow THROUGH overlay faces whose underlying terrain matches (without
     // claiming them — those faces belong to their Road/Town region).
     let terrain_class: Vec<Option<RegionKind>> = (0..grid.face_count())
-        .map(|fi| region_class(grid, face_types, None, fi))
+        .map(|face_index| region_class(grid, face_types, None, face_index))
         .collect();
 
     let mut face_region = vec![NO_REGION; grid.face_count()];

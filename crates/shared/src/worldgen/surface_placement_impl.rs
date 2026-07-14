@@ -116,8 +116,8 @@ fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> 
         .collect();
 
     (0..grid.face_count())
-        .map(|fi| {
-            let idx = grid.face_cells(fi);
+        .map(|face_index| {
+            let idx = grid.face_cells(face_index);
             // Sea: any corner in a real sea body (coast overdraw hidden by depth).
             let oc = idx.map(|cell| ocean_components.cell(grid.topology.cell(cell).unwrap()));
             if oc
@@ -134,7 +134,7 @@ fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> 
             }
             match idx
                 .iter()
-                .find_map(|&vi| lake_components.cell(grid.topology.cell(vi).unwrap()))
+                .find_map(|&cell_index| lake_components.cell(grid.topology.cell(cell_index).unwrap()))
             {
                 Some(component) => lake_r[component.index()],
                 None => 0.0,
@@ -197,12 +197,12 @@ fn river_surface_radii(
     // skin cannot end short of the visible bank. Do not spread into cliffs or
     // another water body; outlet edges have their own exact waterline anchor.
     let footprint: Vec<bool> = (0..grid.face_count())
-        .map(|fi| {
-            core[fi]
-                || (!face_types[fi].is_water()
-                    && face_types[fi] != Terrain::Cliff
+        .map(|face_index| {
+            core[face_index]
+                || (!face_types[face_index].is_water()
+                    && face_types[face_index] != Terrain::Cliff
                     && grid
-                        .face_neighbors(fi)
+                        .face_neighbors(face_index)
                         .into_iter()
                         .any(|neighbor| core[neighbor]))
         })
@@ -216,9 +216,9 @@ fn river_surface_radii(
         .map(|face| components.face(face))
         .collect();
     let mut has_river = vec![false; components.count()];
-    for fi in 0..grid.face_count() {
-        if let Some(component) = component[fi]
-            && matches!(face_types[fi], Terrain::River | Terrain::RiverSpring)
+    for face_index in 0..grid.face_count() {
+        if let Some(component) = component[face_index]
+            && matches!(face_types[face_index], Terrain::River | Terrain::RiverSpring)
         {
             has_river[component.index()] = true;
         }
@@ -235,12 +235,12 @@ fn river_surface_radii(
     let mut spring_anchor: Vec<f32> = Vec::new();
     let mut outlet_anchor: Vec<f32> = Vec::new();
     let mut bank_edge_anchor: Vec<f32> = Vec::new();
-    for fi in 0..grid.face_count() {
-        let Some(c) = component[fi] else { continue };
+    for face_index in 0..grid.face_count() {
+        let Some(c) = component[face_index] else { continue };
         if !has_river[c.index()] {
             continue;
         }
-        for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+        for (k, &corner) in mesh_tris[face_index].iter().enumerate() {
             let next = node_of.len();
             let node = *node_of.entry(key(corner)).or_insert_with(|| {
                 neighbors.push(Vec::new());
@@ -253,31 +253,31 @@ fn river_surface_radii(
                 bank_edge_anchor.push(f32::MIN);
                 next
             });
-            nodes[fi][k] = node;
+            nodes[face_index][k] = node;
         }
         for edge in 0..3 {
-            let (a, b) = (nodes[fi][edge], nodes[fi][(edge + 1) % 3]);
+            let (a, b) = (nodes[face_index][edge], nodes[face_index][(edge + 1) % 3]);
             if !neighbors[a].contains(&b) {
                 neighbors[a].push(b);
                 neighbors[b].push(a);
             }
         }
-        if face_types[fi] == Terrain::River {
-            let radius = mesh_tris[fi]
+        if face_types[face_index] == Terrain::River {
+            let radius = mesh_tris[face_index]
                 .iter()
                 .map(|&p| Vec3::from_array(p).length())
                 .sum::<f32>()
                 / 3.0;
-            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
-                let node = nodes[fi][k];
+            for (k, &corner) in mesh_tris[face_index].iter().enumerate() {
+                let node = nodes[face_index][k];
                 measured_sum[node] += radius;
                 measured_count[node] += 1;
                 river_corner[node] = river_corner[node].max(Vec3::from_array(corner).length());
             }
         }
-        if face_types[fi] == Terrain::RiverSpring {
-            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
-                let node = nodes[fi][k];
+        if face_types[face_index] == Terrain::RiverSpring {
+            for (k, &corner) in mesh_tris[face_index].iter().enumerate() {
+                let node = nodes[face_index][k];
                 let radius = Vec3::from_array(corner).length();
                 measured_sum[node] += radius;
                 measured_count[node] += 1;
@@ -291,21 +291,21 @@ fn river_surface_radii(
     // not a channel-height interpolation that can float beside a deep or wide
     // bank. Sink it just below the ground to avoid a visible crack from tiny
     // precision differences between the independently drawn meshes.
-    for fi in 0..grid.face_count() {
-        let Some(c) = component[fi] else { continue };
+    for face_index in 0..grid.face_count() {
+        let Some(c) = component[face_index] else { continue };
         if !has_river[c.index()] {
             continue;
         }
-        for neighbor in grid.face_neighbors(fi) {
+        for neighbor in grid.face_neighbors(face_index) {
             if component[neighbor] == Some(c) {
                 continue;
             }
-            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+            for (k, &corner) in mesh_tris[face_index].iter().enumerate() {
                 if mesh_tris[neighbor]
                     .iter()
                     .any(|&other| key(other) == key(corner))
                 {
-                    let node = nodes[fi][k];
+                    let node = nodes[face_index][k];
                     bank_edge_anchor[node] =
                         bank_edge_anchor[node].max(ground_radius[node] - RIVER_TERRAIN_CLIP);
                 }
@@ -317,22 +317,22 @@ fn river_surface_radii(
     // Feed that exact waterline into the river interpolation and retain it as
     // a hard final anchor, so the two independently drawn meshes join without
     // a vertical seam or a dry gap.
-    for fi in 0..grid.face_count() {
-        let Some(c) = component[fi] else { continue };
+    for face_index in 0..grid.face_count() {
+        let Some(c) = component[face_index] else { continue };
         if !has_river[c.index()] {
             continue;
         }
-        for neighbor in grid.face_neighbors(fi) {
+        for neighbor in grid.face_neighbors(face_index) {
             let waterline = face_water_r[neighbor];
             if waterline <= 0.0 {
                 continue;
             }
-            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+            for (k, &corner) in mesh_tris[face_index].iter().enumerate() {
                 if mesh_tris[neighbor]
                     .iter()
                     .any(|&other| key(other) == key(corner))
                 {
-                    let node = nodes[fi][k];
+                    let node = nodes[face_index][k];
                     measured_sum[node] += waterline;
                     measured_count[node] += 1;
                     outlet_anchor[node] = outlet_anchor[node].max(waterline);
@@ -404,26 +404,26 @@ fn river_surface_radii(
     // water field: a local terrain spike cannot add a visible crease or seam
     // across the channel. The buried apron only widens its footprint.
     let mut clearance = vec![RIVER_SURFACE_CLEARANCE; components.count()];
-    for fi in 0..grid.face_count() {
-        let Some(c) = component[fi] else { continue };
-        if face_types[fi] != Terrain::River {
+    for face_index in 0..grid.face_count() {
+        let Some(c) = component[face_index] else { continue };
+        if face_types[face_index] != Terrain::River {
             continue;
         }
         let c = c.index();
-        for &node in &nodes[fi] {
+        for &node in &nodes[face_index] {
             clearance[c] =
                 clearance[c].max(river_corner[node] - surface[node] + RIVER_SURFACE_CLEARANCE);
         }
     }
     (0..grid.face_count())
-        .map(|fi| {
-            let Some(c) = component[fi] else {
+        .map(|face_index| {
+            let Some(c) = component[face_index] else {
                 return [0.0; 3];
             };
             if !has_river[c.index()] {
                 return [0.0; 3];
             }
-            nodes[fi].map(|node| {
+            nodes[face_index].map(|node| {
                 if outlet_anchor[node] > f32::MIN {
                     outlet_anchor[node]
                 } else if spring_anchor[node] > f32::MIN {
@@ -459,13 +459,13 @@ fn face_road_material(
     cells: &[Terrain],
     landform: &[u8],
     slope_class: &[u8],
-    fi: usize,
+    face_index: usize,
 ) -> u8 {
     let mut sand = false;
     let mut rock = false;
     let mut soil = false;
-    for vi in grid.face_cells(fi) {
-        match cells[vi] {
+    for cell_index in grid.face_cells(face_index) {
+        match cells[cell_index] {
             Terrain::Desert | Terrain::Beach | Terrain::Savanna => sand = true,
             Terrain::Mountain | Terrain::Volcanic | Terrain::Cliff => rock = true,
             Terrain::Forest
@@ -475,8 +475,8 @@ fn face_road_material(
             | Terrain::Tundra => soil = true,
             _ => {}
         }
-        if matches!(landform[vi], LANDFORM_MOUNTAINS | LANDFORM_PLATEAU)
-            || slope_class[vi] >= SLOPE_STEEP
+        if matches!(landform[cell_index], LANDFORM_MOUNTAINS | LANDFORM_PLATEAU)
+            || slope_class[cell_index] >= SLOPE_STEEP
         {
             rock = true;
         }
@@ -535,26 +535,26 @@ fn build_mesh(
         .to_f32_array();
     let mut tris = Vec::with_capacity(grid.face_count());
     let mut cols = Vec::with_capacity(grid.face_count());
-    for fi in 0..grid.face_count() {
-        let idx = grid.face_cells(fi);
+    for face_index in 0..grid.face_count() {
+        let idx = grid.face_cells(face_index);
         // Features are built structures: a face the feature OWNS (≥2 painted
         // corners — the two-triangle quads along the painted cell chain)
         // renders solid with a hard edge. Faces with exactly one painted
         // corner are the flank band and fade via the corner gradient. Total:
         // blend band / solid strip / blend band, for every feature.
         let corner = |k: usize| {
-            let vi = idx[k];
-            if painted.bridge_entries.contains(vi) {
+            let cell_index = idx[k];
+            if painted.bridge_entries.contains(cell_index) {
                 entry_color
-            } else if painted.towns.contains(vi) {
+            } else if painted.towns.contains(cell_index) {
                 town_color
-            } else if painted.roads.contains(vi) {
+            } else if painted.roads.contains(cell_index) {
                 road_color
             } else {
-                let mut c = cells[vi].color().to_linear().to_f32_array();
-                if cells[vi].is_water() {
+                let mut c = cells[cell_index].color().to_linear().to_f32_array();
+                if cells[cell_index].is_water() {
                     // Water darkens with depth (shallow shore → dark abyss).
-                    let f = match water_depth[vi] {
+                    let f = match water_depth[cell_index] {
                         DEPTH_SHALLOW => 1.0,
                         DEPTH_DEEP => 0.62,
                         _ => 0.35,
@@ -567,7 +567,7 @@ fn build_mesh(
                     // darken (ruggedness), and a steep/cliff cell bleeds toward
                     // bare rock — so a forested hill, a forested mountain and a
                     // cliff face all look distinct even under the same biome.
-                    let shade = match landform[vi] {
+                    let shade = match landform[cell_index] {
                         LANDFORM_MOUNTAINS => 0.82,
                         LANDFORM_PLATEAU => 0.90,
                         LANDFORM_HILLS => 0.96,
@@ -576,9 +576,9 @@ fn build_mesh(
                     for ch in c.iter_mut().take(3) {
                         *ch *= shade;
                     }
-                    if slope_class[vi] >= SLOPE_STEEP {
+                    if slope_class[cell_index] >= SLOPE_STEEP {
                         let rock = [0.24, 0.21, 0.19];
-                        let k = if slope_class[vi] == SLOPE_CLIFF {
+                        let k = if slope_class[cell_index] == SLOPE_CLIFF {
                             0.6
                         } else {
                             0.3
@@ -591,12 +591,12 @@ fn build_mesh(
                 c
             }
         };
-        let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, fi) {
+        let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, face_index) {
             [entry_color; 3]
-        } else if face_solid(grid, &painted.towns, fi) {
+        } else if face_solid(grid, &painted.towns, face_index) {
             [town_color; 3]
-        } else if face_solid(grid, &painted.roads, fi) {
-            [road_mat_color(face_road_material(grid, cells, landform, slope_class, fi)); 3]
+        } else if face_solid(grid, &painted.roads, face_index) {
+            [road_mat_color(face_road_material(grid, cells, landform, slope_class, face_index)); 3]
         } else {
             // Boundary faces render ONE flat color — the equal-weight average
             // of the distinct corner colors (50/50 for a pair) — so band
@@ -756,21 +756,21 @@ fn place_flora(
 ) -> Vec<FloraData> {
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ FLORA_RNG_SALT);
     let mut out = Vec::new();
-    for fi in 0..grid.face_count() {
-        let clear = painted_corners(grid, &painted.roads, fi) > 0
-            || painted_corners(grid, &painted.towns, fi) > 0
-            || painted_corners(grid, &painted.bridge_entries, fi) > 0
-            || painted_corners(grid, &painted.bridges, fi) > 0;
+    for face_index in 0..grid.face_count() {
+        let clear = painted_corners(grid, &painted.roads, face_index) > 0
+            || painted_corners(grid, &painted.towns, face_index) > 0
+            || painted_corners(grid, &painted.bridge_entries, face_index) > 0
+            || painted_corners(grid, &painted.bridges, face_index) > 0;
         if clear {
             continue;
         }
-        let mix = flora_density(tiles[fi]);
+        let mix = flora_density(tiles[face_index]);
         if mix.is_empty() {
             continue;
         }
         // Moisture in roughly [-1, 1]: scale greens up on wet ground, rocks
         // up on dry ground. One sample per face keeps it cheap.
-        let m = terrain.moisture_at(grid.centroid(fi));
+        let m = terrain.moisture_at(grid.centroid(face_index));
         let wet = (1.0 + m).clamp(0.3, 1.8);
         let dry = (1.0 - m).clamp(0.5, 1.6);
         for &(base, scale, kind) in &mix {
@@ -791,7 +791,7 @@ fn place_flora(
                     u = 1.0 - u;
                     v = 1.0 - v;
                 }
-                let t = &mesh_tris[fi];
+                let t = &mesh_tris[face_index];
                 let (a, b, c) = (
                     Vec3::from_array(t[0]),
                     Vec3::from_array(t[1]),
@@ -800,7 +800,7 @@ fn place_flora(
                 let pos = a + (b - a) * u + (c - a) * v;
                 out.push(FloraData {
                     pos: pos.to_array(),
-                    face: fi as u32,
+                    face: face_index as u32,
                     kind,
                 });
             }
@@ -825,17 +825,17 @@ fn place_structures(
     mesh_tris: &[[[f32; 3]; 3]],
 ) -> Vec<StructureData> {
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ STRUCT_RNG_SALT);
-    let face_center = |fi: usize| {
-        let t = &mesh_tris[fi];
+    let face_center = |face_index: usize| {
+        let t = &mesh_tris[face_index];
         (Vec3::from_array(t[0]) + Vec3::from_array(t[1]) + Vec3::from_array(t[2])) / 3.0
     };
-    let town = |fi: usize| face_solid(grid, &painted.towns, fi);
-    let road = |fi: usize| face_solid(grid, &painted.roads, fi);
-    let feature = |fi: usize| {
-        town(fi)
-            || road(fi)
-            || painted_corners(grid, &painted.bridges, fi) > 0
-            || painted_corners(grid, &painted.bridge_entries, fi) > 0
+    let town = |face_index: usize| face_solid(grid, &painted.towns, face_index);
+    let road = |face_index: usize| face_solid(grid, &painted.roads, face_index);
+    let feature = |face_index: usize| {
+        town(face_index)
+            || road(face_index)
+            || painted_corners(grid, &painted.bridges, face_index) > 0
+            || painted_corners(grid, &painted.bridge_entries, face_index) > 0
     };
     // Face-step distance from any town (capped) — cheap context for the rest.
     let town_sources: Vec<_> = grid
@@ -853,90 +853,90 @@ fn place_structures(
                 .map_or(u16::MAX, |steps| steps as u16)
         })
         .collect();
-    let road_near = |fi: usize| {
+    let road_near = |face_index: usize| {
         let face = grid
             .topology
-            .face(fi)
+            .face(face_index)
             .expect("face index from topology range");
         grid.topology
             .face_neighbors(face)
             .iter()
             .any(|neighbor| road(neighbor.index()))
-            || road(fi)
+            || road(face_index)
     };
 
     let mut out = Vec::new();
-    let mut push = |rng: &mut fastrand::Rng, fi: usize, kind: u8| {
+    let mut push = |rng: &mut fastrand::Rng, face_index: usize, kind: u8| {
         out.push(StructureData {
-            pos: face_center(fi).to_array(),
-            face: fi as u32,
+            pos: face_center(face_index).to_array(),
+            face: face_index as u32,
             kind,
             yaw: rng.f32() * std::f32::consts::TAU,
         });
     };
     // A structure needs buildable ground: skip any face with a steep/cliff
     // corner (watchtowers on a ridge are the exception — handled below).
-    let buildable = |fi: usize| {
-        grid.face_cells(fi)
+    let buildable = |face_index: usize| {
+        grid.face_cells(face_index)
             .into_iter()
             .all(|cell| slope_walkable(slope_class[cell]))
     };
-    for fi in 0..grid.face_count() {
-        if tiles[fi].is_water() || !buildable(fi) {
+    for face_index in 0..grid.face_count() {
+        if tiles[face_index].is_water() || !buildable(face_index) {
             continue;
         }
         // Town interior: a well or a campfire in a clearing.
-        if town(fi) {
+        if town(face_index) {
             let r = rng.f32();
             if r < 0.010 {
-                push(&mut rng, fi, STRUCT_WELL);
+                push(&mut rng, face_index, STRUCT_WELL);
             } else if r < 0.045 {
-                push(&mut rng, fi, STRUCT_CAMPFIRE);
+                push(&mut rng, face_index, STRUCT_CAMPFIRE);
             }
             continue;
         }
         // Town edge (non-town land beside a town): a wall segment or a farm.
-        let touches_town = grid.face_neighbors(fi).into_iter().any(town);
+        let touches_town = grid.face_neighbors(face_index).into_iter().any(town);
         if touches_town {
             let coastal = grid
-                .face_neighbors(fi)
+                .face_neighbors(face_index)
                 .into_iter()
                 .any(|neighbor| tiles[neighbor].is_water());
             if coastal && rng.f32() < 0.5 {
-                push(&mut rng, fi, STRUCT_DOCK);
+                push(&mut rng, face_index, STRUCT_DOCK);
             } else if rng.f32() < 0.4 {
-                push(&mut rng, fi, STRUCT_WALL);
+                push(&mut rng, face_index, STRUCT_WALL);
             }
             continue;
         }
-        if feature(fi) {
+        if feature(face_index) {
             continue;
         }
         // Farmland: fertile flat ground just outside town.
-        if town_dist[fi] <= 3
+        if town_dist[face_index] <= 3
             && matches!(
-                tiles[fi],
+                tiles[face_index],
                 Terrain::Plains | Terrain::Savanna | Terrain::Forest
             )
             && rng.f32() < 0.10
         {
-            push(&mut rng, fi, STRUCT_FARM);
+            push(&mut rng, face_index, STRUCT_FARM);
             continue;
         }
         // Watchtower: high ground overlooking a road.
-        if road_near(fi) && terrain.elevation_at(grid.centroid(fi)) > 0.25 && rng.f32() < 0.03 {
-            push(&mut rng, fi, STRUCT_WATCHTOWER);
+        if road_near(face_index) && terrain.elevation_at(grid.centroid(face_index)) > 0.25 && rng.f32() < 0.03 {
+            push(&mut rng, face_index, STRUCT_WATCHTOWER);
             continue;
         }
         // Ruins: rare, deep in the wilderness (far from any town).
-        if town_dist[fi] == u16::MAX
+        if town_dist[face_index] == u16::MAX
             && !matches!(
-                tiles[fi],
+                tiles[face_index],
                 Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank
             )
             && rng.f32() < 0.0006
         {
-            push(&mut rng, fi, STRUCT_RUIN);
+            push(&mut rng, face_index, STRUCT_RUIN);
         }
     }
     out
@@ -946,17 +946,17 @@ fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
     let mut off = Vec::with_capacity(grid.face_count() + 1);
     let mut data = Vec::new();
     off.push(0u32);
-    for fi in 0..grid.face_count() {
-        if face_solid(grid, &painted.roads, fi) {
+    for face_index in 0..grid.face_count() {
+        if face_solid(grid, &painted.roads, face_index) {
             data.push(TAG_ROAD);
         }
-        if face_solid(grid, &painted.towns, fi) {
+        if face_solid(grid, &painted.towns, face_index) {
             data.push(TAG_TOWN);
         }
-        if face_solid(grid, &painted.bridges, fi) {
+        if face_solid(grid, &painted.bridges, face_index) {
             data.push(TAG_BRIDGE);
         }
-        if face_solid(grid, &painted.bridge_entries, fi) {
+        if face_solid(grid, &painted.bridge_entries, face_index) {
             data.push(TAG_BRIDGE_ENTRY);
         }
         off.push(data.len() as u32);

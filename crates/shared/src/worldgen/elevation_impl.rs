@@ -167,9 +167,9 @@ const SOLVER_EPS: f32 = 0.002;
 fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
     let mut sum = 0.0f32;
     let mut weighted = 0.0f32;
-    for &(vi, dot) in kernel {
+    for &(solver_vertex, dot) in kernel {
         let w = 1.0 / (1.01 - dot).max(0.01);
-        weighted += values[vi] * w;
+        weighted += values[solver_vertex] * w;
         sum += w;
     }
     if sum > 0.0 {
@@ -203,17 +203,17 @@ fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default:
         })
         .collect();
     (0..terrain.vert_count())
-        .map(|vi| {
-            let d = terrain.vert_dir(vi);
+        .map(|solver_vertex| {
+            let d = terrain.vert_dir(solver_vertex);
             let key = [d.x.to_bits(), d.y.to_bits(), d.z.to_bits()];
             match index.get(&key) {
-                Some(&ci) => per_cell[ci as usize],
+                Some(&cell_index) => per_cell[cell_index as usize],
                 None => grid
                     .planet
                     .face_at(d)
-                    .map(|fi| {
+                    .map(|face_index| {
                         let best = grid
-                            .face_cells(fi)
+                            .face_cells(face_index)
                             .into_iter()
                             .max_by(|&a, &b| {
                                 grid.cell_direction(a)
@@ -247,10 +247,10 @@ fn solve_elevation(
     painted: &Painted,
     blends: &[(u32, u8, u8)],
 ) -> (Vec<f32>, usize, f32) {
-    let nv = terrain.vert_count();
+    let solver_vertex_count = terrain.vert_count();
     let mut blend_of: BTreeMap<u32, (u8, u8)> = BTreeMap::new();
-    for &(fi, a, b) in blends {
-        blend_of.insert(fi, (a, b));
+    for &(face_index, a, b) in blends {
+        blend_of.insert(face_index, (a, b));
     }
 
     // Per-vertex interval and kind: each vertex takes the range of the tile
@@ -260,39 +260,39 @@ fn solve_elevation(
     let owner: Vec<Terrain> = owner_cells(grid, terrain, cells);
     let owner_lf: Vec<u8> = owner_landform(grid, terrain, landform);
     let _ = tiles;
-    let owner_face: Vec<Option<usize>> = (0..nv)
-        .map(|vi| grid.planet.face_at(terrain.vert_dir(vi)))
+    let owner_face: Vec<Option<usize>> = (0..solver_vertex_count)
+        .map(|solver_vertex| grid.planet.face_at(terrain.vert_dir(solver_vertex)))
         .collect();
     let elevation::ElevationConstraints {
         lower: mut lo,
         upper: mut hi,
-    } = elevation::ElevationConstraints::unconstrained(nv);
-    let mut is_road_vert = vec![false; nv];
-    for vi in 0..nv {
+    } = elevation::ElevationConstraints::unconstrained(solver_vertex_count);
+    let mut is_road_vert = vec![false; solver_vertex_count];
+    for solver_vertex in 0..solver_vertex_count {
         // Blend faces are the altitude ramp between two kinds: their vertices
         // get the HULL of both ranges so the solver can transition through.
         // Land COVER takes its landform's range (height from the massif, not
         // the biome); water/shore/river keep their own range and blend hull.
-        let (rlo, rhi) = if is_cover(owner[vi]) {
-            landform_range(owner_lf[vi])
+        let (rlo, rhi) = if is_cover(owner[solver_vertex]) {
+            landform_range(owner_lf[solver_vertex])
         } else {
-            match owner_face[vi].and_then(|fi| blend_of.get(&(fi as u32))) {
-                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owner[vi]),
+            match owner_face[solver_vertex].and_then(|face_index| blend_of.get(&(face_index as u32))) {
+                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owner[solver_vertex]),
                 Some(&(a, b)) => {
                     let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
                     let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
                     (alo.min(blo), ahi.max(bhi))
                 }
-                None => elev_range(owner[vi]),
+                None => elev_range(owner[solver_vertex]),
             }
         };
-        lo[vi] = rlo;
-        hi[vi] = rhi;
+        lo[solver_vertex] = rlo;
+        hi[solver_vertex] = rhi;
     }
-    for ci in 0..grid.cell_count() {
-        if painted.roads.contains(ci) {
-            for &(vi, _) in terrain.kernel(grid.cell_position(ci))[..3].iter() {
-                is_road_vert[vi] = true;
+    for cell_index in 0..grid.cell_count() {
+        if painted.roads.contains(cell_index) {
+            for &(solver_vertex, _) in terrain.kernel(grid.cell_position(cell_index))[..3].iter() {
+                is_road_vert[solver_vertex] = true;
             }
         }
     }
@@ -302,7 +302,7 @@ fn solve_elevation(
     // the deep basins/abyss come from geometry, not a separate tile. Distance
     // to land in vertex steps (~35m).
     {
-        let mut dist = vec![u8::MAX; nv];
+        let mut dist = vec![u8::MAX; solver_vertex_count];
         let solver_graph = elevation::TerrainSolverVertexGraph::new(terrain);
         let mut q: VecDeque<elevation::SolverVertexId> = VecDeque::new();
         for solver_vertex in solver_graph.vertices() {
@@ -322,19 +322,19 @@ fn solve_elevation(
                 }
             }
         }
-        for vi in 0..nv {
-            if !owner[vi].is_water() || owner[vi] == Terrain::River {
+        for solver_vertex in 0..solver_vertex_count {
+            if !owner[solver_vertex].is_water() || owner[solver_vertex] == Terrain::River {
                 continue;
             }
             // Lakes keep their own (concave) profile; only the open sea shelves.
-            if owner[vi] == Terrain::Lake {
+            if owner[solver_vertex] == Terrain::Lake {
                 continue;
             }
             // A narrow depth WINDOW per distance band, both bounds deepening
             // with distance: shore-shallows (no wall at the coast) grading to
             // abyss offshore. floor ≤ ceil, and the step between adjacent
             // bands stays within the extreme-edge limit.
-            let (floor, ceil) = match dist[vi] {
+            let (floor, ceil) = match dist[solver_vertex] {
                 1 => (-0.10, -0.03),
                 2 => (-0.22, -0.08),
                 3 => (-0.38, -0.18),
@@ -344,8 +344,8 @@ fn solve_elevation(
                 7 => (-0.82, -0.62),
                 _ => (-0.95, -0.70),
             };
-            hi[vi] = hi[vi].min(ceil);
-            lo[vi] = lo[vi].max(floor).min(hi[vi]);
+            hi[solver_vertex] = hi[solver_vertex].min(ceil);
+            lo[solver_vertex] = lo[solver_vertex].max(floor).min(hi[solver_vertex]);
         }
     }
 
@@ -356,25 +356,25 @@ fn solve_elevation(
         .iter()
         .map(|path| path.iter().map(|s| terrain.kernel(*s)).collect())
         .collect();
-    let mut is_canyon_vert = vec![false; nv];
+    let mut is_canyon_vert = vec![false; solver_vertex_count];
     for kernels in &river_kernels {
         for kernel in kernels {
-            for &(vi, _) in kernel {
-                is_canyon_vert[vi] = true;
+            for &(solver_vertex, _) in kernel {
+                is_canyon_vert[solver_vertex] = true;
                 let (rlo, rhi) = elev_range(Terrain::River);
-                lo[vi] = rlo;
-                hi[vi] = rhi;
+                lo[solver_vertex] = rlo;
+                hi[solver_vertex] = rhi;
             }
         }
     }
 
     // Per-vertex kind for gradient caps (canyon verts count as River).
-    let vkind: Vec<Terrain> = (0..nv)
-        .map(|vi| {
-            if is_canyon_vert[vi] {
+    let vkind: Vec<Terrain> = (0..solver_vertex_count)
+        .map(|solver_vertex| {
+            if is_canyon_vert[solver_vertex] {
                 Terrain::River
             } else {
-                owner[vi]
+                owner[solver_vertex]
             }
         })
         .collect();
@@ -385,12 +385,12 @@ fn solve_elevation(
     // seaward drop needs no pinning — the wide Cliff range and the steep
     // cliff/water gradient allowance let the whole drop happen at the edge.
     let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
-    let mut cliff_crest: Vec<bool> = vec![false; nv];
-    for vi in 0..nv {
-        if owner[vi] == Terrain::Cliff
-            && !terrain.adj_of(vi).iter().any(|&nb| shore_kind(owner[nb]))
+    let mut cliff_crest: Vec<bool> = vec![false; solver_vertex_count];
+    for solver_vertex in 0..solver_vertex_count {
+        if owner[solver_vertex] == Terrain::Cliff
+            && !terrain.adj_of(solver_vertex).iter().any(|&nb| shore_kind(owner[nb]))
         {
-            cliff_crest[vi] = true;
+            cliff_crest[solver_vertex] = true;
         }
     }
 
@@ -404,7 +404,7 @@ fn solve_elevation(
         |e| {
             let mut residual = 0.0;
             // 1) gradient caps per edge (best-effort smoothing).
-            for a in 0..nv {
+            for a in 0..solver_vertex_count {
                 for &b in terrain.adj_of(a) {
                     if b <= a {
                         continue;
@@ -432,8 +432,8 @@ fn solve_elevation(
             // the gradient cap bounds the slope, this bounds the change in slope
             // (curvature), giving a road that eases over the ground.
             {
-                let mut delta = vec![0.0f32; nv];
-                for a in 0..nv {
+                let mut delta = vec![0.0f32; solver_vertex_count];
+                for a in 0..solver_vertex_count {
                     if !is_road_vert[a] {
                         continue;
                     }
@@ -451,7 +451,7 @@ fn solve_elevation(
                         delta[a] = 0.5 * (sum / cnt as f32 - e[a]);
                     }
                 }
-                for a in 0..nv {
+                for a in 0..solver_vertex_count {
                     if delta[a] != 0.0 {
                         e[a] += delta[a];
                         residual += delta[a].abs();
@@ -463,27 +463,27 @@ fn solve_elevation(
             // It only samples other channel vertices, preserving the banks as the
             // raised rim; the following monotone pass keeps flow downhill.
             {
-                let mut delta = vec![0.0f32; nv];
-                for vi in 0..nv {
-                    if owner[vi] != Terrain::River {
+                let mut delta = vec![0.0f32; solver_vertex_count];
+                for solver_vertex in 0..solver_vertex_count {
+                    if owner[solver_vertex] != Terrain::River {
                         continue;
                     }
                     let mut sum = 0.0;
                     let mut count = 0usize;
-                    for &nb in terrain.adj_of(vi) {
+                    for &nb in terrain.adj_of(solver_vertex) {
                         if owner[nb] == Terrain::River {
                             sum += e[nb];
                             count += 1;
                         }
                     }
                     if count > 0 {
-                        delta[vi] = 0.15 * (sum / count as f32 - e[vi]);
+                        delta[solver_vertex] = 0.15 * (sum / count as f32 - e[solver_vertex]);
                     }
                 }
-                for vi in 0..nv {
-                    if delta[vi] != 0.0 {
-                        e[vi] += delta[vi];
-                        residual += delta[vi].abs();
+                for solver_vertex in 0..solver_vertex_count {
+                    if delta[solver_vertex] != 0.0 {
+                        e[solver_vertex] += delta[solver_vertex];
+                        residual += delta[solver_vertex].abs();
                     }
                 }
             }
@@ -499,8 +499,8 @@ fn solve_elevation(
                     }
                     if v > floor + 0.001 {
                         let delta = v - floor;
-                        for &(vi, _) in kernel {
-                            e[vi] -= delta;
+                        for &(solver_vertex, _) in kernel {
+                            e[solver_vertex] -= delta;
                         }
                         residual += delta;
                     } else {
@@ -512,16 +512,16 @@ fn solve_elevation(
             // below the average of its neighbors, so basins bowl toward the
             // middle and channels dip below their banks — depth grows naturally
             // with basin size instead of being a flat plate.
-            for vi in 0..nv {
-                let Some(c) = water_concavity(owner[vi]) else {
+            for solver_vertex in 0..solver_vertex_count {
+                let Some(c) = water_concavity(owner[solver_vertex]) else {
                     continue;
                 };
-                let nbs = terrain.adj_of(vi);
+                let nbs = terrain.adj_of(solver_vertex);
                 let avg: f32 = nbs.iter().map(|&nb| e[nb]).sum::<f32>() / nbs.len() as f32;
                 let cap = avg - c;
-                if e[vi] > cap {
-                    residual += e[vi] - cap;
-                    e[vi] = cap;
+                if e[solver_vertex] > cap {
+                    residual += e[solver_vertex] - cap;
+                    e[solver_vertex] = cap;
                 }
             }
             // Concavity can lower a downstream channel vertex more than its next
@@ -536,8 +536,8 @@ fn solve_elevation(
                     }
                     if v > floor + 0.001 {
                         let delta = v - floor;
-                        for &(vi, _) in kernel {
-                            e[vi] -= delta;
+                        for &(solver_vertex, _) in kernel {
+                            e[solver_vertex] -= delta;
                         }
                         residual += delta;
                     } else {
@@ -550,29 +550,29 @@ fn solve_elevation(
             // concavity above then keeps the interior below the edge, so the whole
             // basin stays under its rim (otherwise the flat water surface floats over
             // ground where a lake tile pokes up past the shore).
-            for vi in 0..nv {
-                if owner[vi] != Terrain::Lake {
+            for solver_vertex in 0..solver_vertex_count {
+                if owner[solver_vertex] != Terrain::Lake {
                     continue;
                 }
                 let mut min_shore = f32::MAX;
-                for &nb in terrain.adj_of(vi) {
+                for &nb in terrain.adj_of(solver_vertex) {
                     if owner[nb] == Terrain::LakeShore {
                         min_shore = min_shore.min(e[nb]);
                     }
                 }
                 if min_shore != f32::MAX {
                     let cap = min_shore - 0.01;
-                    if e[vi] > cap {
-                        residual += e[vi] - cap;
-                        e[vi] = cap;
+                    if e[solver_vertex] > cap {
+                        residual += e[solver_vertex] - cap;
+                        e[solver_vertex] = cap;
                     }
                 }
             }
             // 3b) cliff crest tracking: the crest equals the hinterland edge.
-            for vi in 0..nv {
-                if cliff_crest[vi] {
+            for solver_vertex in 0..solver_vertex_count {
+                if cliff_crest[solver_vertex] {
                     let mut hinterland = f32::MIN;
-                    for &nb in terrain.adj_of(vi) {
+                    for &nb in terrain.adj_of(solver_vertex) {
                         if owner[nb].is_land()
                             && owner[nb] != Terrain::Cliff
                             && !shore_kind(owner[nb])
@@ -581,8 +581,8 @@ fn solve_elevation(
                         }
                     }
                     if hinterland > f32::MIN {
-                        residual += (e[vi] - hinterland).abs();
-                        e[vi] = hinterland;
+                        residual += (e[solver_vertex] - hinterland).abs();
+                        e[solver_vertex] = hinterland;
                     }
                 }
             }
@@ -590,29 +590,29 @@ fn solve_elevation(
             // than the adjacent river, a lake shore than its lake, a beach than
             // the sea — the water's edge is always a step up onto land. Water
             // surfaces render clamped at 0, so the floor is vs max(water e, 0).
-            for vi in 0..nv {
+            for solver_vertex in 0..solver_vertex_count {
                 // A bank vert caught in a river's descent kernel still IS a bank:
                 // on a hillside the kernel would drag the downhill bank below the
                 // water and the river would spill. The floor runs after the
                 // descent step, so both banks end above the channel everywhere.
-                if is_canyon_vert[vi] && owner[vi] != Terrain::RiverBank {
+                if is_canyon_vert[solver_vertex] && owner[solver_vertex] != Terrain::RiverBank {
                     continue;
                 }
-                let matching_water = bank_water(owner[vi]);
+                let matching_water = bank_water(owner[solver_vertex]);
                 if matching_water.is_empty() {
                     continue;
                 }
                 let mut water_surface = f32::MIN;
-                for &nb in terrain.adj_of(vi) {
+                for &nb in terrain.adj_of(solver_vertex) {
                     if matching_water.contains(&owner[nb]) {
                         water_surface = water_surface.max(e[nb].max(0.0));
                     }
                 }
                 if water_surface > f32::MIN {
                     let floor = water_surface + 0.01;
-                    if e[vi] < floor {
-                        residual += floor - e[vi];
-                        e[vi] = floor;
+                    if e[solver_vertex] < floor {
+                        residual += floor - e[solver_vertex];
+                        e[solver_vertex] = floor;
                     }
                 }
             }
@@ -620,10 +620,10 @@ fn solve_elevation(
             // final word each iteration, so the finished field satisfies every
             // tile's elevation range exactly (caps are best-effort where the tile
             // map demands steeper chains than they allow).
-            for vi in 0..nv {
-                let c = e[vi].clamp(lo[vi], hi[vi]);
-                residual += (c - e[vi]).abs();
-                e[vi] = c;
+            for solver_vertex in 0..solver_vertex_count {
+                let c = e[solver_vertex].clamp(lo[solver_vertex], hi[solver_vertex]);
+                residual += (c - e[solver_vertex]).abs();
+                e[solver_vertex] = c;
             }
             residual
         },
@@ -632,28 +632,28 @@ fn solve_elevation(
     // to river descent at a high source): every bank vert ends strictly above
     // its adjacent water surface. Highest banks first so a bank that borders
     // another bank still clears the shared water.
-    let mut order: Vec<usize> = (0..nv)
-        .filter(|&vi| {
+    let mut order: Vec<usize> = (0..solver_vertex_count)
+        .filter(|&solver_vertex| {
             matches!(
-                owner[vi],
+                owner[solver_vertex],
                 Terrain::RiverBank | Terrain::LakeShore | Terrain::Beach
             )
         })
         .collect();
     order.sort_by(|&a, &b| e[b].partial_cmp(&e[a]).unwrap());
-    for &vi in &order {
-        let matching = bank_water(owner[vi]);
+    for &solver_vertex in &order {
+        let matching = bank_water(owner[solver_vertex]);
         if matching.is_empty() {
             continue;
         }
         let mut surface = f32::MIN;
-        for &nb in terrain.adj_of(vi) {
+        for &nb in terrain.adj_of(solver_vertex) {
             if matching.contains(&owner[nb]) {
                 surface = surface.max(e[nb].max(0.0));
             }
         }
         if surface > f32::MIN {
-            e[vi] = e[vi].max(surface + 0.01);
+            e[solver_vertex] = e[solver_vertex].max(surface + 0.01);
         }
     }
     elevation::classify_result(&mut e);

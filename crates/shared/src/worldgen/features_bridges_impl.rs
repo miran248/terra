@@ -54,28 +54,28 @@ fn paint_features(
         let band = widen_band(grid, &chain);
         if band
             .iter()
-            .any(|&vi| cells[vi].is_water() || slope_class[vi] == SLOPE_CLIFF)
+            .any(|&cell_index| cells[cell_index].is_water() || slope_class[cell_index] == SLOPE_CLIFF)
         {
             continue;
         }
-        for vi in band {
-            painted.roads.insert(vi);
+        for cell_index in band {
+            painted.roads.insert(cell_index);
         }
         kept.push(path.clone());
     }
     // Towns sit on walkable ground within the settlement radius.
-    for (vi, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
-        let pos = grid.cell_position(vi);
+    for (cell_index, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
+        let pos = grid.cell_position(cell_index);
         if slope_walkable(slope)
             && terrain
                 .settlement_anchors
                 .iter()
                 .any(|a| a.distance(pos) <= TOWN_RADIUS)
         {
-            painted.towns.insert(vi);
+            painted.towns.insert(cell_index);
         }
     }
-    link_feature_pinches(grid, &mut painted.roads, |vi| cells[vi].is_land());
+    link_feature_pinches(grid, &mut painted.roads, |cell_index| cells[cell_index].is_land());
     link_feature_pinches(grid, &mut painted.towns, |_| true);
     (painted, kept)
 }
@@ -184,8 +184,8 @@ fn build_bridges(
     // One walkable cell further from `away`, so the deck grounds inland of the
     // steep bank edge (the pad there sits on flat ground, clear of the carved
     // channel). Falls back to the cell itself if no inland walkable neighbor.
-    let inland1 = |vi: usize, away: Vec3| {
-        cell_neighbor_indices(grid, vi)
+    let inland1 = |cell_index: usize, away: Vec3| {
+        cell_neighbor_indices(grid, cell_index)
             .filter(|&nb| bridge_walkable(cells[nb]))
             .max_by(|&a, &b| {
                 grid.cell_direction(a)
@@ -193,7 +193,7 @@ fn build_bridges(
                     .partial_cmp(&grid.cell_direction(b).distance(away))
                     .unwrap()
             })
-            .unwrap_or(vi)
+            .unwrap_or(cell_index)
     };
     let inland = inland1;
     // A deck grounds cleanly only on an open, gentle patch: the anchor cell
@@ -226,11 +226,11 @@ fn build_bridges(
     // even though the cell is steep toward the channel) and no marine/steep
     // tile in the ring. slope_class is unused here (bridges use footing scale).
     let _ = slope_class;
-    let good_anchor = |vi: usize| {
-        bridge_walkable(cells[vi])
-            && terrain.slope(grid.cell_position(vi)) < BRIDGE_MAX_FOOTING_SLOPE
+    let good_anchor = |cell_index: usize| {
+        bridge_walkable(cells[cell_index])
+            && terrain.slope(grid.cell_position(cell_index)) < BRIDGE_MAX_FOOTING_SLOPE
             && grid
-                .cell_neighbors(vi)
+                .cell_neighbors(cell_index)
                 .iter()
                 .all(|nb| !forbidden(cells[nb.index()]))
     };
@@ -259,17 +259,17 @@ fn build_bridges(
                 crate::sphere::slerp(pa, pb, -ext + (1.0 + 2.0 * ext) * k as f32 / steps as f32)
             })
             .collect();
-        for vi in cell_chain(grid, &span) {
-            painted.bridges.insert(vi);
+        for cell_index in cell_chain(grid, &span) {
+            painted.bridges.insert(cell_index);
         }
         for end in [span.first(), span.last()] {
-            let Some(fi) = end.and_then(|p| grid.planet.face_at(p.0)) else {
+            let Some(face_index) = end.and_then(|p| grid.planet.face_at(p.0)) else {
                 continue;
             };
-            for vi in grid.face_cells(fi) {
-                if cells[vi].is_land() {
-                    painted.bridge_entries.insert(vi);
-                    for nb in cell_neighbor_indices(grid, vi) {
+            for cell_index in grid.face_cells(face_index) {
+                if cells[cell_index].is_land() {
+                    painted.bridge_entries.insert(cell_index);
+                    for nb in cell_neighbor_indices(grid, cell_index) {
                         if cells[nb].is_land() {
                             painted.bridge_entries.insert(nb);
                         }
@@ -369,15 +369,15 @@ fn build_bridges(
     let mut touch_ocean = vec![false; components.count()];
     let mut only_lake = vec![true; components.count()];
     let mut only_ocean = vec![true; components.count()];
-    for vi in 0..grid.cell_count() {
+    for cell_index in 0..grid.cell_count() {
         let cell = grid
             .topology
-            .cell(vi)
+            .cell(cell_index)
             .expect("cell index from topology range");
         let Some(id) = components.cell(cell).map(|component| component.index()) else {
             continue;
         };
-        for nb in cell_neighbor_indices(grid, vi) {
+        for nb in cell_neighbor_indices(grid, cell_index) {
             match cells[nb] {
                 Terrain::Lake => {
                     touch_lake[id] = true;
@@ -422,42 +422,42 @@ fn build_bridges(
             if !(ringed(id) && size <= max_cells) {
                 continue;
             }
-            let shore = |vi: usize| {
-                bridge_walkable(cells[vi])
+            let shore = |cell_index: usize| {
+                bridge_walkable(cells[cell_index])
                     && grid
-                        .cell_neighbors(vi)
+                        .cell_neighbors(cell_index)
                         .iter()
                         .any(|nb| cells[nb.index()] == shore_kind)
             };
             let island_shore: Vec<usize> = (0..grid.cell_count())
-                .filter(|&vi| {
+                .filter(|&cell_index| {
                     let cell = grid
                         .topology
-                        .cell(vi)
+                        .cell(cell_index)
                         .expect("cell index from topology range");
                     components
                         .cell(cell)
                         .is_some_and(|component| component.index() == id)
-                        && shore(vi)
+                        && shore(cell_index)
                 })
                 .collect();
             let mut best: Option<(f32, usize, usize)> = None;
             for &a in &island_shore {
                 let pa = grid.cell_position(a);
-                for vi in 0..grid.cell_count() {
+                for cell_index in 0..grid.cell_count() {
                     let cell = grid
                         .topology
-                        .cell(vi)
+                        .cell(cell_index)
                         .expect("cell index from topology range");
                     let Some(other) = components.cell(cell) else {
                         continue;
                     };
-                    if other.index() == id || !shore(vi) {
+                    if other.index() == id || !shore(cell_index) {
                         continue;
                     }
-                    let dd = pa.distance(grid.cell_position(vi));
+                    let dd = pa.distance(grid.cell_position(cell_index));
                     if best.is_none_or(|(bd, _, _)| dd < bd) {
-                        best = Some((dd, a, vi));
+                        best = Some((dd, a, cell_index));
                     }
                 }
             }
@@ -471,7 +471,7 @@ fn build_bridges(
         }
     }
 
-    link_feature_pinches(grid, &mut painted.bridge_entries, |vi| cells[vi].is_land());
+    link_feature_pinches(grid, &mut painted.bridge_entries, |cell_index| cells[cell_index].is_land());
     spans
 }
 
@@ -486,13 +486,13 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     // shelf constraint). Deep water never surfaces because Ocean's range floor
     // deepens with distance from land — no separate tile, no margin pass.
     let (water_dist, water_kind) = water_distance(grid, base, 2);
-    let shore = |vi: usize, kind: Terrain| -> Terrain {
+    let shore = |cell_index: usize, kind: Terrain| -> Terrain {
         match kind {
             Terrain::Lake => Terrain::LakeShore,
             Terrain::River | Terrain::RiverSpring => Terrain::RiverBank,
             _ => {
-                let steep = matches!(base[vi], Terrain::Mountain | Terrain::Snow)
-                    || terrain.elevation_at(grid.cell_position(vi)) > 0.15;
+                let steep = matches!(base[cell_index], Terrain::Mountain | Terrain::Snow)
+                    || terrain.elevation_at(grid.cell_position(cell_index)) > 0.15;
                 if steep {
                     Terrain::Cliff
                 } else {
@@ -506,58 +506,58 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     // chain plus the chain right behind it, for beaches, cliffs, lake shores
     // and river banks alike. Wide types (oceans, lakes, rivers, towns) are
     // free-width; bands are not.
-    for vi in 0..grid.cell_count() {
-        if base[vi].is_water() {
+    for cell_index in 0..grid.cell_count() {
+        if base[cell_index].is_water() {
             continue;
         }
-        if water_dist[vi] <= 2 {
-            out[vi] = shore(vi, water_kind[vi].unwrap_or(Terrain::Ocean));
+        if water_dist[cell_index] <= 2 {
+            out[cell_index] = shore(cell_index, water_kind[cell_index].unwrap_or(Terrain::Ocean));
         }
     }
     // Fill notches: a land cell with ≥2 neighbors in the shore band belongs
     // to the band too.
     let banded: Vec<bool> = (0..grid.cell_count())
-        .map(|vi| {
+        .map(|cell_index| {
             matches!(
-                out[vi],
+                out[cell_index],
                 Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank
             )
         })
         .collect();
-    for vi in 0..grid.cell_count() {
-        if base[vi].is_water() || banded[vi] {
+    for cell_index in 0..grid.cell_count() {
+        if base[cell_index].is_water() || banded[cell_index] {
             continue;
         }
         if grid
-            .cell_neighbors(vi)
+            .cell_neighbors(cell_index)
             .iter()
             .filter(|nb| banded[nb.index()])
             .count()
             >= 2
         {
-            out[vi] = shore(vi, water_kind[vi].unwrap_or(Terrain::Ocean));
+            out[cell_index] = shore(cell_index, water_kind[cell_index].unwrap_or(Terrain::Ocean));
         }
     }
 
     // WFC over inland biome edges: land cells bordering a different
     // classification. Water and the shore band enter as fixed neighbors.
     let in_band: Vec<bool> = (0..grid.cell_count())
-        .map(|vi| out[vi] != base[vi])
+        .map(|cell_index| out[cell_index] != base[cell_index])
         .collect();
     let base = &out;
     let mut cell_of = vec![usize::MAX; grid.cell_count()];
     let mut wfc_cells: Vec<usize> = Vec::new();
-    for vi in 0..grid.cell_count() {
-        if base[vi].is_water() || in_band[vi] {
+    for cell_index in 0..grid.cell_count() {
+        if base[cell_index].is_water() || in_band[cell_index] {
             continue;
         }
         if grid
-            .cell_neighbors(vi)
+            .cell_neighbors(cell_index)
             .iter()
-            .any(|nb| base[nb.index()] != base[vi])
+            .any(|nb| base[nb.index()] != base[cell_index])
         {
-            cell_of[vi] = wfc_cells.len();
-            wfc_cells.push(vi);
+            cell_of[cell_index] = wfc_cells.len();
+            wfc_cells.push(cell_index);
         }
     }
 
@@ -569,10 +569,10 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     ];
     let domains: Vec<Vec<(Terrain, f32)>> = wfc_cells
         .iter()
-        .map(|&vi| {
-            let mut d = vec![(base[vi], 1.0)];
+        .map(|&cell_index| {
+            let mut d = vec![(base[cell_index], 1.0)];
             for t in transition_tiles {
-                if t != base[vi] {
+                if t != base[cell_index] {
                     d.push((t, 0.3));
                 }
             }
@@ -581,8 +581,8 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
         .collect();
     let neighbors: Vec<Vec<wfc::Neighbor>> = wfc_cells
         .iter()
-        .map(|&vi| {
-            cell_neighbor_indices(grid, vi)
+        .map(|&cell_index| {
+            cell_neighbor_indices(grid, cell_index)
                 .map(|nb| match cell_of[nb] {
                     usize::MAX => wfc::Neighbor::Fixed(base[nb]),
                     ci => wfc::Neighbor::Cell(ci),
@@ -590,7 +590,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
                 .collect()
         })
         .collect();
-    let fallback: Vec<Terrain> = wfc_cells.iter().map(|&vi| base[vi]).collect();
+    let fallback: Vec<Terrain> = wfc_cells.iter().map(|&cell_index| base[cell_index]).collect();
 
     let solved = wfc::solve(
         &wfc::Compat::default(),
@@ -601,8 +601,8 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     );
 
     let mut resolved = base.clone();
-    for (ci, &vi) in wfc_cells.iter().enumerate() {
-        resolved[vi] = solved[ci];
+    for (ci, &cell_index) in wfc_cells.iter().enumerate() {
+        resolved[cell_index] = solved[ci];
     }
     smooth_coast_band(grid, &mut resolved);
     absorb_small_patches(grid, &mut resolved);
@@ -631,18 +631,18 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
     let river = dist_to(&|t| t == Terrain::River);
     let lake = dist_to(&|t| t == Terrain::Lake);
     let sea = dist_to(&|t| t == Terrain::Ocean);
-    for vi in 0..grid.cell_count() {
-        let orphan = match cells[vi] {
-            Terrain::RiverBank => river[vi] > 2,
-            Terrain::LakeShore => lake[vi] > 2,
-            Terrain::Beach | Terrain::Cliff => sea[vi] > 2 && lake[vi] > 2 && river[vi] > 2,
+    for cell_index in 0..grid.cell_count() {
+        let orphan = match cells[cell_index] {
+            Terrain::RiverBank => river[cell_index] > 2,
+            Terrain::LakeShore => lake[cell_index] > 2,
+            Terrain::Beach | Terrain::Cliff => sea[cell_index] > 2 && lake[cell_index] > 2 && river[cell_index] > 2,
             _ => false,
         };
         if !orphan {
             continue;
         }
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for nb in cell_neighbor_indices(grid, vi) {
+        for nb in cell_neighbor_indices(grid, cell_index) {
             let t = cells[nb];
             if matches!(
                 t,
@@ -661,7 +661,7 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
                 *counts.entry(t as u8).or_default() += 1;
             }
         }
-        cells[vi] = counts
+        cells[cell_index] = counts
             .iter()
             .max_by_key(|(_, c)| **c)
             .map(|(&k, _)| Terrain::ALL[k as usize])
@@ -681,43 +681,43 @@ fn mark_blends(
     painted: &Painted,
 ) -> Vec<(u32, u8, u8)> {
     let plain = |t: Terrain| t.is_land();
-    let overlay = |fi: usize| {
-        face_solid(grid, &painted.roads, fi)
-            || face_solid(grid, &painted.towns, fi)
-            || face_solid(grid, &painted.bridge_entries, fi)
+    let overlay = |face_index: usize| {
+        face_solid(grid, &painted.roads, face_index)
+            || face_solid(grid, &painted.towns, face_index)
+            || face_solid(grid, &painted.bridge_entries, face_index)
     };
     let mut out = Vec::new();
-    for (fi, &tile) in tiles.iter().enumerate().take(grid.face_count()) {
-        if !plain(tile) || overlay(fi) {
+    for (face_index, &tile) in tiles.iter().enumerate().take(grid.face_count()) {
+        if !plain(tile) || overlay(face_index) {
             continue;
         }
         // Feature flanks (a painted corner without ownership) blend toward the
         // feature; most specific wins (entry pad < town blob < road network).
-        let feature = if painted_corners(grid, &painted.bridge_entries, fi) > 0 {
+        let feature = if painted_corners(grid, &painted.bridge_entries, face_index) > 0 {
             Some(crate::level::BLEND_BRIDGE_ENTRY)
-        } else if painted_corners(grid, &painted.towns, fi) > 0 {
+        } else if painted_corners(grid, &painted.towns, face_index) > 0 {
             Some(crate::level::BLEND_TOWN)
-        } else if painted_corners(grid, &painted.roads, fi) > 0 {
+        } else if painted_corners(grid, &painted.roads, face_index) > 0 {
             Some(crate::level::BLEND_ROAD)
         } else {
             None
         };
         if let Some(code) = feature {
-            out.push((fi as u32, tiles[fi] as u8, code));
+            out.push((face_index as u32, tiles[face_index] as u8, code));
             continue;
         }
         // Corner cells that disagree with the face's derived kind: the face is
         // the linking tile between its kind and the most present other LAND
         // kind (water transitions are the shore band's job).
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for vi in grid.face_cells(fi) {
-            let t = cells[vi];
-            if plain(t) && t != tiles[fi] {
+        for cell_index in grid.face_cells(face_index) {
+            let t = cells[cell_index];
+            if plain(t) && t != tiles[face_index] {
                 *counts.entry(t as u8).or_default() += 1;
             }
         }
         if let Some((&other, _)) = counts.iter().max_by_key(|(_, c)| **c) {
-            out.push((fi as u32, tiles[fi] as u8, other));
+            out.push((face_index as u32, tiles[face_index] as u8, other));
         }
     }
     out
@@ -772,8 +772,8 @@ fn absorb_small_clusters<T: Copy + Ord>(
             continue;
         }
         let mut counts: BTreeMap<T, usize> = BTreeMap::new();
-        for &vi in &cluster {
-            for nb in cell_neighbor_indices(grid, vi) {
+        for &cell_index in &cluster {
+            for nb in cell_neighbor_indices(grid, cell_index) {
                 let t = out[nb];
                 if t != kind && absorbable(t) {
                     *counts.entry(t).or_default() += 1;
@@ -781,8 +781,8 @@ fn absorb_small_clusters<T: Copy + Ord>(
             }
         }
         if let Some((&k, _)) = counts.iter().max_by_key(|(_, c)| **c) {
-            for vi in cluster {
-                out[vi] = k;
+            for cell_index in cluster {
+                out[cell_index] = k;
             }
         }
     }
@@ -816,21 +816,21 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
 fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
     for _ in 0..8 {
         let mut changed = false;
-        for vi in 0..grid.cell_count() {
-            if !matches!(out[vi], Terrain::Beach | Terrain::Cliff) {
+        for cell_index in 0..grid.cell_count() {
+            if !matches!(out[cell_index], Terrain::Beach | Terrain::Cliff) {
                 continue;
             }
             let mut same = 0;
             let mut other = 0;
-            for nb in cell_neighbor_indices(grid, vi) {
+            for nb in cell_neighbor_indices(grid, cell_index) {
                 match out[nb] {
-                    t if t == out[vi] => same += 1,
+                    t if t == out[cell_index] => same += 1,
                     Terrain::Beach | Terrain::Cliff => other += 1,
                     _ => {}
                 }
             }
             if same == 0 && other >= 2 {
-                out[vi] = if out[vi] == Terrain::Beach {
+                out[cell_index] = if out[cell_index] == Terrain::Beach {
                     Terrain::Cliff
                 } else {
                     Terrain::Beach
