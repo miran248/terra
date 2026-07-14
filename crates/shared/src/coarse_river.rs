@@ -41,3 +41,29 @@ pub(crate) fn path_to_water(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::zones::ZoneConfig;
+
+    #[test]
+    fn route_is_deterministic_and_reaches_water() {
+        let zones = Zones::generate(1337, &ZoneConfig::default());
+        let source = (0..zones.face_count())
+            .find(|&face| zones.kind_of_face(face) == ZoneKind::MountainRange)
+            .expect("locked seed has mountain faces");
+        let blocked = BTreeSet::new();
+        let first = path_to_water(&zones, source, &blocked).expect("mountain reaches water");
+        let second = path_to_water(&zones, source, &blocked).expect("route is repeatable");
+
+        assert_eq!(first.1, second.1);
+        assert_eq!(first.1.first(), Some(&source));
+        assert!(zones.kind_of_face(*first.1.last().unwrap()).is_water());
+        assert!(first.1.windows(2).all(|edge| {
+            zones.adj[edge[0]]
+                .iter()
+                .any(|neighbor| *neighbor as usize == edge[1])
+        }));
+    }
+}
