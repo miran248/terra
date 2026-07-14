@@ -32,6 +32,7 @@ use crate::wfc;
 use crate::zones::FINE_SUB;
 
 mod domain;
+mod elevation;
 mod regions;
 mod router;
 
@@ -3216,20 +3217,21 @@ fn river_surface_radii(
     // through the first few rings lets water emerge from the ground naturally
     // instead of ending as an abrupt, hovering cap at the source patch.
     let mut spring_distance = vec![usize::MAX; surface.len()];
-    let mut frontier = VecDeque::new();
-    for node in 0..surface.len() {
-        if spring_anchor[node] > f32::MIN {
-            spring_distance[node] = 0;
-            frontier.push_back(node);
+    let solver_graph = elevation::SolverVertexGraph::new(&neighbors);
+    let mut frontier: VecDeque<elevation::SolverVertexId> = VecDeque::new();
+    for solver_vertex in solver_graph.vertices() {
+        if spring_anchor[solver_vertex.index()] > f32::MIN {
+            spring_distance[solver_vertex.index()] = 0;
+            frontier.push_back(solver_vertex);
         }
     }
-    while let Some(node) = frontier.pop_front() {
-        if spring_distance[node] >= RIVER_SPRING_TAPER_RINGS {
+    while let Some(solver_vertex) = frontier.pop_front() {
+        if spring_distance[solver_vertex.index()] >= RIVER_SPRING_TAPER_RINGS {
             continue;
         }
-        for &neighbor in &neighbors[node] {
-            if spring_distance[neighbor] == usize::MAX {
-                spring_distance[neighbor] = spring_distance[node] + 1;
+        for neighbor in solver_graph.neighbors(solver_vertex) {
+            if spring_distance[neighbor.index()] == usize::MAX {
+                spring_distance[neighbor.index()] = spring_distance[solver_vertex.index()] + 1;
                 frontier.push_back(neighbor);
             }
         }
@@ -4086,8 +4088,10 @@ fn solve_elevation(
     let owner_face: Vec<Option<usize>> = (0..nv)
         .map(|vi| grid.planet.face_at(terrain.vert_dir(vi)))
         .collect();
-    let mut lo = vec![-1.0f32; nv];
-    let mut hi = vec![1.0f32; nv];
+    let elevation::ElevationConstraints {
+        lower: mut lo,
+        upper: mut hi,
+    } = elevation::ElevationConstraints::unconstrained(nv);
     let mut is_road_vert = vec![false; nv];
     for vi in 0..nv {
         // Blend faces are the altitude ramp between two kinds: their vertices
@@ -4124,21 +4128,22 @@ fn solve_elevation(
     // to land in vertex steps (~35m).
     {
         let mut dist = vec![u8::MAX; nv];
-        let mut q: VecDeque<usize> = VecDeque::new();
-        for vi in 0..nv {
-            if !owner[vi].is_water() {
-                dist[vi] = 0;
-                q.push_back(vi);
+        let solver_graph = elevation::TerrainSolverVertexGraph::new(terrain);
+        let mut q: VecDeque<elevation::SolverVertexId> = VecDeque::new();
+        for solver_vertex in solver_graph.vertices() {
+            if !owner[solver_vertex.index()].is_water() {
+                dist[solver_vertex.index()] = 0;
+                q.push_back(solver_vertex);
             }
         }
-        while let Some(cur) = q.pop_front() {
-            if dist[cur] >= 8 {
+        while let Some(solver_vertex) = q.pop_front() {
+            if dist[solver_vertex.index()] >= 8 {
                 continue;
             }
-            for &nb in terrain.adj_of(cur) {
-                if dist[nb] == u8::MAX {
-                    dist[nb] = dist[cur] + 1;
-                    q.push_back(nb);
+            for neighbor in solver_graph.neighbors(solver_vertex) {
+                if dist[neighbor.index()] == u8::MAX {
+                    dist[neighbor.index()] = dist[solver_vertex.index()] + 1;
+                    q.push_back(neighbor);
                 }
             }
         }
@@ -4217,236 +4222,237 @@ fn solve_elevation(
     // Bridges CONFORM to the finished terrain (selected after this solve on
     // gentle ground), so the solver no longer flattens entry pads — features
     // no longer reshape the field here.
-    let mut e: Vec<f32> = terrain.vert_elevations().to_vec();
-    let mut iters = 0;
-    let mut residual = f32::MAX;
-    for it in 0..SOLVER_MAX_ITERS {
-        residual = 0.0;
-        // 1) gradient caps per edge (best-effort smoothing).
-        for a in 0..nv {
-            for &b in terrain.adj_of(a) {
-                if b <= a {
-                    continue;
-                }
-                let mut cap = if is_cover(vkind[a]) && is_cover(vkind[b]) {
-                    landform_edge_cap(owner_lf[a], owner_lf[b])
-                } else {
-                    max_gradient(vkind[a], vkind[b])
-                };
-                if is_road_vert[a] && is_road_vert[b] {
-                    cap = cap.min(ROAD_EDGE_GRADIENT);
-                }
-                let d = e[a] - e[b];
-                if d.abs() > cap {
-                    let excess = (d.abs() - cap) / 2.0;
-                    let dir = d.signum();
-                    e[a] -= dir * excess;
-                    e[b] += dir * excess;
-                    residual += excess;
-                }
-            }
-        }
-        // 1b) road smoothing: pull every road vertex toward the average of
-        // its road-corridor neighbors, so the ROAD SURFACE has no local bumps —
-        // the gradient cap bounds the slope, this bounds the change in slope
-        // (curvature), giving a road that eases over the ground.
-        {
-            let mut delta = vec![0.0f32; nv];
+    let (mut e, iters, residual) = elevation::ordered_relaxation(
+        terrain.vert_elevations().to_vec(),
+        SOLVER_MAX_ITERS,
+        SOLVER_EPS,
+        |e| {
+            let mut residual = 0.0;
+            // 1) gradient caps per edge (best-effort smoothing).
             for a in 0..nv {
-                if !is_road_vert[a] {
-                    continue;
-                }
-                let mut sum = 0.0;
-                let mut cnt = 0;
                 for &b in terrain.adj_of(a) {
-                    if is_road_vert[b] {
-                        sum += e[b];
-                        cnt += 1;
+                    if b <= a {
+                        continue;
+                    }
+                    let mut cap = if is_cover(vkind[a]) && is_cover(vkind[b]) {
+                        landform_edge_cap(owner_lf[a], owner_lf[b])
+                    } else {
+                        max_gradient(vkind[a], vkind[b])
+                    };
+                    if is_road_vert[a] && is_road_vert[b] {
+                        cap = cap.min(ROAD_EDGE_GRADIENT);
+                    }
+                    let d = e[a] - e[b];
+                    if d.abs() > cap {
+                        let excess = (d.abs() - cap) / 2.0;
+                        let dir = d.signum();
+                        e[a] -= dir * excess;
+                        e[b] += dir * excess;
+                        residual += excess;
                     }
                 }
-                if cnt > 0 {
-                    // Half-strength Laplacian: smooths bumps without erasing
-                    // the road's overall descent.
-                    delta[a] = 0.5 * (sum / cnt as f32 - e[a]);
+            }
+            // 1b) road smoothing: pull every road vertex toward the average of
+            // its road-corridor neighbors, so the ROAD SURFACE has no local bumps —
+            // the gradient cap bounds the slope, this bounds the change in slope
+            // (curvature), giving a road that eases over the ground.
+            {
+                let mut delta = vec![0.0f32; nv];
+                for a in 0..nv {
+                    if !is_road_vert[a] {
+                        continue;
+                    }
+                    let mut sum = 0.0;
+                    let mut cnt = 0;
+                    for &b in terrain.adj_of(a) {
+                        if is_road_vert[b] {
+                            sum += e[b];
+                            cnt += 1;
+                        }
+                    }
+                    if cnt > 0 {
+                        // Half-strength Laplacian: smooths bumps without erasing
+                        // the road's overall descent.
+                        delta[a] = 0.5 * (sum / cnt as f32 - e[a]);
+                    }
+                }
+                for a in 0..nv {
+                    if delta[a] != 0.0 {
+                        e[a] += delta[a];
+                        residual += delta[a].abs();
+                    }
                 }
             }
-            for a in 0..nv {
-                if delta[a] != 0.0 {
-                    e[a] += delta[a];
-                    residual += delta[a].abs();
+            // 1c) river-bed smoothing: a light Laplacian over the carved channel
+            // removes cell-to-cell chatter before the downstream constraint runs.
+            // It only samples other channel vertices, preserving the banks as the
+            // raised rim; the following monotone pass keeps flow downhill.
+            {
+                let mut delta = vec![0.0f32; nv];
+                for vi in 0..nv {
+                    if owner[vi] != Terrain::River {
+                        continue;
+                    }
+                    let mut sum = 0.0;
+                    let mut count = 0usize;
+                    for &nb in terrain.adj_of(vi) {
+                        if owner[nb] == Terrain::River {
+                            sum += e[nb];
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        delta[vi] = 0.15 * (sum / count as f32 - e[vi]);
+                    }
+                }
+                for vi in 0..nv {
+                    if delta[vi] != 0.0 {
+                        e[vi] += delta[vi];
+                        residual += delta[vi].abs();
+                    }
                 }
             }
-        }
-        // 1c) river-bed smoothing: a light Laplacian over the carved channel
-        // removes cell-to-cell chatter before the downstream constraint runs.
-        // It only samples other channel vertices, preserving the banks as the
-        // raised rim; the following monotone pass keeps flow downhill.
-        {
-            let mut delta = vec![0.0f32; nv];
+            // 2) rivers descend monotonically (lower-only kernel clamp) — but only
+            // until they reach the sea; below the surface the river IS the ocean
+            // and fighting its ranges would oscillate forever.
+            for kernels in &river_kernels {
+                let mut floor = f32::MAX;
+                for kernel in kernels {
+                    let v = kernel_interp(kernel, e);
+                    if floor < -0.05 {
+                        break;
+                    }
+                    if v > floor + 0.001 {
+                        let delta = v - floor;
+                        for &(vi, _) in kernel {
+                            e[vi] -= delta;
+                        }
+                        residual += delta;
+                    } else {
+                        floor = floor.min(v);
+                    }
+                }
+            }
+            // 3) lake and river beds are CONCAVE: every water vert is pushed
+            // below the average of its neighbors, so basins bowl toward the
+            // middle and channels dip below their banks — depth grows naturally
+            // with basin size instead of being a flat plate.
             for vi in 0..nv {
-                if owner[vi] != Terrain::River {
+                let Some(c) = water_concavity(owner[vi]) else {
                     continue;
-                }
-                let mut sum = 0.0;
-                let mut count = 0usize;
-                for &nb in terrain.adj_of(vi) {
-                    if owner[nb] == Terrain::River {
-                        sum += e[nb];
-                        count += 1;
-                    }
-                }
-                if count > 0 {
-                    delta[vi] = 0.15 * (sum / count as f32 - e[vi]);
-                }
-            }
-            for vi in 0..nv {
-                if delta[vi] != 0.0 {
-                    e[vi] += delta[vi];
-                    residual += delta[vi].abs();
-                }
-            }
-        }
-        // 2) rivers descend monotonically (lower-only kernel clamp) — but only
-        // until they reach the sea; below the surface the river IS the ocean
-        // and fighting its ranges would oscillate forever.
-        for kernels in &river_kernels {
-            let mut floor = f32::MAX;
-            for kernel in kernels {
-                let v = kernel_interp(kernel, &e);
-                if floor < -0.05 {
-                    break;
-                }
-                if v > floor + 0.001 {
-                    let delta = v - floor;
-                    for &(vi, _) in kernel {
-                        e[vi] -= delta;
-                    }
-                    residual += delta;
-                } else {
-                    floor = floor.min(v);
-                }
-            }
-        }
-        // 3) lake and river beds are CONCAVE: every water vert is pushed
-        // below the average of its neighbors, so basins bowl toward the
-        // middle and channels dip below their banks — depth grows naturally
-        // with basin size instead of being a flat plate.
-        for vi in 0..nv {
-            let Some(c) = water_concavity(owner[vi]) else {
-                continue;
-            };
-            let nbs = terrain.adj_of(vi);
-            let avg: f32 = nbs.iter().map(|&nb| e[nb]).sum::<f32>() / nbs.len() as f32;
-            let cap = avg - c;
-            if e[vi] > cap {
-                residual += e[vi] - cap;
-                e[vi] = cap;
-            }
-        }
-        // Concavity can lower a downstream channel vertex more than its next
-        // neighbour, so reapply the directional constraint after carving. This
-        // permits a deeper bed without ever creating an uphill segment.
-        for kernels in &river_kernels {
-            let mut floor = f32::MAX;
-            for kernel in kernels {
-                let v = kernel_interp(kernel, &e);
-                if floor < -0.05 {
-                    break;
-                }
-                if v > floor + 0.001 {
-                    let delta = v - floor;
-                    for &(vi, _) in kernel {
-                        e[vi] -= delta;
-                    }
-                    residual += delta;
-                } else {
-                    floor = floor.min(v);
-                }
-            }
-        }
-        // 3a) a lake never rises above its shore: clamp every lake vertex that
-        // touches the shore to just below its lowest shore neighbour. The
-        // concavity above then keeps the interior below the edge, so the whole
-        // basin stays under its rim (otherwise the flat water surface floats over
-        // ground where a lake tile pokes up past the shore).
-        for vi in 0..nv {
-            if owner[vi] != Terrain::Lake {
-                continue;
-            }
-            let mut min_shore = f32::MAX;
-            for &nb in terrain.adj_of(vi) {
-                if owner[nb] == Terrain::LakeShore {
-                    min_shore = min_shore.min(e[nb]);
-                }
-            }
-            if min_shore != f32::MAX {
-                let cap = min_shore - 0.01;
+                };
+                let nbs = terrain.adj_of(vi);
+                let avg: f32 = nbs.iter().map(|&nb| e[nb]).sum::<f32>() / nbs.len() as f32;
+                let cap = avg - c;
                 if e[vi] > cap {
                     residual += e[vi] - cap;
                     e[vi] = cap;
                 }
             }
-        }
-        // 3b) cliff crest tracking: the crest equals the hinterland edge.
-        for vi in 0..nv {
-            if cliff_crest[vi] {
-                let mut hinterland = f32::MIN;
-                for &nb in terrain.adj_of(vi) {
-                    if owner[nb].is_land() && owner[nb] != Terrain::Cliff && !shore_kind(owner[nb])
-                    {
-                        hinterland = hinterland.max(e[nb]);
+            // Concavity can lower a downstream channel vertex more than its next
+            // neighbour, so reapply the directional constraint after carving. This
+            // permits a deeper bed without ever creating an uphill segment.
+            for kernels in &river_kernels {
+                let mut floor = f32::MAX;
+                for kernel in kernels {
+                    let v = kernel_interp(kernel, e);
+                    if floor < -0.05 {
+                        break;
+                    }
+                    if v > floor + 0.001 {
+                        let delta = v - floor;
+                        for &(vi, _) in kernel {
+                            e[vi] -= delta;
+                        }
+                        residual += delta;
+                    } else {
+                        floor = floor.min(v);
                     }
                 }
-                if hinterland > f32::MIN {
-                    residual += (e[vi] - hinterland).abs();
-                    e[vi] = hinterland;
+            }
+            // 3a) a lake never rises above its shore: clamp every lake vertex that
+            // touches the shore to just below its lowest shore neighbour. The
+            // concavity above then keeps the interior below the edge, so the whole
+            // basin stays under its rim (otherwise the flat water surface floats over
+            // ground where a lake tile pokes up past the shore).
+            for vi in 0..nv {
+                if owner[vi] != Terrain::Lake {
+                    continue;
+                }
+                let mut min_shore = f32::MAX;
+                for &nb in terrain.adj_of(vi) {
+                    if owner[nb] == Terrain::LakeShore {
+                        min_shore = min_shore.min(e[nb]);
+                    }
+                }
+                if min_shore != f32::MAX {
+                    let cap = min_shore - 0.01;
+                    if e[vi] > cap {
+                        residual += e[vi] - cap;
+                        e[vi] = cap;
+                    }
                 }
             }
-        }
-        // 4) banks sit ABOVE their water: a river bank is strictly higher
-        // than the adjacent river, a lake shore than its lake, a beach than
-        // the sea — the water's edge is always a step up onto land. Water
-        // surfaces render clamped at 0, so the floor is vs max(water e, 0).
-        for vi in 0..nv {
-            // A bank vert caught in a river's descent kernel still IS a bank:
-            // on a hillside the kernel would drag the downhill bank below the
-            // water and the river would spill. The floor runs after the
-            // descent step, so both banks end above the channel everywhere.
-            if is_canyon_vert[vi] && owner[vi] != Terrain::RiverBank {
-                continue;
-            }
-            let matching_water = bank_water(owner[vi]);
-            if matching_water.is_empty() {
-                continue;
-            }
-            let mut water_surface = f32::MIN;
-            for &nb in terrain.adj_of(vi) {
-                if matching_water.contains(&owner[nb]) {
-                    water_surface = water_surface.max(e[nb].max(0.0));
+            // 3b) cliff crest tracking: the crest equals the hinterland edge.
+            for vi in 0..nv {
+                if cliff_crest[vi] {
+                    let mut hinterland = f32::MIN;
+                    for &nb in terrain.adj_of(vi) {
+                        if owner[nb].is_land()
+                            && owner[nb] != Terrain::Cliff
+                            && !shore_kind(owner[nb])
+                        {
+                            hinterland = hinterland.max(e[nb]);
+                        }
+                    }
+                    if hinterland > f32::MIN {
+                        residual += (e[vi] - hinterland).abs();
+                        e[vi] = hinterland;
+                    }
                 }
             }
-            if water_surface > f32::MIN {
-                let floor = water_surface + 0.01;
-                if e[vi] < floor {
-                    residual += floor - e[vi];
-                    e[vi] = floor;
+            // 4) banks sit ABOVE their water: a river bank is strictly higher
+            // than the adjacent river, a lake shore than its lake, a beach than
+            // the sea — the water's edge is always a step up onto land. Water
+            // surfaces render clamped at 0, so the floor is vs max(water e, 0).
+            for vi in 0..nv {
+                // A bank vert caught in a river's descent kernel still IS a bank:
+                // on a hillside the kernel would drag the downhill bank below the
+                // water and the river would spill. The floor runs after the
+                // descent step, so both banks end above the channel everywhere.
+                if is_canyon_vert[vi] && owner[vi] != Terrain::RiverBank {
+                    continue;
+                }
+                let matching_water = bank_water(owner[vi]);
+                if matching_water.is_empty() {
+                    continue;
+                }
+                let mut water_surface = f32::MIN;
+                for &nb in terrain.adj_of(vi) {
+                    if matching_water.contains(&owner[nb]) {
+                        water_surface = water_surface.max(e[nb].max(0.0));
+                    }
+                }
+                if water_surface > f32::MIN {
+                    let floor = water_surface + 0.01;
+                    if e[vi] < floor {
+                        residual += floor - e[vi];
+                        e[vi] = floor;
+                    }
                 }
             }
-        }
-        // 5) tile ranges — hard constraints and always get the
-        // final word each iteration, so the finished field satisfies every
-        // tile's elevation range exactly (caps are best-effort where the tile
-        // map demands steeper chains than they allow).
-        for vi in 0..nv {
-            let c = e[vi].clamp(lo[vi], hi[vi]);
-            residual += (c - e[vi]).abs();
-            e[vi] = c;
-        }
-        iters = it + 1;
-        if residual < SOLVER_EPS {
-            break;
-        }
-    }
+            // 5) tile ranges — hard constraints and always get the
+            // final word each iteration, so the finished field satisfies every
+            // tile's elevation range exactly (caps are best-effort where the tile
+            // map demands steeper chains than they allow).
+            for vi in 0..nv {
+                let c = e[vi].clamp(lo[vi], hi[vi]);
+                residual += (c - e[vi]).abs();
+                e[vi] = c;
+            }
+            residual
+        },
+    );
     // Final guarantee (the solver's per-iteration bank floor can lose a race
     // to river descent at a high source): every bank vert ends strictly above
     // its adjacent water surface. Highest banks first so a bank that borders
@@ -4475,9 +4481,7 @@ fn solve_elevation(
             e[vi] = e[vi].max(surface + 0.01);
         }
     }
-    for v in &mut e {
-        *v = v.clamp(-1.0, 1.0);
-    }
+    elevation::classify_result(&mut e);
     (e, iters, residual)
 }
 

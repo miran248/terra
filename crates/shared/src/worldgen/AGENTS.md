@@ -15,6 +15,7 @@ Private implementation modules for deterministic world generation.
 # Work Guidance
 
 - `domain.rs` — typed dense `CellField`, `FaceField`, and `CellSet` storage.
+- `elevation.rs` — constraint storage, ordered relaxation, result classification, and typed solver-vertex graph.
 - `regions.rs` — typed overlay-aware face partitioning with connector pass-through.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
 
