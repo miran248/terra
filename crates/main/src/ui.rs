@@ -59,7 +59,6 @@ impl Plugin for UiPlugin {
         app.init_resource::<UpgradeLevels>()
             .init_resource::<TerrainHudTimer>()
             .add_systems(Startup, (load_font, spawn_terrain_hud).chain())
-            // .add_systems(Startup, (setup_sidebar, setup_crafting).chain())
             .add_systems(
                 OnEnter(shared::state::AppState::Playing),
                 reset_upgrade_buttons,
@@ -91,6 +90,7 @@ fn text_font(font: &UiFont, size: f32) -> TextFont {
     }
 }
 
+#[expect(dead_code, reason = "sidebar UI is intentionally dormant")]
 fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
     commands
         .spawn((
@@ -211,6 +211,7 @@ fn update_stats(
     );
 }
 
+#[expect(dead_code, reason = "crafting UI is intentionally dormant")]
 fn setup_crafting(mut commands: Commands, font: Res<UiFont>) {
     commands
         .spawn((

@@ -410,7 +410,7 @@ fn face_solid(grid: &Grid, bits: &BitSet, fi: usize) -> bool {
 struct GenState {
     pub grid: Grid,
     pub terrain: Option<TerrainGen>,
-    /// Per-vertex tile labels — the single source of truth for terrain identity.
+    /// Per-cell tile labels — the single source of truth for terrain identity.
     pub cells: Vec<Terrain>,
     /// Per-face render/physics type, DERIVED from `cells` on every cell change.
     pub tiles: Vec<Terrain>,
@@ -1364,25 +1364,12 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
     // Lakes keep their distance from the sea: any lake cell within ~7 cell
     // steps (~250m ≈ the 10-tile rule) of ocean water becomes land, and a
     // lake trimmed under the minimum size drains entirely.
-    let mut ocean_dist = vec![u8::MAX; grid.cell_count()];
-    let mut q: VecDeque<usize> = VecDeque::new();
-    for vi in 0..grid.cell_count() {
-        if cells[vi] == Terrain::Ocean {
-            ocean_dist[vi] = 0;
-            q.push_back(vi);
-        }
-    }
-    while let Some(cur) = q.pop_front() {
-        if ocean_dist[cur] >= 7 {
-            continue;
-        }
-        for nb in cell_neighbor_indices(grid, cur) {
-            if ocean_dist[nb] == u8::MAX {
-                ocean_dist[nb] = ocean_dist[cur] + 1;
-                q.push_back(nb);
-            }
-        }
-    }
+    let ocean_sources: Vec<_> = grid
+        .topology
+        .cells()
+        .filter(|cell| cells[cell.index()] == Terrain::Ocean)
+        .collect();
+    let ocean_dist = grid.topology.cell_distances(&ocean_sources, 7);
     let fill_kind = |cells: &[Terrain], vi: usize| -> Terrain {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
         for nb in cell_neighbor_indices(grid, vi) {
@@ -1398,7 +1385,11 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
             .unwrap_or(Terrain::Plains)
     };
     for vi in 0..grid.cell_count() {
-        if cells[vi] == Terrain::Lake && ocean_dist[vi] <= 7 {
+        let cell = grid
+            .topology
+            .cell(vi)
+            .expect("cell index from topology range");
+        if cells[vi] == Terrain::Lake && ocean_dist.cell_steps(cell).is_some() {
             cells[vi] = fill_kind(cells, vi);
         }
     }
@@ -1453,49 +1444,29 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 
     for _ in 0..4 {
         let mut changed = false;
-        let mut dist = vec![u8::MAX; grid.cell_count()];
-        let mut q: VecDeque<usize> = VecDeque::new();
-        for vi in 0..grid.cell_count() {
-            if cells[vi].is_land() {
-                dist[vi] = 0;
-                q.push_back(vi);
-            }
-        }
+        let land_sources: Vec<_> = grid
+            .topology
+            .cells()
+            .filter(|cell| cells[cell.index()].is_land())
+            .collect();
         // Cell steps are ~17.5m: with resolution doubled to pack in content,
         // core water sits ≥3 steps from land (half the old physical width).
-        while let Some(cur) = q.pop_front() {
-            if dist[cur] >= 2 {
-                continue;
-            }
-            for nb in cell_neighbor_indices(grid, cur) {
-                if dist[nb] == u8::MAX {
-                    dist[nb] = dist[cur] + 1;
-                    q.push_back(nb);
-                }
-            }
-        }
+        let land_dist = grid.topology.cell_distances(&land_sources, 2);
         // Core water reaches outward 2 steps.
-        let mut core_reach = vec![false; grid.cell_count()];
-        let mut q: VecDeque<(usize, u8)> = VecDeque::new();
+        let core_sources: Vec<_> = grid
+            .topology
+            .cells()
+            .filter(|cell| wet(cells[cell.index()]) && land_dist.cell_steps(*cell).is_none())
+            .collect();
+        let core_reach = grid
+            .topology
+            .cell_distances_with(&core_sources, 2, |cell| wet(cells[cell.index()]));
         for vi in 0..grid.cell_count() {
-            if wet(cells[vi]) && dist[vi] == u8::MAX {
-                core_reach[vi] = true;
-                q.push_back((vi, 0));
-            }
-        }
-        while let Some((cur, d)) = q.pop_front() {
-            if d >= 2 {
-                continue;
-            }
-            for nb in cell_neighbor_indices(grid, cur) {
-                if wet(cells[nb]) && !core_reach[nb] {
-                    core_reach[nb] = true;
-                    q.push_back((nb, d + 1));
-                }
-            }
-        }
-        for vi in 0..grid.cell_count() {
-            if wet(cells[vi]) && !core_reach[vi] {
+            let cell = grid
+                .topology
+                .cell(vi)
+                .expect("cell index from topology range");
+            if wet(cells[vi]) && core_reach.cell_steps(cell).is_none() {
                 cells[vi] = fill_kind(cells, vi);
                 changed = true;
             }
@@ -2465,26 +2436,16 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
 /// join their most common plain land neighbor.
 fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
     let dist_to = |pred: &dyn Fn(Terrain) -> bool| -> Vec<u8> {
-        let mut dist = vec![u8::MAX; grid.cell_count()];
-        let mut q: VecDeque<usize> = VecDeque::new();
-        for vi in 0..grid.cell_count() {
-            if pred(cells[vi]) {
-                dist[vi] = 0;
-                q.push_back(vi);
-            }
-        }
-        while let Some(cur) = q.pop_front() {
-            if dist[cur] >= 2 {
-                continue;
-            }
-            for nb in cell_neighbor_indices(grid, cur) {
-                if dist[nb] == u8::MAX {
-                    dist[nb] = dist[cur] + 1;
-                    q.push_back(nb);
-                }
-            }
-        }
-        dist
+        let sources: Vec<_> = grid
+            .topology
+            .cells()
+            .filter(|cell| pred(cells[cell.index()]))
+            .collect();
+        let field = grid.topology.cell_distances(&sources, 2);
+        grid.topology
+            .cells()
+            .map(|cell| field.cell_steps(cell).map_or(u8::MAX, |steps| steps as u8))
+            .collect()
     };
     let river = dist_to(&|t| t == Terrain::River);
     let lake = dist_to(&|t| t == Terrain::Lake);
@@ -4932,34 +4893,26 @@ mod tests {
             assert_eq!(road_pinches, 0, "road strip pinched at a vertex");
 
             // Lake-to-ocean distance ≥ 10 edge steps.
-            let mut dist = vec![u16::MAX; state.grid.face_count()];
-            let mut q: VecDeque<usize> = VecDeque::new();
-            for fi in 0..state.grid.face_count() {
-                // Actual ocean TILES, not ocean-zone: an isolated ocean-zone
-                // pocket is reclassified to a lake (see size_range(Ocean)) and
-                // must not seed the distance field.
-                if state.tiles[fi] == Terrain::Ocean {
-                    dist[fi] = 0;
-                    q.push_back(fi);
-                }
-            }
-            while let Some(cur) = q.pop_front() {
-                if dist[cur] >= 10 {
-                    continue;
-                }
-                for nb in state.grid.face_neighbors(cur) {
-                    if dist[nb] == u16::MAX {
-                        dist[nb] = dist[cur] + 1;
-                        q.push_back(nb);
-                    }
-                }
-            }
+            // Actual ocean TILES, not ocean-zone: an isolated ocean-zone
+            // pocket is reclassified to a lake (see size_range(Ocean)) and
+            // must not seed the distance field.
+            let ocean_faces: Vec<_> = state
+                .grid
+                .topology
+                .faces()
+                .filter(|face| state.tiles[face.index()] == Terrain::Ocean)
+                .collect();
+            let ocean_distance = state.grid.topology.face_distances(&ocean_faces, 10);
             for fi in 0..state.grid.face_count() {
                 if state.tiles[fi] == Terrain::Lake {
+                    let face = state
+                        .grid
+                        .topology
+                        .face(fi)
+                        .expect("face index from topology range");
                     assert!(
-                        dist[fi] > 10,
-                        "lake face {fi} only {} tiles from ocean water",
-                        dist[fi]
+                        ocean_distance.face_steps(face).is_none(),
+                        "lake face {fi} is within 10 tiles of ocean water",
                     );
                 }
             }
@@ -5280,19 +5233,27 @@ mod tests {
             {
                 continue;
             }
-            let mut comp = vec![start];
-            let mut q = VecDeque::from([start]);
-            visited[start] = true;
-            while let Some(cur) = q.pop_front() {
-                for nb in cell_neighbor_indices(&state.grid, cur) {
-                    if matches!(state.cells[nb], Terrain::River | Terrain::RiverSpring)
-                        && !visited[nb]
-                    {
-                        visited[nb] = true;
-                        comp.push(nb);
-                        q.push_back(nb);
-                    }
-                }
+            let comp: Vec<_> = state
+                .grid
+                .topology
+                .cell_component(
+                    state
+                        .grid
+                        .topology
+                        .cell(start)
+                        .expect("cell index from topology range"),
+                    |cell| {
+                        matches!(
+                            state.cells[cell.index()],
+                            Terrain::River | Terrain::RiverSpring
+                        )
+                    },
+                )
+                .into_iter()
+                .map(|cell| cell.index())
+                .collect();
+            for &cell in &comp {
+                visited[cell] = true;
             }
             let touches_sea = comp.iter().any(|&vi| {
                 state

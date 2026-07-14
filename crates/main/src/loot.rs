@@ -233,7 +233,7 @@ fn collect_loot(
     mut loot: ResMut<LootState>,
     mut scrap: ResMut<ScrapCounter>,
 ) {
-    let Ok((player_entity, player_tf)) = player_q.single() else {
+    let Ok((_, player_tf)) = player_q.single() else {
         return;
     };
 

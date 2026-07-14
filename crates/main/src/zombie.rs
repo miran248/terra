@@ -80,7 +80,6 @@ fn spawn_zombies(
 }
 
 fn move_zombies(
-    time: Res<Time>,
     player_q: Query<&Transform, With<Player>>,
     mut q: Query<(&Zombie, &Transform, Forces), Without<Player>>,
 ) {

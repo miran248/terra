@@ -80,7 +80,3 @@ pub fn zombie_speed(wave: u32) -> f32 {
 pub fn zombie_count(wave: u32) -> u32 {
     5 + (wave - 1) * 4
 }
-
-pub fn spawn_interval(wave: u32) -> f32 {
-    (1.5 - 0.04 * (wave as f32 - 1.0)).max(0.15)
-}

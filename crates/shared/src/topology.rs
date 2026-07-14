@@ -228,10 +228,26 @@ impl TerrainTopology {
         component(&self.face_neighbors, start, member)
     }
     pub fn cell_distances(&self, sources: &[CellId], max_steps: u32) -> DistanceField<CellId> {
-        distances(&self.cell_neighbors, sources, max_steps)
+        distances(&self.cell_neighbors, sources, max_steps, |_| true)
     }
     pub fn face_distances(&self, sources: &[FaceId], max_steps: u32) -> DistanceField<FaceId> {
-        distances(&self.face_neighbors, sources, max_steps)
+        distances(&self.face_neighbors, sources, max_steps, |_| true)
+    }
+    pub fn cell_distances_with(
+        &self,
+        sources: &[CellId],
+        max_steps: u32,
+        member: impl Fn(CellId) -> bool,
+    ) -> DistanceField<CellId> {
+        distances(&self.cell_neighbors, sources, max_steps, member)
+    }
+    pub fn face_distances_with(
+        &self,
+        sources: &[FaceId],
+        max_steps: u32,
+        member: impl Fn(FaceId) -> bool,
+    ) -> DistanceField<FaceId> {
+        distances(&self.face_neighbors, sources, max_steps, member)
     }
     pub fn cell_shortest_path(
         &self,
@@ -333,12 +349,13 @@ fn distances<I: Copy + IdIndex>(
     adjacency: &[impl AsRef<[I]>],
     sources: &[I],
     max_steps: u32,
+    member: impl Fn(I) -> bool,
 ) -> DistanceField<I> {
     let mut steps = vec![None; adjacency.len()];
     let mut nearest_source = vec![None; adjacency.len()];
     let mut queue = VecDeque::new();
     for &source in sources {
-        if steps[source.index()].is_none() {
+        if member(source) && steps[source.index()].is_none() {
             steps[source.index()] = Some(0);
             nearest_source[source.index()] = Some(source);
             queue.push_back(source);
@@ -350,7 +367,7 @@ fn distances<I: Copy + IdIndex>(
             continue;
         }
         for &next in adjacency[current.index()].as_ref() {
-            if steps[next.index()].is_none() {
+            if member(next) && steps[next.index()].is_none() {
                 steps[next.index()] = Some(step + 1);
                 nearest_source[next.index()] = nearest_source[current.index()];
                 queue.push_back(next);
@@ -469,6 +486,12 @@ mod tests {
         let fd = topology.face_distances(&[faces[0]], 1);
         assert_eq!(fd.face_steps(faces[1]), Some(1));
         assert_eq!(fd.nearest_face(faces[1]), Some(faces[0]));
+        let filtered_cd = topology.cell_distances_with(&[cells[0]], 1, |cell| cell != cells[1]);
+        assert_eq!(filtered_cd.cell_steps(cells[1]), None);
+        assert_eq!(filtered_cd.cell_steps(cells[2]), Some(1));
+        let filtered_fd = topology.face_distances_with(&[faces[0]], 1, |face| face != faces[1]);
+        assert_eq!(filtered_fd.face_steps(faces[1]), None);
+        assert_eq!(filtered_fd.face_steps(faces[2]), Some(1));
         assert_eq!(
             topology.cell_shortest_path(cells[0], cells[1], 1),
             Some(vec![cells[0], cells[1]])

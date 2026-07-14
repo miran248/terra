@@ -34,14 +34,7 @@ pub struct Settlement {
 }
 
 #[derive(Component)]
-pub struct RegionMarker {
-    pub name: String,
-    pub kind: String,
-}
-
-#[derive(Component)]
 pub struct Player {
-    pub hp: f32,
     pub fire_timer: Timer,
     pub damage: f32,
     pub range: f32,
@@ -50,16 +43,6 @@ pub struct Player {
 
 #[derive(Resource)]
 pub struct PlayerHp(pub f32);
-
-/// Debug teleport ring: named landmarks (bridges, towns, one per named
-/// region) the player can jump between. `[` / `]` cycle, the current name is
-/// logged. Each target is the WORLD position to drop the player at (already
-/// lifted above the ground or the bridge deck).
-#[derive(Resource, Default)]
-pub struct Teleports {
-    pub targets: Vec<(String, Vec3)>,
-    pub idx: usize,
-}
 
 #[derive(Resource)]
 pub struct GameAssets {
@@ -517,12 +500,12 @@ fn setup_map(
             let pos = Vec3::from_array(st.pos);
             let up = pos.normalize();
             let base = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(st.yaw);
-            let mut at = |cmd: &mut Commands,
-                          mesh: Handle<Mesh>,
-                          mat: Handle<StandardMaterial>,
-                          lift: f32,
-                          scale: Vec3,
-                          collide: bool| {
+            let at = |cmd: &mut Commands,
+                      mesh: Handle<Mesh>,
+                      mat: Handle<StandardMaterial>,
+                      lift: f32,
+                      scale: Vec3,
+                      collide: bool| {
                 let mut e = cmd.spawn((
                     Mesh3d(mesh),
                     MeshMaterial3d(mat),
@@ -744,7 +727,6 @@ fn setup_map(
             Visibility::default(),
             start,
             Player {
-                hp: PLAYER_HP,
                 fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
                 damage: ATTACK_DAMAGE,
                 range: ATTACK_RANGE,
@@ -775,17 +757,6 @@ fn setup_map(
         ));
     }
 
-    // Region markers (oceans, beaches, forests, …)
-    for region in &level.regions {
-        let pos = Vec3::from_array(region.pos) * PLANET_RADIUS;
-        commands.spawn((
-            Transform::from_translation(pos),
-            RegionMarker {
-                name: region.name.clone(),
-                kind: format!("{:?}", region.kind),
-            },
-        ));
-    }
     let tris: Vec<[Vec3; 3]> = level
         .unit_tris
         .iter()
@@ -807,31 +778,6 @@ fn setup_map(
         .iter()
         .map(|&b| unsafe { std::mem::transmute(b) })
         .collect();
-    // Teleport ring: bridges first (hard to find on foot), then towns, then
-    // one landmark per named region.
-    let mut targets: Vec<(String, Vec3)> = Vec::new();
-    // Drop just above the SOLVED surface (works at any altitude — inland
-    // river bridges sit high, so a fixed sea-level height would be
-    // underground).
-    let surface = |p: [f32; 3]| {
-        let dir = Vec3::from_array(p).normalize();
-        let pos = shared::sphere::SpherePos::new(dir);
-        dir * (terrain.surface_radius(pos) + 3.0)
-    };
-    // Bridges: spawn at the on-land entry (the deck's grounded end) so the
-    // player arrives beside the bridge on solid ground, not over the water.
-    for (i, road) in level.roads.iter().filter(|r| r.is_bridge).enumerate() {
-        if let Some(end) = road.points.first() {
-            targets.push((format!("Bridge {}", i + 1), surface(*end)));
-        }
-    }
-    for s in &level.settlements {
-        targets.push((s.name.clone(), surface(s.pos)));
-    }
-    for r in &level.regions {
-        targets.push((r.name.clone(), surface(r.pos)));
-    }
-    commands.insert_resource(Teleports { targets, idx: 0 });
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);
     commands.insert_resource(LevelTags(tags));
@@ -1045,7 +991,7 @@ fn orient_player(mut q: Query<(&Player, &mut Transform), With<RigidBody>>) {
 
 fn camera_follow(
     time: Res<Time>,
-    mut player_q: Query<(&Player, &Transform), Without<MainCamera>>,
+    player_q: Query<(&Player, &Transform), Without<MainCamera>>,
     mut camera_q: Query<&mut Transform, (With<MainCamera>, Without<MinimapCamera>)>,
 ) {
     let Ok((player, tf)) = player_q.single() else {

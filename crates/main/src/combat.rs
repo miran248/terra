@@ -2,7 +2,6 @@ use crate::constants::*;
 use crate::turret::Projectile;
 use crate::ui::UpgradeLevels;
 use crate::zombie::Zombie;
-use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
