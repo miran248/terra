@@ -27,7 +27,7 @@ use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
 #[cfg(test)]
 use crate::topology::FaceComponentId;
-use crate::topology::{CellComponentId, ComponentLabels, TerrainTopology};
+use crate::topology::{CellComponentId, CellId, ComponentLabels, FaceId, TerrainTopology};
 use crate::wfc;
 use crate::zones::FINE_SUB;
 
@@ -85,24 +85,29 @@ impl Grid {
         }
     }
 
-    pub fn centroid(&self, fi: usize) -> SpherePos {
-        let [a, b, c] = self.unit_tris[fi];
+    pub fn centroid(&self, face: FaceId) -> SpherePos {
+        let [a, b, c] = self.unit_tris[face.index()];
         SpherePos::new(((a + b + c) / 3.0).normalize())
     }
 
-    pub fn cell_position(&self, cell: usize) -> SpherePos {
+    pub fn centroid_index(&self, face: usize) -> SpherePos {
+        self.centroid(self.topology.face(face).expect("dense face index"))
+    }
+
+    pub fn cell_position(&self, cell: CellId) -> SpherePos {
         SpherePos::new(self.cell_direction(cell))
     }
 
-    fn cell_direction(&self, cell: usize) -> Vec3 {
-        Vec3::from_array(
-            self.topology.cell_position(
-                self.topology
-                    .cell(cell)
-                    .expect("cell index from topology range"),
-            ),
-        )
-        .normalize()
+    pub fn cell_position_index(&self, cell: usize) -> SpherePos {
+        self.cell_position(self.topology.cell(cell).expect("dense cell index"))
+    }
+
+    fn cell_direction(&self, cell: CellId) -> Vec3 {
+        Vec3::from_array(self.topology.cell_position(cell)).normalize()
+    }
+
+    fn cell_direction_index(&self, cell: usize) -> Vec3 {
+        self.cell_direction(self.topology.cell(cell).expect("dense cell index"))
     }
 
     pub fn cell_count(&self) -> usize {
@@ -113,32 +118,30 @@ impl Grid {
         self.topology.face_count()
     }
 
-    fn face_neighbors(&self, face: usize) -> [usize; 3] {
-        self.topology
-            .face_neighbors(
-                self.topology
-                    .face(face)
-                    .expect("face index from topology range"),
-            )
-            .map(|neighbor| neighbor.index())
+    fn face_neighbors(&self, face: FaceId) -> [FaceId; 3] {
+        self.topology.face_neighbors(face)
     }
 
-    fn face_cells(&self, face: usize) -> [usize; 3] {
-        self.topology
-            .face_cells(
-                self.topology
-                    .face(face)
-                    .expect("face index from topology range"),
-            )
-            .map(|cell| cell.index())
+    fn face_neighbors_index(&self, face: usize) -> [usize; 3] {
+        self.face_neighbors(self.topology.face(face).expect("dense face index"))
+            .map(FaceId::index)
     }
 
-    fn cell_neighbors(&self, cell: usize) -> &[crate::topology::CellId] {
-        self.topology.cell_neighbors(
-            self.topology
-                .cell(cell)
-                .expect("cell index from topology range"),
-        )
+    fn face_cells(&self, face: FaceId) -> [CellId; 3] {
+        self.topology.face_cells(face)
+    }
+
+    fn face_cells_index(&self, face: usize) -> [usize; 3] {
+        self.face_cells(self.topology.face(face).expect("dense face index"))
+            .map(CellId::index)
+    }
+
+    fn cell_neighbors(&self, cell: CellId) -> &[CellId] {
+        self.topology.cell_neighbors(cell)
+    }
+
+    fn cell_neighbors_index(&self, cell: usize) -> &[CellId] {
+        self.cell_neighbors(self.topology.cell(cell).expect("dense cell index"))
     }
 }
 
@@ -150,7 +153,7 @@ fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> FaceField<Terrain> {
     grid.topology
         .faces()
         .map(|face| {
-            let idx = grid.face_cells(face.index());
+            let idx = grid.face_cells_index(face.index());
             classification::derive_face(cells[idx[0]], cells[idx[1]], cells[idx[2]])
         })
         .collect::<Vec<_>>()
@@ -160,8 +163,8 @@ fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> FaceField<Terrain> {
 /// The neighbors of a cell in CYCLIC order (walking the face fan), starting
 /// from the lowest-id neighbor — deterministic.
 fn ring(grid: &Grid, v: usize) -> Vec<usize> {
-    let mut out = Vec::with_capacity(grid.cell_neighbors(v).len());
-    let mut cur = grid.cell_neighbors(v)[0].index();
+    let mut out = Vec::with_capacity(grid.cell_neighbors_index(v).len());
+    let mut cur = grid.cell_neighbors_index(v)[0].index();
     out.push(cur);
     loop {
         let cell = grid
@@ -169,7 +172,7 @@ fn ring(grid: &Grid, v: usize) -> Vec<usize> {
             .cell(v)
             .expect("cell index from topology range");
         let next = grid.topology.cell_faces(cell).iter().find_map(|&face| {
-            let idx = grid.face_cells(face.index());
+            let idx = grid.face_cells_index(face.index());
             if !idx.contains(&cur) {
                 return None;
             }
@@ -184,7 +187,7 @@ fn ring(grid: &Grid, v: usize) -> Vec<usize> {
             None => break,
         }
     }
-    debug_assert_eq!(out.len(), grid.cell_neighbors(v).len());
+    debug_assert_eq!(out.len(), grid.cell_neighbors_index(v).len());
     out
 }
 
@@ -272,7 +275,7 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
                         if cross
                             && t.is_water()
                             && !grid
-                                .cell_neighbors(c)
+                                .cell_neighbors_index(c)
                                 .iter()
                                 .any(|nb| cells[nb.index()] == t)
                         {
@@ -911,7 +914,7 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
                 .map(|fi| {
                     let solid = state
                         .grid
-                        .face_cells(fi)
+                        .face_cells_index(fi)
                         .iter()
                         .filter(|&&cell| state.painted.roads.contains(cell))
                         .count()
@@ -1293,7 +1296,7 @@ mod tests {
         // (Depth is per grid CELL — sample the solved field at the cell.)
         for vi in 0..state.grid.cell_count() {
             if state.water_depth.dense()[vi] == DEPTH_ABYSS {
-                let d = terrain.elevation_at(state.grid.cell_position(vi));
+                let d = terrain.elevation_at(state.grid.cell_position_index(vi));
                 assert!(d < -0.1, "abyss cell {vi} not deep: {d}");
             }
         }
@@ -1311,7 +1314,7 @@ mod tests {
         for fi in 0..state.grid.face_count() {
             let solid = state
                 .grid
-                .face_cells(fi)
+                .face_cells_index(fi)
                 .iter()
                 .filter(|&&cell| state.painted.roads.contains(cell))
                 .count()
@@ -1359,18 +1362,18 @@ mod tests {
                 // water's-edge end would just read the natural bank drop.)
                 let cell = state
                     .grid
-                    .face_cells(fi)
+                    .face_cells_index(fi)
                     .into_iter()
                     .max_by(|&a, &b| {
                         state
                             .grid
-                            .cell_direction(a)
+                            .cell_direction_index(a)
                             .dot(end.0)
-                            .partial_cmp(&state.grid.cell_direction(b).dot(end.0))
+                            .partial_cmp(&state.grid.cell_direction_index(b).dot(end.0))
                             .unwrap()
                     })
                     .unwrap();
-                let slope = terrain.slope(state.grid.cell_position(cell));
+                let slope = terrain.slope(state.grid.cell_position_index(cell));
                 assert!(slope < 0.3, "bridge anchor on steep ground: slope {slope}");
             }
         }
@@ -1382,7 +1385,7 @@ mod tests {
         // solid feature faces obey the same fan rule.
         {
             for fi in 0..state.grid.face_count() {
-                let corners = state.grid.face_cells(fi);
+                let corners = state.grid.face_cells_index(fi);
                 assert!(
                     corners
                         .iter()
@@ -1588,14 +1591,17 @@ mod tests {
     fn tile_type_sets_cluster_mixed_connected_groups() {
         let grid = Grid::new(1);
 
-        let cell_neighbor = grid.cell_neighbors(0)[0].index();
+        let cell_neighbor = grid.cell_neighbors_index(0)[0].index();
         let cell_distant = (0..grid.cell_count())
             .find(|&v| {
                 v != 0
                     && v != cell_neighbor
-                    && !grid.cell_neighbors(0).iter().any(|cell| cell.index() == v)
                     && !grid
-                        .cell_neighbors(cell_neighbor)
+                        .cell_neighbors_index(0)
+                        .iter()
+                        .any(|cell| cell.index() == v)
+                    && !grid
+                        .cell_neighbors_index(cell_neighbor)
                         .iter()
                         .any(|cell| cell.index() == v)
             })
@@ -1627,13 +1633,13 @@ mod tests {
         let cell_nonmember = cells.iter().position(|&t| t == Terrain::Plains).unwrap();
         assert_eq!(cell_components.cell(cell(cell_nonmember)), None);
 
-        let face_neighbor = grid.face_neighbors(0)[0];
+        let face_neighbor = grid.face_neighbors_index(0)[0];
         let face_distant = (0..grid.face_count())
             .find(|&f| {
                 f != 0
                     && f != face_neighbor
-                    && !grid.face_neighbors(0).contains(&f)
-                    && !grid.face_neighbors(face_neighbor).contains(&f)
+                    && !grid.face_neighbors_index(0).contains(&f)
+                    && !grid.face_neighbors_index(face_neighbor).contains(&f)
             })
             .expect("grid needs a non-adjacent face");
         let mut face_types = vec![Terrain::Plains; grid.face_count()];
@@ -1696,7 +1702,7 @@ mod tests {
             ) {
                 continue;
             }
-            for neighbor in state.grid.face_neighbors(fi) {
+            for neighbor in state.grid.face_neighbors_index(fi) {
                 let waterline = state.water_r.dense()[neighbor];
                 if waterline <= 0.0 {
                     continue;
@@ -1805,7 +1811,7 @@ mod tests {
                 visited[cell] = true;
             }
             let touches_sea = comp.iter().any(|&vi| {
-                state.grid.cell_neighbors(vi).iter().any(|nb| {
+                state.grid.cell_neighbors_index(vi).iter().any(|nb| {
                     matches!(
                         state.cells.dense()[nb.index()],
                         Terrain::Ocean | Terrain::Lake
@@ -1829,13 +1835,13 @@ mod tests {
                 }
                 if !state
                     .grid
-                    .face_cells(fi)
+                    .face_cells_index(fi)
                     .iter()
                     .any(|cell| comp.contains(cell))
                 {
                     continue;
                 }
-                for nb in state.grid.face_neighbors(fi) {
+                for nb in state.grid.face_neighbors_index(fi) {
                     if matches!(state.tiles.dense()[nb], Terrain::Ocean | Terrain::Lake) {
                         open = true;
                         break 'faces;
@@ -1862,7 +1868,7 @@ mod tests {
         // (a) each undirected edge belongs to exactly two faces.
         let mut edge_faces: BTreeMap<(usize, usize), u32> = BTreeMap::new();
         for fi in 0..grid.face_count() {
-            let idx = grid.face_cells(fi);
+            let idx = grid.face_cells_index(fi);
             for k in 0..3 {
                 let (a, b) = (idx[k], idx[(k + 1) % 3]);
                 let key = if a < b { (a, b) } else { (b, a) };
@@ -1895,8 +1901,8 @@ mod tests {
                     }
                     // Adjacent in the fan iff they share an edge through v
                     // (two common vertices).
-                    let fi = grid.face_cells(faces[i].index());
-                    let fj = grid.face_cells(faces[j].index());
+                    let fi = grid.face_cells_index(faces[i].index());
+                    let fj = grid.face_cells_index(faces[j].index());
                     let shared = fi.iter().filter(|x| fj.contains(x)).count();
                     if shared == 2 {
                         seen[j] = true;

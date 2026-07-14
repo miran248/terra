@@ -14,7 +14,7 @@ macro_rules! id {
             pub fn index(self) -> usize {
                 self.0 as usize
             }
-            fn new(index: usize) -> Self {
+            pub(crate) fn new(index: usize) -> Self {
                 Self(u32::try_from(index).expect("terrain topology exceeds u32 ids"))
             }
         }

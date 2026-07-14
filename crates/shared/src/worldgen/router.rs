@@ -21,19 +21,19 @@ pub(super) fn lattice_path(
     let turn_cost = |previous: Vec3, direction: Vec3| {
         ((1.0 - previous.dot(direction)).max(0.0) * 2500.0) as u64
     };
+    let first_cell = grid.topology.cell(0).expect("grid has cells");
     let edge_angle = grid
-        .cell_direction(0)
-        .angle_between(grid.cell_direction(grid.cell_neighbors(0)[0].index()));
+        .cell_direction(first_cell)
+        .angle_between(grid.cell_direction(grid.cell_neighbors(first_cell)[0]));
     let heuristic = |cell: CellId| {
         (grid
-            .cell_direction(cell.index())
-            .angle_between(grid.cell_direction(to.index()))
+            .cell_direction(cell)
+            .angle_between(grid.cell_direction(to))
             / edge_angle
             * 990.0) as u64
     };
-    let direction = |a: CellId, b: CellId| {
-        (grid.cell_direction(b.index()) - grid.cell_direction(a.index())).normalize()
-    };
+    let direction =
+        |a: CellId, b: CellId| (grid.cell_direction(b) - grid.cell_direction(a)).normalize();
 
     let mut best = vec![[u64::MAX; 7]; grid.cell_count()];
     let mut came: BTreeMap<(usize, usize), (usize, usize)> = BTreeMap::new();
@@ -63,8 +63,8 @@ pub(super) fn lattice_path(
             return path;
         }
         let previous_direction =
-            (slot < 6).then(|| direction(grid.cell_neighbors(cell_index)[slot], cell));
-        for &neighbor in grid.cell_neighbors(cell_index) {
+            (slot < 6).then(|| direction(grid.cell_neighbors(cell)[slot], cell));
+        for &neighbor in grid.cell_neighbors(cell) {
             if blocked(neighbor) && neighbor != to {
                 continue;
             }
@@ -74,7 +74,7 @@ pub(super) fn lattice_path(
                 + extra(neighbor)
                 + previous_direction.map_or(0, |previous| turn_cost(previous, next_direction));
             let next_slot = grid
-                .cell_neighbors(neighbor.index())
+                .cell_neighbors(neighbor)
                 .iter()
                 .position(|candidate| *candidate == cell)
                 .expect("adjacent cells have reciprocal edges");

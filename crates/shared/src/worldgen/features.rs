@@ -2,7 +2,7 @@ use super::{CellSet, Grid};
 use crate::terrain::Terrain;
 
 pub(super) fn painted_corners(grid: &Grid, cells: &CellSet, face: usize) -> usize {
-    grid.face_cells(face)
+    grid.face_cells_index(face)
         .iter()
         .filter(|&&cell| cells.contains(cell))
         .count()
@@ -30,13 +30,15 @@ pub(super) fn widen_band(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<
     let mut output = chain.to_vec();
     for segment in chain.windows(2) {
         let (start, end) = (segment[0], segment[1]);
-        let left = grid.cell_direction(start).cross(grid.cell_direction(end));
+        let left = grid
+            .cell_direction_index(start)
+            .cross(grid.cell_direction_index(end));
         let cell = grid
             .topology
             .cell(start)
             .expect("cell index from topology range");
         for &face in grid.topology.cell_faces(cell) {
-            let corners = grid.face_cells(face.index());
+            let corners = grid.face_cells_index(face.index());
             if !corners.contains(&end) {
                 continue;
             }
@@ -44,7 +46,7 @@ pub(super) fn widen_band(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<
                 .iter()
                 .find(|&&candidate| candidate != start && candidate != end)
                 .unwrap();
-            let side_matches = both_sides || grid.cell_direction(*partner).dot(left) > 0.0;
+            let side_matches = both_sides || grid.cell_direction_index(*partner).dot(left) > 0.0;
             if side_matches && !output.contains(partner) {
                 output.push(*partner);
             }

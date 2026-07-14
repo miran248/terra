@@ -198,7 +198,7 @@ pub(super) fn owner_of<T: Copy>(
         .topology
         .cells()
         .map(|cell| {
-            let direction = grid.cell_direction(cell.index());
+            let direction = grid.cell_direction_index(cell.index());
             (
                 [
                     direction.x.to_bits(),
@@ -220,12 +220,12 @@ pub(super) fn owner_of<T: Copy>(
                     .face_at(d)
                     .map(|face_index| {
                         let best = grid
-                            .face_cells(face_index)
+                            .face_cells_index(face_index)
                             .into_iter()
                             .max_by(|&a, &b| {
-                                grid.cell_direction(a)
+                                grid.cell_direction_index(a)
                                     .dot(d)
-                                    .partial_cmp(&grid.cell_direction(b).dot(d))
+                                    .partial_cmp(&grid.cell_direction_index(b).dot(d))
                                     .unwrap()
                             })
                             .unwrap();
@@ -302,7 +302,9 @@ pub(super) fn solve_elevation(
     }
     for cell_index in 0..grid.cell_count() {
         if painted.roads.contains(cell_index) {
-            for &(solver_vertex, _) in terrain.kernel(grid.cell_position(cell_index))[..3].iter() {
+            for &(solver_vertex, _) in
+                terrain.kernel(grid.cell_position_index(cell_index))[..3].iter()
+            {
                 is_road_vert[solver_vertex] = true;
             }
         }

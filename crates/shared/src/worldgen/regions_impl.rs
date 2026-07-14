@@ -98,7 +98,7 @@ pub(super) fn build_regions(
         }
         let cent = faces
             .iter()
-            .map(|face| grid.centroid(face.index()).0)
+            .map(|face| grid.centroid_index(face.index()).0)
             .sum::<Vec3>()
             .normalize_or(Vec3::Y);
         let idx = *kind_counts

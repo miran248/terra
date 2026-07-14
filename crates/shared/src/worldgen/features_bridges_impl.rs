@@ -66,7 +66,7 @@ pub(super) fn paint_features(
     }
     // Towns sit on walkable ground within the settlement radius.
     for (cell_index, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
-        let pos = grid.cell_position(cell_index);
+        let pos = grid.cell_position_index(cell_index);
         if slope_walkable(slope)
             && terrain
                 .settlement_anchors
@@ -132,8 +132,8 @@ pub(super) fn cross_band(
         s.normalize_or_zero()
     };
     let heading = tangent(
-        grid.cell_direction(land),
-        grid.cell_direction(first) - grid.cell_direction(land),
+        grid.cell_direction_index(land),
+        grid.cell_direction_index(first) - grid.cell_direction_index(land),
     );
     if heading == Vec3::ZERO {
         return None;
@@ -148,14 +148,14 @@ pub(super) fn cross_band(
         if !band(cells[cur]) {
             return None;
         }
-        let cpos = grid.cell_direction(cur);
+        let cpos = grid.cell_direction_index(cur);
         let mut best = None;
         let mut best_dot = -2.0;
         for nb in cell_neighbor_indices(grid, cur) {
             if nb == prev {
                 continue;
             }
-            let d = tangent(cpos, grid.cell_direction(nb) - cpos).dot(heading);
+            let d = tangent(cpos, grid.cell_direction_index(nb) - cpos).dot(heading);
             if d > best_dot {
                 best_dot = d;
                 best = Some(nb);
@@ -191,9 +191,9 @@ pub(super) fn build_bridges(
         cell_neighbor_indices(grid, cell_index)
             .filter(|&nb| bridge_walkable(cells[nb]))
             .max_by(|&a, &b| {
-                grid.cell_direction(a)
+                grid.cell_direction_index(a)
                     .distance(away)
-                    .partial_cmp(&grid.cell_direction(b).distance(away))
+                    .partial_cmp(&grid.cell_direction_index(b).distance(away))
                     .unwrap()
             })
             .unwrap_or(cell_index)
@@ -231,9 +231,9 @@ pub(super) fn build_bridges(
     let _ = slope_class;
     let good_anchor = |cell_index: usize| {
         bridge_walkable(cells[cell_index])
-            && terrain.slope(grid.cell_position(cell_index)) < BRIDGE_MAX_FOOTING_SLOPE
+            && terrain.slope(grid.cell_position_index(cell_index)) < BRIDGE_MAX_FOOTING_SLOPE
             && grid
-                .cell_neighbors(cell_index)
+                .cell_neighbors_index(cell_index)
                 .iter()
                 .all(|nb| !forbidden(cells[nb.index()]))
     };
@@ -246,7 +246,7 @@ pub(super) fn build_bridges(
                   mids: &mut Vec<SpherePos>,
                   painted: &mut Painted|
      -> bool {
-        let (pa, pb) = (grid.cell_position(a), grid.cell_position(b));
+        let (pa, pb) = (grid.cell_position_index(a), grid.cell_position_index(b));
         let d = pa.distance(pb);
         if d < 1.0 || d > max_span {
             return false;
@@ -269,7 +269,7 @@ pub(super) fn build_bridges(
             let Some(face_index) = end.and_then(|p| grid.planet.face_at(p.0)) else {
                 continue;
             };
-            for cell_index in grid.face_cells(face_index) {
+            for cell_index in grid.face_cells_index(face_index) {
                 if cells[cell_index].is_land() {
                     painted.bridge_entries.insert(cell_index);
                     for nb in cell_neighbor_indices(grid, cell_index) {
@@ -297,7 +297,7 @@ pub(super) fn build_bridges(
             continue;
         }
         let Some(entry) = grid
-            .cell_neighbors(l1)
+            .cell_neighbors_index(l1)
             .iter()
             .find(|nb| cells[nb.index()] == Terrain::RiverBank)
         else {
@@ -315,7 +315,7 @@ pub(super) fn build_bridges(
             if l2 == l1 {
                 continue;
             }
-            let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
+            let mid = (grid.cell_direction_index(l1) + grid.cell_direction_index(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
                 commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
@@ -336,7 +336,7 @@ pub(super) fn build_bridges(
             continue;
         }
         let Some(entry) = grid
-            .cell_neighbors(l1)
+            .cell_neighbors_index(l1)
             .iter()
             .find(|nb| cells[nb.index()] == Terrain::Swamp)
         else {
@@ -346,7 +346,7 @@ pub(super) fn build_bridges(
             if l2 == l1 {
                 continue;
             }
-            let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
+            let mid = (grid.cell_direction_index(l1) + grid.cell_direction_index(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
                 commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
@@ -428,7 +428,7 @@ pub(super) fn build_bridges(
             let shore = |cell_index: usize| {
                 bridge_walkable(cells[cell_index])
                     && grid
-                        .cell_neighbors(cell_index)
+                        .cell_neighbors_index(cell_index)
                         .iter()
                         .any(|nb| cells[nb.index()] == shore_kind)
             };
@@ -446,7 +446,7 @@ pub(super) fn build_bridges(
                 .collect();
             let mut best: Option<(f32, usize, usize)> = None;
             for &a in &island_shore {
-                let pa = grid.cell_position(a);
+                let pa = grid.cell_position_index(a);
                 for cell_index in 0..grid.cell_count() {
                     let cell = grid
                         .topology
@@ -458,14 +458,14 @@ pub(super) fn build_bridges(
                     if other.index() == id || !shore(cell_index) {
                         continue;
                     }
-                    let dd = pa.distance(grid.cell_position(cell_index));
+                    let dd = pa.distance(grid.cell_position_index(cell_index));
                     if best.is_none_or(|(bd, _, _)| dd < bd) {
                         best = Some((dd, a, cell_index));
                     }
                 }
             }
             if let Some((_, a, b)) = best {
-                let mid = (grid.cell_direction(a) + grid.cell_direction(b)) * 0.5;
+                let mid = (grid.cell_direction_index(a) + grid.cell_direction_index(b)) * 0.5;
                 let (g1, g2) = (inland(a, mid), inland(b, mid));
                 if good_anchor(g1) && good_anchor(g2) {
                     commit(g1, g2, max_span, &mut spans, &mut mids, painted);
@@ -501,7 +501,7 @@ pub(super) fn resolve_transitions(
             Terrain::River | Terrain::RiverSpring => Terrain::RiverBank,
             _ => {
                 let steep = matches!(base[cell_index], Terrain::Mountain | Terrain::Snow)
-                    || terrain.elevation_at(grid.cell_position(cell_index)) > 0.15;
+                    || terrain.elevation_at(grid.cell_position_index(cell_index)) > 0.15;
                 if steep {
                     Terrain::Cliff
                 } else {
@@ -538,7 +538,7 @@ pub(super) fn resolve_transitions(
             continue;
         }
         if grid
-            .cell_neighbors(cell_index)
+            .cell_neighbors_index(cell_index)
             .iter()
             .filter(|nb| banded[nb.index()])
             .count()
@@ -561,7 +561,7 @@ pub(super) fn resolve_transitions(
             continue;
         }
         if grid
-            .cell_neighbors(cell_index)
+            .cell_neighbors_index(cell_index)
             .iter()
             .any(|nb| base[nb.index()] != base[cell_index])
         {
@@ -724,7 +724,7 @@ pub(super) fn mark_blends(
         // the linking tile between its kind and the most present other LAND
         // kind (water transitions are the shore band's job).
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for cell_index in grid.face_cells(face_index) {
+        for cell_index in grid.face_cells_index(face_index) {
             let t = cells[cell_index];
             if plain(t) && t != tiles[face_index] {
                 *counts.entry(t as u8).or_default() += 1;
@@ -747,7 +747,7 @@ pub(super) fn mark_blends(
 /// Temporary index bridge for geometry-heavy algorithms whose state arrays are
 /// still densely indexed by cell.
 pub(super) fn cell_neighbor_indices(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
-    grid.cell_neighbors(v).iter().map(|cell| cell.index())
+    grid.cell_neighbors_index(v).iter().map(|cell| cell.index())
 }
 
 /// A contiguous cluster of equal values below its minimum size is speckle: it
