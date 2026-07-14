@@ -32,6 +32,7 @@ use crate::wfc;
 use crate::zones::FINE_SUB;
 
 mod domain;
+mod regions;
 mod router;
 
 use domain::{CellField, CellSet, FaceField};
@@ -2675,12 +2676,14 @@ fn build_regions(
     let mut regions: Vec<RegionData> = Vec::new();
     let mut kind_counts: BTreeMap<u8, usize> = BTreeMap::new();
 
-    for start in 0..grid.face_count() {
-        let Some(kind) = class[start] else { continue };
-        if face_region[start] != NO_REGION {
+    let partitioner = regions::RegionPartitioner::new(grid, &class, &terrain_class);
+    for start in grid.topology.faces() {
+        let Some(kind) = class[start.index()] else {
+            continue;
+        };
+        if face_region[start.index()] != NO_REGION {
             continue;
         }
-        let overlay_kind = matches!(kind, RegionKind::Road | RegionKind::Town);
         // Collect the edge-connected cluster. Stored refs are region id + 1
         // (0 = no region, see level::region_index).
         let re = regions.len() as u32 + 1;
@@ -2691,30 +2694,7 @@ fn build_regions(
             RegionKind::Cliff => size_range(Terrain::Cliff).1 * 2,
             _ => usize::MAX,
         };
-        let mut faces = vec![start];
-        let mut q = VecDeque::from([start]);
-        let mut visited_connector = BitSet::new(grid.face_count());
-        face_region[start] = re;
-        while let Some(cur) = q.pop_front() {
-            if faces.len() >= max_faces {
-                break;
-            }
-            for nb in grid.face_neighbors(cur) {
-                if class[nb] == Some(kind) && face_region[nb] == NO_REGION {
-                    face_region[nb] = re;
-                    faces.push(nb);
-                    q.push_back(nb);
-                } else if !overlay_kind
-                    && class[nb] != Some(kind)
-                    && terrain_class[nb] == Some(kind)
-                    && !visited_connector.contains(nb)
-                {
-                    // Overlay face with matching ground: pass through it.
-                    visited_connector.insert(nb);
-                    q.push_back(nb);
-                }
-            }
-        }
+        let faces = partitioner.claim(start, kind, re, max_faces, &mut face_region);
         // Tiny scraps stay unnamed (towns and roads always name).
         let min_faces = match kind {
             RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
@@ -2724,14 +2704,14 @@ fn build_regions(
             _ => 8,
         };
         if faces.len() < min_faces {
-            for fi in faces {
-                face_region[fi] = NO_REGION;
+            for face in faces {
+                face_region[face.index()] = NO_REGION;
             }
             continue;
         }
         let cent = faces
             .iter()
-            .map(|&fi| grid.centroid(fi).0)
+            .map(|face| grid.centroid(face.index()).0)
             .sum::<Vec3>()
             .normalize_or(Vec3::Y);
         let idx = *kind_counts
