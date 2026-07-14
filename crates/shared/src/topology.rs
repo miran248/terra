@@ -30,17 +30,16 @@ pub struct ComponentLabels<I> {
     count: usize,
 }
 
-impl<I: Copy> ComponentLabels<I> {
+impl<I> ComponentLabels<I> {
     pub fn count(&self) -> usize { self.count }
-    pub fn label_at(&self, index: usize) -> Option<I> { self.labels[index] }
 }
 
 impl ComponentLabels<CellComponentId> {
-    pub fn cell(&self, cell: CellId) -> Option<CellComponentId> { self.label_at(cell.index()) }
+    pub fn cell(&self, cell: CellId) -> Option<CellComponentId> { self.labels[cell.index()] }
 }
 
 impl ComponentLabels<FaceComponentId> {
-    pub fn face(&self, face: FaceId) -> Option<FaceComponentId> { self.label_at(face.index()) }
+    pub fn face(&self, face: FaceId) -> Option<FaceComponentId> { self.labels[face.index()] }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,19 +48,14 @@ pub struct DistanceField<I> {
     nearest_source: Vec<Option<I>>,
 }
 
-impl<I: Copy> DistanceField<I> {
-    pub fn steps_at(&self, index: usize) -> Option<u32> { self.steps[index] }
-    pub fn nearest_source_at(&self, index: usize) -> Option<I> { self.nearest_source[index] }
-}
-
 impl DistanceField<CellId> {
-    pub fn cell_steps(&self, cell: CellId) -> Option<u32> { self.steps_at(cell.index()) }
-    pub fn nearest_cell(&self, cell: CellId) -> Option<CellId> { self.nearest_source_at(cell.index()) }
+    pub fn cell_steps(&self, cell: CellId) -> Option<u32> { self.steps[cell.index()] }
+    pub fn nearest_cell(&self, cell: CellId) -> Option<CellId> { self.nearest_source[cell.index()] }
 }
 
 impl DistanceField<FaceId> {
-    pub fn face_steps(&self, face: FaceId) -> Option<u32> { self.steps_at(face.index()) }
-    pub fn nearest_face(&self, face: FaceId) -> Option<FaceId> { self.nearest_source_at(face.index()) }
+    pub fn face_steps(&self, face: FaceId) -> Option<u32> { self.steps[face.index()] }
+    pub fn nearest_face(&self, face: FaceId) -> Option<FaceId> { self.nearest_source[face.index()] }
 }
 
 #[derive(Clone, Debug)]
