@@ -38,7 +38,6 @@ pub struct Grid {
     pub planet: PlanetMesh,
     n: usize,
     /// Canonical unit direction per vertex (cell center).
-    verts: Vec<Vec3>,
     /// The 3 cell ids at each face's corners.
     /// Hexagonal cell adjacency: 5–6 edge-linked neighbor cells.
     vert_adj: Vec<Vec<u32>>,
@@ -58,9 +57,6 @@ impl Grid {
             .map(|triangle| triangle.map(|position| position.to_array()))
             .collect();
         let topology = TerrainTopology::from_triangles(&topology_tris);
-        let verts: Vec<Vec3> = topology.cells()
-            .map(|cell| Vec3::from_array(topology.cell_position(cell)).normalize())
-            .collect();
         let vert_adj: Vec<Vec<u32>> = topology.cells()
             .map(|cell| topology.cell_neighbors(cell).iter().map(|neighbor| neighbor.index() as u32).collect())
             .collect();
@@ -68,7 +64,7 @@ impl Grid {
         debug_assert!(vert_adj.iter().all(|a| (5..=6).contains(&a.len())), "hex adjacency broken");
         debug_assert_eq!(topology.cell_count(), nv);
         debug_assert_eq!(topology.face_count(), n);
-        Self { seed, unit_tris, planet, n, verts, vert_adj, nv, topology }
+        Self { seed, unit_tris, planet, n, vert_adj, nv, topology }
     }
 
     pub fn centroid(&self, fi: usize) -> SpherePos {
@@ -77,7 +73,15 @@ impl Grid {
     }
 
     pub fn cell_position(&self, cell: usize) -> SpherePos {
-        SpherePos::new(self.verts[cell])
+        SpherePos::new(self.cell_direction(cell))
+    }
+
+    fn cell_direction(&self, cell: usize) -> Vec3 {
+        Vec3::from_array(
+            self.topology.cell_position(
+                self.topology.cell(cell).expect("cell index from topology range"),
+            ),
+        ).normalize()
     }
 
     pub fn cell_count(&self) -> usize { self.topology.cell_count() }
@@ -930,8 +934,8 @@ fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
             let Some(fi) = grid.planet.face_at(p) else { continue };
             let vi = grid.face_cells(fi).into_iter()
                 .max_by(|&a, &b| {
-                    grid.verts[a].dot(p)
-                        .partial_cmp(&grid.verts[b].dot(p)).unwrap()
+                    grid.cell_direction(a).dot(p)
+                        .partial_cmp(&grid.cell_direction(b).dot(p)).unwrap()
                 })
                 .unwrap();
             if c.last() == Some(&vi) {
@@ -1212,8 +1216,8 @@ fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
     let fi = grid.planet.face_at(p.0)?;
     grid.face_cells(fi).into_iter()
         .max_by(|&a, &b| {
-            grid.verts[a].dot(p.0)
-                .partial_cmp(&grid.verts[b].dot(p.0)).unwrap()
+            grid.cell_direction(a).dot(p.0)
+                .partial_cmp(&grid.cell_direction(b).dot(p.0)).unwrap()
         })
 }
 
@@ -1341,11 +1345,11 @@ fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
         .collect();
     (0..grid.nv)
         .map(|vi| {
-            let a = grid.verts[vi];
+            let a = grid.cell_direction(vi);
             let mut worst = 0.0f32;
             for &nb in &grid.vert_adj[vi] {
                 let nb = nb as usize;
-                let dist = a.distance(grid.verts[nb]) * crate::sphere::PLANET_RADIUS;
+                let dist = a.distance(grid.cell_direction(nb)) * crate::sphere::PLANET_RADIUS;
                 if dist > 1.0 {
                     worst = worst.max((alt[vi] - alt[nb]).abs() / dist);
                 }
@@ -1395,9 +1399,12 @@ fn lattice_path(
     // Costs in milli-steps. One 60° turn ≈ 1.25 extra steps keeps runs long.
     const STEP: u64 = 1000;
     let turn_cost = |pd: Vec3, d: Vec3| ((1.0 - pd.dot(d)).max(0.0) * 2500.0) as u64;
-    let edge_angle = grid.verts[0].angle_between(grid.verts[grid.vert_adj[0][0] as usize]);
-    let h = |vi: usize| (grid.verts[vi].angle_between(grid.verts[to]) / edge_angle * 990.0) as u64;
-    let dir = |a: usize, b: usize| (grid.verts[b] - grid.verts[a]).normalize();
+    let edge_angle = grid.cell_direction(0)
+        .angle_between(grid.cell_direction(grid.vert_adj[0][0] as usize));
+    let h = |vi: usize| (
+        grid.cell_direction(vi).angle_between(grid.cell_direction(to)) / edge_angle * 990.0
+    ) as u64;
+    let dir = |a: usize, b: usize| (grid.cell_direction(b) - grid.cell_direction(a)).normalize();
 
     // State: (cell, slot of the edge we arrived through; 6 = start).
     let mut best: BTreeMap<(usize, usize), u64> = BTreeMap::new();
@@ -1457,7 +1464,7 @@ fn widen(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<usize> {
     let mut out = chain.to_vec();
     for seg in chain.windows(2) {
         let (a, b) = (seg[0], seg[1]);
-        let left = grid.verts[a].cross(grid.verts[b]);
+        let left = grid.cell_direction(a).cross(grid.cell_direction(b));
         let cell = grid.topology.cell(a).expect("cell index from topology range");
         for &face in grid.topology.cell_faces(cell) {
             let idx = grid.face_cells(face.index());
@@ -1465,7 +1472,7 @@ fn widen(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<usize> {
                 continue;
             }
             let third = idx.iter().find(|&&v| v != a && v != b).unwrap();
-            let side_ok = both_sides || grid.verts[*third].dot(left) > 0.0;
+            let side_ok = both_sides || grid.cell_direction(*third).dot(left) > 0.0;
             if side_ok && !out.contains(third) {
                 out.push(*third);
             }
@@ -1582,7 +1589,10 @@ fn cross_band(
         let s = step - from * step.dot(from);
         s.normalize_or_zero()
     };
-    let heading = tangent(grid.verts[land], grid.verts[first] - grid.verts[land]);
+    let heading = tangent(
+        grid.cell_direction(land),
+        grid.cell_direction(first) - grid.cell_direction(land),
+    );
     if heading == Vec3::ZERO {
         return None;
     }
@@ -1596,7 +1606,7 @@ fn cross_band(
         if !band(cells[cur]) {
             return None;
         }
-        let cpos = grid.verts[cur];
+        let cpos = grid.cell_direction(cur);
         let mut best = None;
         let mut best_dot = -2.0;
         for &nb in &grid.vert_adj[cur] {
@@ -1604,7 +1614,7 @@ fn cross_band(
             if nb == prev {
                 continue;
             }
-            let d = tangent(cpos, grid.verts[nb] - cpos).dot(heading);
+            let d = tangent(cpos, grid.cell_direction(nb) - cpos).dot(heading);
             if d > best_dot {
                 best_dot = d;
                 best = Some(nb);
@@ -1641,7 +1651,8 @@ fn build_bridges(
             .map(|&nb| nb as usize)
             .filter(|&nb| bridge_walkable(cells[nb]))
             .max_by(|&a, &b| {
-                grid.verts[a].distance(away).partial_cmp(&grid.verts[b].distance(away)).unwrap()
+                grid.cell_direction(a).distance(away)
+                    .partial_cmp(&grid.cell_direction(b).distance(away)).unwrap()
             })
             .unwrap_or(vi)
     };
@@ -1734,7 +1745,7 @@ fn build_bridges(
             if l2 == l1 {
                 continue;
             }
-            let mid = (grid.verts[l1] + grid.verts[l2]) * 0.5;
+            let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
                 commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
@@ -1763,7 +1774,7 @@ fn build_bridges(
             if l2 == l1 {
                 continue;
             }
-            let mid = (grid.verts[l1] + grid.verts[l2]) * 0.5;
+            let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
                 commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
@@ -1845,7 +1856,7 @@ fn build_bridges(
                 }
             }
             if let Some((_, a, b)) = best {
-                let mid = (grid.verts[a] + grid.verts[b]) * 0.5;
+                let mid = (grid.cell_direction(a) + grid.cell_direction(b)) * 0.5;
                 let (g1, g2) = (inland(a, mid), inland(b, mid));
                 if good_anchor(g1) && good_anchor(g2) {
                     commit(g1, g2, max_span, &mut spans, &mut mids, painted);
@@ -2446,8 +2457,9 @@ pub fn cluster_face_types(
 pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
     let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
 
-    let vert_r: Vec<f32> =
-        grid.verts.iter().map(|d| terrain.render_radius(SpherePos::new(*d))).collect();
+    let vert_r: Vec<f32> = grid.topology.cells()
+        .map(|cell| terrain.render_radius(grid.cell_position(cell.index())))
+        .collect();
     let lake_components = cluster_cell_types(grid, cells, &[Terrain::Lake]);
     let ocean_components = cluster_cell_types(
         grid,
@@ -2826,8 +2838,8 @@ fn build_mesh(
     landform: &[u8],
     slope_class: &[u8],
 ) -> (Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>) {
-    let vert_r: Vec<f32> = grid.verts.iter()
-        .map(|dir| terrain.render_radius(SpherePos::new(*dir)))
+    let vert_r: Vec<f32> = grid.topology.cells()
+        .map(|cell| terrain.render_radius(grid.cell_position(cell.index())))
         .collect();
 
     let road_color = bevy::prelude::Color::srgb(0.5, 0.42, 0.3).to_linear().to_f32_array();
@@ -2926,9 +2938,9 @@ fn build_mesh(
             }
         };
         tris.push([
-            (grid.verts[idx[0] as usize] * vert_r[idx[0] as usize]).to_array(),
-            (grid.verts[idx[1] as usize] * vert_r[idx[1] as usize]).to_array(),
-            (grid.verts[idx[2] as usize] * vert_r[idx[2] as usize]).to_array(),
+            (grid.cell_direction(idx[0]) * vert_r[idx[0]]).to_array(),
+            (grid.cell_direction(idx[1]) * vert_r[idx[1]]).to_array(),
+            (grid.cell_direction(idx[2]) * vert_r[idx[2]]).to_array(),
         ]);
         cols.push(color);
     }
@@ -3368,8 +3380,11 @@ fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
 /// the map is exact, with a nearest-corner fallback for the (unexpected) miss.
 /// Backs both tile-kind ownership and landform ownership.
 fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default: T) -> Vec<T> {
-    let index: BTreeMap<[u32; 3], u32> = grid.verts.iter().enumerate()
-        .map(|(i, v)| ([v.x.to_bits(), v.y.to_bits(), v.z.to_bits()], i as u32))
+    let index: BTreeMap<[u32; 3], u32> = grid.topology.cells()
+        .map(|cell| {
+            let direction = grid.cell_direction(cell.index());
+            ([direction.x.to_bits(), direction.y.to_bits(), direction.z.to_bits()], cell.index() as u32)
+        })
         .collect();
     (0..terrain.vert_count())
         .map(|vi| {
@@ -3380,8 +3395,8 @@ fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default:
                 None => grid.planet.face_at(d)
                     .map(|fi| {
                         let best = grid.face_cells(fi).into_iter()
-                            .max_by(|&a, &b| grid.verts[a].dot(d)
-                                .partial_cmp(&grid.verts[b].dot(d)).unwrap())
+                            .max_by(|&a, &b| grid.cell_direction(a).dot(d)
+                                .partial_cmp(&grid.cell_direction(b).dot(d)).unwrap())
                             .unwrap();
                         per_cell[best]
                     })
@@ -4003,8 +4018,8 @@ mod tests {
                 // whatever the biome. (An omnidirectional slope at the exact
                 // water's-edge end would just read the natural bank drop.)
                 let cell = state.grid.face_cells(fi).into_iter()
-                    .max_by(|&a, &b| state.grid.verts[a].dot(end.0)
-                        .partial_cmp(&state.grid.verts[b].dot(end.0)).unwrap())
+                    .max_by(|&a, &b| state.grid.cell_direction(a).dot(end.0)
+                        .partial_cmp(&state.grid.cell_direction(b).dot(end.0)).unwrap())
                     .unwrap();
                 let slope = terrain.slope(state.grid.cell_position(cell));
                 assert!(slope < 0.3, "bridge anchor on steep ground: slope {slope}");
