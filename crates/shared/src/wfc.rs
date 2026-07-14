@@ -112,17 +112,10 @@ pub fn solve(
     );
 
     // Min-entropy: the unsolved cell with the fewest remaining options.
-    while let Some(pick) = (0..n)
-        .filter(|&i| result[i].is_none())
-        .min_by_key(|&i| dom[i].len())
-    {
+    while let Some(pick) = min_entropy_cell(&dom, &result) {
         // Transitions only when forced: keep the base classification whenever it
         // survived propagation; roll weights only among forced alternatives.
-        let choice = if dom[pick].iter().any(|&(t, _)| t == fallback[pick]) {
-            fallback[pick]
-        } else {
-            weighted_pick(&dom[pick], &mut rng).unwrap_or(fallback[pick])
-        };
+        let choice = collapse_choice(&dom[pick], fallback[pick], &mut rng);
         result[pick] = Some(choice);
         dom[pick] = vec![(choice, 1.0)];
         let mut queue: std::collections::VecDeque<usize> =
@@ -138,6 +131,24 @@ pub fn solve(
     }
 
     result.into_iter().map(|r| r.unwrap()).collect()
+}
+
+fn min_entropy_cell(domains: &[Vec<(Terrain, f32)>], result: &[Option<Terrain>]) -> Option<usize> {
+    (0..domains.len())
+        .filter(|&cell| result[cell].is_none())
+        .min_by_key(|&cell| domains[cell].len())
+}
+
+fn collapse_choice(
+    domain: &[(Terrain, f32)],
+    fallback: Terrain,
+    rng: &mut fastrand::Rng,
+) -> Terrain {
+    if domain.iter().any(|&(terrain, _)| terrain == fallback) {
+        fallback
+    } else {
+        weighted_pick(domain, rng).unwrap_or(fallback)
+    }
 }
 
 fn neighbor_cells(nbs: &[Neighbor]) -> impl Iterator<Item = usize> + '_ {

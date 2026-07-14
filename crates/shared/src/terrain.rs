@@ -651,7 +651,9 @@ impl TerrainGen {
             if river_faces.contains(&src) {
                 continue;
             }
-            if let Some((way, path_faces)) = self.coarse_path_to_water(src, &river_faces) {
+            if let Some((way, path_faces)) =
+                crate::coarse_river::path_to_water(&self.zones, src, &river_faces)
+            {
                 let samples = densify(&way, 25.0);
                 if samples.len() >= 3 {
                     paths.push(samples);
@@ -665,49 +667,6 @@ impl TerrainGen {
             }
         }
         paths
-    }
-
-    /// BFS over coarse faces from `src` to the nearest water-zone face, routing
-    /// around faces already claimed by other rivers; returns the waypoint polyline
-    /// and the coarse faces it passes through.
-    fn coarse_path_to_water(
-        &self,
-        src: usize,
-        blocked: &std::collections::BTreeSet<usize>,
-    ) -> Option<(Vec<SpherePos>, Vec<usize>)> {
-        let n = self.zones.centroids.len();
-        let mut prev = vec![usize::MAX; n];
-        let mut q = std::collections::VecDeque::from([src]);
-        prev[src] = src;
-        while let Some(cur) = q.pop_front() {
-            if self.zones.kind_of_face(cur).is_water() {
-                let mut path = vec![cur];
-                let mut c = cur;
-                while c != src {
-                    c = prev[c];
-                    path.push(c);
-                }
-                path.reverse();
-                let way = path
-                    .iter()
-                    .map(|&f| SpherePos::new(self.zones.centroids[f]))
-                    .collect();
-                return Some((way, path));
-            }
-            for &nb in &self.zones.adj[cur] {
-                let nb = nb as usize;
-                // Rivers route around other rivers and around settlement zones —
-                // a carved channel would drown the town.
-                if prev[nb] == usize::MAX
-                    && !blocked.contains(&nb)
-                    && self.zones.kind_of_face(nb) != ZoneKind::Settlement
-                {
-                    prev[nb] = cur;
-                    q.push_back(nb);
-                }
-            }
-        }
-        None
     }
 
     // ---- L3 stage 3: settlement anchors (read-only refinement of L1 zones) ----

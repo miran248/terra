@@ -1,3 +1,5 @@
+mod coarse_river;
+
 pub mod items;
 pub mod level;
 pub mod planet;
