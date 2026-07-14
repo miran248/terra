@@ -36,13 +36,7 @@ pub struct Grid {
     pub seed: u32,
     pub unit_tris: Vec<[Vec3; 3]>,
     pub planet: PlanetMesh,
-    n: usize,
-    /// Canonical unit direction per vertex (cell center).
-    /// The 3 cell ids at each face's corners.
-    /// Hexagonal cell adjacency: 5–6 edge-linked neighbor cells.
-    nv: usize,
-    /// Typed project-owned connectivity. New traversal code must use this;
-    /// legacy arrays remain temporarily for geometry-heavy generation code.
+    /// Canonical cell positions and all connectivity.
     pub topology: TerrainTopology,
 }
 
@@ -50,17 +44,13 @@ impl Grid {
     pub fn new(seed: u32) -> Self {
         let unit_tris = unit_icosphere_tris(FINE_SUB);
         let planet = PlanetMesh::new(unit_tris.clone());
-        let n = unit_tris.len();
-
         let topology_tris: Vec<[[f32; 3]; 3]> = unit_tris.iter()
             .map(|triangle| triangle.map(|position| position.to_array()))
             .collect();
         let topology = TerrainTopology::from_triangles(&topology_tris);
-        let nv = topology.cell_count();
         debug_assert!(topology.cells().all(|cell| (5..=6).contains(&topology.cell_neighbors(cell).len())), "hex adjacency broken");
-        debug_assert_eq!(topology.cell_count(), nv);
-        debug_assert_eq!(topology.face_count(), n);
-        Self { seed, unit_tris, planet, n, nv, topology }
+        debug_assert_eq!(topology.face_count(), unit_tris.len());
+        Self { seed, unit_tris, planet, topology }
     }
 
     pub fn centroid(&self, fi: usize) -> SpherePos {
@@ -197,7 +187,7 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
     for it in 0..64 {
         debug_assert!(it < 63, "link_tile_pinches did not converge");
         let mut changed = false;
-        for v in 0..grid.nv {
+        for v in 0..grid.cell_count() {
             if potential_at(grid, cells, v) == 0 {
                 continue;
             }
@@ -258,7 +248,7 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
 fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize) -> bool) {
     for _ in 0..8 {
         let mut changed = false;
-        for v in 0..grid.nv {
+        for v in 0..grid.cell_count() {
             if !bits.contains(v) {
                 continue;
             }
@@ -390,7 +380,7 @@ pub struct GenState {
 impl GenState {
     pub fn new(seed: u32) -> Self {
         let grid = Grid::new(seed);
-        let painted = Painted::empty(grid.nv);
+        let painted = Painted::empty(grid.cell_count());
         Self {
             grid,
             terrain: None,
@@ -650,7 +640,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             // base — high ground gets rock/snow, low ground gets a climate
             // biome — so a "Forest" is genuinely a forested LOWLAND, not a
             // steep slope that merely isn't labelled Mountain.
-            let cells = (0..grid.nv)
+            let cells = (0..grid.cell_count())
                 .map(|vi| classify_cover(grid, terrain, &state.landform, vi))
                 .collect();
             vec![Event::TilesClassified(cells)]
@@ -728,7 +718,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             ))]
         }
         Command::BakeOutputs => {
-            let road_material = (0..state.grid.n).map(|fi| {
+            let road_material = (0..state.grid.face_count()).map(|fi| {
                 let solid = state.grid.face_cells(fi).iter()
                     .filter(|&&cell| state.painted.roads.contains(cell)).count() == 3;
                 if solid {
@@ -987,10 +977,10 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
     // sneak along coarse-face edges past the vertex clamps). Turn it into
     // LakeShore — a one-cell dam that encloses the lake by construction; the
     // elevation solver then lifts it above sea level (LakeShore range).
-    let lake_zone: Vec<bool> = (0..grid.nv)
+    let lake_zone: Vec<bool> = (0..grid.cell_count())
         .map(|vi| cell_zone(grid, terrain, vi) == crate::zones::ZoneKind::Lake)
         .collect();
-    let dams: Vec<usize> = (0..grid.nv)
+    let dams: Vec<usize> = (0..grid.cell_count())
         .filter(|&vi| {
             cells[vi].is_water()
                 && !lake_zone[vi]
@@ -1006,13 +996,19 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
 
     enforce_water_shape(grid, cells);
 
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
+    let mut visited = vec![false; grid.cell_count()];
+    for start in 0..grid.cell_count() {
         if !cells[start].is_water() || matches!(cells[start], Terrain::River | Terrain::RiverSpring) || visited[start] {
             continue;
         }
-        let body = flood_cells(grid, start, &mut visited,
-            |nb| cells[nb].is_water() && !matches!(cells[nb], Terrain::River | Terrain::RiverSpring));
+        let body: Vec<usize> = grid.topology.cell_component(
+            grid.topology.cell(start).expect("cell index from topology range"),
+            |cell| {
+                cells[cell.index()].is_water()
+                    && !matches!(cells[cell.index()], Terrain::River | Terrain::RiverSpring)
+            },
+        ).into_iter().map(|cell| cell.index()).collect();
+        for &cell in &body { visited[cell] = true }
         // A body is an OCEAN only if it reaches ocean-zone cells AND is large
         // enough to be one: an isolated pocket of ocean-zone faces walled off
         // by land (a single coarse face — hence the tell-tale triangle shape)
@@ -1055,9 +1051,9 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
     // Lakes keep their distance from the sea: any lake cell within ~7 cell
     // steps (~250m ≈ the 10-tile rule) of ocean water becomes land, and a
     // lake trimmed under the minimum size drains entirely.
-    let mut ocean_dist = vec![u8::MAX; grid.nv];
+    let mut ocean_dist = vec![u8::MAX; grid.cell_count()];
     let mut q: VecDeque<usize> = VecDeque::new();
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         if cells[vi] == Terrain::Ocean {
             ocean_dist[vi] = 0;
             q.push_back(vi);
@@ -1086,17 +1082,21 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
             .map(|(&k, _)| Terrain::ALL[k as usize])
             .unwrap_or(Terrain::Plains)
     };
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         if cells[vi] == Terrain::Lake && ocean_dist[vi] <= 7 {
             cells[vi] = fill_kind(cells, vi);
         }
     }
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
+    let mut visited = vec![false; grid.cell_count()];
+    for start in 0..grid.cell_count() {
         if cells[start] != Terrain::Lake || visited[start] {
             continue;
         }
-        let body = flood_cells(grid, start, &mut visited, |nb| cells[nb] == Terrain::Lake);
+        let body: Vec<usize> = grid.topology.cell_component(
+            grid.topology.cell(start).expect("cell index from topology range"),
+            |cell| cells[cell.index()] == Terrain::Lake,
+        ).into_iter().map(|cell| cell.index()).collect();
+        for &cell in &body { visited[cell] = true }
         if body.len() < size_range(Terrain::Lake).0 {
             for &vi in &body {
                 cells[vi] = fill_kind(cells, vi);
@@ -1127,9 +1127,9 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 
     for _ in 0..4 {
         let mut changed = false;
-        let mut dist = vec![u8::MAX; grid.nv];
+        let mut dist = vec![u8::MAX; grid.cell_count()];
         let mut q: VecDeque<usize> = VecDeque::new();
-        for vi in 0..grid.nv {
+        for vi in 0..grid.cell_count() {
             if cells[vi].is_land() {
                 dist[vi] = 0;
                 q.push_back(vi);
@@ -1149,9 +1149,9 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
             }
         }
         // Core water reaches outward 2 steps.
-        let mut core_reach = vec![false; grid.nv];
+        let mut core_reach = vec![false; grid.cell_count()];
         let mut q: VecDeque<(usize, u8)> = VecDeque::new();
-        for vi in 0..grid.nv {
+        for vi in 0..grid.cell_count() {
             if wet(cells[vi]) && dist[vi] == u8::MAX {
                 core_reach[vi] = true;
                 q.push_back((vi, 0));
@@ -1168,7 +1168,7 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
                 }
             }
         }
-        for vi in 0..grid.nv {
+        for vi in 0..grid.cell_count() {
             if wet(cells[vi]) && !core_reach[vi] {
                 cells[vi] = fill_kind(cells, vi);
                 changed = true;
@@ -1232,9 +1232,9 @@ fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
 /// (no lowland directly against a peak). Speckle is absorbed into the
 /// surrounding landform so each is a coherent cluster.
 fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
-    let e: Vec<f32> = (0..grid.nv).map(|vi| terrain.elevation_at(grid.cell_position(vi))).collect();
-    let mut lf = vec![LANDFORM_WATER; grid.nv];
-    for vi in 0..grid.nv {
+    let e: Vec<f32> = (0..grid.cell_count()).map(|vi| terrain.elevation_at(grid.cell_position(vi))).collect();
+    let mut lf = vec![LANDFORM_WATER; grid.cell_count()];
+    for vi in 0..grid.cell_count() {
         if e[vi] < 0.0 {
             continue; // water
         }
@@ -1252,7 +1252,7 @@ fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     // Valleys: low ground hemmed in by higher landform on most sides.
     let higher = |l: u8| matches!(l, LANDFORM_HILLS | LANDFORM_MOUNTAINS | LANDFORM_PLATEAU);
     let mut valleys = Vec::new();
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         if lf[vi] == LANDFORM_LOWLAND
             && cell_neighbor_indices(grid, vi).filter(|&nb| higher(lf[nb])).count() >= 3
         {
@@ -1339,10 +1339,10 @@ const SLOPE_CLIFF_MAX: f32 = 0.90;  // ~42°: steep/cliff (impassable) boundary
 /// player traverses rather than interpolation noise. Passes (gentle cells in
 /// mountains) and escarpments (cliff cells) fall out of it automatically.
 fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
-    let alt: Vec<f32> = (0..grid.nv)
+    let alt: Vec<f32> = (0..grid.cell_count())
         .map(|vi| terrain.altitude(grid.cell_position(vi)))
         .collect();
-    (0..grid.nv)
+    (0..grid.cell_count())
         .map(|vi| {
             let a = grid.cell_direction(vi);
             let mut worst = 0.0f32;
@@ -1368,7 +1368,7 @@ fn bucket(value: f32, thresholds: &[f32]) -> u8 {
 /// to abyss offshore (and lake/river beds shallow-to-deep by their concavity).
 /// Land cells are DEPTH_SHALLOW (unused). The depth analogue of slope class.
 fn classify_water_depth(grid: &Grid, cells: &[Terrain], terrain: &TerrainGen) -> Vec<u8> {
-    (0..grid.nv)
+    (0..grid.cell_count())
         .map(|vi| {
             if !cells[vi].is_water() {
                 return DEPTH_SHALLOW;
@@ -1486,7 +1486,7 @@ fn paint_features(
     cells: &[Terrain],
     slope_class: &[u8],
 ) -> (Painted, Vec<Vec<SpherePos>>) {
-    let mut painted = Painted::empty(grid.nv);
+    let mut painted = Painted::empty(grid.cell_count());
     let mut kept: Vec<Vec<SpherePos>> = Vec::new();
     // Roads route on WALKABLE ground: they follow valleys and mountain passes
     // and refuse water and steep slopes (conform, don't carve). A leg that has
@@ -1521,7 +1521,7 @@ fn paint_features(
         kept.push(path.clone());
     }
     // Towns sit on walkable ground within the settlement radius.
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         let pos = grid.cell_position(vi);
         if slope_walkable(slope_class[vi])
             && terrain.settlement_anchors.iter().any(|a| a.distance(pos) <= TOWN_RADIUS)
@@ -1724,7 +1724,7 @@ fn build_bridges(
     // across the band (bank → channel → bank) to walkable ground on the far
     // side. The endpoints are the walkable ground next to the banks.
     let river_band = |t: Terrain| matches!(t, Terrain::River | Terrain::RiverBank);
-    for l1 in 0..grid.nv {
+    for l1 in 0..grid.cell_count() {
         if spans.len() >= BRIDGE_MAX_COUNT {
             break;
         }
@@ -1753,7 +1753,7 @@ fn build_bridges(
     // the swamp itself as the crossable band.
     let swamp_band = |t: Terrain| t == Terrain::Swamp;
     let dry_end = |t: Terrain| bridge_walkable(t) && t != Terrain::Swamp;
-    for l1 in 0..grid.nv {
+    for l1 in 0..grid.cell_count() {
         if spans.len() >= BRIDGE_MAX_COUNT {
             break;
         }
@@ -1794,7 +1794,7 @@ fn build_bridges(
     let mut touch_ocean = vec![false; components.count()];
     let mut only_lake = vec![true; components.count()];
     let mut only_ocean = vec![true; components.count()];
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         let cell = grid.topology.cell(vi).expect("cell index from topology range");
         let Some(id) = components.cell(cell).map(|component| component.index()) else { continue };
         for nb in cell_neighbor_indices(grid, vi) {
@@ -1829,7 +1829,7 @@ fn build_bridges(
             }
             let shore = |vi: usize| bridge_walkable(cells[vi])
                 && grid.cell_neighbors(vi).iter().any(|nb| cells[nb.index()] == shore_kind);
-            let island_shore: Vec<usize> = (0..grid.nv)
+            let island_shore: Vec<usize> = (0..grid.cell_count())
                 .filter(|&vi| {
                     let cell = grid.topology.cell(vi).expect("cell index from topology range");
                     components.cell(cell).is_some_and(|component| component.index() == id) && shore(vi)
@@ -1838,7 +1838,7 @@ fn build_bridges(
             let mut best: Option<(f32, usize, usize)> = None;
             for &a in &island_shore {
                 let pa = grid.cell_position(a);
-                for vi in 0..grid.nv {
+                for vi in 0..grid.cell_count() {
                     let cell = grid.topology.cell(vi).expect("cell index from topology range");
                     let Some(other) = components.cell(cell) else { continue };
                     if other.index() == id || !shore(vi) {
@@ -1891,7 +1891,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     // chain plus the chain right behind it, for beaches, cliffs, lake shores
     // and river banks alike. Wide types (oceans, lakes, rivers, towns) are
     // free-width; bands are not.
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         if base[vi].is_water() {
             continue;
         }
@@ -1901,10 +1901,10 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     }
     // Fill notches: a land cell with ≥2 neighbors in the shore band belongs
     // to the band too.
-    let banded: Vec<bool> = (0..grid.nv)
+    let banded: Vec<bool> = (0..grid.cell_count())
         .map(|vi| matches!(out[vi], Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank))
         .collect();
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         if base[vi].is_water() || banded[vi] {
             continue;
         }
@@ -1915,11 +1915,11 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
 
     // WFC over inland biome edges: land cells bordering a different
     // classification. Water and the shore band enter as fixed neighbors.
-    let in_band: Vec<bool> = (0..grid.nv).map(|vi| out[vi] != base[vi]).collect();
+    let in_band: Vec<bool> = (0..grid.cell_count()).map(|vi| out[vi] != base[vi]).collect();
     let base = &out;
-    let mut cell_of = vec![usize::MAX; grid.nv];
+    let mut cell_of = vec![usize::MAX; grid.cell_count()];
     let mut wfc_cells: Vec<usize> = Vec::new();
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         if base[vi].is_water() || in_band[vi] {
             continue;
         }
@@ -1968,9 +1968,9 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
 /// join their most common plain land neighbor.
 fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
     let dist_to = |pred: &dyn Fn(Terrain) -> bool| -> Vec<u8> {
-        let mut dist = vec![u8::MAX; grid.nv];
+        let mut dist = vec![u8::MAX; grid.cell_count()];
         let mut q: VecDeque<usize> = VecDeque::new();
-        for vi in 0..grid.nv {
+        for vi in 0..grid.cell_count() {
             if pred(cells[vi]) {
                 dist[vi] = 0;
                 q.push_back(vi);
@@ -1992,7 +1992,7 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
     let river = dist_to(&|t| t == Terrain::River);
     let lake = dist_to(&|t| t == Terrain::Lake);
     let sea = dist_to(&|t| t == Terrain::Ocean);
-    for vi in 0..grid.nv {
+    for vi in 0..grid.cell_count() {
         let orphan = match cells[vi] {
             Terrain::RiverBank => river[vi] > 2,
             Terrain::LakeShore => lake[vi] > 2,
@@ -2034,7 +2034,7 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
             || face_solid(grid, &painted.bridge_entries, fi)
     };
     let mut out = Vec::new();
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         if !plain(tiles[fi]) || overlay(fi) {
             continue;
         }
@@ -2077,43 +2077,12 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
 /// join their most common neighboring land kind. Transition bands (shore
 /// kinds) are thin by design and exempt; water minimums live in
 /// normalize_water_bodies.
-/// The one connected-component BFS, over any adjacency: `neighbors(i)` yields
-/// i's neighbours, `member` selects participating nodes, `visited` is threaded
-/// so callers can walk one component at a time. Returns the component reached
-/// from `start`. Everything that clusters the grid — water bodies, lakes,
-/// speckle, islands, regions — goes through this (via the wrappers below).
-fn flood<I: IntoIterator<Item = usize>>(
-    start: usize,
-    visited: &mut [bool],
-    neighbors: impl Fn(usize) -> I,
-    member: impl Fn(usize) -> bool,
-) -> Vec<usize> {
-    let mut out = vec![start];
-    let mut q = VecDeque::from([start]);
-    visited[start] = true;
-    while let Some(cur) = q.pop_front() {
-        for nb in neighbors(cur) {
-            if !visited[nb] && member(nb) {
-                visited[nb] = true;
-                out.push(nb);
-                q.push_back(nb);
-            }
-        }
-    }
-    out
-}
-
-/// Neighbours over the two grid adjacencies, as `usize` iterators.
+/// Temporary index bridge for geometry-heavy algorithms whose state arrays are
+/// still densely indexed by cell.
 fn cell_neighbor_indices(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
     grid.cell_neighbors(v).iter().map(|cell| cell.index())
 }
 
-/// Single-component flood over the VERTEX grid (the common case).
-fn flood_cells(grid: &Grid, start: usize, visited: &mut [bool], member: impl Fn(usize) -> bool) -> Vec<usize> {
-    flood(start, visited, |c| cell_neighbor_indices(grid, c), member)
-}
-
-/// Cluster grid FACES into connected components (shared-edge adjacency).
 /// A contiguous cluster of equal values below its minimum size is speckle: it
 /// is absorbed into its most common eligible neighbor value. Generic over the
 /// value type (biome cover, landform, …). `eligible` selects which values
@@ -2126,13 +2095,17 @@ fn absorb_small_clusters<T: Copy + Ord>(
     min_size: impl Fn(T) -> usize,
     absorbable: impl Fn(T) -> bool,
 ) {
-    let mut visited = vec![false; grid.nv];
-    for start in 0..grid.nv {
+    let mut visited = vec![false; grid.cell_count()];
+    for start in 0..grid.cell_count() {
         if !eligible(out[start]) || visited[start] {
             continue;
         }
         let kind = out[start];
-        let cluster = flood_cells(grid, start, &mut visited, |nb| out[nb] == kind);
+        let cluster: Vec<usize> = grid.topology.cell_component(
+            grid.topology.cell(start).expect("cell index from topology range"),
+            |cell| out[cell.index()] == kind && !visited[cell.index()],
+        ).into_iter().map(|cell| cell.index()).collect();
+        for &cell in &cluster { visited[cell] = true }
         if cluster.len() >= min_size(kind) {
             continue;
         }
@@ -2172,7 +2145,7 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
 fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
     for _ in 0..8 {
         let mut changed = false;
-        for vi in 0..grid.nv {
+        for vi in 0..grid.cell_count() {
             if !matches!(out[vi], Terrain::Beach | Terrain::Cliff) {
                 continue;
             }
@@ -2254,20 +2227,20 @@ fn build_regions(
     painted: &Painted,
 ) -> (Vec<RegionData>, Vec<u32>) {
     let class: Vec<Option<RegionKind>> =
-        (0..grid.n).map(|fi| region_class(grid, face_types, Some(painted), fi)).collect();
+        (0..grid.face_count()).map(|fi| region_class(grid, face_types, Some(painted), fi)).collect();
     // Terrain-derived class ignoring the road/town overlay: a road slicing
     // through a desert must not split it into two regions, so terrain clusters
     // may flow THROUGH overlay faces whose underlying terrain matches (without
     // claiming them — those faces belong to their Road/Town region).
-    let terrain_class: Vec<Option<RegionKind>> = (0..grid.n)
+    let terrain_class: Vec<Option<RegionKind>> = (0..grid.face_count())
         .map(|fi| region_class(grid, face_types, None, fi))
         .collect();
 
-    let mut face_region = vec![NO_REGION; grid.n];
+    let mut face_region = vec![NO_REGION; grid.face_count()];
     let mut regions: Vec<RegionData> = Vec::new();
     let mut kind_counts: BTreeMap<u8, usize> = BTreeMap::new();
 
-    for start in 0..grid.n {
+    for start in 0..grid.face_count() {
         let Some(kind) = class[start] else { continue };
         if face_region[start] != NO_REGION {
             continue;
@@ -2285,7 +2258,7 @@ fn build_regions(
         };
         let mut faces = vec![start];
         let mut q = VecDeque::from([start]);
-        let mut visited_connector = BitSet::new(grid.n);
+        let mut visited_connector = BitSet::new(grid.face_count());
         face_region[start] = re;
         while let Some(cur) = q.pop_front() {
             if faces.len() >= max_faces {
@@ -2393,25 +2366,18 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 /// (roads are an overlay — the cells still hold the terrain beneath).
 /// Reduce a per-cell u8 to per-face by taking the max over the face's corner
 /// cells (used for slope/depth: a face is as steep/deep as its worst corner).
-/// Label EVERY member vertex with its connected-component id (-1 for non-members),
-/// walking shared-edge adjacency — the full-partition form of [`flood_cells`].
-/// The one clustering primitive: run it with any membership predicate (a single
-/// type, a set of types, water bodies, biome masses, …) and query membership by
-/// "same id ⇒ same cluster". Run it with different predicates and a vertex can
-/// land in several (overlapping) clusterings.
 /// Cluster authoritative terrain cells whose type occurs in `types`.
 ///
 /// Every selected type belongs to the same membership class: adjacent selected
-/// cells connect even when their terrain types differ. The returned labels are
-/// `-1` for cells outside the set; each connected selected group has one
-/// non-negative id. An empty set has no components and duplicate types do not
-/// affect the result.
+/// cells connect even when their terrain types differ. Cells outside the set
+/// have no typed label. An empty set has no components and duplicate types do
+/// not affect the result.
 pub fn cluster_cell_types(
     grid: &Grid,
     cells: &[Terrain],
     types: &[Terrain],
 ) -> ComponentLabels<CellComponentId> {
-    assert_eq!(cells.len(), grid.nv, "cell type count must match the grid");
+    assert_eq!(cells.len(), grid.cell_count(), "cell type count must match the grid");
     grid.topology.cell_components(|cell| types.contains(&cells[cell.index()]))
 }
 
@@ -2427,7 +2393,7 @@ pub fn cluster_face_types(
     face_types: &[Terrain],
     types: &[Terrain],
 ) -> ComponentLabels<FaceComponentId> {
-    assert_eq!(face_types.len(), grid.n, "face type count must match the grid");
+    assert_eq!(face_types.len(), grid.face_count(), "face type count must match the grid");
     grid.topology.face_components(|face| types.contains(&face_types[face.index()]))
 }
 
@@ -2465,7 +2431,7 @@ pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain])
     let mut rim: Vec<Vec<f32>> = vec![Vec::new(); lake_components.count()];
     let mut peak = vec![f32::MIN; lake_components.count()];
     let mut is_sea = vec![false; ocean_components.count()];
-    for v in 0..grid.nv {
+    for v in 0..grid.cell_count() {
         let cell = grid.topology.cell(v).expect("cell index from topology range");
         if let Some(component) = lake_components.cell(cell) {
             let c = component.index();
@@ -2493,7 +2459,7 @@ pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain])
         })
         .collect();
 
-    (0..grid.n)
+    (0..grid.face_count())
         .map(|fi| {
             let idx = grid.face_cells(fi);
             // Sea: any corner in a real sea body (coast overdraw hidden by depth).
@@ -2543,9 +2509,9 @@ pub fn river_surface_radii(
     face_types: &[Terrain],
     face_water_r: &[f32],
 ) -> Vec<[f32; 3]> {
-    assert_eq!(mesh_tris.len(), grid.n, "river mesh must match the grid");
-    assert_eq!(face_types.len(), grid.n, "river face types must match the grid");
-    assert_eq!(face_water_r.len(), grid.n, "river waterlines must match the grid");
+    assert_eq!(mesh_tris.len(), grid.face_count(), "river mesh must match the grid");
+    assert_eq!(face_types.len(), grid.face_count(), "river face types must match the grid");
+    assert_eq!(face_water_r.len(), grid.face_count(), "river waterlines must match the grid");
     let core: Vec<bool> = face_types.iter()
         .map(|&t| matches!(t, Terrain::River | Terrain::RiverSpring | Terrain::RiverBank))
         .collect();
@@ -2553,7 +2519,7 @@ pub fn river_surface_radii(
     // it adds a full face ring beyond irregular RiverBank tiles, so the water
     // skin cannot end short of the visible bank. Do not spread into cliffs or
     // another water body; outlet edges have their own exact waterline anchor.
-    let footprint: Vec<bool> = (0..grid.n).map(|fi| {
+    let footprint: Vec<bool> = (0..grid.face_count()).map(|fi| {
         core[fi] || (
             !face_types[fi].is_water()
                 && face_types[fi] != Terrain::Cliff
@@ -2563,7 +2529,7 @@ pub fn river_surface_radii(
     let components = grid.topology.face_components(|face| footprint[face.index()]);
     let component: Vec<_> = grid.topology.faces().map(|face| components.face(face)).collect();
     let mut has_river = vec![false; components.count()];
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         if let Some(component) = component[fi]
             && matches!(face_types[fi], Terrain::River | Terrain::RiverSpring)
         {
@@ -2573,7 +2539,7 @@ pub fn river_surface_radii(
 
     let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
     let mut node_of: BTreeMap<[u32; 3], usize> = BTreeMap::new();
-    let mut nodes = vec![[usize::MAX; 3]; grid.n];
+    let mut nodes = vec![[usize::MAX; 3]; grid.face_count()];
     let mut neighbors: Vec<Vec<usize>> = Vec::new();
     let mut measured_sum: Vec<f32> = Vec::new();
     let mut measured_count: Vec<u32> = Vec::new();
@@ -2582,7 +2548,7 @@ pub fn river_surface_radii(
     let mut spring_anchor: Vec<f32> = Vec::new();
     let mut outlet_anchor: Vec<f32> = Vec::new();
     let mut bank_edge_anchor: Vec<f32> = Vec::new();
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         let Some(c) = component[fi] else { continue };
         if !has_river[c.index()] { continue }
         for (k, &corner) in mesh_tris[fi].iter().enumerate() {
@@ -2634,7 +2600,7 @@ pub fn river_surface_radii(
     // not a channel-height interpolation that can float beside a deep or wide
     // bank. Sink it just below the ground to avoid a visible crack from tiny
     // precision differences between the independently drawn meshes.
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         let Some(c) = component[fi] else { continue };
         if !has_river[c.index()] { continue }
         for neighbor in grid.face_neighbors(fi) {
@@ -2658,7 +2624,7 @@ pub fn river_surface_radii(
     // Feed that exact waterline into the river interpolation and retain it as
     // a hard final anchor, so the two independently drawn meshes join without
     // a vertical seam or a dry gap.
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         let Some(c) = component[fi] else { continue };
         if !has_river[c.index()] { continue }
         for neighbor in grid.face_neighbors(fi) {
@@ -2734,7 +2700,7 @@ pub fn river_surface_radii(
     // water field: a local terrain spike cannot add a visible crease or seam
     // across the channel. The buried apron only widens its footprint.
     let mut clearance = vec![RIVER_SURFACE_CLEARANCE; components.count()];
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         let Some(c) = component[fi] else { continue };
         if face_types[fi] != Terrain::River { continue }
         let c = c.index();
@@ -2743,7 +2709,7 @@ pub fn river_surface_radii(
                 .max(river_corner[node] - surface[node] + RIVER_SURFACE_CLEARANCE);
         }
     }
-    (0..grid.n).map(|fi| {
+    (0..grid.face_count()).map(|fi| {
         let Some(c) = component[fi] else { return [0.0; 3] };
         if !has_river[c.index()] { return [0.0; 3] }
         nodes[fi].map(|node| {
@@ -2767,7 +2733,7 @@ pub fn river_surface_radii(
 }
 
 pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
-    (0..grid.n)
+    (0..grid.face_count())
         .map(|fi| grid.face_cells(fi).into_iter().map(|cell| per_cell[cell]).max().unwrap_or(0))
         .collect()
 }
@@ -2775,7 +2741,7 @@ pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
 /// Reduce a per-cell u8 to per-face by majority corner (used for landform: the
 /// massif a face sits in).
 pub fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
-    (0..grid.n)
+    (0..grid.face_count())
         .map(|fi| {
             let mut c: BTreeMap<u8, usize> = BTreeMap::new();
             for cell in grid.face_cells(fi) {
@@ -2846,9 +2812,9 @@ fn build_mesh(
     };
     let town_color = crate::theme::WARNING.to_linear().to_f32_array();
     let entry_color = bevy::prelude::Color::srgb(0.42, 0.33, 0.24).to_linear().to_f32_array();
-    let mut tris = Vec::with_capacity(grid.n);
-    let mut cols = Vec::with_capacity(grid.n);
-    for fi in 0..grid.n {
+    let mut tris = Vec::with_capacity(grid.face_count());
+    let mut cols = Vec::with_capacity(grid.face_count());
+    for fi in 0..grid.face_count() {
         let idx = grid.face_cells(fi);
         // Features are built structures: a face the feature OWNS (≥2 painted
         // corners — the two-triangle quads along the painted cell chain)
@@ -3030,7 +2996,7 @@ fn place_flora(
 ) -> Vec<FloraData> {
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ FLORA_RNG_SALT);
     let mut out = Vec::new();
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         let clear = painted_corners(grid, &painted.roads, fi) > 0
             || painted_corners(grid, &painted.towns, fi) > 0
             || painted_corners(grid, &painted.bridge_entries, fi) > 0
@@ -3129,7 +3095,7 @@ fn place_structures(
     // corner (watchtowers on a ridge are the exception — handled below).
     let buildable = |fi: usize| grid.face_cells(fi).into_iter()
         .all(|cell| slope_walkable(slope_class[cell]));
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         if tiles[fi].is_water() || !buildable(fi) {
             continue;
         }
@@ -3185,10 +3151,10 @@ fn place_structures(
 }
 
 fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
-    let mut off = Vec::with_capacity(grid.n + 1);
+    let mut off = Vec::with_capacity(grid.face_count() + 1);
     let mut data = Vec::new();
     off.push(0u32);
-    for fi in 0..grid.n {
+    for fi in 0..grid.face_count() {
         if face_solid(grid, &painted.roads, fi) { data.push(TAG_ROAD); }
         if face_solid(grid, &painted.towns, fi) { data.push(TAG_TOWN); }
         if face_solid(grid, &painted.bridges, fi) { data.push(TAG_BRIDGE); }
@@ -3456,7 +3422,7 @@ fn solve_elevation(
         lo[vi] = rlo;
         hi[vi] = rhi;
     }
-    for ci in 0..grid.nv {
+    for ci in 0..grid.cell_count() {
         if painted.roads.contains(ci) {
             for &(vi, _) in terrain.kernel(grid.cell_position(ci))[..3].iter() {
                 is_road_vert[vi] = true;
@@ -3947,7 +3913,7 @@ mod tests {
         });
         let mut sizes = vec![0usize; components.count()];
         let mut is_ocean = vec![false; components.count()];
-        for v in 0..state.grid.nv {
+        for v in 0..state.grid.cell_count() {
             let cell = state.grid.topology.cell(v).unwrap();
             let Some(c) = components.cell(cell).map(|component| component.index()) else { continue };
             sizes[c] += 1;
@@ -3966,7 +3932,7 @@ mod tests {
         // Deep water never surfaces: every abyss-depth cell solves well below
         // the waterline (the depth class replaces the old DeepOcean tile).
         // (Depth is per grid CELL — sample the solved field at the cell.)
-        for vi in 0..state.grid.nv {
+        for vi in 0..state.grid.cell_count() {
             if state.water_depth[vi] == DEPTH_ABYSS {
                 let d = terrain.elevation_at(state.grid.cell_position(vi));
                 assert!(d < -0.1, "abyss cell {vi} not deep: {d}");
@@ -3975,12 +3941,12 @@ mod tests {
 
         // Roads never sit on water: checked per cell (painting is per cell)
         // and per solid road face.
-        for vi in 0..state.grid.nv {
+        for vi in 0..state.grid.cell_count() {
             if state.painted.roads.contains(vi) {
                 assert!(state.cells[vi].is_land(), "road painted on water cell {vi}");
             }
         }
-        for fi in 0..state.grid.n {
+        for fi in 0..state.grid.face_count() {
             let solid = state.grid.face_cells(fi).iter()
                 .filter(|&&cell| state.painted.roads.contains(cell))
                 .count() == 3;
@@ -4025,7 +3991,7 @@ mod tests {
         // Also checked: every face's type is one of its corner cells, and
         // solid feature faces obey the same fan rule.
         {
-            for fi in 0..state.grid.n {
+            for fi in 0..state.grid.face_count() {
                 let corners = state.grid.face_cells(fi);
                 assert!(
                     corners.iter().any(|&cell| state.cells[cell] == state.tiles[fi]),
@@ -4035,7 +4001,7 @@ mod tests {
             }
             let mut tile_pinches = 0usize;
             let mut road_pinches = 0usize;
-            for v in 0..state.grid.nv {
+            for v in 0..state.grid.cell_count() {
                 let ring = ring(&state.grid, v);
                 let n = ring.len();
                 let ts: Vec<Terrain> = (0..n)
@@ -4073,9 +4039,9 @@ mod tests {
             assert_eq!(road_pinches, 0, "road strip pinched at a vertex");
 
             // Lake-to-ocean distance ≥ 10 edge steps.
-            let mut dist = vec![u16::MAX; state.grid.n];
+            let mut dist = vec![u16::MAX; state.grid.face_count()];
             let mut q: VecDeque<usize> = VecDeque::new();
-            for fi in 0..state.grid.n {
+            for fi in 0..state.grid.face_count() {
                 // Actual ocean TILES, not ocean-zone: an isolated ocean-zone
                 // pocket is reclassified to a lake (see size_range(Ocean)) and
                 // must not seed the distance field.
@@ -4095,7 +4061,7 @@ mod tests {
                     }
                 }
             }
-            for fi in 0..state.grid.n {
+            for fi in 0..state.grid.face_count() {
                 if state.tiles[fi] == Terrain::Lake {
                     assert!(
                         dist[fi] > 10,
@@ -4210,13 +4176,13 @@ mod tests {
         let grid = Grid::new(1);
 
         let cell_neighbor = grid.cell_neighbors(0)[0].index();
-        let cell_distant = (0..grid.nv).find(|&v| {
+        let cell_distant = (0..grid.cell_count()).find(|&v| {
             v != 0
                 && v != cell_neighbor
                 && !grid.cell_neighbors(0).iter().any(|cell| cell.index() == v)
                 && !grid.cell_neighbors(cell_neighbor).iter().any(|cell| cell.index() == v)
         }).expect("grid needs a non-adjacent cell");
-        let mut cells = vec![Terrain::Plains; grid.nv];
+        let mut cells = vec![Terrain::Plains; grid.cell_count()];
         cells[0] = Terrain::Forest;
         cells[cell_neighbor] = Terrain::Mountain;
         cells[cell_distant] = Terrain::Snow;
@@ -4233,13 +4199,13 @@ mod tests {
         assert_eq!(cell_components.cell(cell(cell_nonmember)), None);
 
         let face_neighbor = grid.face_neighbors(0)[0];
-        let face_distant = (0..grid.n).find(|&f| {
+        let face_distant = (0..grid.face_count()).find(|&f| {
             f != 0
                 && f != face_neighbor
                 && !grid.face_neighbors(0).contains(&f)
                 && !grid.face_neighbors(face_neighbor).contains(&f)
         }).expect("grid needs a non-adjacent face");
-        let mut face_types = vec![Terrain::Plains; grid.n];
+        let mut face_types = vec![Terrain::Plains; grid.face_count()];
         face_types[0] = Terrain::Beach;
         face_types[face_neighbor] = Terrain::Cliff;
         face_types[face_distant] = Terrain::Ocean;
@@ -4273,7 +4239,7 @@ mod tests {
 
         let mut spring_corners = 0usize;
         let mut outlet_corners = 0usize;
-        for fi in 0..state.grid.n {
+        for fi in 0..state.grid.face_count() {
             if state.tiles[fi] == Terrain::RiverSpring {
                 for corner in 0..3 {
                     spring_corners += 1;
@@ -4324,7 +4290,7 @@ mod tests {
         let mut sizes = vec![0usize; components.count()];
         let mut has_lake = vec![false; components.count()];
         let mut has_ocean = vec![false; components.count()];
-        for fi in 0..state.grid.n {
+        for fi in 0..state.grid.face_count() {
             let face = state.grid.topology.face(fi).unwrap();
             let Some(c) = components.face(face).map(|component| component.index()) else { continue };
             sizes[c] += 1;
@@ -4349,8 +4315,8 @@ mod tests {
         // Every river must join a larger water body — no thin terrain band
         // may cut a mouth off (guards the junction-face damming bug).
         let state = run(1337, |_| {});
-        let mut visited = vec![false; state.grid.nv];
-        for start in 0..state.grid.nv {
+        let mut visited = vec![false; state.grid.cell_count()];
+        for start in 0..state.grid.cell_count() {
             if !matches!(state.cells[start], Terrain::River | Terrain::RiverSpring) || visited[start] {
                 continue;
             }
@@ -4375,7 +4341,7 @@ mod tests {
             // And the mouth is open at FACE level too: some River face is
             // edge-adjacent to an Ocean/Lake face.
             let mut open = false;
-            'faces: for fi in 0..state.grid.n {
+            'faces: for fi in 0..state.grid.face_count() {
                 if !matches!(state.tiles[fi], Terrain::River | Terrain::RiverSpring) {
                     continue;
                 }
@@ -4407,7 +4373,7 @@ mod tests {
 
         // (a) each undirected edge belongs to exactly two faces.
         let mut edge_faces: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-        for fi in 0..grid.n {
+        for fi in 0..grid.face_count() {
             let idx = grid.face_cells(fi);
             for k in 0..3 {
                 let (a, b) = (idx[k], idx[(k + 1) % 3]);
@@ -4422,7 +4388,7 @@ mod tests {
         // (b) every cell's faces form ONE closed fan: walking face→face
         // across shared edges visits all of them and returns. A cell whose
         // fan splits is a pinhole even if each edge is shared twice.
-        for v in 0..grid.nv {
+        for v in 0..grid.cell_count() {
             let cell = grid.topology.cell(v).expect("cell index from topology range");
             let faces = grid.topology.cell_faces(cell);
             let n = faces.len();

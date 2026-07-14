@@ -141,6 +141,12 @@ impl TerrainTopology {
     pub fn face_components(&self, member: impl Fn(FaceId) -> bool) -> ComponentLabels<FaceComponentId> {
         components(&self.face_neighbors, FaceId::new, member, FaceComponentId::new)
     }
+    pub fn cell_component(&self, start: CellId, member: impl Fn(CellId) -> bool) -> Vec<CellId> {
+        component(&self.cell_neighbors, start, member)
+    }
+    pub fn face_component(&self, start: FaceId, member: impl Fn(FaceId) -> bool) -> Vec<FaceId> {
+        component(&self.face_neighbors, start, member)
+    }
     pub fn cell_distances(&self, sources: &[CellId], max_steps: u32) -> DistanceField<CellId> {
         distances(&self.cell_neighbors, sources, max_steps)
     }
@@ -156,6 +162,28 @@ impl TerrainTopology {
     pub fn cell_shortest_path_to(&self, start: CellId, max_steps: u32, goal: impl Fn(CellId) -> bool) -> Option<Vec<CellId>> {
         shortest_path_to(&self.cell_neighbors, start, max_steps, goal)
     }
+}
+
+fn component<I: Copy + IdIndex>(
+    adjacency: &[impl AsRef<[I]>],
+    start: I,
+    member: impl Fn(I) -> bool,
+) -> Vec<I> {
+    if !member(start) { return Vec::new() }
+    let mut visited = vec![false; adjacency.len()];
+    let mut result = vec![start];
+    let mut queue = VecDeque::from([start]);
+    visited[start.index()] = true;
+    while let Some(current) = queue.pop_front() {
+        for &next in adjacency[current.index()].as_ref() {
+            if !visited[next.index()] && member(next) {
+                visited[next.index()] = true;
+                result.push(next);
+                queue.push_back(next);
+            }
+        }
+    }
+    result
 }
 
 fn components<I: Copy + IdIndex, C: Copy>(adjacency: &[impl AsRef<[I]>], id: impl Fn(usize) -> I, member: impl Fn(I) -> bool, component: impl Fn(usize) -> C) -> ComponentLabels<C>
@@ -272,6 +300,8 @@ mod tests {
         let fc = topology.face_components(|face| face != faces[3]);
         assert_eq!(fc.count(), 1);
         assert_eq!(fc.face(faces[3]), None);
+        assert_eq!(topology.cell_component(cells[0], |cell| cell != cells[3]).len(), 3);
+        assert_eq!(topology.face_component(faces[0], |face| face != faces[3]).len(), 3);
         let cd = topology.cell_distances(&[cells[0]], 1);
         assert_eq!(cd.cell_steps(cells[1]), Some(1));
         assert_eq!(cd.nearest_cell(cells[1]), Some(cells[0]));
