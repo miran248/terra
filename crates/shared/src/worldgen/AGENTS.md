@@ -14,8 +14,11 @@ Private implementation modules for deterministic world generation.
 
 # Work Guidance
 
+- `classification.rs` — terrain/face classification primitives and ordered buckets.
 - `domain.rs` — typed dense `CellField`, `FaceField`, and `CellSet` storage.
 - `elevation.rs` — constraint storage, ordered relaxation, result classification, and typed solver-vertex graph.
+- `features.rs` — typed feature ownership and face projection rules.
+- `projection.rs` — deterministic cell-to-face reductions.
 - `regions.rs` — typed overlay-aware face partitioning with connector pass-through.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
 

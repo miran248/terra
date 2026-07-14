@@ -31,8 +31,11 @@ use crate::topology::{CellComponentId, ComponentLabels, TerrainTopology};
 use crate::wfc;
 use crate::zones::FINE_SUB;
 
+mod classification;
 mod domain;
 mod elevation;
+mod features;
+mod projection;
 mod regions;
 mod router;
 
@@ -148,37 +151,10 @@ fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> FaceField<Terrain> {
         .faces()
         .map(|face| {
             let idx = grid.face_cells(face.index());
-            derive_one(cells[idx[0]], cells[idx[1]], cells[idx[2]])
+            classification::derive_face(cells[idx[0]], cells[idx[1]], cells[idx[2]])
         })
         .collect::<Vec<_>>()
         .into()
-}
-
-fn derive_one(a: Terrain, b: Terrain, c: Terrain) -> Terrain {
-    let pri = |t: Terrain| match t {
-        Terrain::Beach | Terrain::Cliff | Terrain::LakeShore | Terrain::RiverBank => 0u8,
-        t if t.is_water() => 1,
-        _ => 2,
-    };
-    if a == b || a == c {
-        a
-    } else if b == c {
-        b
-    } else if [a, b, c].iter().filter(|t| t.is_water()).count() >= 2 {
-        // Two water kinds meeting (a river mouth: River + Ocean + bank) are
-        // never dammed by the third corner — the face stays water, keeping
-        // the water surface continuous where bodies join.
-        [a, b, c]
-            .into_iter()
-            .filter(|t| t.is_water())
-            .min_by_key(|t| *t as u8)
-            .unwrap()
-    } else {
-        [a, b, c]
-            .into_iter()
-            .min_by_key(|t| (pri(*t), *t as u8))
-            .unwrap()
-    }
 }
 
 /// The neighbors of a cell in CYCLIC order (walking the face fan), starting
@@ -226,7 +202,9 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
         let ring = ring(grid, v);
         let n = ring.len();
         let ts: Vec<Terrain> = (0..n)
-            .map(|i| derive_one(cells[v], cells[ring[i]], cells[ring[(i + 1) % n]]))
+            .map(|i| {
+                classification::derive_face(cells[v], cells[ring[i]], cells[ring[(i + 1) % n]])
+            })
             .collect();
         let mut types = ts.clone();
         types.sort_by_key(|t| *t as u8);
@@ -263,7 +241,13 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
             let ts: Vec<Terrain> = {
                 let n = ring_v.len();
                 (0..n)
-                    .map(|i| derive_one(cells[v], cells[ring_v[i]], cells[ring_v[(i + 1) % n]]))
+                    .map(|i| {
+                        classification::derive_face(
+                            cells[v],
+                            cells[ring_v[i]],
+                            cells[ring_v[(i + 1) % n]],
+                        )
+                    })
                     .collect()
             };
             let mut types = ts;
@@ -383,10 +367,7 @@ impl Painted {
 
 /// How many of a face's corner cells are in the set.
 fn painted_corners(grid: &Grid, bits: &BitSet, fi: usize) -> usize {
-    grid.face_cells(fi)
-        .iter()
-        .filter(|&&cell| bits.contains(cell))
-        .count()
+    features::painted_corners(grid, bits, fi)
 }
 
 /// A face is a solid feature surface only when the feature owns ALL its
@@ -395,7 +376,7 @@ fn painted_corners(grid: &Grid, bits: &BitSet, fi: usize) -> usize {
 /// themselves). Faces with 1–2 painted corners form one straight-edged strip
 /// on each side — the blend band, rendered as a per-corner gradient.
 fn face_solid(grid: &Grid, bits: &BitSet, fi: usize) -> bool {
-    painted_corners(grid, bits, fi) == 3
+    features::face_solid(grid, bits, fi)
 }
 
 // ---- state ----
@@ -1479,23 +1460,7 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 /// here: min-ocean sits one above max-lake, so a small isolated ocean-zone
 /// pocket falls through to Lake.
 fn size_range(t: Terrain) -> (usize, usize) {
-    use Terrain::*;
-    const INF: usize = usize::MAX;
-    match t {
-        // A real sea; anything smaller on ocean zone is reclassified a lake.
-        Ocean => (4000, INF),
-        // Enclosed water: a puddle below min is filled; capped just under the
-        // ocean minimum so "min ocean > max lake" holds by construction.
-        Lake => (60, 3999),
-        // Linear water/bands — area minimums don't apply.
-        River | RiverSpring | LakeShore | RiverBank => (1, INF),
-        // Coastal bands: thin, with a min length and a max named-segment length.
-        Beach => (20, 60),
-        Cliff => (1, 24),
-        // Land biomes: a patch below min is speckle and joins its surroundings.
-        Desert | Plains | Forest | Tundra | Mountain | Snow | Swamp | Jungle | Savanna
-        | Volcanic | Glacier => (40, INF),
-    }
+    classification::size_range(t)
 }
 
 /// Nearest cell to a point: the closest corner of the face under it.
@@ -1690,7 +1655,7 @@ fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
 /// The number of ascending `thresholds` a value reaches — turns a measurement
 /// into an ordered class (flat/gentle/steep/cliff, shallow/deep/abyss).
 fn bucket(value: f32, thresholds: &[f32]) -> u8 {
-    thresholds.iter().filter(|&&t| value >= t).count() as u8
+    classification::bucket(value, thresholds)
 }
 
 /// Per-water-cell depth class from the solved surface: shore-shallows deepen
@@ -1716,38 +1681,14 @@ fn classify_water_depth(grid: &Grid, cells: &[Terrain], terrain: &TerrainGen) ->
 /// every face between the two lines has ≥2 painted corners — a gap-free strip
 /// of stacked parallelograms with straight edges.
 fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
-    widen(grid, chain, false)
+    features::widen_band(grid, chain, false)
 }
 
 /// Three lattice lines: the chain plus BOTH side partners (~105m) — wide
 /// enough that the elevation solver owns distinct channel and bank verts and
 /// can actually carve a cross-section (rivers).
 fn widen_band_sym(grid: &Grid, chain: &[usize]) -> Vec<usize> {
-    widen(grid, chain, true)
-}
-
-fn widen(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<usize> {
-    let mut out = chain.to_vec();
-    for seg in chain.windows(2) {
-        let (a, b) = (seg[0], seg[1]);
-        let left = grid.cell_direction(a).cross(grid.cell_direction(b));
-        let cell = grid
-            .topology
-            .cell(a)
-            .expect("cell index from topology range");
-        for &face in grid.topology.cell_faces(cell) {
-            let idx = grid.face_cells(face.index());
-            if !idx.contains(&b) {
-                continue;
-            }
-            let third = idx.iter().find(|&&v| v != a && v != b).unwrap();
-            let side_ok = both_sides || grid.cell_direction(*third).dot(left) > 0.0;
-            if side_ok && !out.contains(third) {
-                out.push(*third);
-            }
-        }
-    }
-    out
+    features::widen_band(grid, chain, true)
 }
 
 /// Roads may not cross water: a planned path whose cell chain touches a water
@@ -1845,16 +1786,7 @@ const BRIDGE_MAX_FOOTING_SLOPE: f32 = 0.25;
 /// Terrain a bridge may land on: gentle, walkable ground — never a mountain,
 /// cliff, snowfield, glacier or volcanic slope.
 fn bridge_walkable(t: Terrain) -> bool {
-    matches!(
-        t,
-        Terrain::Plains
-            | Terrain::Forest
-            | Terrain::Savanna
-            | Terrain::Tundra
-            | Terrain::Desert
-            | Terrain::Jungle
-            | Terrain::Swamp
-    )
+    features::bridge_walkable(t)
 }
 
 /// Walk straight across a water band from walkable ground `land`, entering the
@@ -3285,32 +3217,13 @@ fn river_surface_radii(
 }
 
 fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
-    (0..grid.face_count())
-        .map(|fi| {
-            grid.face_cells(fi)
-                .into_iter()
-                .map(|cell| per_cell[cell])
-                .max()
-                .unwrap_or(0)
-        })
-        .collect()
+    projection::face_max(grid, per_cell)
 }
 
 /// Reduce a per-cell u8 to per-face by majority corner (used for landform: the
 /// massif a face sits in).
 fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
-    (0..grid.face_count())
-        .map(|fi| {
-            let mut c: BTreeMap<u8, usize> = BTreeMap::new();
-            for cell in grid.face_cells(fi) {
-                *c.entry(per_cell[cell]).or_default() += 1;
-            }
-            c.into_iter()
-                .max_by_key(|(_, n)| *n)
-                .map(|(k, _)| k)
-                .unwrap_or(0)
-        })
-        .collect()
+    projection::face_majority(grid, per_cell)
 }
 
 fn face_road_material(
@@ -4766,7 +4679,7 @@ mod tests {
                 let n = ring.len();
                 let ts: Vec<Terrain> = (0..n)
                     .map(|i| {
-                        match derive_one(
+                        match classification::derive_face(
                             state.cells[v],
                             state.cells[ring[i]],
                             state.cells[ring[(i + 1) % n]],
