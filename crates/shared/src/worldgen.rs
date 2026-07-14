@@ -40,7 +40,6 @@ pub struct Grid {
     /// Canonical unit direction per vertex (cell center).
     /// The 3 cell ids at each face's corners.
     /// Hexagonal cell adjacency: 5–6 edge-linked neighbor cells.
-    vert_adj: Vec<Vec<u32>>,
     nv: usize,
     /// Typed project-owned connectivity. New traversal code must use this;
     /// legacy arrays remain temporarily for geometry-heavy generation code.
@@ -57,14 +56,11 @@ impl Grid {
             .map(|triangle| triangle.map(|position| position.to_array()))
             .collect();
         let topology = TerrainTopology::from_triangles(&topology_tris);
-        let vert_adj: Vec<Vec<u32>> = topology.cells()
-            .map(|cell| topology.cell_neighbors(cell).iter().map(|neighbor| neighbor.index() as u32).collect())
-            .collect();
         let nv = topology.cell_count();
-        debug_assert!(vert_adj.iter().all(|a| (5..=6).contains(&a.len())), "hex adjacency broken");
+        debug_assert!(topology.cells().all(|cell| (5..=6).contains(&topology.cell_neighbors(cell).len())), "hex adjacency broken");
         debug_assert_eq!(topology.cell_count(), nv);
         debug_assert_eq!(topology.face_count(), n);
-        Self { seed, unit_tris, planet, n, vert_adj, nv, topology }
+        Self { seed, unit_tris, planet, n, nv, topology }
     }
 
     pub fn centroid(&self, fi: usize) -> SpherePos {
@@ -98,6 +94,12 @@ impl Grid {
         self.topology
             .face_cells(self.topology.face(face).expect("face index from topology range"))
             .map(|cell| cell.index())
+    }
+
+    fn cell_neighbors(&self, cell: usize) -> &[crate::topology::CellId] {
+        self.topology.cell_neighbors(
+            self.topology.cell(cell).expect("cell index from topology range"),
+        )
     }
 }
 
@@ -135,8 +137,8 @@ fn derive_one(a: Terrain, b: Terrain, c: Terrain) -> Terrain {
 /// The neighbors of a cell in CYCLIC order (walking the face fan), starting
 /// from the lowest-id neighbor — deterministic.
 fn ring(grid: &Grid, v: usize) -> Vec<usize> {
-    let mut out = Vec::with_capacity(grid.vert_adj[v].len());
-    let mut cur = grid.vert_adj[v][0] as usize;
+    let mut out = Vec::with_capacity(grid.cell_neighbors(v).len());
+    let mut cur = grid.cell_neighbors(v)[0].index();
     out.push(cur);
     loop {
         let cell = grid.topology.cell(v).expect("cell index from topology range");
@@ -156,7 +158,7 @@ fn ring(grid: &Grid, v: usize) -> Vec<usize> {
             None => break,
         }
     }
-    debug_assert_eq!(out.len(), grid.vert_adj[v].len());
+    debug_assert_eq!(out.len(), grid.cell_neighbors(v).len());
     out
 }
 
@@ -227,7 +229,7 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
                         // body of that kind, never strand a puddle.
                         if cross
                             && t.is_water()
-                            && !grid.vert_adj[c].iter().any(|&nb| cells[nb as usize] == t)
+                            && !grid.cell_neighbors(c).iter().any(|nb| cells[nb.index()] == t)
                         {
                             continue;
                         }
@@ -886,7 +888,7 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
         // water, extend it from its end along the shortest cell path to the
         // nearest sea/lake cell — a river always reaches a larger body.
         let reaches = chain.iter().any(|&vi| {
-            sea(cells[vi]) || grid.vert_adj[vi].iter().any(|&nb| sea(cells[nb as usize]))
+            sea(cells[vi]) || grid.cell_neighbors(vi).iter().any(|nb| sea(cells[nb.index()]))
         });
         if !reaches {
             if let Some(end) = chain.last().and_then(|&index| grid.topology.cell(index)) {
@@ -907,12 +909,12 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
         // keeping each Spring face edge-connected (a thinner patch pinches).
         let mut spring_cells: Vec<usize> = chain.iter().take(2).copied().collect();
         if let [a, b, ..] = spring_cells.as_slice() {
-            if let Some(&third) = grid.vert_adj[*a].iter()
-                .find(|&&candidate| candidate != *a as u32
-                    && candidate != *b as u32
-                    && grid.vert_adj[*b].contains(&candidate))
+            if let Some(third) = grid.cell_neighbors(*a).iter()
+                .find(|candidate| candidate.index() != *a
+                    && candidate.index() != *b
+                    && grid.cell_neighbors(*b).contains(candidate))
             {
-                spring_cells.push(third as usize);
+                spring_cells.push(third.index());
             }
         }
         for source in spring_cells {
@@ -942,7 +944,7 @@ fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
                 continue;
             }
             if let Some(&prev) = c.last() {
-                if !grid.vert_adj[prev].contains(&(vi as u32)) {
+                if !grid.cell_neighbors(prev).iter().any(|neighbor| neighbor.index() == vi) {
                     c.extend(shortest_cell_path(grid, prev, vi));
                 }
             }
@@ -992,8 +994,8 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
         .filter(|&vi| {
             cells[vi].is_water()
                 && !lake_zone[vi]
-                && grid.vert_adj[vi].iter().any(|&nb| {
-                    let nb = nb as usize;
+                && grid.cell_neighbors(vi).iter().any(|nb| {
+                    let nb = nb.index();
                     cells[nb].is_water() && lake_zone[nb]
                 })
         })
@@ -1023,8 +1025,8 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
             // land kind so no 1-cell water ever survives.
             let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
             for &vi in &body {
-                for &nb in &grid.vert_adj[vi] {
-                    let t = cells[nb as usize];
+                for nb in cell_neighbor_indices(grid, vi) {
+                    let t = cells[nb];
                     if t.is_land() {
                         *counts.entry(t as u8).or_default() += 1;
                     }
@@ -1065,8 +1067,7 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
         if ocean_dist[cur] >= 7 {
             continue;
         }
-        for &nb in &grid.vert_adj[cur] {
-            let nb = nb as usize;
+        for nb in cell_neighbor_indices(grid, cur) {
             if ocean_dist[nb] == u8::MAX {
                 ocean_dist[nb] = ocean_dist[cur] + 1;
                 q.push_back(nb);
@@ -1075,8 +1076,8 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
     }
     let fill_kind = |cells: &[Terrain], vi: usize| -> Terrain {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for &nb in &grid.vert_adj[vi] {
-            let t = cells[nb as usize];
+        for nb in cell_neighbor_indices(grid, vi) {
+            let t = cells[nb];
             if t.is_land() {
                 *counts.entry(t as u8).or_default() += 1;
             }
@@ -1112,8 +1113,8 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
 fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
     let fill_kind = |cells: &[Terrain], vi: usize| -> Terrain {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for &nb in &grid.vert_adj[vi] {
-            let t = cells[nb as usize];
+        for nb in cell_neighbor_indices(grid, vi) {
+            let t = cells[nb];
             if t.is_land() {
                 *counts.entry(t as u8).or_default() += 1;
             }
@@ -1140,8 +1141,7 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
             if dist[cur] >= 2 {
                 continue;
             }
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
+            for nb in cell_neighbor_indices(grid, cur) {
                 if dist[nb] == u8::MAX {
                     dist[nb] = dist[cur] + 1;
                     q.push_back(nb);
@@ -1161,8 +1161,7 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
             if d >= 2 {
                 continue;
             }
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
+            for nb in cell_neighbor_indices(grid, cur) {
                 if wet(cells[nb]) && !core_reach[nb] {
                     core_reach[nb] = true;
                     q.push_back((nb, d + 1));
@@ -1239,8 +1238,8 @@ fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
         if e[vi] < 0.0 {
             continue; // water
         }
-        let relief = grid.vert_adj[vi].iter()
-            .map(|&nb| (e[vi] - e[nb as usize]).abs())
+        let relief = cell_neighbor_indices(grid, vi)
+            .map(|nb| (e[vi] - e[nb]).abs())
             .fold(0.0f32, f32::max);
         lf[vi] = if e[vi] >= 0.35 {
             if relief < 0.035 { LANDFORM_PLATEAU } else { LANDFORM_MOUNTAINS }
@@ -1255,7 +1254,7 @@ fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     let mut valleys = Vec::new();
     for vi in 0..grid.nv {
         if lf[vi] == LANDFORM_LOWLAND
-            && grid.vert_adj[vi].iter().filter(|&&nb| higher(lf[nb as usize])).count() >= 3
+            && cell_neighbor_indices(grid, vi).filter(|&nb| higher(lf[nb])).count() >= 3
         {
             valleys.push(vi);
         }
@@ -1347,8 +1346,7 @@ fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
         .map(|vi| {
             let a = grid.cell_direction(vi);
             let mut worst = 0.0f32;
-            for &nb in &grid.vert_adj[vi] {
-                let nb = nb as usize;
+            for nb in cell_neighbor_indices(grid, vi) {
                 let dist = a.distance(grid.cell_direction(nb)) * crate::sphere::PLANET_RADIUS;
                 if dist > 1.0 {
                     worst = worst.max((alt[vi] - alt[nb]).abs() / dist);
@@ -1400,7 +1398,7 @@ fn lattice_path(
     const STEP: u64 = 1000;
     let turn_cost = |pd: Vec3, d: Vec3| ((1.0 - pd.dot(d)).max(0.0) * 2500.0) as u64;
     let edge_angle = grid.cell_direction(0)
-        .angle_between(grid.cell_direction(grid.vert_adj[0][0] as usize));
+        .angle_between(grid.cell_direction(grid.cell_neighbors(0)[0].index()));
     let h = |vi: usize| (
         grid.cell_direction(vi).angle_between(grid.cell_direction(to)) / edge_angle * 990.0
     ) as u64;
@@ -1426,15 +1424,14 @@ fn lattice_path(
             path.reverse();
             return path;
         }
-        let pd = (slot < 6).then(|| dir(grid.vert_adj[vi][slot] as usize, vi));
-        for &nb in &grid.vert_adj[vi] {
-            let nb = nb as usize;
+        let pd = (slot < 6).then(|| dir(grid.cell_neighbors(vi)[slot].index(), vi));
+        for nb in cell_neighbor_indices(grid, vi) {
             if blocked(nb) && nb != to {
                 continue;
             }
             let d = dir(vi, nb);
             let ng = g + STEP + extra(nb) + pd.map_or(0, |pd| turn_cost(pd, d));
-            let nslot = grid.vert_adj[nb].iter().position(|&x| x as usize == vi).unwrap();
+            let nslot = grid.cell_neighbors(nb).iter().position(|cell| cell.index() == vi).unwrap();
             if best.get(&(nb, nslot)).is_none_or(|&b| ng < b) {
                 best.insert((nb, nslot), ng);
                 came.insert((nb, nslot), (vi, slot));
@@ -1609,8 +1606,7 @@ fn cross_band(
         let cpos = grid.cell_direction(cur);
         let mut best = None;
         let mut best_dot = -2.0;
-        for &nb in &grid.vert_adj[cur] {
-            let nb = nb as usize;
+        for nb in cell_neighbor_indices(grid, cur) {
             if nb == prev {
                 continue;
             }
@@ -1647,8 +1643,7 @@ fn build_bridges(
     // steep bank edge (the pad there sits on flat ground, clear of the carved
     // channel). Falls back to the cell itself if no inland walkable neighbor.
     let inland1 = |vi: usize, away: Vec3| {
-        grid.vert_adj[vi].iter()
-            .map(|&nb| nb as usize)
+        cell_neighbor_indices(grid, vi)
             .filter(|&nb| bridge_walkable(cells[nb]))
             .max_by(|&a, &b| {
                 grid.cell_direction(a).distance(away)
@@ -1684,7 +1679,7 @@ fn build_bridges(
     let good_anchor = |vi: usize| {
         bridge_walkable(cells[vi])
             && terrain.slope(grid.cell_position(vi)) < BRIDGE_MAX_FOOTING_SLOPE
-            && grid.vert_adj[vi].iter().all(|&nb| !forbidden(cells[nb as usize]))
+            && grid.cell_neighbors(vi).iter().all(|nb| !forbidden(cells[nb.index()]))
     };
 
     // Commit a bridge between two bank cells if it clears the spacing rule.
@@ -1712,9 +1707,9 @@ fn build_bridges(
             for vi in grid.face_cells(fi) {
                 if cells[vi].is_land() {
                     painted.bridge_entries.insert(vi);
-                    for &nb in &grid.vert_adj[vi] {
-                        if cells[nb as usize].is_land() {
-                            painted.bridge_entries.insert(nb as usize);
+                    for nb in cell_neighbor_indices(grid, vi) {
+                        if cells[nb].is_land() {
+                            painted.bridge_entries.insert(nb);
                         }
                     }
                 }
@@ -1736,12 +1731,12 @@ fn build_bridges(
         if !bridge_walkable(cells[l1]) {
             continue;
         }
-        let Some(&entry) = grid.vert_adj[l1].iter()
-            .find(|&&nb| cells[nb as usize] == Terrain::RiverBank)
+        let Some(entry) = grid.cell_neighbors(l1).iter()
+            .find(|nb| cells[nb.index()] == Terrain::RiverBank)
         else {
             continue;
         };
-        if let Some(l2) = cross_band(grid, cells, l1, entry as usize, 9, river_band, bridge_walkable) {
+        if let Some(l2) = cross_band(grid, cells, l1, entry.index(), 9, river_band, bridge_walkable) {
             if l2 == l1 {
                 continue;
             }
@@ -1765,12 +1760,12 @@ fn build_bridges(
         if !dry_end(cells[l1]) {
             continue;
         }
-        let Some(&entry) = grid.vert_adj[l1].iter()
-            .find(|&&nb| cells[nb as usize] == Terrain::Swamp)
+        let Some(entry) = grid.cell_neighbors(l1).iter()
+            .find(|nb| cells[nb.index()] == Terrain::Swamp)
         else {
             continue;
         };
-        if let Some(l2) = cross_band(grid, cells, l1, entry as usize, 9, swamp_band, dry_end) {
+        if let Some(l2) = cross_band(grid, cells, l1, entry.index(), 9, swamp_band, dry_end) {
             if l2 == l1 {
                 continue;
             }
@@ -1802,8 +1797,8 @@ fn build_bridges(
     for vi in 0..grid.nv {
         let cell = grid.topology.cell(vi).expect("cell index from topology range");
         let Some(id) = components.cell(cell).map(|component| component.index()) else { continue };
-        for &nb in &grid.vert_adj[vi] {
-            match cells[nb as usize] {
+        for nb in cell_neighbor_indices(grid, vi) {
+            match cells[nb] {
                 Terrain::Lake => { touch_lake[id] = true; only_ocean[id] = false; }
                 Terrain::Ocean => { touch_ocean[id] = true; only_lake[id] = false; }
                 Terrain::River => {}
@@ -1833,7 +1828,7 @@ fn build_bridges(
                 continue;
             }
             let shore = |vi: usize| bridge_walkable(cells[vi])
-                && grid.vert_adj[vi].iter().any(|&nb| cells[nb as usize] == shore_kind);
+                && grid.cell_neighbors(vi).iter().any(|nb| cells[nb.index()] == shore_kind);
             let island_shore: Vec<usize> = (0..grid.nv)
                 .filter(|&vi| {
                     let cell = grid.topology.cell(vi).expect("cell index from topology range");
@@ -1913,7 +1908,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
         if base[vi].is_water() || banded[vi] {
             continue;
         }
-        if grid.vert_adj[vi].iter().filter(|&&nb| banded[nb as usize]).count() >= 2 {
+        if grid.cell_neighbors(vi).iter().filter(|nb| banded[nb.index()]).count() >= 2 {
             out[vi] = shore(vi, water_kind[vi].unwrap_or(Terrain::Ocean));
         }
     }
@@ -1928,7 +1923,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
         if base[vi].is_water() || in_band[vi] {
             continue;
         }
-        if grid.vert_adj[vi].iter().any(|&nb| base[nb as usize] != base[vi]) {
+        if grid.cell_neighbors(vi).iter().any(|nb| base[nb.index()] != base[vi]) {
             cell_of[vi] = wfc_cells.len();
             wfc_cells.push(vi);
         }
@@ -1945,8 +1940,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
         d
     }).collect();
     let neighbors: Vec<Vec<wfc::Neighbor>> = wfc_cells.iter().map(|&vi| {
-        grid.vert_adj[vi].iter().map(|&nb| {
-            let nb = nb as usize;
+        cell_neighbor_indices(grid, vi).map(|nb| {
             match cell_of[nb] {
                 usize::MAX => wfc::Neighbor::Fixed(base[nb]),
                 ci => wfc::Neighbor::Cell(ci),
@@ -1986,8 +1980,7 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
             if dist[cur] >= 2 {
                 continue;
             }
-            for &nb in &grid.vert_adj[cur] {
-                let nb = nb as usize;
+            for nb in cell_neighbor_indices(grid, cur) {
                 if dist[nb] == u8::MAX {
                     dist[nb] = dist[cur] + 1;
                     q.push_back(nb);
@@ -2010,8 +2003,8 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
             continue;
         }
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for &nb in &grid.vert_adj[vi] {
-            let t = cells[nb as usize];
+        for nb in cell_neighbor_indices(grid, vi) {
+            let t = cells[nb];
             if matches!(
                 t,
                 Terrain::Desert | Terrain::Plains | Terrain::Forest
@@ -2112,7 +2105,7 @@ fn flood<I: IntoIterator<Item = usize>>(
 
 /// Neighbours over the two grid adjacencies, as `usize` iterators.
 fn cell_neighbor_indices(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
-    grid.vert_adj[v].iter().map(|&x| x as usize)
+    grid.cell_neighbors(v).iter().map(|cell| cell.index())
 }
 
 /// Single-component flood over the VERTEX grid (the common case).
@@ -2145,8 +2138,8 @@ fn absorb_small_clusters<T: Copy + Ord>(
         }
         let mut counts: BTreeMap<T, usize> = BTreeMap::new();
         for &vi in &cluster {
-            for &nb in &grid.vert_adj[vi] {
-                let t = out[nb as usize];
+            for nb in cell_neighbor_indices(grid, vi) {
+                let t = out[nb];
                 if t != kind && absorbable(t) {
                     *counts.entry(t).or_default() += 1;
                 }
@@ -2185,8 +2178,8 @@ fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
             }
             let mut same = 0;
             let mut other = 0;
-            for &nb in &grid.vert_adj[vi] {
-                match out[nb as usize] {
+            for nb in cell_neighbor_indices(grid, vi) {
+                match out[nb] {
                     t if t == out[vi] => same += 1,
                     Terrain::Beach | Terrain::Cliff => other += 1,
                     _ => {}
@@ -4216,12 +4209,12 @@ mod tests {
     fn tile_type_sets_cluster_mixed_connected_groups() {
         let grid = Grid::new(1);
 
-        let cell_neighbor = grid.vert_adj[0][0] as usize;
+        let cell_neighbor = grid.cell_neighbors(0)[0].index();
         let cell_distant = (0..grid.nv).find(|&v| {
             v != 0
                 && v != cell_neighbor
-                && !grid.vert_adj[0].contains(&(v as u32))
-                && !grid.vert_adj[cell_neighbor].contains(&(v as u32))
+                && !grid.cell_neighbors(0).iter().any(|cell| cell.index() == v)
+                && !grid.cell_neighbors(cell_neighbor).iter().any(|cell| cell.index() == v)
         }).expect("grid needs a non-adjacent cell");
         let mut cells = vec![Terrain::Plains; grid.nv];
         cells[0] = Terrain::Forest;
@@ -4365,8 +4358,7 @@ mod tests {
             let mut q = VecDeque::from([start]);
             visited[start] = true;
             while let Some(cur) = q.pop_front() {
-                for &nb in &state.grid.vert_adj[cur] {
-                    let nb = nb as usize;
+                for nb in cell_neighbor_indices(&state.grid, cur) {
                     if matches!(state.cells[nb], Terrain::River | Terrain::RiverSpring) && !visited[nb] {
                         visited[nb] = true;
                         comp.push(nb);
@@ -4375,8 +4367,8 @@ mod tests {
                 }
             }
             let touches_sea = comp.iter().any(|&vi| {
-                state.grid.vert_adj[vi].iter().any(|&nb| matches!(
-                    state.cells[nb as usize], Terrain::Ocean | Terrain::Lake
+                state.grid.cell_neighbors(vi).iter().any(|nb| matches!(
+                    state.cells[nb.index()], Terrain::Ocean | Terrain::Lake
                 ))
             });
             assert!(touches_sea, "river component of {} cells cut off from any water body", comp.len());
