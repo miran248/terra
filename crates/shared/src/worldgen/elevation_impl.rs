@@ -253,13 +253,11 @@ pub(super) fn solve_elevation(
     landform: &[u8],
     tiles: &[Terrain],
     painted: &Painted,
-    blends: &[(u32, u8, u8)],
+    blends: &[FaceBlend],
 ) -> (Vec<f32>, usize, f32) {
     let solver_vertex_count = terrain.vert_count();
-    let mut blend_of: BTreeMap<u32, (u8, u8)> = BTreeMap::new();
-    for &(face_index, a, b) in blends {
-        blend_of.insert(face_index, (a, b));
-    }
+    let blend_of: BTreeMap<u32, FaceBlend> =
+        blends.iter().map(|blend| (blend.face, *blend)).collect();
 
     // Per-vertex interval and kind: each vertex takes the range of the tile
     // directly under it — the same mapping the gradient caps use, so the
@@ -287,15 +285,16 @@ pub(super) fn solve_elevation(
             match owner_face[solver_vertex]
                 .and_then(|face_index| blend_of.get(&(face_index as u32)))
             {
-                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => {
-                    elev_range(owner[solver_vertex])
-                }
-                Some(&(a, b)) => {
-                    let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
-                    let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
+                Some(FaceBlend {
+                    base,
+                    target: BlendTarget::Terrain(target),
+                    ..
+                }) => {
+                    let (alo, ahi) = elev_range(*base);
+                    let (blo, bhi) = elev_range(*target);
                     (alo.min(blo), ahi.max(bhi))
                 }
-                None => elev_range(owner[solver_vertex]),
+                Some(_) | None => elev_range(owner[solver_vertex]),
             }
         };
         lo[solver_vertex] = rlo;

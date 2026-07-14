@@ -13,14 +13,14 @@ use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
 use crate::level::{
-    DEPTH_ABYSS, DEPTH_DEEP, DEPTH_SHALLOW, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE,
-    FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE,
-    FloraData, LANDFORM_HILLS, LANDFORM_LOWLAND, LANDFORM_MOUNTAINS, LANDFORM_PLATEAU,
-    LANDFORM_VALLEY, LANDFORM_WATER, LEVEL_FORMAT_VERSION, LevelData, NO_REGION, ROAD_MAT_DIRT,
-    ROAD_MAT_GRAVEL, ROAD_MAT_ROCK, ROAD_MAT_SAND, RegionData, RegionKind, RoadData, SLOPE_CLIFF,
-    SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN,
-    STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, SettlementData, StructureData, TAG_BRIDGE,
-    TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN, slope_walkable,
+    BlendTarget, DEPTH_ABYSS, DEPTH_DEEP, DEPTH_SHALLOW, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS,
+    FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK,
+    FLORA_TREE, FaceBlend, FaceTag, FloraData, LANDFORM_HILLS, LANDFORM_LOWLAND,
+    LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, LANDFORM_VALLEY, LANDFORM_WATER, LevelData,
+    ROAD_MAT_DIRT, ROAD_MAT_GRAVEL, ROAD_MAT_ROCK, ROAD_MAT_SAND, RegionData, RegionKind, RoadData,
+    SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM,
+    STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, SettlementData, StructureData,
+    slope_walkable,
 };
 use crate::planet::{PlanetMesh, unit_icosphere_tris};
 use crate::sphere::SpherePos;
@@ -374,9 +374,9 @@ struct GenState {
     /// for serialization (NOT terrain.road_paths, which is the L2 plan).
     pub roads: Vec<Vec<SpherePos>>,
     /// Inland biome-boundary faces and the kind pair they link.
-    pub blends: Vec<(u32, u8, u8)>,
+    pub blends: Vec<FaceBlend>,
     pub regions: Vec<RegionData>,
-    pub face_region: FaceField<u32>,
+    pub face_region: FaceField<Option<u32>>,
     /// Per-face water-surface radius (0.0 = dry), clustered once (sea + lakes).
     pub water_r: FaceField<f32>,
     /// Generation-baked per-corner river surface. Runtime and serializers do
@@ -384,8 +384,7 @@ struct GenState {
     pub river_r: FaceField<[f32; 3]>,
     pub mesh_tris: FaceField<[[f32; 3]; 3]>,
     pub mesh_colors: FaceField<[[f32; 4]; 3]>,
-    pub tag_off: Vec<u32>,
-    pub tag_data: Vec<u8>,
+    pub face_tags: FaceField<Vec<FaceTag>>,
     pub flora: Vec<FloraData>,
     pub structures: Vec<StructureData>,
     /// Per-cell terrain steepness (0 Flat, 1 Gentle, 2 Steep, 3 Cliff) from the
@@ -452,8 +451,7 @@ impl GenState {
             river_r: FaceField::default(),
             mesh_tris: FaceField::default(),
             mesh_colors: FaceField::default(),
-            tag_off: Vec::new(),
-            tag_data: Vec::new(),
+            face_tags: FaceField::default(),
             flora: Vec::new(),
             structures: Vec::new(),
             slope_class: CellField::default(),
@@ -497,7 +495,6 @@ impl GenState {
         }));
 
         LevelData {
-            version: LEVEL_FORMAT_VERSION,
             seed: self.grid.seed,
             vert_elev: terrain.vert_elevations().to_vec(),
             terrain_tris: self.mesh_tris.dense().to_vec(),
@@ -508,11 +505,10 @@ impl GenState {
                 .iter()
                 .map(|triangle| triangle.map(|point| point.to_array()))
                 .collect(),
-            face_types: self.tiles.iter().map(|terrain| *terrain as u8).collect(),
+            face_types: self.tiles.to_vec(),
             face_water_r: self.water_r.dense().to_vec(),
             face_river_r: self.river_r.dense().to_vec(),
-            face_tag_off: self.tag_off.clone(),
-            face_tag_data: self.tag_data.clone(),
+            face_tags: self.face_tags.to_vec(),
             face_blend: self.blends.clone(),
             settlements,
             roads,
@@ -643,17 +639,17 @@ enum Event {
     WaterNormalized(CellField<Terrain>),
     FeaturesPainted(Painted, Vec<Vec<SpherePos>>),
     TransitionsResolved(CellField<Terrain>),
-    BlendsMarked(Vec<(u32, u8, u8)>),
+    BlendsMarked(Vec<FaceBlend>),
     ElevationSolved {
         field: Vec<f32>,
         iters: usize,
         residual: f32,
     },
     WaterClustered(Vec<f32>),
-    RegionsBuilt(Vec<RegionData>, Vec<u32>),
+    RegionsBuilt(Vec<RegionData>, Vec<Option<u32>>),
     BridgesSelected(Vec<Vec<SpherePos>>, Painted),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
-    TagsBuilt(Vec<u32>, Vec<u8>),
+    TagsBuilt(Vec<Vec<FaceTag>>),
     FloraPlaced(Vec<FloraData>),
     StructuresPlaced(Vec<StructureData>),
     SlopeClassified(Vec<u8>, Vec<u8>),
@@ -703,7 +699,10 @@ impl Event {
             Event::RegionsBuilt(r, _) => format!("regions built: {}", r.len()),
             Event::BridgesSelected(b, _) => format!("bridges selected: {}", b.len()),
             Event::MeshBuilt(t, _) => format!("mesh built: {} tris", t.len()),
-            Event::TagsBuilt(_, d) => format!("tags built: {} entries", d.len()),
+            Event::TagsBuilt(tags) => format!(
+                "tags built: {} entries",
+                tags.iter().map(Vec::len).sum::<usize>()
+            ),
             Event::FloraPlaced(f) => format!("flora placed: {}", f.len()),
             Event::StructuresPlaced(v) => format!("structures placed: {}", v.len()),
             Event::SlopeClassified(sc, wd) => {
@@ -864,8 +863,10 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::MeshBuilt(tris, cols)]
         }
         Command::BuildTags => {
-            let (off, data) = build_face_tags(&state.grid, &state.painted);
-            vec![Event::TagsBuilt(off, data)]
+            vec![Event::TagsBuilt(build_face_tags(
+                &state.grid,
+                &state.painted,
+            ))]
         }
         Command::PlaceFlora => {
             vec![Event::FloraPlaced(place_flora(
@@ -988,10 +989,7 @@ fn evolve(mut state: GenState, event: Event) -> GenState {
             state.mesh_tris = t.into();
             state.mesh_colors = c.into();
         }
-        Event::TagsBuilt(off, data) => {
-            state.tag_off = off;
-            state.tag_data = data;
-        }
+        Event::TagsBuilt(tags) => state.face_tags = tags.into(),
         Event::FloraPlaced(f) => state.flora = f,
         Event::StructuresPlaced(v) => state.structures = v,
         Event::SlopeClassified(sc, wd) => {
@@ -1149,10 +1147,10 @@ mod tests {
             }
         }
         let e = terrain.vert_elevations();
-        let blend_of: std::collections::BTreeMap<u32, (u8, u8)> = state
+        let blend_of: std::collections::BTreeMap<u32, FaceBlend> = state
             .blends
             .iter()
-            .map(|&(face_index, a, b)| (face_index, (a, b)))
+            .map(|blend| (blend.face, *blend))
             .collect();
         // Bridges CONFORM to the terrain (no entry pads), so every vertex must
         // satisfy its tile range — no pad exemption.
@@ -1174,15 +1172,16 @@ mod tests {
                 landform_range(owners_lf[solver_vertex])
             } else {
                 match blend_of.get(&(face_index as u32)) {
-                    Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => {
-                        elev_range(owners[solver_vertex])
-                    }
-                    Some(&(a, b)) => {
-                        let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
-                        let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
+                    Some(FaceBlend {
+                        base,
+                        target: BlendTarget::Terrain(target),
+                        ..
+                    }) => {
+                        let (alo, ahi) = elev_range(*base);
+                        let (blo, bhi) = elev_range(*target);
                         (alo.min(blo), ahi.max(bhi))
                     }
-                    None => elev_range(owners[solver_vertex]),
+                    Some(_) | None => elev_range(owners[solver_vertex]),
                 }
             };
             assert!(
@@ -1542,11 +1541,13 @@ mod tests {
 
         // Blend marks link two differing plain kinds actually adjacent there.
         assert!(!state.blends.is_empty(), "no blends marked");
-        for &(face_index, a, b) in &state.blends {
-            assert_ne!(a, b);
+        for blend in &state.blends {
+            if let BlendTarget::Terrain(target) = blend.target {
+                assert_ne!(blend.base, target);
+            }
             assert_eq!(
-                state.tiles.dense()[face_index as usize] as u8,
-                a,
+                state.tiles.dense()[blend.face as usize],
+                blend.base,
                 "blend face kind mismatch"
             );
         }
@@ -1965,10 +1966,10 @@ mod tests {
             seed_1337.as_slice(),
             include_bytes!("../../main/assets/level_1337.bin")
         );
-        assert_eq!(serialized_fingerprint(&seed_1337), 0xefb3_6ef5_28ab_ac4e);
+        assert_eq!(serialized_fingerprint(&seed_1337), 0x8a20_1f42_04c8_cd86);
 
         let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-        assert_eq!(serialized_fingerprint(&seed_42), 0x713a_71fe_65e0_c310);
+        assert_eq!(serialized_fingerprint(&seed_42), 0x49b3_1867_8334_559f);
     }
 
     #[test]

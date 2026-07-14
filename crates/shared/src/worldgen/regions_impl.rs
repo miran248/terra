@@ -47,7 +47,7 @@ pub(super) fn build_regions(
     terrain: &TerrainGen,
     face_types: &[Terrain],
     painted: &Painted,
-) -> (Vec<RegionData>, Vec<u32>) {
+) -> (Vec<RegionData>, Vec<Option<u32>>) {
     let class: Vec<Option<RegionKind>> = (0..grid.face_count())
         .map(|face_index| region_class(grid, face_types, Some(painted), face_index))
         .collect();
@@ -59,7 +59,7 @@ pub(super) fn build_regions(
         .map(|face_index| region_class(grid, face_types, None, face_index))
         .collect();
 
-    let mut face_region = vec![NO_REGION; grid.face_count()];
+    let mut face_region = vec![None; grid.face_count()];
     let mut regions: Vec<RegionData> = Vec::new();
     let mut kind_counts: BTreeMap<u8, usize> = BTreeMap::new();
 
@@ -68,12 +68,10 @@ pub(super) fn build_regions(
         let Some(kind) = class[start.index()] else {
             continue;
         };
-        if face_region[start.index()] != NO_REGION {
+        if face_region[start.index()].is_some() {
             continue;
         }
-        // Collect the edge-connected cluster. Stored refs are region id + 1
-        // (0 = no region, see level::region_index).
-        let re = regions.len() as u32 + 1;
+        let region_index = regions.len() as u32;
         // Long coastlines split into multiple named regions while naming —
         // the tiles themselves are never retyped for naming's sake.
         let max_faces = match kind {
@@ -81,7 +79,7 @@ pub(super) fn build_regions(
             RegionKind::Cliff => size_range(Terrain::Cliff).1 * 2,
             _ => usize::MAX,
         };
-        let faces = partitioner.claim(start, kind, re, max_faces, &mut face_region);
+        let faces = partitioner.claim(start, kind, region_index, max_faces, &mut face_region);
         // Tiny scraps stay unnamed (towns and roads always name).
         let min_faces = match kind {
             RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
@@ -92,7 +90,7 @@ pub(super) fn build_regions(
         };
         if faces.len() < min_faces {
             for face in faces {
-                face_region[face.index()] = NO_REGION;
+                face_region[face.index()] = None;
             }
             continue;
         }

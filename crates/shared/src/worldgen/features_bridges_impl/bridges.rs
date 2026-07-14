@@ -151,7 +151,11 @@ pub(in crate::worldgen) fn cross_band(
         let cpos = grid.cell_direction(CellId::new(cur));
         let mut best = None;
         let mut best_dot = -2.0;
-        for nb in cell_neighbor_indices(grid, cur) {
+        for nb in grid
+            .cell_neighbors(CellId::new(cur))
+            .iter()
+            .map(|cell| cell.index())
+        {
             if nb == prev {
                 continue;
             }
@@ -176,7 +180,7 @@ pub(in crate::worldgen) fn build_bridges(
     cells: &[Terrain],
     slope_class: &[u8],
     _face_types: &[Terrain],
-    _face_region: &[u32],
+    _face_region: &[Option<u32>],
     painted: &mut Painted,
 ) -> Vec<Vec<SpherePos>> {
     let mut spans: Vec<Vec<SpherePos>> = Vec::new();
@@ -188,7 +192,9 @@ pub(in crate::worldgen) fn build_bridges(
     // steep bank edge (the pad there sits on flat ground, clear of the carved
     // channel). Falls back to the cell itself if no inland walkable neighbor.
     let inland1 = |cell_index: usize, away: Vec3| {
-        cell_neighbor_indices(grid, cell_index)
+        grid.cell_neighbors(CellId::new(cell_index))
+            .iter()
+            .map(|cell| cell.index())
             .filter(|&nb| bridge_walkable(cells[nb]))
             .max_by(|&a, &b| {
                 grid.cell_direction(CellId::new(a))
@@ -275,7 +281,11 @@ pub(in crate::worldgen) fn build_bridges(
             for cell_index in grid.face_cells(FaceId::new(face_index)).map(CellId::index) {
                 if cells[cell_index].is_land() {
                     painted.bridge_entries.insert(CellId::new(cell_index));
-                    for nb in cell_neighbor_indices(grid, cell_index) {
+                    for nb in grid
+                        .cell_neighbors(CellId::new(cell_index))
+                        .iter()
+                        .map(|cell| cell.index())
+                    {
                         if cells[nb].is_land() {
                             painted.bridge_entries.insert(CellId::new(nb));
                         }
@@ -385,7 +395,11 @@ pub(in crate::worldgen) fn build_bridges(
         let Some(id) = components.cell(cell).map(|component| component.index()) else {
             continue;
         };
-        for nb in cell_neighbor_indices(grid, cell_index) {
+        for nb in grid
+            .cell_neighbors(CellId::new(cell_index))
+            .iter()
+            .map(|cell| cell.index())
+        {
             match cells[nb] {
                 Terrain::Lake => {
                     touch_lake[id] = true;

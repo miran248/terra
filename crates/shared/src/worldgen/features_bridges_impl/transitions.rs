@@ -111,7 +111,9 @@ pub(in crate::worldgen) fn resolve_transitions(
     let neighbors: Vec<Vec<wfc::Neighbor>> = wfc_cells
         .iter()
         .map(|&cell_index| {
-            cell_neighbor_indices(grid, cell_index)
+            grid.cell_neighbors(CellId::new(cell_index))
+                .iter()
+                .map(|cell| cell.index())
                 .map(|nb| match cell_of[nb] {
                     usize::MAX => wfc::Neighbor::Fixed(base[nb]),
                     ci => wfc::Neighbor::Cell(ci),
@@ -175,8 +177,12 @@ pub(in crate::worldgen) fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]
         if !orphan {
             continue;
         }
-        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for nb in cell_neighbor_indices(grid, cell_index) {
+        let mut counts: BTreeMap<Terrain, usize> = BTreeMap::new();
+        for nb in grid
+            .cell_neighbors(CellId::new(cell_index))
+            .iter()
+            .map(|cell| cell.index())
+        {
             let t = cells[nb];
             if matches!(
                 t,
@@ -192,7 +198,7 @@ pub(in crate::worldgen) fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]
                     | Terrain::Volcanic
                     | Terrain::Glacier
             ) {
-                *counts.entry(t as u8).or_default() += 1;
+                *counts.entry(t).or_default() += 1;
             }
         }
         cells[cell_index] = counts
@@ -213,7 +219,7 @@ pub(in crate::worldgen) fn mark_blends(
     cells: &[Terrain],
     tiles: &[Terrain],
     painted: &Painted,
-) -> Vec<(u32, u8, u8)> {
+) -> Vec<FaceBlend> {
     let plain = |t: Terrain| t.is_land();
     let overlay = |face_index: usize| {
         face_solid(grid, &painted.roads, face_index)
@@ -228,30 +234,38 @@ pub(in crate::worldgen) fn mark_blends(
         // Feature flanks (a painted corner without ownership) blend toward the
         // feature; most specific wins (entry pad < town blob < road network).
         let feature = if painted_corners(grid, &painted.bridge_entries, face_index) > 0 {
-            Some(crate::level::BLEND_BRIDGE_ENTRY)
+            Some(BlendTarget::BridgeEntry)
         } else if painted_corners(grid, &painted.towns, face_index) > 0 {
-            Some(crate::level::BLEND_TOWN)
+            Some(BlendTarget::Town)
         } else if painted_corners(grid, &painted.roads, face_index) > 0 {
-            Some(crate::level::BLEND_ROAD)
+            Some(BlendTarget::Road)
         } else {
             None
         };
         if let Some(code) = feature {
-            out.push((face_index as u32, tiles[face_index] as u8, code));
+            out.push(FaceBlend {
+                face: face_index as u32,
+                base: tiles[face_index],
+                target: code,
+            });
             continue;
         }
         // Corner cells that disagree with the face's derived kind: the face is
         // the linking tile between its kind and the most present other LAND
         // kind (water transitions are the shore band's job).
-        let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
+        let mut counts: BTreeMap<Terrain, usize> = BTreeMap::new();
         for cell_index in grid.face_cells(FaceId::new(face_index)).map(CellId::index) {
             let t = cells[cell_index];
             if plain(t) && t != tiles[face_index] {
-                *counts.entry(t as u8).or_default() += 1;
+                *counts.entry(t).or_default() += 1;
             }
         }
-        if let Some((&other, _)) = counts.iter().max_by_key(|(_, c)| **c) {
-            out.push((face_index as u32, tiles[face_index] as u8, other));
+        if let Some((&other, _)) = counts.iter().max_by_key(|(_, count)| **count) {
+            out.push(FaceBlend {
+                face: face_index as u32,
+                base: tiles[face_index],
+                target: BlendTarget::Terrain(other),
+            });
         }
     }
     out
@@ -264,17 +278,6 @@ pub(in crate::worldgen) fn mark_blends(
 /// join their most common neighboring land kind. Transition bands (shore
 /// kinds) are thin by design and exempt; water minimums live in
 /// normalize_water_bodies.
-/// Temporary index bridge for geometry-heavy algorithms whose state arrays are
-/// still densely indexed by cell.
-pub(in crate::worldgen) fn cell_neighbor_indices(
-    grid: &Grid,
-    v: usize,
-) -> impl Iterator<Item = usize> + '_ {
-    grid.cell_neighbors(CellId::new(v))
-        .iter()
-        .map(|cell| cell.index())
-}
-
 /// A contiguous cluster of equal values below its minimum size is speckle: it
 /// is absorbed into its most common eligible neighbor value. Generic over the
 /// value type (biome cover, landform, …). `eligible` selects which values
@@ -312,7 +315,11 @@ pub(in crate::worldgen) fn absorb_small_clusters<T: Copy + Ord>(
         }
         let mut counts: BTreeMap<T, usize> = BTreeMap::new();
         for &cell_index in &cluster {
-            for nb in cell_neighbor_indices(grid, cell_index) {
+            for nb in grid
+                .cell_neighbors(CellId::new(cell_index))
+                .iter()
+                .map(|cell| cell.index())
+            {
                 let t = out[nb];
                 if t != kind && absorbable(t) {
                     *counts.entry(t).or_default() += 1;
@@ -361,7 +368,11 @@ pub(in crate::worldgen) fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
             }
             let mut same = 0;
             let mut other = 0;
-            for nb in cell_neighbor_indices(grid, cell_index) {
+            for nb in grid
+                .cell_neighbors(CellId::new(cell_index))
+                .iter()
+                .map(|cell| cell.index())
+            {
                 match out[nb] {
                     t if t == out[cell_index] => same += 1,
                     Terrain::Beach | Terrain::Cliff => other += 1,

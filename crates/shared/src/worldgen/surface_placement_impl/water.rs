@@ -98,7 +98,11 @@ pub(in crate::worldgen) fn water_surface_radii(
         if let Some(component) = lake_components.cell(cell) {
             let c = component.index();
             peak[c] = peak[c].max(vert_r[v]);
-            for nb in cell_neighbor_indices(grid, v) {
+            for nb in grid
+                .cell_neighbors(CellId::new(v))
+                .iter()
+                .map(|cell| cell.index())
+            {
                 if cells[nb] == Terrain::LakeShore {
                     rim[c].push(vert_r[nb]);
                 }

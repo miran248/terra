@@ -1,5 +1,6 @@
 use bevy::prelude::{Color, Resource, Vec3};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::planet::{PlanetMesh, unit_icosphere_tris};
@@ -17,7 +18,7 @@ pub const HABITABLE_MAX_TEMP: f32 = 30.0;
 
 // ---- biome types ----
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Terrain {
     Ocean,
     Lake,
@@ -32,13 +33,12 @@ pub enum Terrain {
     Tundra,
     Mountain,
     Snow,
-    // Added kinds (appended so existing discriminants are stable).
     Swamp,
     Jungle,
     Savanna,
     Volcanic,
     Glacier,
-    /// Ground-contact source of a river; appended to preserve existing ids.
+    /// Ground-contact source of a river.
     RiverSpring,
 }
 
@@ -64,11 +64,6 @@ impl Terrain {
         Terrain::Glacier,
         Terrain::RiverSpring,
     ];
-
-    /// Decodes the stable terrain discriminant stored in [`crate::level::LevelData`].
-    pub fn from_id(id: u8) -> Option<Self> {
-        Self::ALL.get(usize::from(id)).copied()
-    }
 
     pub fn color(&self) -> Color {
         match self {
@@ -117,20 +112,6 @@ impl Terrain {
     /// A solid land biome — land that is neither water nor a shore transition.
     pub fn is_land_biome(&self) -> bool {
         self.is_land() && !self.is_shore()
-    }
-}
-
-#[cfg(test)]
-mod terrain_id_tests {
-    use super::Terrain;
-
-    #[test]
-    fn stable_ids_round_trip() {
-        for (id, terrain) in Terrain::ALL.into_iter().enumerate() {
-            assert_eq!(Terrain::from_id(id as u8), Some(terrain));
-        }
-        assert_eq!(Terrain::from_id(Terrain::ALL.len() as u8), None);
-        assert_eq!(Terrain::from_id(u8::MAX), None);
     }
 }
 

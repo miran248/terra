@@ -23,7 +23,7 @@ Shared library crate for rs-zombies. Common types, utilities, and shared Bevy co
 - `worldgen.rs` — deterministic cell-first level-generation pipeline. Terrain, water bodies, rivers, feature paint, and region inputs are owned on cells; faces are derived once for mesh/query output. Mutable generation state stays internal; the public `CompletedWorld` boundary exposes only finalized `LevelData` and summary statistics.
 - `roads.rs` — settlement/road network (`Roads`, deterministic per seed). `Roads::generate(&terrain)` places 12 settlements, connects with shore-routed bridges. `PathKind::Bridge` for water crossings. Wobbled slerp with fallback to straight. Bevy `Resource`.
 - `planet.rs` — `PlanetMesh` (icosphere tris + grid-indexed ray intersection). `unit_icosphere_tris(n)` builds base triangles. `face_at(dir)` for face lookup. Used by `gen_level` for road/bridge face painting.
-- `level.rs` — `LevelData` (postcard-serializable): precomputed tris, per-triangle colors, settlements, roads. Deserialized by main on startup.
+- `level.rs` — typed Postcard `LevelData` schema: precomputed tris, terrain and blend identities, per-face tag lists and optional region indices, settlements, and roads. Deserialized and validated by main on startup; schema changes regenerate the embedded asset.
 - `state.rs` — `AppState` enum (Loading, Playing, Paused, Restarting, GameOver, Title).
 - `upgrades.rs` — `Upgrade` definitions (Piercing, Bounces, Splits, etc.) and `UpgradeKind`.
 

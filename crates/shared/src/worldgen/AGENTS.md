@@ -8,7 +8,7 @@ Private implementation modules for deterministic world generation.
 
 # Local Contracts
 
-- Preserve serialized output, FIFO command/event order, iteration order, RNG streams, and floating-point operation order for locked seeds.
+- Preserve generation policy, FIFO command/event order, iteration order, RNG streams, and floating-point operation order for locked seeds. Intentional `LevelData` schema changes regenerate the tracked asset and locked fingerprints.
 - Use `CellId` and `FaceId` at algorithm boundaries; reserve `usize` for dense storage and solver-mesh vertices.
 - Keep `shared::worldgen::{run, CompletedWorld, GenerationStats}` as the public facade.
 

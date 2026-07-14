@@ -216,7 +216,11 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
             // land kind so no 1-cell water ever survives.
             let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
             for &cell_index in &body {
-                for nb in cell_neighbor_indices(grid, cell_index) {
+                for nb in grid
+                    .cell_neighbors(CellId::new(cell_index))
+                    .iter()
+                    .map(|cell| cell.index())
+                {
                     let t = cells[nb];
                     if t.is_land() {
                         *counts.entry(t as u8).or_default() += 1;
@@ -256,7 +260,11 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
     let ocean_dist = grid.topology.cell_distances(&ocean_sources, 7);
     let fill_kind = |cells: &[Terrain], cell_index: usize| -> Terrain {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for nb in cell_neighbor_indices(grid, cell_index) {
+        for nb in grid
+            .cell_neighbors(CellId::new(cell_index))
+            .iter()
+            .map(|cell| cell.index())
+        {
             let t = cells[nb];
             if t.is_land() {
                 *counts.entry(t as u8).or_default() += 1;
@@ -312,7 +320,11 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
 pub(super) fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
     let fill_kind = |cells: &[Terrain], cell_index: usize| -> Terrain {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for nb in cell_neighbor_indices(grid, cell_index) {
+        for nb in grid
+            .cell_neighbors(CellId::new(cell_index))
+            .iter()
+            .map(|cell| cell.index())
+        {
             let t = cells[nb];
             if t.is_land() {
                 *counts.entry(t as u8).or_default() += 1;
@@ -409,7 +421,10 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
         if e[cell_index] < 0.0 {
             continue; // water
         }
-        let relief = cell_neighbor_indices(grid, cell_index)
+        let relief = grid
+            .cell_neighbors(CellId::new(cell_index))
+            .iter()
+            .map(|cell| cell.index())
             .map(|nb| (e[cell_index] - e[nb]).abs())
             .fold(0.0f32, f32::max);
         lf[cell_index] = if e[cell_index] >= 0.35 {
@@ -429,7 +444,10 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     let mut valleys = Vec::new();
     for cell_index in 0..grid.cell_count() {
         if lf[cell_index] == LANDFORM_LOWLAND
-            && cell_neighbor_indices(grid, cell_index)
+            && grid
+                .cell_neighbors(CellId::new(cell_index))
+                .iter()
+                .map(|cell| cell.index())
                 .filter(|&nb| higher(lf[nb]))
                 .count()
                 >= 3
@@ -560,7 +578,11 @@ pub(super) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
         .map(|cell_index| {
             let a = grid.cell_direction(CellId::new(cell_index));
             let mut worst = 0.0f32;
-            for nb in cell_neighbor_indices(grid, cell_index) {
+            for nb in grid
+                .cell_neighbors(CellId::new(cell_index))
+                .iter()
+                .map(|cell| cell.index())
+            {
                 let dist =
                     a.distance(grid.cell_direction(CellId::new(nb))) * crate::sphere::PLANET_RADIUS;
                 if dist > 1.0 {

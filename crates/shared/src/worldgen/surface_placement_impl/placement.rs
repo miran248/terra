@@ -316,24 +316,23 @@ pub(in crate::worldgen) fn place_structures(
     out
 }
 
-pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
-    let mut off = Vec::with_capacity(grid.face_count() + 1);
-    let mut data = Vec::new();
-    off.push(0u32);
+pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Vec<Vec<FaceTag>> {
+    let mut tags = Vec::with_capacity(grid.face_count());
     for face_index in 0..grid.face_count() {
+        let mut face_tags = Vec::new();
         if face_solid(grid, &painted.roads, face_index) {
-            data.push(TAG_ROAD);
+            face_tags.push(FaceTag::Road);
         }
         if face_solid(grid, &painted.towns, face_index) {
-            data.push(TAG_TOWN);
+            face_tags.push(FaceTag::Town);
         }
         if face_solid(grid, &painted.bridges, face_index) {
-            data.push(TAG_BRIDGE);
+            face_tags.push(FaceTag::Bridge);
         }
         if face_solid(grid, &painted.bridge_entries, face_index) {
-            data.push(TAG_BRIDGE_ENTRY);
+            face_tags.push(FaceTag::BridgeEntry);
         }
-        off.push(data.len() as u32);
+        tags.push(face_tags);
     }
-    (off, data)
+    tags
 }

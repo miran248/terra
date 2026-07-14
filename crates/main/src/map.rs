@@ -5,9 +5,10 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
-    FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG,
-    FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTags, LevelData, STRUCT_CAMPFIRE,
-    STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL,
+    BlendTarget, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS,
+    FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTag, LevelData,
+    STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER,
+    STRUCT_WELL,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
@@ -54,7 +55,7 @@ pub struct GameAssets {
 pub struct MapPlugin;
 
 #[derive(Resource)]
-pub struct LevelTags(pub FaceTags);
+pub struct LevelTags(pub Vec<Vec<FaceTag>>);
 
 #[derive(Resource)]
 pub struct LevelFaceTypes(pub Vec<shared::terrain::Terrain>);
@@ -124,12 +125,14 @@ fn cull_props(
 #[derive(Resource)]
 pub struct LevelRegions {
     pub regions: Vec<shared::level::RegionData>,
-    pub face_region: Vec<u32>,
+    pub face_region: Vec<Option<u32>>,
 }
 
 /// Blend-marked boundary faces: the pair of terrain kinds each links.
 #[derive(Resource)]
-pub struct LevelBlends(pub std::collections::BTreeMap<u32, (u8, u8)>);
+pub struct LevelBlends(
+    pub std::collections::BTreeMap<u32, (shared::terrain::Terrain, BlendTarget)>,
+);
 
 /// Drives the world sun (see `drive_daynight`). The sun orbits the planet's Y
 /// axis, so day and night are real hemispheres: `angle` is the sun's longitude
@@ -764,15 +767,8 @@ fn setup_map(
         })
         .collect();
     let planet_mesh = PlanetMesh::new(tris);
-    let tags = FaceTags {
-        off: level.face_tag_off.clone(),
-        data: level.face_tag_data.clone(),
-    };
-    let face_types: Vec<shared::terrain::Terrain> = level
-        .face_types
-        .iter()
-        .map(|&id| shared::terrain::Terrain::from_id(id).expect("validated terrain id"))
-        .collect();
+    let tags = level.face_tags.clone();
+    let face_types = level.face_types.clone();
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);
     commands.insert_resource(LevelTags(tags));
@@ -789,7 +785,7 @@ fn setup_map(
         level
             .face_blend
             .iter()
-            .map(|&(fi, a, b)| (fi, (a, b)))
+            .map(|blend| (blend.face, (blend.base, blend.target)))
             .collect(),
     ));
 }

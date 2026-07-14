@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use super::Grid;
-use crate::level::{NO_REGION, RegionKind};
+use crate::level::RegionKind;
 use crate::topology::FaceId;
 
 /// Typed face partitioner for named region overlays.
@@ -30,23 +30,23 @@ impl<'a> RegionPartitioner<'a> {
         &self,
         start: FaceId,
         kind: RegionKind,
-        region_ref: u32,
+        region_index: u32,
         max_faces: usize,
-        face_region: &mut [u32],
+        face_region: &mut [Option<u32>],
     ) -> Vec<FaceId> {
         let overlay_kind = matches!(kind, RegionKind::Road | RegionKind::Town);
         let mut faces = vec![start];
         let mut queue = VecDeque::from([start]);
         let mut visited_connector = vec![false; self.grid.face_count()];
-        face_region[start.index()] = region_ref;
+        face_region[start.index()] = Some(region_index);
         while let Some(current) = queue.pop_front() {
             if faces.len() >= max_faces {
                 break;
             }
             for neighbor in self.grid.topology.face_neighbors(current) {
                 let index = neighbor.index();
-                if self.class[index] == Some(kind) && face_region[index] == NO_REGION {
-                    face_region[index] = region_ref;
+                if self.class[index] == Some(kind) && face_region[index].is_none() {
+                    face_region[index] = Some(region_index);
                     faces.push(neighbor);
                     queue.push_back(neighbor);
                 } else if !overlay_kind
@@ -86,7 +86,7 @@ mod tests {
         terrain_class[start.index()] = Some(RegionKind::Plains);
         terrain_class[connector.index()] = Some(RegionKind::Plains);
         terrain_class[beyond.index()] = Some(RegionKind::Plains);
-        let mut assignments = vec![NO_REGION; grid.face_count()];
+        let mut assignments = vec![None; grid.face_count()];
 
         let faces = RegionPartitioner::new(&grid, &class, &terrain_class).claim(
             start,
@@ -98,6 +98,6 @@ mod tests {
 
         assert!(faces.contains(&start));
         assert!(faces.contains(&beyond));
-        assert_eq!(assignments[connector.index()], NO_REGION);
+        assert_eq!(assignments[connector.index()], None);
     }
 }

@@ -602,23 +602,23 @@ fn update_terrain_hud(
         && let Some(fi) = planet.face_at(tf.translation.normalize())
     {
         if let Some(blends) = blends
-            && let Some(&(a, b)) = blends.0.get(&(fi as u32))
+            && let Some(&(base, target)) = blends.0.get(&(fi as u32))
         {
-            let other = if a == tile as u8 { b } else { a };
-            tile_line = match shared::level::blend_feature_name(other) {
+            let other = match target {
+                shared::level::BlendTarget::Terrain(other) if other == tile => base,
+                shared::level::BlendTarget::Terrain(other) => other,
+                _ => base,
+            };
+            tile_line = match target.name() {
                 Some(name) => format!("{} + {name}", tile_name(tile)),
-                None => format!(
-                    "{} + {}",
-                    tile_name(tile),
-                    tile_name(Terrain::ALL[other as usize])
-                ),
+                None => format!("{} + {}", tile_name(tile), tile_name(other)),
             };
         }
         if let Some(tags) = tags {
-            for &tag in tags.0.of(fi) {
+            for &tag in &tags.0[fi] {
                 tile_line.push_str("  ");
-                tile_line.push_str(shared::level::tag_name(tag));
-                if tag == shared::level::TAG_ROAD
+                tile_line.push_str(tag.name());
+                if tag == shared::level::FaceTag::Road
                     && let Some(m) = road_mat.as_ref().and_then(|r| r.0.get(fi).copied())
                 {
                     tile_line.push_str(" (");
@@ -632,7 +632,8 @@ fn update_terrain_hud(
                 .face_region
                 .get(fi)
                 .copied()
-                .and_then(shared::level::region_index)
+                .flatten()
+                .map(|index| index as usize)
         {
             region_name = format!("\n{}", regions.regions[ri].name);
         }
