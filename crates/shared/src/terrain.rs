@@ -7,6 +7,10 @@ use crate::planet::{PlanetMesh, unit_icosphere_tris};
 use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
 use crate::zones::{COARSE_SUB, ZoneConfig, ZoneKind, Zones};
 
+/// Base proposed-elevation contour for the lake bed inside its coarse
+/// containment zone. Fine detail perturbs this threshold into an uneven shore.
+pub(crate) const LAKE_BED_ELEVATION: f32 = -0.18;
+
 pub const MAX_MOUNTAIN: f32 = 200.0;
 pub const MAX_DEPTH: f32 = 200.0;
 
@@ -188,9 +192,9 @@ impl TerrainGen {
 
         let height = Fbm::<Perlin>::new(seed)
             .set_octaves(6)
-            .set_frequency(1.5)
+            .set_frequency(1.8)
             .set_lacunarity(2.3)
-            .set_persistence(0.55);
+            .set_persistence(0.58);
         let sub_seed = |delta: u32| seed.wrapping_add(delta);
 
         let zones = Zones::generate(seed, &ZoneConfig::default());
@@ -199,17 +203,18 @@ impl TerrainGen {
         Self {
             height,
             detail: Fbm::<Perlin>::new(sub_seed(1))
-                .set_octaves(3)
-                .set_frequency(7.0),
+                .set_octaves(4)
+                .set_frequency(8.5)
+                .set_persistence(0.55),
             moisture: Fbm::<Perlin>::new(sub_seed(2))
                 .set_octaves(4)
-                .set_frequency(2.5),
+                .set_frequency(1.8),
             temp_noise: Fbm::<Perlin>::new(sub_seed(3))
                 .set_octaves(3)
-                .set_frequency(2.0),
+                .set_frequency(1.5),
             warp: Fbm::<Perlin>::new(sub_seed(4))
                 .set_octaves(3)
-                .set_frequency(2.8),
+                .set_frequency(2.0),
             vert_elev: vec![0.0; verts.len()],
             vert_moist: vec![0.0; verts.len()],
             vert_temp: vec![0.0; verts.len()],
@@ -341,6 +346,14 @@ impl TerrainGen {
         self.moisture.get(self.warped(pos)) as f32
     }
 
+    /// Fine lake footprint within a safe coarse containment zone. Elevation
+    /// supplies a connected basin; higher-frequency detail breaks the coarse
+    /// triangular outline into coves and irregular banks.
+    pub(crate) fn is_lake_bed(&self, pos: SpherePos, elevation: f32) -> bool {
+        let shore_detail = self.detail.get(self.warped(pos)) as f32 * 0.10;
+        elevation < LAKE_BED_ELEVATION + shore_detail
+    }
+
     // ---- classification (zone-aware) ----
 
     pub fn base_classify(&self, pos: SpherePos) -> Terrain {
@@ -357,7 +370,7 @@ impl TerrainGen {
         match kind {
             ZoneKind::Ocean => Terrain::Ocean,
             ZoneKind::Lake => {
-                if e < 0.0 {
+                if self.is_lake_bed(pos, e) {
                     Terrain::Lake
                 } else {
                     self.land_biome(pos, e)
@@ -456,7 +469,7 @@ impl TerrainGen {
             let raw = self.height.get(w) as f32;
             let (min, max, curve, land) = self.blended_profile(pos.0);
             let detail = if land {
-                self.detail.get(w) as f32 * 0.06
+                self.detail.get(w) as f32 * 0.075
             } else {
                 0.0
             };
@@ -545,12 +558,13 @@ impl TerrainGen {
     /// L1 zone identity is authoritative: blending may cross the land/water
     /// boundary only within one coarse face of it. Vertices whose coarse face is
     /// *interior* to a zone (whole ring shares the same water/land identity) are
-    /// clamped to that identity's sign — islands can't sink, lakes can't dry,
-    /// and no inland dip reads as ocean. River carving (after this) is the one
+    /// clamped to that identity's sign — islands can't sink, lake containment
+    /// fields stay below sea level, and no inland dip reads as ocean. Lake cover
+    /// later selects a noisy inner contour as the actual bed. River carving is the one
     /// deliberate exception.
     /// L1 zone identity is authoritative. Per-vertex sign rules:
-    ///   • Lake zones are water, period — small enough that blending would
-    ///     erase them, and guaranteed inland, so every lake vertex is wet.
+    ///   • Lake zones remain negative containment basins; fine classification
+    ///     chooses only their deeper organic contour as actual lake water.
     ///   • Land zones stay dry except along the OCEAN coastline — adjacency to
     ///     a lake does not unlock dipping (that crossing belongs to the lake's
     ///     own edge, otherwise every lake drains to the sea through a chain of
@@ -743,9 +757,9 @@ impl TerrainGen {
         let wy = self.warp.get([d.x, d.y + 9.7, d.z + 2.1]);
         let wz = self.warp.get([d.x + 3.4, d.y, d.z + 6.8]);
         [
-            base[0] + wx * 0.18,
-            base[1] + wy * 0.18,
-            base[2] + wz * 0.18,
+            base[0] + wx * 0.25,
+            base[1] + wy * 0.25,
+            base[2] + wz * 0.25,
         ]
     }
 

@@ -164,10 +164,10 @@ impl Default for ZoneConfig {
                 },
                 FeatureSpec {
                     kind: ZoneKind::MountainRange,
-                    count: 3,
-                    target_area_m2: 8.0e5,
+                    count: 5,
+                    target_area_m2: 6.5e5,
                     min_area_m2: 2.0e5,
-                    min_distance_m: 1200.0,
+                    min_distance_m: 900.0,
                 },
                 FeatureSpec {
                     kind: ZoneKind::Lake,
@@ -177,7 +177,7 @@ impl Default for ZoneConfig {
                     min_distance_m: 600.0,
                 },
             ],
-            rivers: 4,
+            rivers: 6,
         }
     }
 }
@@ -729,6 +729,7 @@ mod tests {
         let z = make(42);
         assert_eq!(z.zones_of_kind(ZoneKind::Continent).count(), 5);
         assert_eq!(z.zones_of_kind(ZoneKind::Island).count(), 3);
+        assert_eq!(z.zones_of_kind(ZoneKind::MountainRange).count(), 5);
         assert_eq!(z.zones_of_kind(ZoneKind::Lake).count(), 3);
         assert_eq!(z.zones_of_kind(ZoneKind::Settlement).count(), 12);
         let _ = cfg;
