@@ -1,10 +1,11 @@
 use super::Grid;
-use crate::topology::{CellId, FaceId};
+use crate::topology::CellId;
 
 pub(super) fn face_max<T: Copy>(grid: &Grid, per_cell: &[T], rank: impl Fn(T) -> u8) -> Vec<T> {
-    (0..grid.face_count())
+    grid.topology
+        .faces()
         .map(|face| {
-            grid.face_cells(FaceId::new(face))
+            grid.face_cells(face)
                 .map(CellId::index)
                 .into_iter()
                 .map(|cell| per_cell[cell])
@@ -19,9 +20,10 @@ pub(super) fn face_majority<T: Copy + Eq>(
     per_cell: &[T],
     rank: impl Fn(T) -> u8,
 ) -> Vec<T> {
-    (0..grid.face_count())
+    grid.topology
+        .faces()
         .map(|face| {
-            let cells = grid.face_cells(FaceId::new(face)).map(CellId::index);
+            let cells = grid.face_cells(face).map(CellId::index);
             let values = cells.map(|cell| per_cell[cell]);
             values
                 .into_iter()

@@ -13,32 +13,9 @@ macro_rules! field {
             }
         }
 
-        #[allow(dead_code)]
         impl<T> $name<T> {
             pub(super) fn as_slice(&self) -> &[T] {
                 &self.0
-            }
-            pub(super) fn dense(&self) -> &[T] {
-                self.as_slice()
-            }
-            pub(super) fn as_mut_slice(&mut self) -> &mut [T] {
-                &mut self.0
-            }
-            pub(super) fn iter(&self) -> std::slice::Iter<'_, T> {
-                self.0.iter()
-            }
-            pub(super) fn len(&self) -> usize {
-                self.0.len()
-            }
-            pub(super) fn into_vec(self) -> Vec<T> {
-                self.0
-            }
-        }
-
-        #[allow(dead_code)]
-        impl<T: Clone> $name<T> {
-            pub(super) fn to_vec(&self) -> Vec<T> {
-                self.0.clone()
             }
         }
 
@@ -84,6 +61,18 @@ macro_rules! field {
 
 field!(CellField, CellId);
 field!(FaceField, FaceId);
+
+impl<T> CellField<T> {
+    pub(super) fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.0
+    }
+}
+
+impl<T: Clone> FaceField<T> {
+    pub(super) fn to_vec(&self) -> Vec<T> {
+        self.0.clone()
+    }
+}
 
 /// Dense membership set whose identity domain is terrain cells.
 #[derive(Clone, Debug, PartialEq, Eq)]

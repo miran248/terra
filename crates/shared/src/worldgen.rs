@@ -34,6 +34,7 @@ mod projection;
 mod regions;
 mod router;
 
+use classification::size_range;
 use domain::{CellField, CellSet, FaceField};
 use features::{
     absorb_small_clusters, build_bridges, mark_blends, paint_features, resolve_transitions,
@@ -392,6 +393,10 @@ impl GenState {
         self.terrain.as_ref().expect("terrain not generated yet")
     }
 
+    fn terrain_mut(&mut self) -> &mut TerrainGen {
+        self.terrain.as_mut().expect("terrain not generated yet")
+    }
+
     /// Package a completed pipeline into the runtime artifact. This is the
     /// single cell-to-runtime boundary; serializers only encode the result.
     fn to_level_data(&self) -> LevelData {
@@ -451,7 +456,7 @@ impl GenState {
         let terrain = self.terrain.as_ref().expect("pipeline finished");
         let elevations = terrain.vert_elevations();
         let mut terrain_faces = BTreeMap::new();
-        for &kind in self.tiles.iter() {
+        for &kind in self.tiles.as_slice().iter() {
             let name = match kind {
                 Terrain::Ocean => "Ocean",
                 Terrain::Lake => "Lake",
@@ -480,6 +485,7 @@ impl GenState {
             max_elevation: elevations.iter().copied().fold(f32::MIN, f32::max),
             water_faces: self
                 .tiles
+                .as_slice()
                 .iter()
                 .filter(|terrain| terrain.is_water())
                 .count(),

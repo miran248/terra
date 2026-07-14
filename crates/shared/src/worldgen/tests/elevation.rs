@@ -112,7 +112,7 @@ fn solved_field_invariants() {
                         .face_at(terrain.vert_dir(solver_vertex))
                         .is_some_and(|face_index| {
                             matches!(
-                                state.tiles.dense()[face_index],
+                                state.tiles.as_slice()[face_index],
                                 Terrain::Cliff | Terrain::Mountain | Terrain::Snow
                             )
                         })
@@ -145,9 +145,9 @@ fn solved_field_invariants() {
 
     // No enclosed water body smaller than the minimum (no 1-cell lakes).
     let components = state.grid.topology.cell_components(|cell| {
-        state.cells.dense()[cell.index()].is_water()
+        state.cells.as_slice()[cell.index()].is_water()
             && !matches!(
-                state.cells.dense()[cell.index()],
+                state.cells.as_slice()[cell.index()],
                 Terrain::River | Terrain::RiverSpring
             )
     });
@@ -175,7 +175,7 @@ fn solved_field_invariants() {
     // the waterline (the depth class replaces the old DeepOcean tile).
     // (Depth is per grid CELL — sample the solved field at the cell.)
     for cell_index in 0..state.grid.cell_count() {
-        if state.water_depth.dense()[cell_index] == Some(WaterDepth::Abyss) {
+        if state.water_depth.as_slice()[cell_index] == Some(WaterDepth::Abyss) {
             let d = terrain.elevation_at(state.grid.cell_position(CellId::new(cell_index)));
             assert!(d < -0.1, "abyss cell {cell_index} not deep: {d}");
         }
@@ -186,7 +186,7 @@ fn solved_field_invariants() {
     for cell_index in 0..state.grid.cell_count() {
         if state.painted.roads.contains(CellId::new(cell_index)) {
             assert!(
-                state.cells.dense()[cell_index].is_land(),
+                state.cells.as_slice()[cell_index].is_land(),
                 "road painted on water cell {cell_index}"
             );
         }
@@ -202,7 +202,7 @@ fn solved_field_invariants() {
             == 3;
         if solid {
             assert!(
-                state.tiles.dense()[face_index].is_land(),
+                state.tiles.as_slice()[face_index].is_land(),
                 "solid road face on water tile {face_index}"
             );
         }
@@ -233,9 +233,9 @@ fn solved_field_invariants() {
                 .face_at(end.0)
                 .expect("deck end on a face");
             assert!(
-                bridge_walkable(state.tiles.dense()[face_index]),
+                bridge_walkable(state.tiles.as_slice()[face_index]),
                 "bridge entry on non-walkable tile {:?}",
-                state.tiles.dense()[face_index]
+                state.tiles.as_slice()[face_index]
             );
             // The anchor CELL (where placement gated on the solved slope)
             // is genuinely gentle — a bridge never lands on steep ground,
@@ -274,9 +274,9 @@ fn solved_field_invariants() {
             assert!(
                 corners
                     .iter()
-                    .any(|&cell| state.cells.dense()[cell] == state.tiles.dense()[face_index]),
+                    .any(|&cell| state.cells.as_slice()[cell] == state.tiles.as_slice()[face_index]),
                 "face {face_index} derived {:?} not among its corner cells",
-                state.tiles.dense()[face_index]
+                state.tiles.as_slice()[face_index]
             );
         }
         let mut tile_pinches = 0usize;
@@ -287,9 +287,9 @@ fn solved_field_invariants() {
             let ts: Vec<Terrain> = (0..n)
                 .map(|i| {
                     match classification::derive_face(
-                        state.cells.dense()[v],
-                        state.cells.dense()[ring[i].index()],
-                        state.cells.dense()[ring[(i + 1) % n].index()],
+                        state.cells.as_slice()[v],
+                        state.cells.as_slice()[ring[i].index()],
+                        state.cells.as_slice()[ring[(i + 1) % n].index()],
                     ) {
                         // Spring is a river source marker, not a separate
                         // traversable band; validate it as part of the river
@@ -334,11 +334,11 @@ fn solved_field_invariants() {
             .grid
             .topology
             .faces()
-            .filter(|face| state.tiles.dense()[face.index()] == Terrain::Ocean)
+            .filter(|face| state.tiles.as_slice()[face.index()] == Terrain::Ocean)
             .collect();
         let ocean_distance = state.grid.topology.face_distances(&ocean_faces, 10);
         for face_index in 0..state.grid.face_count() {
-            if state.tiles.dense()[face_index] == Terrain::Lake {
+            if state.tiles.as_slice()[face_index] == Terrain::Lake {
                 let face = state
                     .grid
                     .topology
@@ -446,460 +446,9 @@ fn solved_field_invariants() {
             assert_ne!(blend.base, target);
         }
         assert_eq!(
-            state.tiles.dense()[blend.face as usize],
+            state.tiles.as_slice()[blend.face as usize],
             blend.base,
             "blend face kind mismatch"
         );
-    }
-}
-
-#[test]
-fn kernel_is_local() {
-    // The interpolation kernel must return genuinely nearby vertices.
-    // Guards the polar search bug: the fixed 3x3 grid window returned
-    // verts up to 335m away near the poles (longitude cells shrink).
-    let terrain = TerrainGen::init(1);
-    for i in 0..2000 {
-        let u = (i as f32 * 0.6180339) % 1.0;
-        let v = (i as f32 * 0.7548776) % 1.0;
-        let p = crate::sphere::random_point(u, v);
-        for (solver_vertex, _) in terrain.kernel(p) {
-            let d = p.distance(crate::sphere::SpherePos::new(
-                terrain.vert_dir(solver_vertex),
-            ));
-            assert!(
-                d < 200.0,
-                "kernel vert {d:.0}m away at lat {:.0}",
-                p.0.y.asin().to_degrees()
-            );
-        }
-    }
-}
-
-#[test]
-fn tile_type_sets_cluster_mixed_connected_groups() {
-    let grid = Grid::new(1);
-
-    let cell_neighbor = grid.cell_neighbors(CellId::new(0))[0].index();
-    let cell_distant = (0..grid.cell_count())
-        .find(|&v| {
-            v != 0
-                && v != cell_neighbor
-                && !grid
-                    .cell_neighbors(CellId::new(0))
-                    .iter()
-                    .any(|cell| cell.index() == v)
-                && !grid
-                    .cell_neighbors(CellId::new(cell_neighbor))
-                    .iter()
-                    .any(|cell| cell.index() == v)
-        })
-        .expect("grid needs a non-adjacent cell");
-    let mut cells = vec![Terrain::Plains; grid.cell_count()];
-    cells[0] = Terrain::Forest;
-    cells[cell_neighbor] = Terrain::Mountain;
-    cells[cell_distant] = Terrain::Snow;
-    let cell_components = cluster_cell_types(
-        &grid,
-        &cells,
-        &[
-            Terrain::Forest,
-            Terrain::Mountain,
-            Terrain::Snow,
-            Terrain::Forest,
-        ],
-    );
-    assert_eq!(cell_components.count(), 2);
-    let cell = |index| grid.topology.cell(index).unwrap();
-    assert_eq!(
-        cell_components.cell(cell(0)),
-        cell_components.cell(cell(cell_neighbor))
-    );
-    assert_ne!(
-        cell_components.cell(cell(0)),
-        cell_components.cell(cell(cell_distant))
-    );
-    let cell_nonmember = cells.iter().position(|&t| t == Terrain::Plains).unwrap();
-    assert_eq!(cell_components.cell(cell(cell_nonmember)), None);
-
-    let face_neighbor = grid.face_neighbors(FaceId::new(0)).map(FaceId::index)[0];
-    let face_distant = (0..grid.face_count())
-        .find(|&f| {
-            f != 0
-                && f != face_neighbor
-                && !grid
-                    .face_neighbors(FaceId::new(0))
-                    .map(FaceId::index)
-                    .contains(&f)
-                && !grid
-                    .face_neighbors(FaceId::new(face_neighbor))
-                    .map(FaceId::index)
-                    .contains(&f)
-        })
-        .expect("grid needs a non-adjacent face");
-    let mut face_types = vec![Terrain::Plains; grid.face_count()];
-    face_types[0] = Terrain::Beach;
-    face_types[face_neighbor] = Terrain::Cliff;
-    face_types[face_distant] = Terrain::Ocean;
-    let face_components = cluster_face_types(
-        &grid,
-        &face_types,
-        &[Terrain::Beach, Terrain::Cliff, Terrain::Ocean],
-    );
-    assert_eq!(face_components.count(), 2);
-    let face = |index| grid.topology.face(index).unwrap();
-    assert_eq!(
-        face_components.face(face(0)),
-        face_components.face(face(face_neighbor))
-    );
-    assert_ne!(
-        face_components.face(face(0)),
-        face_components.face(face(face_distant))
-    );
-    let face_nonmember = face_types
-        .iter()
-        .position(|&t| t == Terrain::Plains)
-        .unwrap();
-    assert_eq!(face_components.face(face(face_nonmember)), None);
-
-    let empty_components = cluster_cell_types(&grid, &cells, &[]);
-    assert_eq!(empty_components.count(), 0);
-    assert!(
-        grid.topology
-            .cells()
-            .all(|cell| empty_components.cell(cell).is_none())
-    );
-}
-
-#[test]
-fn river_surface_starts_on_springs_and_joins_body_water() {
-    let state = run_state(1337, |_| {});
-    let river_r = river_surface_radii(
-        &state.grid,
-        state.mesh_tris.as_slice(),
-        state.tiles.as_slice(),
-        state.water_r.as_slice(),
-    );
-    let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
-
-    let mut spring_corners = 0usize;
-    let mut outlet_corners = 0usize;
-    for (face_index, face_river_r) in river_r.iter().enumerate().take(state.grid.face_count()) {
-        if state.tiles.dense()[face_index] == Terrain::RiverSpring {
-            for (corner, &radius) in face_river_r.iter().enumerate() {
-                spring_corners += 1;
-                let ground = Vec3::from_array(state.mesh_tris.dense()[face_index][corner]).length();
-                assert!(
-                    (radius - (ground - RIVER_TERRAIN_CLIP)).abs() < 1e-3,
-                    "spring water must start embedded in the terrain"
-                );
-            }
-        }
-        if !matches!(
-            state.tiles.dense()[face_index],
-            Terrain::River | Terrain::RiverSpring | Terrain::RiverBank
-        ) {
-            continue;
-        }
-        for neighbor in state
-            .grid
-            .face_neighbors(FaceId::new(face_index))
-            .map(FaceId::index)
-        {
-            let waterline = state.water_r.dense()[neighbor];
-            if waterline <= 0.0 {
-                continue;
-            }
-            for (corner, &radius) in face_river_r.iter().enumerate() {
-                if state.mesh_tris.dense()[neighbor]
-                    .iter()
-                    .any(|&other| key(other) == key(state.mesh_tris.dense()[face_index][corner]))
-                {
-                    outlet_corners += 1;
-                    assert!(
-                        (radius - waterline).abs() < 1e-3,
-                        "river outlet must share its neighboring waterline"
-                    );
-                }
-            }
-        }
-    }
-    assert!(spring_corners > 0, "seed must include Spring faces");
-    assert!(
-        outlet_corners > 0,
-        "seed must include water-connected river outlets"
-    );
-}
-
-#[test]
-fn lakes_stay_enclosed() {
-    // No lake-zone water may connect to the ocean — the rim dam guarantees
-    // every lake is its own body (guards the drain-channel bug where lakes
-    // leaked to the sea along coarse-face edges and became ocean inlets).
-    let state = run_state(1337, |_| {});
-    let terrain = state.terrain.as_ref().unwrap();
-    let components = state.grid.topology.face_components(|face| {
-        state.tiles.dense()[face.index()].is_water()
-            && !matches!(
-                state.tiles.dense()[face.index()],
-                Terrain::River | Terrain::RiverSpring
-            )
-    });
-    let mut sizes = vec![0usize; components.count()];
-    let mut has_lake = vec![false; components.count()];
-    let mut has_ocean = vec![false; components.count()];
-    for face_index in 0..state.grid.face_count() {
-        let face = state.grid.topology.face(face_index).unwrap();
-        let Some(c) = components.face(face).map(|component| component.index()) else {
-            continue;
-        };
-        sizes[c] += 1;
-        match terrain.zones().kind_at_fine(face_index) {
-            crate::zones::ZoneKind::Lake => has_lake[c] = true,
-            crate::zones::ZoneKind::Ocean => has_ocean[c] = true,
-            _ => {}
-        }
-    }
-    let mut lake_faces = 0;
-    for c in 0..components.count() {
-        if has_lake[c] {
-            lake_faces += sizes[c];
-            assert!(
-                !has_ocean[c],
-                "lake body of {} faces connects to the ocean",
-                sizes[c]
-            );
-        }
-    }
-    assert!(
-        lake_faces > 100,
-        "lakes nearly vanished: {lake_faces} faces"
-    );
-}
-
-#[test]
-fn rivers_reach_the_sea() {
-    // Every river must join a larger water body — no thin terrain band
-    // may cut a mouth off (guards the junction-face damming bug).
-    let state = run_state(1337, |_| {});
-    let mut visited = vec![false; state.grid.cell_count()];
-    for start in 0..state.grid.cell_count() {
-        if !matches!(
-            state.cells.dense()[start],
-            Terrain::River | Terrain::RiverSpring
-        ) || visited[start]
-        {
-            continue;
-        }
-        let comp: Vec<_> = state
-            .grid
-            .topology
-            .cell_component(
-                state
-                    .grid
-                    .topology
-                    .cell(start)
-                    .expect("cell index from topology range"),
-                |cell| {
-                    matches!(
-                        state.cells.dense()[cell.index()],
-                        Terrain::River | Terrain::RiverSpring
-                    )
-                },
-            )
-            .into_iter()
-            .map(|cell| cell.index())
-            .collect();
-        for &cell in &comp {
-            visited[cell] = true;
-        }
-        let touches_sea = comp.iter().any(|&cell_index| {
-            state
-                .grid
-                .cell_neighbors(CellId::new(cell_index))
-                .iter()
-                .any(|nb| {
-                    matches!(
-                        state.cells.dense()[nb.index()],
-                        Terrain::Ocean | Terrain::Lake
-                    )
-                })
-        });
-        assert!(
-            touches_sea,
-            "river component of {} cells cut off from any water body",
-            comp.len()
-        );
-        // And the mouth is open at FACE level too: some River face is
-        // edge-adjacent to an Ocean/Lake face.
-        let mut open = false;
-        'faces: for face_index in 0..state.grid.face_count() {
-            if !matches!(
-                state.tiles.dense()[face_index],
-                Terrain::River | Terrain::RiverSpring
-            ) {
-                continue;
-            }
-            if !state
-                .grid
-                .face_cells(FaceId::new(face_index))
-                .map(CellId::index)
-                .iter()
-                .any(|cell| comp.contains(cell))
-            {
-                continue;
-            }
-            for nb in state
-                .grid
-                .face_neighbors(FaceId::new(face_index))
-                .map(FaceId::index)
-            {
-                if matches!(state.tiles.dense()[nb], Terrain::Ocean | Terrain::Lake) {
-                    open = true;
-                    break 'faces;
-                }
-            }
-        }
-        assert!(
-            open,
-            "river mouth dammed at face level ({} cells)",
-            comp.len()
-        );
-    }
-}
-
-#[test]
-fn mesh_is_watertight() {
-    // Every fall-through bug is a crack: an edge used by only one triangle
-    // is a hole the player can drop through. On a closed surface each edge
-    // is shared by EXACTLY two faces, and every vertex fan is a full ring.
-    // Assert both on the baked mesh (the collider is built from it).
-    let state = run_state(1337, |_| {});
-    let grid = &state.grid;
-
-    // (a) each undirected edge belongs to exactly two faces.
-    let mut edge_faces: BTreeMap<(usize, usize), u32> = BTreeMap::new();
-    for face_index in 0..grid.face_count() {
-        let idx = grid.face_cells(FaceId::new(face_index)).map(CellId::index);
-        for k in 0..3 {
-            let (a, b) = (idx[k], idx[(k + 1) % 3]);
-            let key = if a < b { (a, b) } else { (b, a) };
-            *edge_faces.entry(key).or_default() += 1;
-        }
-    }
-    for (&(a, b), &n) in &edge_faces {
-        assert_eq!(n, 2, "edge ({a},{b}) shared by {n} faces (not 2) — a crack");
-    }
-
-    // (b) every cell's faces form ONE closed fan: walking face→face
-    // across shared edges visits all of them and returns. A cell whose
-    // fan splits is a pinhole even if each edge is shared twice.
-    for v in 0..grid.cell_count() {
-        let cell = grid
-            .topology
-            .cell(v)
-            .expect("cell index from topology range");
-        let faces = grid.topology.cell_faces(cell);
-        let n = faces.len();
-        assert!((5..=6).contains(&n), "cell {v} has {n} faces");
-        let mut seen = vec![false; n];
-        let mut stack = vec![0usize];
-        seen[0] = true;
-        let mut count = 1;
-        while let Some(i) = stack.pop() {
-            for j in 0..n {
-                if seen[j] {
-                    continue;
-                }
-                // Adjacent in the fan iff they share an edge through v
-                // (two common vertices).
-                let face_index = grid.face_cells(faces[i]).map(CellId::index);
-                let fj = grid.face_cells(faces[j]).map(CellId::index);
-                let shared = face_index.iter().filter(|x| fj.contains(x)).count();
-                if shared == 2 {
-                    seen[j] = true;
-                    count += 1;
-                    stack.push(j);
-                }
-            }
-        }
-        assert_eq!(count, n, "cell {v} fan is not one closed ring — a pinhole");
-    }
-}
-
-#[test]
-fn deterministic_pipeline() {
-    let a = run_state(42, |_| {});
-    let b = run_state(42, |_| {});
-    assert_eq!(
-        a.terrain.unwrap().vert_elevations(),
-        b.terrain.unwrap().vert_elevations()
-    );
-    assert_eq!(a.cells, b.cells);
-    assert_eq!(a.tiles, b.tiles);
-    assert_eq!(a.regions.len(), b.regions.len());
-    assert_eq!(a.flora.len(), b.flora.len());
-    assert!(
-        a.flora
-            .iter()
-            .zip(&b.flora)
-            .all(|(x, y)| x.pos == y.pos && x.kind == y.kind)
-    );
-    assert_eq!(a.structures.len(), b.structures.len());
-    assert!(
-        a.structures
-            .iter()
-            .zip(&b.structures)
-            .all(|(x, y)| x.pos == y.pos && x.kind == y.kind)
-    );
-    assert_eq!(a.slope_class, b.slope_class);
-    assert_eq!(a.water_depth, b.water_depth);
-    assert_eq!(a.landform, b.landform);
-}
-
-fn serialized_fingerprint(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
-}
-
-#[test]
-fn locked_serialized_worlds() {
-    let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
-    assert_eq!(
-        seed_1337.as_slice(),
-        include_bytes!("../../../main/assets/level_1337.bin")
-    );
-    assert_eq!(serialized_fingerprint(&seed_1337), 0x6e14_b46d_517e_d0e2);
-
-    let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 0x49fa_fb72_6e14_c803);
-}
-
-#[test]
-fn flora_stays_off_water_and_features() {
-    let state = run_state(1337, |_| {});
-    assert!(
-        state.flora.len() > 1000,
-        "flora nearly absent: {}",
-        state.flora.len()
-    );
-    for f in &state.flora {
-        let face_index = f.face as usize;
-        assert!(
-            state.tiles.dense()[face_index].is_land(),
-            "flora on water face {face_index}"
-        );
-        for bits in [
-            &state.painted.roads,
-            &state.painted.towns,
-            &state.painted.bridge_entries,
-        ] {
-            assert_eq!(
-                painted_corners(&state.grid, bits, FaceId::new(face_index)),
-                0,
-                "flora on a feature face {face_index}"
-            );
-        }
     }
 }

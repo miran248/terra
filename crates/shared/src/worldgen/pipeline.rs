@@ -110,7 +110,9 @@ impl Event {
             Event::RiversPlanned(r) => format!("rivers planned: {}", r.len()),
             Event::SettlementsPlaced(a) => format!("settlements placed: {}", a.len()),
             Event::RoadsPlanned(r) => format!("roads planned: {}", r.len()),
-            Event::TilesClassified(c) => format!("cells classified: {}", c.len()),
+            Event::TilesClassified(c) => {
+                format!("cells classified: {}", c.as_slice().len())
+            }
             Event::RiversPainted(_) => "rivers painted".into(),
             Event::WaterNormalized(_) => "water bodies normalized".into(),
             Event::FeaturesPainted(_, roads) => {
@@ -299,56 +301,56 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
             state.slope_class.as_slice(),
             state.mesh_tris.as_slice(),
         )),
-        Command::BakeOutputs => {
-            let depth = face_max(&state.grid, state.water_depth.as_slice(), |depth| {
-                depth.map_or(0, |d| d.severity() + 1)
-            })
-            .into_iter()
-            .zip(state.tiles.iter())
-            .map(|(depth, terrain)| terrain.is_water().then_some(depth).flatten())
-            .collect();
-            let road_material = state
+        Command::BakeOutputs => bake_outputs(state),
+    }
+}
+
+fn bake_outputs(state: &GenState) -> Event {
+    let depth = face_max(&state.grid, state.water_depth.as_slice(), |depth| {
+        depth.map_or(0, |d| d.severity() + 1)
+    })
+    .into_iter()
+    .zip(state.tiles.as_slice())
+    .map(|(depth, terrain)| terrain.is_water().then_some(depth).flatten())
+    .collect();
+    let road_material = state
+        .grid
+        .topology
+        .faces()
+        .map(|face| {
+            let solid = state
                 .grid
-                .topology
-                .faces()
-                .map(|face| {
-                    let solid = state
-                        .grid
-                        .face_cells(face)
-                        .iter()
-                        .filter(|&&cell| state.painted.roads.contains(cell))
-                        .count()
-                        == 3;
-                    if solid {
-                        Some(face_road_material(
-                            &state.grid,
-                            state.cells.as_slice(),
-                            state.landform.as_slice(),
-                            state.slope_class.as_slice(),
-                            face.index(),
-                        ))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            Event::OutputsBaked {
-                river_r: river_surface_radii(
+                .face_cells(face)
+                .iter()
+                .filter(|&&cell| state.painted.roads.contains(cell))
+                .count()
+                == 3;
+            solid.then(|| {
+                face_road_material(
                     &state.grid,
-                    state.mesh_tris.as_slice(),
-                    state.tiles.as_slice(),
-                    state.water_r.as_slice(),
-                ),
-                slope: face_max(
-                    &state.grid,
+                    state.cells.as_slice(),
+                    state.landform.as_slice(),
                     state.slope_class.as_slice(),
-                    SlopeClass::severity,
-                ),
-                depth,
-                landform: face_majority(&state.grid, state.landform.as_slice(), Landform::rank),
-                road_material,
-            }
-        }
+                    face.index(),
+                )
+            })
+        })
+        .collect();
+    Event::OutputsBaked {
+        river_r: river_surface_radii(
+            &state.grid,
+            state.mesh_tris.as_slice(),
+            state.tiles.as_slice(),
+            state.water_r.as_slice(),
+        ),
+        slope: face_max(
+            &state.grid,
+            state.slope_class.as_slice(),
+            SlopeClass::severity,
+        ),
+        depth,
+        landform: face_majority(&state.grid, state.landform.as_slice(), Landform::rank),
+        road_material,
     }
 }
 
@@ -356,31 +358,19 @@ fn evolve(state: &mut GenState, event: Event) {
     match event {
         Event::TerrainInitialized(t) => state.terrain = Some(*t),
         Event::ElevationProposed(e) => {
-            state
-                .terrain
-                .as_mut()
-                .expect("terrain exists")
-                .set_vert_elevations(e);
+            state.terrain_mut().set_vert_elevations(e);
         }
         Event::ClimateComputed(moist, temp) => {
-            state
-                .terrain
-                .as_mut()
-                .expect("terrain exists")
-                .set_climate(moist, temp);
+            state.terrain_mut().set_climate(moist, temp);
         }
         Event::RiversPlanned(r) => {
-            state.terrain.as_mut().expect("terrain exists").river_paths = r;
+            state.terrain_mut().river_paths = r;
         }
         Event::SettlementsPlaced(a) => {
-            state
-                .terrain
-                .as_mut()
-                .expect("terrain exists")
-                .settlement_anchors = a;
+            state.terrain_mut().settlement_anchors = a;
         }
         Event::RoadsPlanned(r) => {
-            state.terrain.as_mut().expect("terrain exists").road_paths = r;
+            state.terrain_mut().road_paths = r;
         }
         Event::TilesClassified(c)
         | Event::RiversPainted(c)
@@ -395,11 +385,7 @@ fn evolve(state: &mut GenState, event: Event) {
         }
         Event::BlendsMarked(b) => state.blends = b,
         Event::ElevationSolved { field, .. } => {
-            state
-                .terrain
-                .as_mut()
-                .expect("terrain exists")
-                .set_vert_elevations(field);
+            state.terrain_mut().set_vert_elevations(field);
         }
         Event::WaterClustered(r) => state.water_r = r.into(),
         Event::RegionsBuilt(r, fr) => {

@@ -1,71 +1,5 @@
-use super::super::*;
+use super::super::super::*;
 
-/// Roads may not cross water: a planned path whose cell chain touches a water
-/// cell is dropped entirely (crossing there needs a bridge, not a road).
-pub(in crate::worldgen) fn paint_features(
-    grid: &Grid,
-    terrain: &TerrainGen,
-    cells: &[Terrain],
-    slope_class: &[SlopeClass],
-) -> (Painted, Vec<Vec<SpherePos>>) {
-    let mut painted = Painted::empty(grid.cell_count());
-    let mut kept: Vec<Vec<SpherePos>> = Vec::new();
-    // Roads route on WALKABLE ground: they follow valleys and mountain passes
-    // and refuse water and steep slopes (conform, don't carve). A leg that has
-    // no gentle dry route is dropped — that gap wants a bridge.
-    // Roads may not cross water or a cliff, and are steered strongly toward
-    // gentle ground (steep cells cost extra), so they follow valleys and
-    // passes but can still climb a slope when they must.
-    let blocked = |cell: crate::topology::CellId| {
-        cells[cell.index()].is_water() || slope_class[cell.index()] == SlopeClass::Cliff
-    };
-    let extra = |cell: crate::topology::CellId| match slope_class[cell.index()] {
-        SlopeClass::Flat => 0,
-        SlopeClass::Gentle => 400,
-        _ => 4000, // steep
-    };
-    'paths: for path in &terrain.road_paths {
-        let mut chain: Vec<CellId> = Vec::new();
-        let waypoints: Vec<CellId> = path.iter().filter_map(|p| nearest_cell(grid, *p)).collect();
-        for leg in waypoints.windows(2) {
-            let seg = router::lattice_path(grid, blocked, extra, leg[0], leg[1]);
-            if seg.is_empty() {
-                continue 'paths;
-            }
-            let skip = usize::from(chain.last() == seg.first());
-            chain.extend(&seg[skip..]);
-        }
-        let band = features::widen_band(grid, &chain, false);
-        if band.iter().any(|&cell| {
-            cells[cell.index()].is_water() || slope_class[cell.index()] == SlopeClass::Cliff
-        }) {
-            continue;
-        }
-        for cell in band {
-            painted.roads.insert(cell);
-        }
-        kept.push(path.clone());
-    }
-    // Towns sit on walkable ground within the settlement radius.
-    for (cell_index, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
-        let pos = grid.cell_position(CellId::new(cell_index));
-        if slope.is_walkable()
-            && terrain
-                .settlement_anchors
-                .iter()
-                .any(|a| a.distance(pos) <= TOWN_RADIUS)
-        {
-            painted.towns.insert(CellId::new(cell_index));
-        }
-    }
-    link_feature_pinches(grid, &mut painted.roads, |cell| {
-        cells[cell.index()].is_land()
-    });
-    link_feature_pinches(grid, &mut painted.towns, |_| true);
-    (painted, kept)
-}
-
-/// Gaps up to this bridge freely.
 /// A tiny overshoot past the gentle anchor cell so the deck grounds just
 /// inside solid ground (bridges conform — no long inland ramp).
 pub(in crate::worldgen) const BRIDGE_ENTRY_OVERLAP: f32 = 3.0;
@@ -143,7 +77,68 @@ pub(in crate::worldgen) fn cross_band(
     None
 }
 
-/// Bridges cross WATER LOCALLY:/// Bridges cross WATER LOCALLY: over a river from one walkable bank to the
+struct BridgeOutput {
+    spans: Vec<Vec<SpherePos>>,
+    mids: Vec<SpherePos>,
+}
+
+fn commit_bridge(
+    grid: &Grid,
+    cells: &[Terrain],
+    a: CellId,
+    b: CellId,
+    max_span: f32,
+    output: &mut BridgeOutput,
+    painted: &mut Painted,
+) -> bool {
+    let (pa, pb) = (grid.cell_position(a), grid.cell_position(b));
+    let distance = pa.distance(pb);
+    if distance < 1.0 || distance > max_span {
+        return false;
+    }
+    let mid = SpherePos::new((pa.0 + pb.0).normalize());
+    if output
+        .mids
+        .iter()
+        .any(|existing| existing.distance(mid) < BRIDGE_MIN_SPACING)
+    {
+        return false;
+    }
+    let extension = BRIDGE_ENTRY_OVERLAP / distance;
+    let steps = (distance * (1.0 + 2.0 * extension) / 6.0).ceil().max(2.0) as usize;
+    let span = (0..=steps)
+        .map(|step| {
+            crate::sphere::slerp(
+                pa,
+                pb,
+                -extension + (1.0 + 2.0 * extension) * step as f32 / steps as f32,
+            )
+        })
+        .collect::<Vec<_>>();
+    for cell in cell_chain(grid, &span) {
+        painted.bridges.insert(cell);
+    }
+    for end in [span.first(), span.last()] {
+        let Some(face_index) = end.and_then(|point| grid.planet.face_at(point.0)) else {
+            continue;
+        };
+        for cell in grid.face_cells(FaceId::new(face_index)) {
+            if cells[cell.index()].is_land() {
+                painted.bridge_entries.insert(cell);
+                for &neighbor in grid.cell_neighbors(cell) {
+                    if cells[neighbor.index()].is_land() {
+                        painted.bridge_entries.insert(neighbor);
+                    }
+                }
+            }
+        }
+    }
+    output.mids.push(mid);
+    output.spans.push(span);
+    true
+}
+
+/// Bridges cross WATER LOCALLY: over a river from one walkable bank to the
 /// other, and over a lake to reach an island within it. Never oceans, never
 /// mountains — a short footbridge on gentle ground.
 pub(in crate::worldgen) fn build_bridges(
@@ -155,8 +150,10 @@ pub(in crate::worldgen) fn build_bridges(
     _face_region: &[Option<u32>],
     painted: &mut Painted,
 ) -> Vec<Vec<SpherePos>> {
-    let mut spans: Vec<Vec<SpherePos>> = Vec::new();
-    let mut mids: Vec<SpherePos> = Vec::new();
+    let mut output = BridgeOutput {
+        spans: Vec::new(),
+        mids: Vec::new(),
+    };
     // A deck grounds cleanly only on gentle ground: reject an endpoint whose
     // proposed elevation differs sharply from its land neighbors (a steep bank
     // shoulder the entry pad couldn't flatten). Proposed field is set by now.
@@ -216,59 +213,12 @@ pub(in crate::worldgen) fn build_bridges(
                 .all(|nb| !forbidden(cells[nb.index()]))
     };
 
-    // Commit a bridge between two bank cells if it clears the spacing rule.
-    let commit = |a: CellId,
-                  b: CellId,
-                  max_span: f32,
-                  spans: &mut Vec<Vec<SpherePos>>,
-                  mids: &mut Vec<SpherePos>,
-                  painted: &mut Painted|
-     -> bool {
-        let (pa, pb) = (grid.cell_position(a), grid.cell_position(b));
-        let d = pa.distance(pb);
-        if d < 1.0 || d > max_span {
-            return false;
-        }
-        let mid = SpherePos::new((pa.0 + pb.0).normalize());
-        if mids.iter().any(|m| m.distance(mid) < BRIDGE_MIN_SPACING) {
-            return false;
-        }
-        let ext = BRIDGE_ENTRY_OVERLAP / d;
-        let steps = (d * (1.0 + 2.0 * ext) / 6.0).ceil().max(2.0) as usize;
-        let span: Vec<SpherePos> = (0..=steps)
-            .map(|k| {
-                crate::sphere::slerp(pa, pb, -ext + (1.0 + 2.0 * ext) * k as f32 / steps as f32)
-            })
-            .collect();
-        for cell_index in cell_chain(grid, &span) {
-            painted.bridges.insert(cell_index);
-        }
-        for end in [span.first(), span.last()] {
-            let Some(face_index) = end.and_then(|p| grid.planet.face_at(p.0)) else {
-                continue;
-            };
-            for cell in grid.face_cells(FaceId::new(face_index)) {
-                if cells[cell.index()].is_land() {
-                    painted.bridge_entries.insert(cell);
-                    for &neighbor in grid.cell_neighbors(cell) {
-                        if cells[neighbor.index()].is_land() {
-                            painted.bridge_entries.insert(neighbor);
-                        }
-                    }
-                }
-            }
-        }
-        mids.push(mid);
-        spans.push(span);
-        true
-    };
-
     // (1) River crossings: a walkable cell beside a river bank, straight
     // across the band (bank → channel → bank) to walkable ground on the far
     // side. The endpoints are the walkable ground next to the banks.
     let river_band = |t: Terrain| matches!(t, Terrain::River | Terrain::RiverBank);
     for l1 in grid.topology.cells() {
-        if spans.len() >= BRIDGE_MAX_COUNT {
+        if output.spans.len() >= BRIDGE_MAX_COUNT {
             break;
         }
         if !features::bridge_walkable(cells[l1.index()]) {
@@ -296,7 +246,7 @@ pub(in crate::worldgen) fn build_bridges(
             let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
-                commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
+                commit_bridge(grid, cells, g1, g2, BRIDGE_MAX_SPAN, &mut output, painted);
             }
         }
     }
@@ -307,7 +257,7 @@ pub(in crate::worldgen) fn build_bridges(
     let swamp_band = |t: Terrain| t == Terrain::Swamp;
     let dry_end = |t: Terrain| features::bridge_walkable(t) && t != Terrain::Swamp;
     for l1 in grid.topology.cells() {
-        if spans.len() >= BRIDGE_MAX_COUNT {
+        if output.spans.len() >= BRIDGE_MAX_COUNT {
             break;
         }
         if !dry_end(cells[l1.index()]) {
@@ -327,7 +277,7 @@ pub(in crate::worldgen) fn build_bridges(
             let mid = (grid.cell_direction(l1) + grid.cell_direction(l2)) * 0.5;
             let (g1, g2) = (inland(l1, mid), inland(l2, mid));
             if good_anchor(g1) && good_anchor(g2) {
-                commit(g1, g2, BRIDGE_MAX_SPAN, &mut spans, &mut mids, painted);
+                commit_bridge(grid, cells, g1, g2, BRIDGE_MAX_SPAN, &mut output, painted);
             }
         }
     }
@@ -393,7 +343,7 @@ pub(in crate::worldgen) fn build_bridges(
             }
         };
         for (id, &size) in sizes.iter().enumerate().take(components.count()) {
-            if spans.len() >= BRIDGE_MAX_COUNT {
+            if output.spans.len() >= BRIDGE_MAX_COUNT {
                 break;
             }
             if !(ringed(id) && size <= max_cells) {
@@ -436,7 +386,7 @@ pub(in crate::worldgen) fn build_bridges(
                 let mid = (grid.cell_direction(a) + grid.cell_direction(b)) * 0.5;
                 let (g1, g2) = (inland(a, mid), inland(b, mid));
                 if good_anchor(g1) && good_anchor(g2) {
-                    commit(g1, g2, max_span, &mut spans, &mut mids, painted);
+                    commit_bridge(grid, cells, g1, g2, max_span, &mut output, painted);
                 }
             }
         }
@@ -445,5 +395,5 @@ pub(in crate::worldgen) fn build_bridges(
     link_feature_pinches(grid, &mut painted.bridge_entries, |cell_index| {
         cells[cell_index.index()].is_land()
     });
-    spans
+    output.spans
 }
