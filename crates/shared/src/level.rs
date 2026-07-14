@@ -118,10 +118,6 @@ pub enum SlopeClass {
     Steep,
     Cliff,
 }
-pub const SLOPE_FLAT: SlopeClass = SlopeClass::Flat;
-pub const SLOPE_GENTLE: SlopeClass = SlopeClass::Gentle;
-pub const SLOPE_STEEP: SlopeClass = SlopeClass::Steep;
-pub const SLOPE_CLIFF: SlopeClass = SlopeClass::Cliff;
 
 impl SlopeClass {
     pub const fn name(self) -> &'static str {
@@ -149,7 +145,7 @@ impl SlopeClass {
 /// biome cover and slope-class detail: lowlands, hills, mountains, plateaus,
 /// valleys — or water. Drives which biome COVER a cell gets and reads in the
 /// HUD as the landform word.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Landform {
     Water,
     Lowland,
@@ -158,12 +154,6 @@ pub enum Landform {
     Mountains,
     Plateau,
 }
-pub const LANDFORM_WATER: Landform = Landform::Water;
-pub const LANDFORM_LOWLAND: Landform = Landform::Lowland;
-pub const LANDFORM_VALLEY: Landform = Landform::Valley;
-pub const LANDFORM_HILLS: Landform = Landform::Hills;
-pub const LANDFORM_MOUNTAINS: Landform = Landform::Mountains;
-pub const LANDFORM_PLATEAU: Landform = Landform::Plateau;
 
 impl Landform {
     pub const fn name(self) -> &'static str {
@@ -179,6 +169,16 @@ impl Landform {
     pub const fn is_highland(self) -> bool {
         matches!(self, Self::Hills | Self::Mountains | Self::Plateau)
     }
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Water => 0,
+            Self::Lowland => 1,
+            Self::Valley => 2,
+            Self::Hills => 3,
+            Self::Mountains => 4,
+            Self::Plateau => 5,
+        }
+    }
 }
 
 /// Road SURFACE material, from the ground the road crosses (sand in deserts
@@ -190,10 +190,6 @@ pub enum RoadMaterial {
     Sand,
     Rock,
 }
-pub const ROAD_MAT_GRAVEL: RoadMaterial = RoadMaterial::Gravel;
-pub const ROAD_MAT_DIRT: RoadMaterial = RoadMaterial::Dirt;
-pub const ROAD_MAT_SAND: RoadMaterial = RoadMaterial::Sand;
-pub const ROAD_MAT_ROCK: RoadMaterial = RoadMaterial::Rock;
 impl RoadMaterial {
     pub const fn name(self) -> &'static str {
         match self {
@@ -213,9 +209,6 @@ pub enum WaterDepth {
     Deep,
     Abyss,
 }
-pub const DEPTH_SHALLOW: WaterDepth = WaterDepth::Shallow;
-pub const DEPTH_DEEP: WaterDepth = WaterDepth::Deep;
-pub const DEPTH_ABYSS: WaterDepth = WaterDepth::Abyss;
 impl WaterDepth {
     pub const fn name(self) -> &'static str {
         match self {
@@ -247,17 +240,6 @@ pub enum FloraKind {
     DeadTree,
     Reed,
 }
-pub const FLORA_TREE: FloraKind = FloraKind::Tree;
-pub const FLORA_BUSH: FloraKind = FloraKind::Bush;
-pub const FLORA_FLOWER: FloraKind = FloraKind::Flower;
-pub const FLORA_ROCK: FloraKind = FloraKind::Rock;
-pub const FLORA_GRASS: FloraKind = FloraKind::Grass;
-pub const FLORA_LOG: FloraKind = FloraKind::Log;
-pub const FLORA_MUSHROOM: FloraKind = FloraKind::Mushroom;
-pub const FLORA_CACTUS: FloraKind = FloraKind::Cactus;
-pub const FLORA_BERRY: FloraKind = FloraKind::Berry;
-pub const FLORA_DEADTREE: FloraKind = FloraKind::DeadTree;
-pub const FLORA_REED: FloraKind = FloraKind::Reed;
 
 // Structures: built props placed contextually (like towns and bridges).
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -270,13 +252,6 @@ pub enum StructureKind {
     Well,
     Campfire,
 }
-pub const STRUCT_RUIN: StructureKind = StructureKind::Ruin;
-pub const STRUCT_WATCHTOWER: StructureKind = StructureKind::Watchtower;
-pub const STRUCT_DOCK: StructureKind = StructureKind::Dock;
-pub const STRUCT_FARM: StructureKind = StructureKind::Farm;
-pub const STRUCT_WALL: StructureKind = StructureKind::Wall;
-pub const STRUCT_WELL: StructureKind = StructureKind::Well;
-pub const STRUCT_CAMPFIRE: StructureKind = StructureKind::Campfire;
 impl StructureKind {
     pub const fn name(self) -> &'static str {
         match self {
@@ -372,6 +347,30 @@ pub enum RegionKind {
     Glacier,
     Town,
     Road,
+}
+
+impl RegionKind {
+    pub const fn rank(self) -> usize {
+        match self {
+            Self::Ocean => 0,
+            Self::Lake => 1,
+            Self::River => 2,
+            Self::Beach => 3,
+            Self::Cliff => 4,
+            Self::Forest => 5,
+            Self::Desert => 6,
+            Self::Mountain => 7,
+            Self::Plains => 8,
+            Self::Tundra => 9,
+            Self::Swamp => 10,
+            Self::Jungle => 11,
+            Self::Savanna => 12,
+            Self::Volcano => 13,
+            Self::Glacier => 14,
+            Self::Town => 15,
+            Self::Road => 16,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]

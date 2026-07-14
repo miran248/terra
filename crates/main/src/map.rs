@@ -5,10 +5,8 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
-    BlendTarget, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS,
-    FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTag, FloraKind, Landform,
-    LevelData, RoadKind, RoadMaterial, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN,
-    STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, SlopeClass, WaterDepth,
+    BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass,
+    StructureKind, WaterDepth,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
@@ -85,10 +83,10 @@ fn flora_cull(kind: FloraKind) -> f32 {
     // fog visibility (main.rs) is set beyond the largest of these so props fade
     // into haze before this hard cull edge rather than popping.
     match kind {
-        FLORA_FLOWER | FLORA_GRASS | FLORA_MUSHROOM | FLORA_REED => 150.0,
-        FLORA_BUSH | FLORA_BERRY | FLORA_CACTUS | FLORA_ROCK => 300.0,
-        FLORA_LOG => 420.0,
-        FLORA_TREE | FLORA_DEADTREE => 880.0,
+        FloraKind::Flower | FloraKind::Grass | FloraKind::Mushroom | FloraKind::Reed => 150.0,
+        FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
+        FloraKind::Log => 420.0,
+        FloraKind::Tree | FloraKind::DeadTree => 880.0,
     }
 }
 
@@ -322,7 +320,7 @@ fn setup_map(
             let rot = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
             let cull = flora_cull(f.kind);
             match f.kind {
-                FLORA_TREE => {
+                FloraKind::Tree => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(trunk_mesh.clone()),
@@ -345,7 +343,7 @@ fn setup_map(
                             .with_scale(Vec3::new(scale, scale * 1.25, scale)),
                     ));
                 }
-                FLORA_BUSH => {
+                FloraKind::Bush => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(bush_mesh.clone()),
@@ -355,7 +353,7 @@ fn setup_map(
                             .with_scale(Vec3::new(scale, scale * 0.75, scale)),
                     ));
                 }
-                FLORA_FLOWER => {
+                FloraKind::Flower => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(flower_mesh.clone()),
@@ -365,7 +363,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                FLORA_ROCK => {
+                FloraKind::Rock => {
                     // Irregular via non-uniform scale; boulders block movement.
                     let sx = 0.8 + (h >> 24 & 0x7) as f32 / 7.0 * 0.7;
                     let sz = 0.8 + (h >> 27 & 0x7) as f32 / 7.0 * 0.7;
@@ -386,7 +384,7 @@ fn setup_map(
                         ));
                     }
                 }
-                FLORA_GRASS => {
+                FloraKind::Grass => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(grass_mesh.clone()),
@@ -396,7 +394,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                FLORA_LOG => {
+                FloraKind::Log => {
                     // Fallen: lie along the ground (trunk axis tangent to up).
                     let lie = rot * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
                     commands.spawn((
@@ -413,7 +411,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                FLORA_MUSHROOM => {
+                FloraKind::Mushroom => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(mush_mesh.clone()),
@@ -423,7 +421,7 @@ fn setup_map(
                             .with_scale(Vec3::new(scale, scale * 0.7, scale)),
                     ));
                 }
-                FLORA_CACTUS => {
+                FloraKind::Cactus => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(cactus_mesh.clone()),
@@ -438,7 +436,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                FLORA_BERRY => {
+                FloraKind::Berry => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(berry_mesh.clone()),
@@ -448,7 +446,7 @@ fn setup_map(
                             .with_scale(Vec3::new(scale, scale * 0.85, scale)),
                     ));
                 }
-                FLORA_DEADTREE => {
+                FloraKind::DeadTree => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(dead_mesh.clone()),
@@ -463,7 +461,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                FLORA_REED => {
+                FloraKind::Reed => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(reed_mesh.clone()),
@@ -514,7 +512,7 @@ fn setup_map(
                 }
             };
             match st.kind {
-                STRUCT_WELL => {
+                StructureKind::Well => {
                     at(
                         &mut commands,
                         cyl_mesh.clone(),
@@ -524,7 +522,7 @@ fn setup_map(
                         true,
                     );
                 }
-                STRUCT_CAMPFIRE => {
+                StructureKind::Campfire => {
                     at(
                         &mut commands,
                         cyl_mesh.clone(),
@@ -542,7 +540,7 @@ fn setup_map(
                         false,
                     );
                 }
-                STRUCT_WALL => {
+                StructureKind::Wall => {
                     at(
                         &mut commands,
                         box_mesh.clone(),
@@ -552,7 +550,7 @@ fn setup_map(
                         true,
                     );
                 }
-                STRUCT_DOCK => {
+                StructureKind::Dock => {
                     at(
                         &mut commands,
                         box_mesh.clone(),
@@ -562,7 +560,7 @@ fn setup_map(
                         true,
                     );
                 }
-                STRUCT_FARM => {
+                StructureKind::Farm => {
                     at(
                         &mut commands,
                         box_mesh.clone(),
@@ -572,7 +570,7 @@ fn setup_map(
                         false,
                     );
                 }
-                STRUCT_WATCHTOWER => {
+                StructureKind::Watchtower => {
                     at(
                         &mut commands,
                         box_mesh.clone(),
@@ -590,7 +588,7 @@ fn setup_map(
                         true,
                     );
                 }
-                STRUCT_RUIN => {
+                StructureKind::Ruin => {
                     // A broken ring of stub columns.
                     for k in 0..5 {
                         let a = k as f32 / 5.0 * std::f32::consts::TAU;
