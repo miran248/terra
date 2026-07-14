@@ -8,3 +8,7 @@ shared = { path = "../shared" }
 postcard = { version = "1", features = ["alloc"] }
 bevy_color = "0.19.0"
 bevy_math = "0.19.0"
+
+[[bench]]
+name = "worldgen"
+harness = false

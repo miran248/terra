@@ -1,7 +1,6 @@
 use shared::worldgen::{CompletedWorld, run};
 use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
 
 /// The pipeline itself lives in `shared::worldgen` as a command/event state machine;
 /// this binary just runs it for a seed, prints the event log + stats, and packs
@@ -16,31 +15,7 @@ fn main() {
         format!("{dir}/../main/assets/level_{seed}.bin")
     }));
 
-    let benchmark_runs = std::env::var("WORLDGEN_BENCH_RUNS")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
-        .max(1);
-    let mut timings = Vec::with_capacity(benchmark_runs);
-    for _ in 1..benchmark_runs {
-        let started = Instant::now();
-        let _ = run(seed, |_| {});
-        timings.push(started.elapsed());
-    }
-    let started = Instant::now();
     let world = run(seed, |line| println!("• {line}"));
-    timings.push(started.elapsed());
-    if benchmark_runs > 1 {
-        let total = timings
-            .iter()
-            .map(std::time::Duration::as_secs_f64)
-            .sum::<f64>();
-        println!(
-            "worldgen benchmark: {benchmark_runs} runs, mean {:.3}s, samples {:?}",
-            total / benchmark_runs as f64,
-            timings
-        );
-    }
     print_stats(&world);
     serialize(world, &out);
 }

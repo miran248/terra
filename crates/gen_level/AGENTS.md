@@ -22,7 +22,7 @@ CLI tool for precomputing level data. Generates terrain meshes, road networks, s
 - All topology derivation, cell-to-face projection, `LevelData` assembly, and generation statistics complete in `shared::worldgen`; this crate only reports, encodes, and writes a `CompletedWorld`.
 - Run: `cargo run -p gen_level` (writes to default path) or `cargo run -p gen_level -- <output_path>`
 - Change seed: `PLANET_SEED=42 cargo run -p gen_level`
-- Repeatable timing: `WORLDGEN_BENCH_RUNS=3 cargo run --release -p gen_level -- <output_path>` reports every sample and the mean while writing only the final run.
+- Repeatable timing: `cargo bench -p gen_level --bench worldgen`; `WORLDGEN_BENCH_RUNS` controls samples and `PLANET_SEED` controls the seed.
 
 # Verification
 
