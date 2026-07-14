@@ -6,9 +6,8 @@ use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
     FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG,
-    FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTags, LEVEL_FORMAT_VERSION, LevelData,
-    STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER,
-    STRUCT_WELL,
+    FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTags, LevelData, STRUCT_CAMPFIRE,
+    STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
@@ -211,11 +210,7 @@ fn setup_map(
 ) {
     let level_bytes = include_bytes!("../assets/level_1337.bin");
     let level: LevelData = postcard::from_bytes(level_bytes).expect("deserialize level");
-    assert_eq!(
-        level.version, LEVEL_FORMAT_VERSION,
-        "stale level binary (format {}, expected {LEVEL_FORMAT_VERSION}) — re-run gen_level",
-        level.version,
-    );
+    level.validate().expect("validate level binary");
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
     // The level carries the SOLVED elevation field the mesh was baked from, so
@@ -776,7 +771,7 @@ fn setup_map(
     let face_types: Vec<shared::terrain::Terrain> = level
         .face_types
         .iter()
-        .map(|&b| unsafe { std::mem::transmute(b) })
+        .map(|&id| shared::terrain::Terrain::from_id(id).expect("validated terrain id"))
         .collect();
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);

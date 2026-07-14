@@ -66,10 +66,10 @@ impl PlanetMesh {
         let (li, oi) = bucket(dir);
         let mut best: Option<(usize, f32)> = None;
         for &idx in &self.grid[li * LON_BUCKETS + oi] {
-            if let Some(r) = ray_triangle_radius(dir, &self.tris[idx as usize]) {
-                if best.is_none_or(|(_, br)| r > br) {
-                    best = Some((idx as usize, r)); // outermost hit = the visible surface
-                }
+            if let Some(r) = ray_triangle_radius(dir, &self.tris[idx as usize])
+                && best.is_none_or(|(_, br)| r > br)
+            {
+                best = Some((idx as usize, r)); // outermost hit = the visible surface
             }
         }
         if let Some((idx, _)) = best {
@@ -78,10 +78,10 @@ impl PlanetMesh {
         // Grid miss: full scan for the outermost hit.
         let mut fallback: Option<(usize, f32)> = None;
         for (idx, t) in self.tris.iter().enumerate() {
-            if let Some(r) = ray_triangle_radius(dir, t) {
-                if fallback.is_none_or(|(_, br)| r > br) {
-                    fallback = Some((idx, r));
-                }
+            if let Some(r) = ray_triangle_radius(dir, t)
+                && fallback.is_none_or(|(_, br)| r > br)
+            {
+                fallback = Some((idx, r));
             }
         }
         fallback.map(|(idx, _)| idx)

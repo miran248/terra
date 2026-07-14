@@ -149,6 +149,10 @@ fn wrap(x: f32, half: f32) -> f32 {
 /// Moves the particle pool: each active particle falls (plus wind), wrapping
 /// inside a cube centred on the camera. Rain streaks / snow flakes are chosen
 /// from the local temperature under the player.
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy ECS query filters encode access rules"
+)]
 fn apply_precip(
     time: Res<Time>,
     mut w: ResMut<Weather>,

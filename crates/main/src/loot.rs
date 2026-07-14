@@ -190,6 +190,10 @@ pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, dir: Vec3)
 }
 
 /// Pull loot toward the player via Forces API.
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy ECS query filters encode access rules"
+)]
 fn magnet_loot(
     magnet: Res<MagnetRadius>,
     player_q: Query<&Transform, With<Player>>,

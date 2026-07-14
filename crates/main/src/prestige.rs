@@ -76,6 +76,11 @@ fn show_game_over(
         });
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "Bevy injects independent ECS system parameters"
+)]
 fn restart_game(
     mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,

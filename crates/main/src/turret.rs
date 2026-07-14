@@ -32,6 +32,10 @@ impl Plugin for TurretPlugin {
     }
 }
 
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy ECS query filters encode access rules"
+)]
 fn player_shoot(
     mut commands: Commands,
     time: Res<Time>,

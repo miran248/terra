@@ -111,14 +111,11 @@ pub fn solve(
         &mut queue,
     );
 
-    loop {
-        // Min-entropy: the unsolved cell with the fewest remaining options.
-        let Some(pick) = (0..n)
-            .filter(|&i| result[i].is_none())
-            .min_by_key(|&i| dom[i].len())
-        else {
-            break;
-        };
+    // Min-entropy: the unsolved cell with the fewest remaining options.
+    while let Some(pick) = (0..n)
+        .filter(|&i| result[i].is_none())
+        .min_by_key(|&i| dom[i].len())
+    {
         // Transitions only when forced: keep the base classification whenever it
         // survived propagation; roll weights only among forced alternatives.
         let choice = if dom[pick].iter().any(|&(t, _)| t == fallback[pick]) {

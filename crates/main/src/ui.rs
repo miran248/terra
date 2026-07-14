@@ -501,6 +501,10 @@ fn spawn_terrain_hud(mut commands: Commands, font: Res<UiFont>) {
         .with_child((Text::new(""), text_font(&font, 12.0), TextColor(theme::INK)));
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Bevy injects independent ECS system parameters"
+)]
 fn update_terrain_hud(
     player_q: Query<&Transform, With<Player>>,
     terrain: Option<Res<shared::terrain::TerrainGen>>,
@@ -594,44 +598,43 @@ fn update_terrain_hud(
     };
     let mut tile_line = tile_name(tile);
     let mut region_name = String::new();
-    if let Some(planet) = planet {
-        if let Some(fi) = planet.face_at(tf.translation.normalize()) {
-            if let Some(blends) = blends {
-                if let Some(&(a, b)) = blends.0.get(&(fi as u32)) {
-                    let other = if a == tile as u8 { b } else { a };
-                    tile_line = match shared::level::blend_feature_name(other) {
-                        Some(name) => format!("{} + {name}", tile_name(tile)),
-                        None => format!(
-                            "{} + {}",
-                            tile_name(tile),
-                            tile_name(Terrain::ALL[other as usize])
-                        ),
-                    };
-                }
-            }
-            if let Some(tags) = tags {
-                for &tag in tags.0.of(fi) {
-                    tile_line.push_str("  ");
-                    tile_line.push_str(shared::level::tag_name(tag));
-                    if tag == shared::level::TAG_ROAD {
-                        if let Some(m) = road_mat.as_ref().and_then(|r| r.0.get(fi).copied()) {
-                            tile_line.push_str(" (");
-                            tile_line.push_str(shared::level::road_material_name(m));
-                            tile_line.push(')');
-                        }
-                    }
-                }
-            }
-            if let Some(regions) = regions {
-                if let Some(ri) = regions
-                    .face_region
-                    .get(fi)
-                    .copied()
-                    .and_then(shared::level::region_index)
+    if let Some(planet) = planet
+        && let Some(fi) = planet.face_at(tf.translation.normalize())
+    {
+        if let Some(blends) = blends
+            && let Some(&(a, b)) = blends.0.get(&(fi as u32))
+        {
+            let other = if a == tile as u8 { b } else { a };
+            tile_line = match shared::level::blend_feature_name(other) {
+                Some(name) => format!("{} + {name}", tile_name(tile)),
+                None => format!(
+                    "{} + {}",
+                    tile_name(tile),
+                    tile_name(Terrain::ALL[other as usize])
+                ),
+            };
+        }
+        if let Some(tags) = tags {
+            for &tag in tags.0.of(fi) {
+                tile_line.push_str("  ");
+                tile_line.push_str(shared::level::tag_name(tag));
+                if tag == shared::level::TAG_ROAD
+                    && let Some(m) = road_mat.as_ref().and_then(|r| r.0.get(fi).copied())
                 {
-                    region_name = format!("\n{}", regions.regions[ri].name);
+                    tile_line.push_str(" (");
+                    tile_line.push_str(shared::level::road_material_name(m));
+                    tile_line.push(')');
                 }
             }
+        }
+        if let Some(regions) = regions
+            && let Some(ri) = regions
+                .face_region
+                .get(fi)
+                .copied()
+                .and_then(shared::level::region_index)
+        {
+            region_name = format!("\n{}", regions.regions[ri].name);
         }
     }
     if hab {

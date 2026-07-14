@@ -65,6 +65,11 @@ impl Terrain {
         Terrain::RiverSpring,
     ];
 
+    /// Decodes the stable terrain discriminant stored in [`crate::level::LevelData`].
+    pub fn from_id(id: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(id)).copied()
+    }
+
     pub fn color(&self) -> Color {
         match self {
             Terrain::Ocean => Color::srgb(0.10, 0.25, 0.55),
@@ -112,6 +117,20 @@ impl Terrain {
     /// A solid land biome — land that is neither water nor a shore transition.
     pub fn is_land_biome(&self) -> bool {
         self.is_land() && !self.is_shore()
+    }
+}
+
+#[cfg(test)]
+mod terrain_id_tests {
+    use super::Terrain;
+
+    #[test]
+    fn stable_ids_round_trip() {
+        for (id, terrain) in Terrain::ALL.into_iter().enumerate() {
+            assert_eq!(Terrain::from_id(id as u8), Some(terrain));
+        }
+        assert_eq!(Terrain::from_id(Terrain::ALL.len() as u8), None);
+        assert_eq!(Terrain::from_id(u8::MAX), None);
     }
 }
 
@@ -322,8 +341,7 @@ impl TerrainGen {
 
     pub fn is_habitable(&self, pos: SpherePos) -> bool {
         let a = self.altitude(pos);
-        a >= HABITABLE_MIN_ALT
-            && a <= HABITABLE_MAX_ALT
+        (HABITABLE_MIN_ALT..=HABITABLE_MAX_ALT).contains(&a)
             && self.slope(pos) < HABITABLE_MAX_SLOPE
             && self.temperature_at(pos) >= HABITABLE_MIN_TEMP
             && self.temperature_at(pos) <= HABITABLE_MAX_TEMP
@@ -335,7 +353,7 @@ impl TerrainGen {
         let alt_m = self.altitude(pos);
         let lapse = alt_m * 0.0065;
         let noise = self.temp_noise.get(self.warped(pos)) as f32 * 10.0;
-        (base - lat * 0.9 - lapse + noise).max(-100.0).min(60.0)
+        (base - lat * 0.9 - lapse + noise).clamp(-100.0, 60.0)
     }
 
     pub fn moisture_at(&self, pos: SpherePos) -> f32 {
@@ -451,7 +469,7 @@ impl TerrainGen {
 
     fn compute_base_elevations(&self) -> Vec<f32> {
         let mut out = vec![0.0f32; self.verts.len()];
-        for i in 0..self.verts.len() {
+        for (i, value) in out.iter_mut().enumerate() {
             let pos = SpherePos::new(self.verts[i]);
             let w = self.warped(pos);
             let raw = self.height.get(w) as f32;
@@ -462,7 +480,7 @@ impl TerrainGen {
                 0.0
             };
             let t = ((raw + detail + 1.0) / 2.0).clamp(0.0, 1.0);
-            out[i] = (min + (max - min) * t.powf(curve)).clamp(-1.0, 1.0);
+            *value = (min + (max - min) * t.powf(curve)).clamp(-1.0, 1.0);
         }
         out
     }
@@ -597,13 +615,13 @@ impl TerrainGen {
                 }
             })
             .collect();
-        for vi in 0..self.verts.len() {
+        for (vi, elevation) in e.iter_mut().enumerate().take(self.verts.len()) {
             let Some(fi) = self.coarse_mesh.face_at(self.verts[vi]) else {
                 continue;
             };
             match rules[fi] {
-                Rule::Wet => e[vi] = e[vi].min(-0.02),
-                Rule::Dry => e[vi] = e[vi].max(0.02),
+                Rule::Wet => *elevation = elevation.min(-0.02),
+                Rule::Dry => *elevation = elevation.max(0.02),
                 Rule::Coast => {}
             }
         }

@@ -206,6 +206,10 @@ fn track_world_map_camera(
 }
 
 /// Click on the open map to teleport to that surface location.
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy ECS query filters encode access rules"
+)]
 fn world_map_click(
     mut open: ResMut<WorldMapOpen>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -334,6 +338,10 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
 
 /// Keep the minimap camera high above the player, looking straight down, rolled so the
 /// player's heading points up in the view (matches the compass).
+#[allow(
+    clippy::type_complexity,
+    reason = "Bevy ECS query filters encode access rules"
+)]
 fn track_minimap_camera(
     player_q: Query<(&Transform, &Player), (With<Player>, Without<MinimapCamera>)>,
     mut cam_q: Query<&mut Transform, With<MinimapCamera>>,
@@ -355,6 +363,11 @@ fn track_minimap_camera(
 /// Rotating N/E/S/W labels around the ring, plus entity blips over the rendered terrain.
 /// The render-to-texture camera shows terrain/roads/settlements, but actors are too small
 /// to see from that height — so player/zombies/loot are drawn as UI dots here.
+#[allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "Bevy injects independent ECS system parameters"
+)]
 fn draw_overlay(
     mut commands: Commands,
     minimap_q: Query<Entity, With<Minimap>>,

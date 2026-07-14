@@ -95,8 +95,8 @@ pub fn build_water_surface(tris: &[[[f32; 3]; 3]], water_r: &[f32]) -> Option<Me
         if r <= 0.0 {
             continue;
         }
-        for k in 0..3 {
-            let dir = Vec3::from_array(t[k]).normalize();
+        for &corner in t {
+            let dir = Vec3::from_array(corner).normalize();
             positions.push((dir * r).to_array());
             normals.push(dir.to_array());
             uvs.push([0.0, 0.0]);

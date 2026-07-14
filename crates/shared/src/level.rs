@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use crate::terrain::Terrain;
+
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
 pub const LEVEL_FORMAT_VERSION: u32 = 20;
 
@@ -233,6 +235,77 @@ pub fn region_index(face_region_value: u32) -> Option<usize> {
 }
 
 impl LevelData {
+    /// Checks all cross-field invariants required by runtime indexing.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.version != LEVEL_FORMAT_VERSION {
+            return Err(format!(
+                "level format {} does not match {LEVEL_FORMAT_VERSION}",
+                self.version
+            ));
+        }
+        let faces = self.unit_tris.len();
+        for (name, len) in [
+            ("terrain_tris", self.terrain_tris.len()),
+            ("terrain_colors", self.terrain_colors.len()),
+            ("face_types", self.face_types.len()),
+            ("face_water_r", self.face_water_r.len()),
+            ("face_river_r", self.face_river_r.len()),
+            ("face_region", self.face_region.len()),
+            ("slope_class", self.slope_class.len()),
+            ("water_depth", self.water_depth.len()),
+            ("landform", self.landform.len()),
+            ("road_material", self.road_material.len()),
+        ] {
+            if len != faces {
+                return Err(format!(
+                    "{name} has {len} entries, expected one per face ({faces})"
+                ));
+            }
+        }
+        for &id in &self.face_types {
+            if Terrain::from_id(id).is_none() {
+                return Err(format!("invalid terrain id {id}"));
+            }
+        }
+        if self.face_tag_off.len() != faces + 1 {
+            return Err(format!(
+                "face_tag_off has {} entries, expected {}",
+                self.face_tag_off.len(),
+                faces + 1
+            ));
+        }
+        let mut previous = 0usize;
+        for &offset in &self.face_tag_off {
+            let offset = usize::try_from(offset).map_err(|_| "tag offset does not fit usize")?;
+            if offset < previous || offset > self.face_tag_data.len() {
+                return Err(format!("invalid face tag offset {offset}"));
+            }
+            previous = offset;
+        }
+        if previous != self.face_tag_data.len() {
+            return Err("face tag offsets do not consume face_tag_data".into());
+        }
+        for &(face, a, b) in &self.face_blend {
+            if face as usize >= faces {
+                return Err(format!("blend references missing face {face}"));
+            }
+            for id in [a, b] {
+                if id < BLEND_FEATURE_MIN && Terrain::from_id(id).is_none() {
+                    return Err(format!("blend contains invalid terrain id {id}"));
+                }
+            }
+        }
+        for &reference in &self.face_region {
+            if region_index(reference).is_some_and(|index| index >= self.regions.len()) {
+                return Err(format!("invalid region reference {reference}"));
+            }
+        }
+        if self.settlements.is_empty() {
+            return Err("level has no settlements".into());
+        }
+        Ok(())
+    }
+
     pub fn face_tags(&self, fi: usize) -> &[u8] {
         let start = self.face_tag_off[fi] as usize;
         let end = self.face_tag_off[fi + 1] as usize;
@@ -294,4 +367,47 @@ pub struct SettlementData {
 pub struct RoadData {
     pub points: Vec<[f32; 3]>,
     pub is_bridge: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::LevelData;
+
+    fn tracked_level() -> LevelData {
+        postcard::from_bytes(include_bytes!("../../main/assets/level_1337.bin"))
+            .expect("tracked level must deserialize")
+    }
+
+    #[test]
+    fn tracked_level_is_valid() {
+        tracked_level().validate().unwrap();
+    }
+
+    #[test]
+    fn validation_rejects_invalid_terrain_ids() {
+        let mut level = tracked_level();
+        level.face_types[0] = u8::MAX;
+        assert!(level.validate().unwrap_err().contains("terrain id"));
+    }
+
+    #[test]
+    fn validation_rejects_inconsistent_face_arrays() {
+        let mut level = tracked_level();
+        level.slope_class.pop();
+        assert!(level.validate().unwrap_err().contains("slope_class"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_tag_offsets() {
+        let mut level = tracked_level();
+        level.face_tag_off[1] = u32::MAX;
+        assert!(level.validate().unwrap_err().contains("tag offset"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_region_references() {
+        let mut level = tracked_level();
+        level.face_region[0] = level.regions.len() as u32 + 1;
+        assert!(level.validate().unwrap_err().contains("region reference"));
+    }
 }

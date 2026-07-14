@@ -22,7 +22,7 @@ impl Plugin for CombatPlugin {
 
 fn get_upgrade_count(levels: &UpgradeLevels, upgrade: Upgrade) -> u32 {
     let idx = Upgrade::ALL.iter().position(|u| *u == upgrade).unwrap();
-    (Upgrade::Piercing.value(levels.levels[idx]) as u32).max(0)
+    Upgrade::Piercing.value(levels.levels[idx]) as u32
 }
 
 fn projectile_behavior(levels: &UpgradeLevels) -> ProjectileBehavior {
@@ -51,22 +51,22 @@ fn projectiles_hit_zombies(
     let mut hits_this_frame: Vec<(Entity, Vec3, ProjectileBehavior, f32)> = Vec::new();
 
     for (p_entity, p_tf, proj) in &projectiles {
-        if let Ok((z_entity, z_tf, mut zombie)) = zombies.get_mut(proj.target) {
-            if p_tf.translation.distance(z_tf.translation) <= ZOMBIE_SIZE * 2.5 {
-                zombie.hp -= proj.damage;
-                commands.entity(p_entity).despawn();
+        if let Ok((z_entity, z_tf, mut zombie)) = zombies.get_mut(proj.target)
+            && p_tf.translation.distance(z_tf.translation) <= ZOMBIE_SIZE * 2.5
+        {
+            zombie.hp -= proj.damage;
+            commands.entity(p_entity).despawn();
 
-                if zombie.hp <= 0.0 {
-                    let dir = z_tf.translation.normalize();
-                    commands.entity(z_entity).despawn();
-                    crate::loot::drop_zombie_loot(&mut commands, &loot_assets, dir);
-                }
+            if zombie.hp <= 0.0 {
+                let dir = z_tf.translation.normalize();
+                commands.entity(z_entity).despawn();
+                crate::loot::drop_zombie_loot(&mut commands, &loot_assets, dir);
+            }
 
-                if behavior.piercing > 0 {
-                    let mut new_behavior = behavior.clone();
-                    new_behavior.piercing -= 1;
-                    hits_this_frame.push((z_entity, z_tf.translation, new_behavior, proj.damage));
-                }
+            if behavior.piercing > 0 {
+                let mut new_behavior = behavior.clone();
+                new_behavior.piercing -= 1;
+                hits_this_frame.push((z_entity, z_tf.translation, new_behavior, proj.damage));
             }
         }
     }

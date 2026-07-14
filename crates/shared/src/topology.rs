@@ -299,14 +299,14 @@ fn component<I: Copy + IdIndex>(
     result
 }
 
-fn components<I: Copy + IdIndex, C: Copy>(
+fn components<I, C: Copy>(
     adjacency: &[impl AsRef<[I]>],
     id: impl Fn(usize) -> I,
     member: impl Fn(I) -> bool,
     component: impl Fn(usize) -> C,
 ) -> ComponentLabels<C>
 where
-    I: IdIndex,
+    I: Copy + IdIndex,
 {
     let mut labels = vec![None; adjacency.len()];
     let mut count = 0;

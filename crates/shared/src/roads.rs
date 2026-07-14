@@ -137,7 +137,7 @@ pub fn build_bridge_deck(
     let er = end_ground(n - 1);
 
     let mut rings: Vec<[Vec3; 4]> = Vec::with_capacity(n);
-    for i in 0..n {
+    for (i, _) in dirs.iter().enumerate().take(n) {
         let t = i as f32 / (n - 1) as f32;
         let r = sr + (er - sr) * t + clearance * (4.0 * t * (1.0 - t));
         let left = ring_left(i, r);
