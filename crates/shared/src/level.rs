@@ -92,131 +92,202 @@ pub struct LevelData {
     /// time and spawned as runtime entities like bridges.
     pub structures: Vec<StructureData>,
     /// Per-face slope class (SLOPE_*), from the solved field.
-    pub slope_class: Vec<u8>,
-    /// Per-face water depth class (DEPTH_*) for water faces; 0 on land.
-    pub water_depth: Vec<u8>,
-    /// Per-face macro landform (LANDFORM_*).
-    pub landform: Vec<u8>,
-    /// Per-face road surface material (ROAD_MAT_*); 0 on non-road faces.
-    pub road_material: Vec<u8>,
+    pub slope_class: Vec<SlopeClass>,
+    /// Per-face water depth class; `None` on dry faces.
+    pub water_depth: Vec<Option<WaterDepth>>,
+    /// Per-face macro landform.
+    pub landform: Vec<Landform>,
+    /// Per-face road surface material; `None` on non-road faces.
+    pub road_material: Vec<Option<RoadMaterial>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct StructureData {
     pub pos: [f32; 3],
     pub face: u32,
-    pub kind: u8,
+    pub kind: StructureKind,
     /// Facing yaw about the local up (radians).
     pub yaw: f32,
 }
 
 /// Per-cell/-face terrain steepness (slope class) from the solved field.
-pub const SLOPE_FLAT: u8 = 0;
-pub const SLOPE_GENTLE: u8 = 1;
-pub const SLOPE_STEEP: u8 = 2;
-pub const SLOPE_CLIFF: u8 = 3;
-
-pub fn slope_name(c: u8) -> &'static str {
-    match c {
-        SLOPE_FLAT => "Flat",
-        SLOPE_GENTLE => "Gentle",
-        SLOPE_STEEP => "Steep",
-        SLOPE_CLIFF => "Cliff",
-        _ => "?",
-    }
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SlopeClass {
+    Flat,
+    Gentle,
+    Steep,
+    Cliff,
 }
+pub const SLOPE_FLAT: SlopeClass = SlopeClass::Flat;
+pub const SLOPE_GENTLE: SlopeClass = SlopeClass::Gentle;
+pub const SLOPE_STEEP: SlopeClass = SlopeClass::Steep;
+pub const SLOPE_CLIFF: SlopeClass = SlopeClass::Cliff;
 
-/// A cell is walkable/buildable when its slope class is flat or gentle.
-pub fn slope_walkable(c: u8) -> bool {
-    c <= SLOPE_GENTLE
+impl SlopeClass {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Flat => "Flat",
+            Self::Gentle => "Gentle",
+            Self::Steep => "Steep",
+            Self::Cliff => "Cliff",
+        }
+    }
+    pub const fn is_walkable(self) -> bool {
+        matches!(self, Self::Flat | Self::Gentle)
+    }
+    pub const fn severity(self) -> u8 {
+        match self {
+            Self::Flat => 0,
+            Self::Gentle => 1,
+            Self::Steep => 2,
+            Self::Cliff => 3,
+        }
+    }
 }
 
 /// Macro LANDFORM (the terrain massif a cell belongs to), the base layer under
 /// biome cover and slope-class detail: lowlands, hills, mountains, plateaus,
 /// valleys — or water. Drives which biome COVER a cell gets and reads in the
 /// HUD as the landform word.
-pub const LANDFORM_WATER: u8 = 0;
-pub const LANDFORM_LOWLAND: u8 = 1;
-pub const LANDFORM_VALLEY: u8 = 2;
-pub const LANDFORM_HILLS: u8 = 3;
-pub const LANDFORM_MOUNTAINS: u8 = 4;
-pub const LANDFORM_PLATEAU: u8 = 5;
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Landform {
+    Water,
+    Lowland,
+    Valley,
+    Hills,
+    Mountains,
+    Plateau,
+}
+pub const LANDFORM_WATER: Landform = Landform::Water;
+pub const LANDFORM_LOWLAND: Landform = Landform::Lowland;
+pub const LANDFORM_VALLEY: Landform = Landform::Valley;
+pub const LANDFORM_HILLS: Landform = Landform::Hills;
+pub const LANDFORM_MOUNTAINS: Landform = Landform::Mountains;
+pub const LANDFORM_PLATEAU: Landform = Landform::Plateau;
 
-/// Road SURFACE material, from the ground the road crosses (sand in deserts
-/// and on beaches, rock in the mountains, dirt on soil, gravel otherwise).
-pub const ROAD_MAT_GRAVEL: u8 = 0;
-pub const ROAD_MAT_DIRT: u8 = 1;
-pub const ROAD_MAT_SAND: u8 = 2;
-pub const ROAD_MAT_ROCK: u8 = 3;
-
-pub fn road_material_name(m: u8) -> &'static str {
-    match m {
-        ROAD_MAT_GRAVEL => "Gravel",
-        ROAD_MAT_DIRT => "Dirt",
-        ROAD_MAT_SAND => "Sand",
-        ROAD_MAT_ROCK => "Rock",
-        _ => "?",
+impl Landform {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Water => "Water",
+            Self::Lowland => "Lowland",
+            Self::Valley => "Valley",
+            Self::Hills => "Hills",
+            Self::Mountains => "Mountains",
+            Self::Plateau => "Plateau",
+        }
+    }
+    pub const fn is_highland(self) -> bool {
+        matches!(self, Self::Hills | Self::Mountains | Self::Plateau)
     }
 }
 
-pub fn landform_name(l: u8) -> &'static str {
-    match l {
-        LANDFORM_WATER => "Water",
-        LANDFORM_LOWLAND => "Lowland",
-        LANDFORM_VALLEY => "Valley",
-        LANDFORM_HILLS => "Hills",
-        LANDFORM_MOUNTAINS => "Mountains",
-        LANDFORM_PLATEAU => "Plateau",
-        _ => "?",
+/// Road SURFACE material, from the ground the road crosses (sand in deserts
+/// and on beaches, rock in the mountains, dirt on soil, gravel otherwise).
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RoadMaterial {
+    Gravel,
+    Dirt,
+    Sand,
+    Rock,
+}
+pub const ROAD_MAT_GRAVEL: RoadMaterial = RoadMaterial::Gravel;
+pub const ROAD_MAT_DIRT: RoadMaterial = RoadMaterial::Dirt;
+pub const ROAD_MAT_SAND: RoadMaterial = RoadMaterial::Sand;
+pub const ROAD_MAT_ROCK: RoadMaterial = RoadMaterial::Rock;
+impl RoadMaterial {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Gravel => "Gravel",
+            Self::Dirt => "Dirt",
+            Self::Sand => "Sand",
+            Self::Rock => "Rock",
+        }
     }
 }
 
 /// Per-cell/-face WATER DEPTH class (from the solved field). The depth analogue
 /// of the slope class: identity (ocean/lake/river) is one thing, depth another.
-pub const DEPTH_SHALLOW: u8 = 0;
-pub const DEPTH_DEEP: u8 = 1;
-pub const DEPTH_ABYSS: u8 = 2;
-
-pub fn depth_name(d: u8) -> &'static str {
-    match d {
-        DEPTH_SHALLOW => "Shallow",
-        DEPTH_DEEP => "Deep",
-        DEPTH_ABYSS => "Abyss",
-        _ => "?",
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaterDepth {
+    Shallow,
+    Deep,
+    Abyss,
+}
+pub const DEPTH_SHALLOW: WaterDepth = WaterDepth::Shallow;
+pub const DEPTH_DEEP: WaterDepth = WaterDepth::Deep;
+pub const DEPTH_ABYSS: WaterDepth = WaterDepth::Abyss;
+impl WaterDepth {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Shallow => "Shallow",
+            Self::Deep => "Deep",
+            Self::Abyss => "Abyss",
+        }
+    }
+    pub const fn severity(self) -> u8 {
+        match self {
+            Self::Shallow => 0,
+            Self::Deep => 1,
+            Self::Abyss => 2,
+        }
     }
 }
 
-pub const FLORA_TREE: u8 = 0;
-pub const FLORA_BUSH: u8 = 1;
-pub const FLORA_FLOWER: u8 = 2;
-pub const FLORA_ROCK: u8 = 3;
-pub const FLORA_GRASS: u8 = 4;
-pub const FLORA_LOG: u8 = 5;
-pub const FLORA_MUSHROOM: u8 = 6;
-pub const FLORA_CACTUS: u8 = 7;
-pub const FLORA_BERRY: u8 = 8;
-pub const FLORA_DEADTREE: u8 = 9;
-pub const FLORA_REED: u8 = 10;
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FloraKind {
+    Tree,
+    Bush,
+    Flower,
+    Rock,
+    Grass,
+    Log,
+    Mushroom,
+    Cactus,
+    Berry,
+    DeadTree,
+    Reed,
+}
+pub const FLORA_TREE: FloraKind = FloraKind::Tree;
+pub const FLORA_BUSH: FloraKind = FloraKind::Bush;
+pub const FLORA_FLOWER: FloraKind = FloraKind::Flower;
+pub const FLORA_ROCK: FloraKind = FloraKind::Rock;
+pub const FLORA_GRASS: FloraKind = FloraKind::Grass;
+pub const FLORA_LOG: FloraKind = FloraKind::Log;
+pub const FLORA_MUSHROOM: FloraKind = FloraKind::Mushroom;
+pub const FLORA_CACTUS: FloraKind = FloraKind::Cactus;
+pub const FLORA_BERRY: FloraKind = FloraKind::Berry;
+pub const FLORA_DEADTREE: FloraKind = FloraKind::DeadTree;
+pub const FLORA_REED: FloraKind = FloraKind::Reed;
 
 // Structures: built props placed contextually (like towns and bridges).
-pub const STRUCT_RUIN: u8 = 0;
-pub const STRUCT_WATCHTOWER: u8 = 1;
-pub const STRUCT_DOCK: u8 = 2;
-pub const STRUCT_FARM: u8 = 3;
-pub const STRUCT_WALL: u8 = 4;
-pub const STRUCT_WELL: u8 = 5;
-pub const STRUCT_CAMPFIRE: u8 = 6;
-
-pub fn structure_name(kind: u8) -> &'static str {
-    match kind {
-        STRUCT_RUIN => "Ruins",
-        STRUCT_WATCHTOWER => "Watchtower",
-        STRUCT_DOCK => "Dock",
-        STRUCT_FARM => "Farm",
-        STRUCT_WALL => "Wall",
-        STRUCT_WELL => "Well",
-        STRUCT_CAMPFIRE => "Campfire",
-        _ => "?",
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StructureKind {
+    Ruin,
+    Watchtower,
+    Dock,
+    Farm,
+    Wall,
+    Well,
+    Campfire,
+}
+pub const STRUCT_RUIN: StructureKind = StructureKind::Ruin;
+pub const STRUCT_WATCHTOWER: StructureKind = StructureKind::Watchtower;
+pub const STRUCT_DOCK: StructureKind = StructureKind::Dock;
+pub const STRUCT_FARM: StructureKind = StructureKind::Farm;
+pub const STRUCT_WALL: StructureKind = StructureKind::Wall;
+pub const STRUCT_WELL: StructureKind = StructureKind::Well;
+pub const STRUCT_CAMPFIRE: StructureKind = StructureKind::Campfire;
+impl StructureKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Ruin => "Ruins",
+            Self::Watchtower => "Watchtower",
+            Self::Dock => "Dock",
+            Self::Farm => "Farm",
+            Self::Wall => "Wall",
+            Self::Well => "Well",
+            Self::Campfire => "Campfire",
+        }
     }
 }
 
@@ -226,7 +297,7 @@ pub struct FloraData {
     pub pos: [f32; 3],
     /// The face it sits on (for gameplay queries).
     pub face: u32,
-    pub kind: u8,
+    pub kind: FloraKind,
 }
 
 impl LevelData {
@@ -312,12 +383,22 @@ pub struct SettlementData {
 #[derive(Serialize, Deserialize)]
 pub struct RoadData {
     pub points: Vec<[f32; 3]>,
-    pub is_bridge: bool,
+    pub kind: RoadKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RoadKind {
+    Road,
+    Bridge,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::LevelData;
+    use super::{
+        FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass, StructureKind,
+        WaterDepth,
+    };
+    use serde::{Serialize, de::DeserializeOwned};
 
     fn tracked_level() -> LevelData {
         postcard::from_bytes(include_bytes!("../../main/assets/level_1337.bin"))
@@ -348,5 +429,40 @@ mod tests {
         let mut level = tracked_level();
         level.face_region[0] = Some(level.regions.len() as u32);
         assert!(level.validate().unwrap_err().contains("region reference"));
+    }
+
+    fn round_trip<T>(value: T)
+    where
+        T: Serialize + DeserializeOwned + PartialEq + std::fmt::Debug,
+    {
+        let bytes = postcard::to_allocvec(&value).unwrap();
+        assert_eq!(postcard::from_bytes::<T>(&bytes).unwrap(), value);
+        assert!(postcard::from_bytes::<T>(&[u8::MAX]).is_err());
+    }
+
+    #[test]
+    fn typed_schema_enums_round_trip_and_reject_invalid_discriminants() {
+        round_trip(SlopeClass::Cliff);
+        round_trip(WaterDepth::Abyss);
+        round_trip(Landform::Plateau);
+        round_trip(RoadMaterial::Rock);
+        round_trip(FloraKind::Reed);
+        round_trip(StructureKind::Campfire);
+        round_trip(RoadKind::Bridge);
+    }
+
+    #[test]
+    fn tracked_level_uses_none_for_dry_and_non_road_faces() {
+        let level = tracked_level();
+        for face in 0..level.face_types.len() {
+            assert_eq!(
+                level.water_depth[face].is_some(),
+                level.face_types[face].is_water()
+            );
+            assert_eq!(
+                level.road_material[face].is_some(),
+                level.face_tags[face].contains(&super::FaceTag::Road)
+            );
+        }
     }
 }

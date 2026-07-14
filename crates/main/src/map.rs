@@ -6,9 +6,9 @@ use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
     BlendTarget, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS,
-    FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTag, LevelData,
-    STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER,
-    STRUCT_WELL,
+    FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, FaceTag, FloraKind, Landform,
+    LevelData, RoadKind, RoadMaterial, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN,
+    STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, SlopeClass, WaterDepth,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
@@ -61,16 +61,16 @@ pub struct LevelTags(pub Vec<Vec<FaceTag>>);
 pub struct LevelFaceTypes(pub Vec<shared::terrain::Terrain>);
 
 #[derive(Resource)]
-pub struct LevelSlope(pub Vec<u8>);
+pub struct LevelSlope(pub Vec<SlopeClass>);
 
 #[derive(Resource)]
-pub struct LevelWaterDepth(pub Vec<u8>);
+pub struct LevelWaterDepth(pub Vec<Option<WaterDepth>>);
 
 #[derive(Resource)]
-pub struct LevelLandform(pub Vec<u8>);
+pub struct LevelLandform(pub Vec<Landform>);
 
 #[derive(Resource)]
-pub struct LevelRoadMaterial(pub Vec<u8>);
+pub struct LevelRoadMaterial(pub Vec<Option<RoadMaterial>>);
 
 /// Distance-based render culling for scatter props: beyond `0` metres the
 /// entity is hidden. Tiny ground cover culls close, trees stay visible far.
@@ -79,7 +79,7 @@ pub struct CullRange(pub f32);
 
 /// Per-flora-kind cull distance (metres) — the smaller the prop, the sooner it
 /// stops being drawn in the distance.
-fn flora_cull(kind: u8) -> f32 {
+fn flora_cull(kind: FloraKind) -> f32 {
     use shared::level::*;
     // ~1.6x the original ranges so props stay visible further out; the camera
     // fog visibility (main.rs) is set beyond the largest of these so props fade
@@ -89,7 +89,6 @@ fn flora_cull(kind: u8) -> f32 {
         FLORA_BUSH | FLORA_BERRY | FLORA_CACTUS | FLORA_ROCK => 300.0,
         FLORA_LOG => 420.0,
         FLORA_TREE | FLORA_DEADTREE => 880.0,
-        _ => 480.0,
     }
 }
 
@@ -474,7 +473,6 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                _ => {}
             }
         }
     }
@@ -611,7 +609,6 @@ fn setup_map(
                         ));
                     }
                 }
-                _ => {}
             }
         }
     }
@@ -632,7 +629,7 @@ fn setup_map(
         .collect();
     let ground = PlanetMesh::new(displaced);
     let bridge_color = Color::srgb(0.35, 0.25, 0.18).to_linear();
-    for road in level.roads.iter().filter(|r| r.is_bridge) {
+    for road in level.roads.iter().filter(|r| r.kind == RoadKind::Bridge) {
         let span: Vec<shared::sphere::SpherePos> = road
             .points
             .iter()

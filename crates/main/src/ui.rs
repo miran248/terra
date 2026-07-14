@@ -568,19 +568,19 @@ fn update_terrain_hud(
                 if tile.is_water() {
                     water_depth
                         .as_ref()
-                        .and_then(|wd| wd.0.get(fi).copied())
-                        .map(|d| shared::level::depth_name(d).to_string())
+                        .and_then(|wd| wd.0.get(fi).copied().flatten())
+                        .map(|d| d.name().to_string())
                         .unwrap_or_default()
                 } else {
                     let lf = landform_r
                         .as_ref()
                         .and_then(|l| l.0.get(fi).copied())
-                        .map(shared::level::landform_name)
+                        .map(shared::level::Landform::name)
                         .unwrap_or("");
                     let sl = slope_class
                         .as_ref()
                         .and_then(|sc| sc.0.get(fi).copied())
-                        .map(shared::level::slope_name)
+                        .map(shared::level::SlopeClass::name)
                         .unwrap_or("");
                     format!("{lf} ({sl})")
                 }
@@ -619,10 +619,12 @@ fn update_terrain_hud(
                 tile_line.push_str("  ");
                 tile_line.push_str(tag.name());
                 if tag == shared::level::FaceTag::Road
-                    && let Some(m) = road_mat.as_ref().and_then(|r| r.0.get(fi).copied())
+                    && let Some(m) = road_mat
+                        .as_ref()
+                        .and_then(|r| r.0.get(fi).copied().flatten())
                 {
                     tile_line.push_str(" (");
-                    tile_line.push_str(shared::level::road_material_name(m));
+                    tile_line.push_str(m.name());
                     tile_line.push(')');
                 }
             }
