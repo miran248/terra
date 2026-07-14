@@ -412,7 +412,7 @@ pub(super) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
 /// Because it reads a smooth continuous field the bands are naturally ordered
 /// (no lowland directly against a peak). Speckle is absorbed into the
 /// surrounding landform so each is a coherent cluster.
-pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
+pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<Landform> {
     let e: Vec<f32> = (0..grid.cell_count())
         .map(|cell_index| terrain.elevation_at(grid.cell_position(CellId::new(cell_index))))
         .collect();
@@ -440,7 +440,7 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
         };
     }
     // Valleys: low ground hemmed in by higher landform on most sides.
-    let higher = |l: u8| matches!(l, LANDFORM_HILLS | LANDFORM_MOUNTAINS | LANDFORM_PLATEAU);
+    let higher = |l: Landform| l.is_highland();
     let mut valleys = Vec::new();
     for cell_index in 0..grid.cell_count() {
         if lf[cell_index] == LANDFORM_LOWLAND
@@ -466,7 +466,7 @@ pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
 
 pub(super) const MIN_LANDFORM_CELLS: usize = 25;
 
-pub(super) fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
+pub(super) fn absorb_small_landforms(grid: &Grid, lf: &mut [Landform]) {
     absorb_small_clusters(
         grid,
         lf,
@@ -482,7 +482,7 @@ pub(super) fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
 pub(super) fn classify_cover(
     grid: &Grid,
     terrain: &TerrainGen,
-    landform: &[u8],
+    landform: &[Landform],
     cell_index: usize,
 ) -> Terrain {
     let pos = grid.cell_position(CellId::new(cell_index));
@@ -506,7 +506,7 @@ pub(super) fn classify_cover(
     }
 }
 
-pub(super) fn land_cover(terrain: &TerrainGen, landform: u8, pos: SpherePos) -> Terrain {
+pub(super) fn land_cover(terrain: &TerrainGen, landform: Landform, pos: SpherePos) -> Terrain {
     let t = terrain.temperature_at(pos);
     let m = terrain.moisture_at(pos);
     let e = terrain.elevation_at(pos);
@@ -570,7 +570,7 @@ pub(super) const SLOPE_CLIFF_MAX: f32 = 0.90; // ~42°: steep/cliff (impassable)
 /// ground distance), not at a sub-metre probe, so it reflects terrain the
 /// player traverses rather than interpolation noise. Passes (gentle cells in
 /// mountains) and escarpments (cliff cells) fall out of it automatically.
-pub(super) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
+pub(super) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<SlopeClass> {
     let alt: Vec<f32> = (0..grid.cell_count())
         .map(|cell_index| terrain.altitude(grid.cell_position(CellId::new(cell_index))))
         .collect();
@@ -590,7 +590,12 @@ pub(super) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
                 }
             }
 
-            bucket(worst, &[SLOPE_GENTLE_MAX, SLOPE_STEEP_MAX, SLOPE_CLIFF_MAX])
+            match bucket(worst, &[SLOPE_GENTLE_MAX, SLOPE_STEEP_MAX, SLOPE_CLIFF_MAX]) {
+                0 => SlopeClass::Flat,
+                1 => SlopeClass::Gentle,
+                2 => SlopeClass::Steep,
+                _ => SlopeClass::Cliff,
+            }
         })
         .collect()
 }
@@ -608,14 +613,18 @@ pub(super) fn classify_water_depth(
     grid: &Grid,
     cells: &[Terrain],
     terrain: &TerrainGen,
-) -> Vec<u8> {
+) -> Vec<Option<WaterDepth>> {
     (0..grid.cell_count())
         .map(|cell_index| {
             if !cells[cell_index].is_water() {
-                return DEPTH_SHALLOW;
+                return None;
             }
             let e = terrain.elevation_at(grid.cell_position(CellId::new(cell_index)));
-            bucket(-e, &[0.20, 0.55])
+            Some(match bucket(-e, &[0.20, 0.55]) {
+                0 => WaterDepth::Shallow,
+                1 => WaterDepth::Deep,
+                _ => WaterDepth::Abyss,
+            })
         })
         .collect()
 }

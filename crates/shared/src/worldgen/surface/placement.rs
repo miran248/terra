@@ -20,10 +20,10 @@ pub(in crate::worldgen) enum FloraScale {
 /// Base per-face density (expected instances) for each flora kind on a tile,
 /// with its moisture response — the scatter analogue of `elev_range`. Faces
 /// are ~9m across at sub=7, so values are small. Empty ⇒ nothing grows here.
-pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, u8)> {
+pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, FloraKind)> {
     use FloraScale::*;
     // (base, scale, kind). Kept sparse: only the kinds that grow on this tile.
-    let v: &[(f32, FloraScale, u8)] = match t {
+    let v: &[(f32, FloraScale, FloraKind)] = match t {
         Terrain::Forest => &[
             (0.40, Wet, FLORA_TREE),
             (0.10, Wet, FLORA_BUSH),
@@ -186,7 +186,7 @@ pub(in crate::worldgen) fn place_structures(
     terrain: &TerrainGen,
     tiles: &[Terrain],
     painted: &Painted,
-    slope_class: &[u8],
+    slope_class: &[SlopeClass],
     mesh_tris: &[[[f32; 3]; 3]],
 ) -> Vec<StructureData> {
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ STRUCT_RNG_SALT);
@@ -231,7 +231,7 @@ pub(in crate::worldgen) fn place_structures(
     };
 
     let mut out = Vec::new();
-    let mut push = |rng: &mut fastrand::Rng, face_index: usize, kind: u8| {
+    let mut push = |rng: &mut fastrand::Rng, face_index: usize, kind: StructureKind| {
         out.push(StructureData {
             pos: face_center(face_index).to_array(),
             face: face_index as u32,
@@ -245,7 +245,7 @@ pub(in crate::worldgen) fn place_structures(
         grid.face_cells(FaceId::new(face_index))
             .map(CellId::index)
             .into_iter()
-            .all(|cell| slope_walkable(slope_class[cell]))
+            .all(|cell| slope_class[cell].is_walkable())
     };
     for face_index in 0..grid.face_count() {
         if tiles[face_index].is_water() || !buildable(face_index) {

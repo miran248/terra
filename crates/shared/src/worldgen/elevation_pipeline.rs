@@ -60,7 +60,7 @@ pub(super) fn is_cover(t: Terrain) -> bool {
 /// Elevation range a LANDFORM's ground may occupy — the base layer that drives
 /// height (cover only colors it). Bands overlap so adjacent landforms
 /// (ordered lowland→hills→mountains) meet without an impossible jump.
-pub(super) fn landform_range(lf: u8) -> (f32, f32) {
+pub(super) fn landform_range(lf: Landform) -> (f32, f32) {
     match lf {
         LANDFORM_VALLEY => (0.0, 0.16),
         LANDFORM_LOWLAND => (0.02, 0.20),
@@ -73,8 +73,8 @@ pub(super) fn landform_range(lf: u8) -> (f32, f32) {
 
 /// How steep a land edge may be, from the steeper of the two landforms:
 /// lowlands are gentle, mountains steep, hills between.
-pub(super) fn landform_edge_cap(lfa: u8, lfb: u8) -> f32 {
-    let one = |lf: u8| -> f32 {
+pub(super) fn landform_edge_cap(lfa: Landform, lfb: Landform) -> f32 {
+    let one = |lf: Landform| -> f32 {
         match lf {
             LANDFORM_VALLEY | LANDFORM_LOWLAND => 0.04,
             LANDFORM_HILLS => 0.14,
@@ -242,7 +242,11 @@ pub(super) fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) 
     owner_of(grid, terrain, cells, Terrain::Plains)
 }
 
-pub(super) fn owner_landform(grid: &Grid, terrain: &TerrainGen, landform: &[u8]) -> Vec<u8> {
+pub(super) fn owner_landform(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    landform: &[Landform],
+) -> Vec<Landform> {
     owner_of(grid, terrain, landform, LANDFORM_LOWLAND)
 }
 
@@ -250,7 +254,7 @@ pub(super) fn solve_elevation(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
-    landform: &[u8],
+    landform: &[Landform],
     tiles: &[Terrain],
     painted: &Painted,
     blends: &[FaceBlend],
@@ -264,7 +268,7 @@ pub(super) fn solve_elevation(
     // constraint set is self-consistent by construction. Transitions between
     // kinds are shaped by the edge caps, not by range intersections.
     let owner: Vec<Terrain> = owner_cells(grid, terrain, cells);
-    let owner_lf: Vec<u8> = owner_landform(grid, terrain, landform);
+    let owner_lf: Vec<Landform> = owner_landform(grid, terrain, landform);
     let _ = tiles;
     let owner_face: Vec<Option<usize>> = (0..solver_vertex_count)
         .map(|solver_vertex| grid.planet.face_at(terrain.vert_dir(solver_vertex)))

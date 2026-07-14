@@ -19,7 +19,7 @@ pub(in crate::worldgen) fn paint_features(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
-    slope_class: &[u8],
+    slope_class: &[SlopeClass],
 ) -> (Painted, Vec<Vec<SpherePos>>) {
     let mut painted = Painted::empty(grid.cell_count());
     let mut kept: Vec<Vec<SpherePos>> = Vec::new();
@@ -67,7 +67,7 @@ pub(in crate::worldgen) fn paint_features(
     // Towns sit on walkable ground within the settlement radius.
     for (cell_index, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
         let pos = grid.cell_position(CellId::new(cell_index));
-        if slope_walkable(slope)
+        if slope.is_walkable()
             && terrain
                 .settlement_anchors
                 .iter()
@@ -178,7 +178,7 @@ pub(in crate::worldgen) fn build_bridges(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
-    slope_class: &[u8],
+    slope_class: &[SlopeClass],
     _face_types: &[Terrain],
     _face_region: &[Option<u32>],
     painted: &mut Painted,

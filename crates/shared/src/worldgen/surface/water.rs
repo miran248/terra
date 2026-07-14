@@ -470,13 +470,3 @@ pub(in crate::worldgen) fn river_surface_radii(
         })
         .collect()
 }
-
-pub(in crate::worldgen) fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
-    projection::face_max(grid, per_cell)
-}
-
-/// Reduce a per-cell u8 to per-face by majority corner (used for landform: the
-/// massif a face sits in).
-pub(in crate::worldgen) fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
-    projection::face_majority(grid, per_cell)
-}

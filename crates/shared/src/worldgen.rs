@@ -15,12 +15,12 @@ use std::collections::{BTreeMap, VecDeque};
 use crate::level::{
     BlendTarget, DEPTH_ABYSS, DEPTH_DEEP, DEPTH_SHALLOW, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS,
     FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK,
-    FLORA_TREE, FaceBlend, FaceTag, FloraData, LANDFORM_HILLS, LANDFORM_LOWLAND,
-    LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, LANDFORM_VALLEY, LANDFORM_WATER, LevelData,
+    FLORA_TREE, FaceBlend, FaceTag, FloraData, FloraKind, LANDFORM_HILLS, LANDFORM_LOWLAND,
+    LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, LANDFORM_VALLEY, LANDFORM_WATER, Landform, LevelData,
     ROAD_MAT_DIRT, ROAD_MAT_GRAVEL, ROAD_MAT_ROCK, ROAD_MAT_SAND, RegionData, RegionKind, RoadData,
-    SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM,
-    STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, SettlementData, StructureData,
-    slope_walkable,
+    RoadKind, RoadMaterial, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, STRUCT_CAMPFIRE,
+    STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL,
+    SettlementData, SlopeClass, StructureData, StructureKind, WaterDepth,
 };
 use crate::planet::{PlanetMesh, unit_icosphere_tris};
 use crate::sphere::SpherePos;
@@ -40,6 +40,7 @@ mod regions;
 mod router;
 
 use domain::{CellField, CellSet, FaceField};
+use projection::{face_majority, face_max};
 
 const TOWN_RADIUS: f32 = 55.0;
 
@@ -277,7 +278,7 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
 /// cell must form one edge-connected fan. Solid needs all 3 corners painted,
 /// so a pinch is two painted runs around a painted cell — paint a passable
 /// gap cell to merge them (e.g. the miter cell at a road's 60° turn).
-fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize) -> bool) {
+fn link_feature_pinches(grid: &Grid, bits: &mut CellSet, passable: impl Fn(usize) -> bool) {
     for _ in 0..8 {
         let mut changed = false;
         for v in 0..grid.cell_count() {
@@ -286,7 +287,7 @@ fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize)
             }
             let ring = ring(grid, v);
             let n = ring.len();
-            let runs = |bits: &BitSet| -> usize {
+            let runs = |bits: &CellSet| -> usize {
                 let solid = |i: usize| {
                     bits.contains(CellId::new(ring[i]))
                         && bits.contains(CellId::new(ring[(i + 1) % n]))
@@ -308,7 +309,6 @@ fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize)
                     changed = true;
                     break;
                 }
-                // BitSet has no remove; rebuild the bit by clearing the word bit.
                 bits.remove(CellId::new(candidate));
             }
         }
@@ -320,33 +320,31 @@ fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize)
 
 // ---- typed domain storage ----
 
-type BitSet = CellSet;
-
 /// Built features, painted per CELL (like terrain identity): a face is a
 /// solid feature where ≥2 of its corner cells are painted, and fades out at
 /// the edges through per-corner colors — the same construction as terrain,
 /// so feature footprints can never pinch or zigzag either.
 #[derive(Clone)]
 struct Painted {
-    pub roads: BitSet,
-    pub towns: BitSet,
-    pub bridges: BitSet,
-    pub bridge_entries: BitSet,
+    pub roads: CellSet,
+    pub towns: CellSet,
+    pub bridges: CellSet,
+    pub bridge_entries: CellSet,
 }
 
 impl Painted {
     fn empty(nv: usize) -> Self {
         Self {
-            roads: BitSet::new(nv),
-            towns: BitSet::new(nv),
-            bridges: BitSet::new(nv),
-            bridge_entries: BitSet::new(nv),
+            roads: CellSet::new(nv),
+            towns: CellSet::new(nv),
+            bridges: CellSet::new(nv),
+            bridge_entries: CellSet::new(nv),
         }
     }
 }
 
 /// How many of a face's corner cells are in the set.
-fn painted_corners(grid: &Grid, bits: &BitSet, face_index: usize) -> usize {
+fn painted_corners(grid: &Grid, bits: &CellSet, face_index: usize) -> usize {
     features::painted_corners(grid, bits, face_index)
 }
 
@@ -355,7 +353,7 @@ fn painted_corners(grid: &Grid, bits: &BitSet, face_index: usize) -> usize {
 /// the parallelogram strip between them (straight edges = the lines
 /// themselves). Faces with 1–2 painted corners form one straight-edged strip
 /// on each side — the blend band, rendered as a per-corner gradient.
-fn face_solid(grid: &Grid, bits: &BitSet, face_index: usize) -> bool {
+fn face_solid(grid: &Grid, bits: &CellSet, face_index: usize) -> bool {
     features::face_solid(grid, bits, face_index)
 }
 
@@ -391,16 +389,16 @@ struct GenState {
     /// SOLVED field. Walkability and feature placement gate on this, so a
     /// mountain pass (Gentle inside Mountains) is traversable and a "flat"
     /// biome that solved steep is not.
-    pub slope_class: CellField<u8>,
+    pub slope_class: CellField<SlopeClass>,
     /// Per-cell water depth class (DEPTH_*) for water cells.
-    pub water_depth: CellField<u8>,
+    pub water_depth: CellField<Option<WaterDepth>>,
     /// Per-cell macro landform (LANDFORM_*), from the proposed field.
-    pub landform: CellField<u8>,
+    pub landform: CellField<Landform>,
     /// Final cell-to-face projections consumed by `LevelData`.
-    pub face_slope_class: FaceField<u8>,
-    pub face_water_depth: FaceField<u8>,
-    pub face_landform: FaceField<u8>,
-    pub face_road_material: FaceField<u8>,
+    pub face_slope_class: FaceField<SlopeClass>,
+    pub face_water_depth: FaceField<Option<WaterDepth>>,
+    pub face_landform: FaceField<Landform>,
+    pub face_road_material: FaceField<Option<RoadMaterial>>,
 }
 
 pub struct CompletedWorld {
@@ -486,19 +484,19 @@ impl GenState {
             .iter()
             .map(|path| RoadData {
                 points: path.iter().map(|point| point.0.to_array()).collect(),
-                is_bridge: false,
+                kind: RoadKind::Road,
             })
             .collect();
         roads.extend(self.bridges.iter().map(|path| RoadData {
             points: path.iter().map(|point| point.0.to_array()).collect(),
-            is_bridge: true,
+            kind: RoadKind::Bridge,
         }));
 
         LevelData {
             seed: self.grid.seed,
             vert_elev: terrain.vert_elevations().to_vec(),
-            terrain_tris: self.mesh_tris.dense().to_vec(),
-            terrain_colors: self.mesh_colors.dense().to_vec(),
+            terrain_tris: self.mesh_tris.to_vec(),
+            terrain_colors: self.mesh_colors.to_vec(),
             unit_tris: self
                 .grid
                 .unit_tris
@@ -506,8 +504,8 @@ impl GenState {
                 .map(|triangle| triangle.map(|point| point.to_array()))
                 .collect(),
             face_types: self.tiles.to_vec(),
-            face_water_r: self.water_r.dense().to_vec(),
-            face_river_r: self.river_r.dense().to_vec(),
+            face_water_r: self.water_r.to_vec(),
+            face_river_r: self.river_r.to_vec(),
             face_tags: self.face_tags.to_vec(),
             face_blend: self.blends.clone(),
             settlements,
@@ -527,7 +525,7 @@ impl GenState {
         let terrain = self.terrain.as_ref().expect("pipeline finished");
         let elevations = terrain.vert_elevations();
         let mut terrain_faces = BTreeMap::new();
-        for &kind in &self.tiles {
+        for &kind in self.tiles.iter() {
             let name = match kind {
                 Terrain::Ocean => "Ocean",
                 Terrain::Lake => "Lake",
@@ -652,14 +650,14 @@ enum Event {
     TagsBuilt(Vec<Vec<FaceTag>>),
     FloraPlaced(Vec<FloraData>),
     StructuresPlaced(Vec<StructureData>),
-    SlopeClassified(Vec<u8>, Vec<u8>),
-    LandformClassified(Vec<u8>),
+    SlopeClassified(Vec<SlopeClass>, Vec<Option<WaterDepth>>),
+    LandformClassified(Vec<Landform>),
     OutputsBaked {
         river_r: Vec<[f32; 3]>,
-        slope: Vec<u8>,
-        depth: Vec<u8>,
-        landform: Vec<u8>,
-        road_material: Vec<u8>,
+        slope: Vec<SlopeClass>,
+        depth: Vec<Option<WaterDepth>>,
+        landform: Vec<Landform>,
+        road_material: Vec<Option<RoadMaterial>>,
     },
 }
 
@@ -707,7 +705,7 @@ impl Event {
             Event::StructuresPlaced(v) => format!("structures placed: {}", v.len()),
             Event::SlopeClassified(sc, wd) => {
                 let cliffs = sc.iter().filter(|&&c| c == SLOPE_CLIFF).count();
-                let abyss = wd.iter().filter(|&&d| d == DEPTH_ABYSS).count();
+                let abyss = wd.iter().filter(|&&d| d == Some(DEPTH_ABYSS)).count();
                 format!("relief classified: {cliffs} cliff cells, {abyss} abyss cells")
             }
             Event::LandformClassified(lf) => {
@@ -727,8 +725,8 @@ impl Event {
 
 // ---- decide / evolve / react ----
 
-fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
-    match cmd {
+fn decide(state: &GenState, cmd: &Command) -> Event {
+    let mut events = match cmd {
         Command::InitTerrain => {
             vec![Event::TerrainInitialized(Box::new(TerrainGen::init(
                 state.grid.seed,
@@ -762,7 +760,7 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::ClassifySlope => {
             let slope = classify_slope(&state.grid, state.terrain());
-            let depth = classify_water_depth(&state.grid, state.cells.dense(), state.terrain());
+            let depth = classify_water_depth(&state.grid, state.cells.as_slice(), state.terrain());
             vec![Event::SlopeClassified(slope, depth)]
         }
         Command::ClassifyTiles => {
@@ -773,39 +771,42 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             // biome — so a "Forest" is genuinely a forested LOWLAND, not a
             // steep slope that merely isn't labelled Mountain.
             let cells = (0..grid.cell_count())
-                .map(|cell_index| classify_cover(grid, terrain, &state.landform, cell_index))
+                .map(|cell_index| {
+                    classify_cover(grid, terrain, state.landform.as_slice(), cell_index)
+                })
                 .collect::<Vec<_>>()
                 .into();
             vec![Event::TilesClassified(cells)]
         }
         Command::PaintRivers => {
             let mut cells = state.cells.clone();
-            paint_rivers(&state.grid, state.terrain(), &mut cells);
+            paint_rivers(&state.grid, state.terrain(), cells.as_mut_slice());
             vec![Event::RiversPainted(cells)]
         }
         Command::NormalizeWater => {
             let mut cells = state.cells.clone();
-            normalize_water_bodies(&state.grid, state.terrain(), &mut cells);
+            normalize_water_bodies(&state.grid, state.terrain(), cells.as_mut_slice());
             vec![Event::WaterNormalized(cells)]
         }
         Command::PaintFeatures => {
             let (painted, roads) = paint_features(
                 &state.grid,
                 state.terrain(),
-                &state.cells,
-                &state.slope_class,
+                state.cells.as_slice(),
+                state.slope_class.as_slice(),
             );
             vec![Event::FeaturesPainted(painted, roads)]
         }
         Command::ResolveTransitions => {
-            let cells = resolve_transitions(&state.grid, state.terrain(), &state.cells).into();
+            let cells =
+                resolve_transitions(&state.grid, state.terrain(), state.cells.as_slice()).into();
             vec![Event::TransitionsResolved(cells)]
         }
         Command::MarkBlends => {
             vec![Event::BlendsMarked(mark_blends(
                 &state.grid,
-                &state.cells,
-                &state.tiles,
+                state.cells.as_slice(),
+                state.tiles.as_slice(),
                 &state.painted,
             ))]
         }
@@ -813,9 +814,9 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             let (field, iters, residual) = solve_elevation(
                 &state.grid,
                 state.terrain(),
-                &state.cells,
-                &state.landform,
-                &state.tiles,
+                state.cells.as_slice(),
+                state.landform.as_slice(),
+                state.tiles.as_slice(),
                 &state.painted,
                 &state.blends,
             );
@@ -829,12 +830,16 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::WaterClustered(water_surface_radii(
                 &state.grid,
                 state.terrain(),
-                &state.cells,
+                state.cells.as_slice(),
             ))]
         }
         Command::BuildRegions => {
-            let (regions, face_region) =
-                build_regions(&state.grid, state.terrain(), &state.tiles, &state.painted);
+            let (regions, face_region) = build_regions(
+                &state.grid,
+                state.terrain(),
+                state.tiles.as_slice(),
+                &state.painted,
+            );
             vec![Event::RegionsBuilt(regions, face_region)]
         }
         Command::SelectBridges => {
@@ -842,10 +847,10 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             let bridges = build_bridges(
                 &state.grid,
                 state.terrain(),
-                &state.cells,
-                &state.slope_class,
-                &state.tiles,
-                &state.face_region,
+                state.cells.as_slice(),
+                state.slope_class.as_slice(),
+                state.tiles.as_slice(),
+                state.face_region.as_slice(),
                 &mut painted,
             );
             vec![Event::BridgesSelected(bridges, painted)]
@@ -854,11 +859,11 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             let (tris, cols) = build_mesh(
                 &state.grid,
                 state.terrain(),
-                &state.cells,
+                state.cells.as_slice(),
                 &state.painted,
-                &state.water_depth,
-                &state.landform,
-                &state.slope_class,
+                state.water_depth.as_slice(),
+                state.landform.as_slice(),
+                state.slope_class.as_slice(),
             );
             vec![Event::MeshBuilt(tris, cols)]
         }
@@ -872,22 +877,29 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
             vec![Event::FloraPlaced(place_flora(
                 &state.grid,
                 state.terrain(),
-                &state.tiles,
+                state.tiles.as_slice(),
                 &state.painted,
-                &state.mesh_tris,
+                state.mesh_tris.as_slice(),
             ))]
         }
         Command::PlaceStructures => {
             vec![Event::StructuresPlaced(place_structures(
                 &state.grid,
                 state.terrain(),
-                &state.tiles,
+                state.tiles.as_slice(),
                 &state.painted,
-                &state.slope_class,
-                &state.mesh_tris,
+                state.slope_class.as_slice(),
+                state.mesh_tris.as_slice(),
             ))]
         }
         Command::BakeOutputs => {
+            let depth = face_max(&state.grid, state.water_depth.as_slice(), |depth| {
+                depth.map_or(0, |d| d.severity() + 1)
+            })
+            .into_iter()
+            .zip(state.tiles.iter())
+            .map(|(depth, terrain)| terrain.is_water().then_some(depth).flatten())
+            .collect();
             let road_material = (0..state.grid.face_count())
                 .map(|face_index| {
                     let solid = state
@@ -899,35 +911,50 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
                         .count()
                         == 3;
                     if solid {
-                        face_road_material(
+                        Some(face_road_material(
                             &state.grid,
-                            &state.cells,
-                            &state.landform,
-                            &state.slope_class,
+                            state.cells.as_slice(),
+                            state.landform.as_slice(),
+                            state.slope_class.as_slice(),
                             face_index,
-                        )
+                        ))
                     } else {
-                        0
+                        None
                     }
                 })
                 .collect();
             vec![Event::OutputsBaked {
                 river_r: river_surface_radii(
                     &state.grid,
-                    &state.mesh_tris,
-                    &state.tiles,
-                    &state.water_r,
+                    state.mesh_tris.as_slice(),
+                    state.tiles.as_slice(),
+                    state.water_r.as_slice(),
                 ),
-                slope: face_max(&state.grid, &state.slope_class),
-                depth: face_max(&state.grid, &state.water_depth),
-                landform: face_majority(&state.grid, &state.landform),
+                slope: face_max(
+                    &state.grid,
+                    state.slope_class.as_slice(),
+                    SlopeClass::severity,
+                ),
+                depth,
+                landform: face_majority(&state.grid, state.landform.as_slice(), |landform| {
+                    match landform {
+                        Landform::Water => 0,
+                        Landform::Lowland => 1,
+                        Landform::Valley => 2,
+                        Landform::Hills => 3,
+                        Landform::Mountains => 4,
+                        Landform::Plateau => 5,
+                    }
+                }),
                 road_material,
             }]
         }
-    }
+    };
+    debug_assert_eq!(events.len(), 1, "each command produces exactly one event");
+    events.pop().expect("command must produce an event")
 }
 
-fn evolve(mut state: GenState, event: Event) -> GenState {
+fn evolve(state: &mut GenState, event: Event) {
     match event {
         Event::TerrainInitialized(t) => state.terrain = Some(*t),
         Event::ElevationProposed(e) => {
@@ -961,7 +988,7 @@ fn evolve(mut state: GenState, event: Event) -> GenState {
         | Event::RiversPainted(c)
         | Event::WaterNormalized(c)
         | Event::TransitionsResolved(c) => {
-            state.tiles = derive_tiles(&state.grid, &c);
+            state.tiles = derive_tiles(&state.grid, c.as_slice());
             state.cells = c;
         }
         Event::FeaturesPainted(p, roads) => {
@@ -1011,7 +1038,6 @@ fn evolve(mut state: GenState, event: Event) -> GenState {
             state.face_road_material = road_material.into();
         }
     }
-    state
 }
 
 fn react(event: &Event) -> Vec<Command> {
@@ -1061,11 +1087,10 @@ fn run_state(seed: u32, mut log: impl FnMut(&str)) -> GenState {
     let mut state = GenState::new(seed);
     let mut queue = VecDeque::from([Command::InitTerrain]);
     while let Some(cmd) = queue.pop_front() {
-        for event in decide(&state, &cmd) {
-            log(&event.label());
-            queue.extend(react(&event));
-            state = evolve(state, event);
-        }
+        let event = decide(&state, &cmd);
+        log(&event.label());
+        queue.extend(react(&event));
+        evolve(&mut state, event);
     }
     state
 }
@@ -1078,20 +1103,20 @@ pub fn run(seed: u32, log: impl FnMut(&str)) -> CompletedWorld {
     }
 }
 
-mod classification_water_impl;
-use classification_water_impl::*;
+mod water;
+use water::*;
 
-mod features_bridges_impl;
-use features_bridges_impl::*;
+mod feature_pipeline;
+use feature_pipeline::*;
 
-mod regions_impl;
-use regions_impl::*;
+mod region_pipeline;
+use region_pipeline::*;
 
-mod surface_placement_impl;
-use surface_placement_impl::*;
+mod surface;
+use surface::*;
 
-mod elevation_impl;
-use elevation_impl::*;
+mod elevation_pipeline;
+use elevation_pipeline::*;
 
 // ---- helpers ----
 
@@ -1107,7 +1132,7 @@ mod tests {
         // Rivers descend monotonically on the SOLVED field.
         assert!(!terrain.river_paths.is_empty(), "no rivers generated");
         let spring_components =
-            cluster_cell_types(&state.grid, &state.cells, &[Terrain::RiverSpring]);
+            cluster_cell_types(&state.grid, state.cells.as_slice(), &[Terrain::RiverSpring]);
         assert_eq!(
             spring_components.count(),
             terrain.river_paths.len(),
@@ -1156,8 +1181,8 @@ mod tests {
         // satisfy its tile range — no pad exemption.
         // Ownership is per-CELL (each solver vert is a grid cell), exactly as
         // the solver assigns ranges — the face type may differ at boundaries.
-        let owners = owner_cells(&state.grid, terrain, &state.cells);
-        let owners_lf = owner_landform(&state.grid, terrain, &state.landform);
+        let owners = owner_cells(&state.grid, terrain, state.cells.as_slice());
+        let owners_lf = owner_landform(&state.grid, terrain, state.landform.as_slice());
         for solver_vertex in 0..terrain.vert_count() {
             if canyon[solver_vertex] {
                 continue;
@@ -1275,7 +1300,7 @@ mod tests {
         // the waterline (the depth class replaces the old DeepOcean tile).
         // (Depth is per grid CELL — sample the solved field at the cell.)
         for cell_index in 0..state.grid.cell_count() {
-            if state.water_depth.dense()[cell_index] == DEPTH_ABYSS {
+            if state.water_depth.dense()[cell_index] == Some(DEPTH_ABYSS) {
                 let d = terrain.elevation_at(state.grid.cell_position(CellId::new(cell_index)));
                 assert!(d < -0.1, "abyss cell {cell_index} not deep: {d}");
             }
@@ -1455,7 +1480,7 @@ mod tests {
         // Cliff tiles are ramps: toe verts hug the shore (lower neighbors
         // unchanged), crest verts never rise above the hinterland behind them
         // (nothing sticks out) — the drop happens across the cliff face.
-        let vkind: Vec<Terrain> = owner_cells(&state.grid, terrain, &state.cells);
+        let vkind: Vec<Terrain> = owner_cells(&state.grid, terrain, state.cells.as_slice());
         let shore_kind = |t: Terrain| t.is_water() || t == Terrain::Beach;
         for a in 0..terrain.vert_count() {
             if vkind[a] != Terrain::Cliff || canyon[a] {
@@ -1674,8 +1699,12 @@ mod tests {
     #[test]
     fn river_surface_starts_on_springs_and_joins_body_water() {
         let state = run_state(1337, |_| {});
-        let river_r =
-            river_surface_radii(&state.grid, &state.mesh_tris, &state.tiles, &state.water_r);
+        let river_r = river_surface_radii(
+            &state.grid,
+            state.mesh_tris.as_slice(),
+            state.tiles.as_slice(),
+            state.water_r.as_slice(),
+        );
         let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
 
         let mut spring_corners = 0usize;
@@ -1966,10 +1995,10 @@ mod tests {
             seed_1337.as_slice(),
             include_bytes!("../../main/assets/level_1337.bin")
         );
-        assert_eq!(serialized_fingerprint(&seed_1337), 0x8a20_1f42_04c8_cd86);
+        assert_eq!(serialized_fingerprint(&seed_1337), 0x6e14_b46d_517e_d0e2);
 
         let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-        assert_eq!(serialized_fingerprint(&seed_42), 0x49b3_1867_8334_559f);
+        assert_eq!(serialized_fingerprint(&seed_42), 0x49fa_fb72_6e14_c803);
     }
 
     #[test]

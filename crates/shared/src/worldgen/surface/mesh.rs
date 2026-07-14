@@ -3,10 +3,10 @@ use super::super::*;
 pub(in crate::worldgen) fn face_road_material(
     grid: &Grid,
     cells: &[Terrain],
-    landform: &[u8],
-    slope_class: &[u8],
+    landform: &[Landform],
+    slope_class: &[SlopeClass],
     face_index: usize,
-) -> u8 {
+) -> RoadMaterial {
     let mut sand = false;
     let mut rock = false;
     let mut soil = false;
@@ -22,7 +22,7 @@ pub(in crate::worldgen) fn face_road_material(
             _ => {}
         }
         if matches!(landform[cell_index], LANDFORM_MOUNTAINS | LANDFORM_PLATEAU)
-            || slope_class[cell_index] >= SLOPE_STEEP
+            || slope_class[cell_index].severity() >= SLOPE_STEEP.severity()
         {
             rock = true;
         }
@@ -52,9 +52,9 @@ pub(in crate::worldgen) fn build_mesh(
     terrain: &TerrainGen,
     cells: &[Terrain],
     painted: &Painted,
-    water_depth: &[u8],
-    landform: &[u8],
-    slope_class: &[u8],
+    water_depth: &[Option<WaterDepth>],
+    landform: &[Landform],
+    slope_class: &[SlopeClass],
 ) -> (TerrainTriangles, TerrainColors) {
     let vert_r: Vec<f32> = grid
         .topology
@@ -65,7 +65,7 @@ pub(in crate::worldgen) fn build_mesh(
     let road_color = bevy::prelude::Color::srgb(0.5, 0.42, 0.3)
         .to_linear()
         .to_f32_array();
-    let road_mat_color = |m: u8| -> [f32; 4] {
+    let road_mat_color = |m: RoadMaterial| -> [f32; 4] {
         match m {
             ROAD_MAT_DIRT => bevy::prelude::Color::srgb(0.45, 0.33, 0.22),
             ROAD_MAT_SAND => bevy::prelude::Color::srgb(0.78, 0.70, 0.50),
@@ -101,8 +101,8 @@ pub(in crate::worldgen) fn build_mesh(
                 if cells[cell_index].is_water() {
                     // Water darkens with depth (shallow shore → dark abyss).
                     let f = match water_depth[cell_index] {
-                        DEPTH_SHALLOW => 1.0,
-                        DEPTH_DEEP => 0.62,
+                        Some(DEPTH_SHALLOW) => 1.0,
+                        Some(DEPTH_DEEP) => 0.62,
                         _ => 0.35,
                     };
                     for ch in c.iter_mut().take(3) {
@@ -122,7 +122,7 @@ pub(in crate::worldgen) fn build_mesh(
                     for ch in c.iter_mut().take(3) {
                         *ch *= shade;
                     }
-                    if slope_class[cell_index] >= SLOPE_STEEP {
+                    if slope_class[cell_index].severity() >= SLOPE_STEEP.severity() {
                         let rock = [0.24, 0.21, 0.19];
                         let k = if slope_class[cell_index] == SLOPE_CLIFF {
                             0.6

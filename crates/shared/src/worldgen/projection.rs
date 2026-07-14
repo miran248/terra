@@ -1,33 +1,35 @@
-use std::collections::BTreeMap;
-
 use super::Grid;
 use crate::topology::{CellId, FaceId};
 
-pub(super) fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+pub(super) fn face_max<T: Copy>(grid: &Grid, per_cell: &[T], rank: impl Fn(T) -> u8) -> Vec<T> {
     (0..grid.face_count())
         .map(|face| {
             grid.face_cells(FaceId::new(face))
                 .map(CellId::index)
                 .into_iter()
                 .map(|cell| per_cell[cell])
-                .max()
-                .unwrap_or(0)
+                .max_by_key(|value| rank(*value))
+                .expect("every face has three cells")
         })
         .collect()
 }
 
-pub(super) fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+pub(super) fn face_majority<T: Copy + Eq>(
+    grid: &Grid,
+    per_cell: &[T],
+    rank: impl Fn(T) -> u8,
+) -> Vec<T> {
     (0..grid.face_count())
         .map(|face| {
-            let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-            for cell in grid.face_cells(FaceId::new(face)).map(CellId::index) {
-                *counts.entry(per_cell[cell]).or_default() += 1;
-            }
-            counts
+            let cells = grid.face_cells(FaceId::new(face)).map(CellId::index);
+            let values = cells.map(|cell| per_cell[cell]);
+            values
                 .into_iter()
-                .max_by_key(|(_, count)| *count)
-                .map(|(kind, _)| kind)
-                .unwrap_or(0)
+                .max_by_key(|candidate| {
+                    let count = values.iter().filter(|value| *value == candidate).count();
+                    (count, u8::MAX - rank(*candidate))
+                })
+                .expect("every face has three cells")
         })
         .collect()
 }

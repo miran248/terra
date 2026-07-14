@@ -1,4 +1,4 @@
-use std::ops::{Deref, DerefMut, Index, IndexMut};
+use std::ops::{Index, IndexMut};
 
 use crate::topology::{CellId, FaceId};
 
@@ -13,29 +13,38 @@ macro_rules! field {
             }
         }
 
+        #[allow(dead_code)]
         impl<T> $name<T> {
-            pub(super) fn dense(&self) -> &[T] {
+            pub(super) fn as_slice(&self) -> &[T] {
                 &self.0
+            }
+            pub(super) fn dense(&self) -> &[T] {
+                self.as_slice()
+            }
+            pub(super) fn as_mut_slice(&mut self) -> &mut [T] {
+                &mut self.0
+            }
+            pub(super) fn iter(&self) -> std::slice::Iter<'_, T> {
+                self.0.iter()
+            }
+            pub(super) fn len(&self) -> usize {
+                self.0.len()
+            }
+            pub(super) fn into_vec(self) -> Vec<T> {
+                self.0
+            }
+        }
+
+        #[allow(dead_code)]
+        impl<T: Clone> $name<T> {
+            pub(super) fn to_vec(&self) -> Vec<T> {
+                self.0.clone()
             }
         }
 
         impl<T> From<Vec<T>> for $name<T> {
             fn from(values: Vec<T>) -> Self {
                 Self(values)
-            }
-        }
-
-        impl<T> Deref for $name<T> {
-            type Target = [T];
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl<T> DerefMut for $name<T> {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
             }
         }
 
