@@ -1,3 +1,5 @@
+use super::*;
+
 // ---- elevation synthesis (SolveElevation) ----
 //
 // The final elevation field is CONSTRAINT-SOLVED from the finished tile map:
@@ -12,7 +14,7 @@
 /// How far below its neighbors' average a water bed vertex is pushed each
 /// solver step — a concave basin/channel instead of a flat plate. `None` for
 /// non-bed kinds. (Rivers cut sharper than lake basins.)
-fn water_concavity(t: Terrain) -> Option<f32> {
+pub(super) fn water_concavity(t: Terrain) -> Option<f32> {
     match t {
         // Per-iteration push below the neighbour average — the deeper this, the
         // deeper the basin bowls (depth still grows with basin size). Lakes were
@@ -25,7 +27,7 @@ fn water_concavity(t: Terrain) -> Option<f32> {
 
 /// The water kinds a shore/bank vertex must sit strictly above (its adjacent
 /// body). Empty for non-bank kinds.
-fn bank_water(t: Terrain) -> &'static [Terrain] {
+pub(super) fn bank_water(t: Terrain) -> &'static [Terrain] {
     match t {
         Terrain::RiverBank => &[Terrain::River, Terrain::RiverSpring],
         Terrain::LakeShore => &[Terrain::Lake],
@@ -37,7 +39,7 @@ fn bank_water(t: Terrain) -> &'static [Terrain] {
 /// A cover biome whose ELEVATION comes from its landform, not itself (a snowy
 /// lowland stays low; snow doesn't imply a mountain). Water, shore bands and
 /// rivers keep their own ranges — they aren't landforms.
-fn is_cover(t: Terrain) -> bool {
+pub(super) fn is_cover(t: Terrain) -> bool {
     use Terrain::*;
     matches!(
         t,
@@ -58,7 +60,7 @@ fn is_cover(t: Terrain) -> bool {
 /// Elevation range a LANDFORM's ground may occupy — the base layer that drives
 /// height (cover only colors it). Bands overlap so adjacent landforms
 /// (ordered lowland→hills→mountains) meet without an impossible jump.
-fn landform_range(lf: u8) -> (f32, f32) {
+pub(super) fn landform_range(lf: u8) -> (f32, f32) {
     match lf {
         LANDFORM_VALLEY => (0.0, 0.16),
         LANDFORM_LOWLAND => (0.02, 0.20),
@@ -71,7 +73,7 @@ fn landform_range(lf: u8) -> (f32, f32) {
 
 /// How steep a land edge may be, from the steeper of the two landforms:
 /// lowlands are gentle, mountains steep, hills between.
-fn landform_edge_cap(lfa: u8, lfb: u8) -> f32 {
+pub(super) fn landform_edge_cap(lfa: u8, lfb: u8) -> f32 {
     let one = |lf: u8| -> f32 {
         match lf {
             LANDFORM_VALLEY | LANDFORM_LOWLAND => 0.04,
@@ -84,7 +86,7 @@ fn landform_edge_cap(lfa: u8, lfb: u8) -> f32 {
     one(lfa).max(one(lfb))
 }
 
-fn elev_range(t: Terrain) -> (f32, f32) {
+pub(super) fn elev_range(t: Terrain) -> (f32, f32) {
     use Terrain::*;
     // Ranges of kinds that may sit next to each other must overlap (or lie
     // within one edge's gradient cap) or the constraint set is unsatisfiable.
@@ -121,7 +123,7 @@ fn elev_range(t: Terrain) -> (f32, f32) {
 
 /// Max elevation change across one vertex edge (~70m) between two tile kinds.
 /// Small at shores (continental shelf), large into mountains and at cliffs.
-fn max_gradient(a: Terrain, b: Terrain) -> f32 {
+pub(super) fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     use Terrain::*;
     let water = |t: Terrain| matches!(t, Ocean | Lake);
     let peak = |t: Terrain| matches!(t, Mountain | Snow | Volcanic | Glacier);
@@ -160,11 +162,11 @@ fn max_gradient(a: Terrain, b: Terrain) -> f32 {
 }
 
 /// Tight cap along road corridors so roads stay walkable.
-const ROAD_EDGE_GRADIENT: f32 = 0.01;
-const SOLVER_MAX_ITERS: usize = 250;
-const SOLVER_EPS: f32 = 0.002;
+pub(super) const ROAD_EDGE_GRADIENT: f32 = 0.01;
+pub(super) const SOLVER_MAX_ITERS: usize = 250;
+pub(super) const SOLVER_EPS: f32 = 0.002;
 
-fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
+pub(super) fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
     let mut sum = 0.0f32;
     let mut weighted = 0.0f32;
     for &(solver_vertex, dot) in kernel {
@@ -186,7 +188,12 @@ fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
 /// a bit-exact subset of grid cells (each subdivision keeps its parents), so
 /// the map is exact, with a nearest-corner fallback for the (unexpected) miss.
 /// Backs both tile-kind ownership and landform ownership.
-fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default: T) -> Vec<T> {
+pub(super) fn owner_of<T: Copy>(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    per_cell: &[T],
+    default: T,
+) -> Vec<T> {
     let index: BTreeMap<[u32; 3], u32> = grid
         .topology
         .cells()
@@ -230,15 +237,15 @@ fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default:
         .collect()
 }
 
-fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terrain> {
+pub(super) fn owner_cells(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<Terrain> {
     owner_of(grid, terrain, cells, Terrain::Plains)
 }
 
-fn owner_landform(grid: &Grid, terrain: &TerrainGen, landform: &[u8]) -> Vec<u8> {
+pub(super) fn owner_landform(grid: &Grid, terrain: &TerrainGen, landform: &[u8]) -> Vec<u8> {
     owner_of(grid, terrain, landform, LANDFORM_LOWLAND)
 }
 
-fn solve_elevation(
+pub(super) fn solve_elevation(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
@@ -276,8 +283,12 @@ fn solve_elevation(
         let (rlo, rhi) = if is_cover(owner[solver_vertex]) {
             landform_range(owner_lf[solver_vertex])
         } else {
-            match owner_face[solver_vertex].and_then(|face_index| blend_of.get(&(face_index as u32))) {
-                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => elev_range(owner[solver_vertex]),
+            match owner_face[solver_vertex]
+                .and_then(|face_index| blend_of.get(&(face_index as u32)))
+            {
+                Some(&(_, b)) if b >= crate::level::BLEND_FEATURE_MIN => {
+                    elev_range(owner[solver_vertex])
+                }
                 Some(&(a, b)) => {
                     let (alo, ahi) = elev_range(Terrain::ALL[a as usize]);
                     let (blo, bhi) = elev_range(Terrain::ALL[b as usize]);
@@ -388,7 +399,10 @@ fn solve_elevation(
     let mut cliff_crest: Vec<bool> = vec![false; solver_vertex_count];
     for solver_vertex in 0..solver_vertex_count {
         if owner[solver_vertex] == Terrain::Cliff
-            && !terrain.adj_of(solver_vertex).iter().any(|&nb| shore_kind(owner[nb]))
+            && !terrain
+                .adj_of(solver_vertex)
+                .iter()
+                .any(|&nb| shore_kind(owner[nb]))
         {
             cliff_crest[solver_vertex] = true;
         }
@@ -659,4 +673,3 @@ fn solve_elevation(
     elevation::classify_result(&mut e);
     (e, iters, residual)
 }
-

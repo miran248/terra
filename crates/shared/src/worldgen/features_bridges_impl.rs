@@ -1,19 +1,21 @@
+use super::*;
+
 /// A band needs two parallel lattice lines. Widen the chain with each edge's
 /// side partner so faces between the lines form a gap-free feature strip.
-fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
+pub(super) fn widen_band(grid: &Grid, chain: &[usize]) -> Vec<usize> {
     features::widen_band(grid, chain, false)
 }
 
 /// Three lattice lines: the chain plus BOTH side partners (~105m) — wide
 /// enough that the elevation solver owns distinct channel and bank verts and
 /// can actually carve a cross-section (rivers).
-fn widen_band_sym(grid: &Grid, chain: &[usize]) -> Vec<usize> {
+pub(super) fn widen_band_sym(grid: &Grid, chain: &[usize]) -> Vec<usize> {
     features::widen_band(grid, chain, true)
 }
 
 /// Roads may not cross water: a planned path whose cell chain touches a water
 /// cell is dropped entirely (crossing there needs a bridge, not a road).
-fn paint_features(
+pub(super) fn paint_features(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
@@ -52,10 +54,9 @@ fn paint_features(
             chain.extend(&seg[skip..]);
         }
         let band = widen_band(grid, &chain);
-        if band
-            .iter()
-            .any(|&cell_index| cells[cell_index].is_water() || slope_class[cell_index] == SLOPE_CLIFF)
-        {
+        if band.iter().any(|&cell_index| {
+            cells[cell_index].is_water() || slope_class[cell_index] == SLOPE_CLIFF
+        }) {
             continue;
         }
         for cell_index in band {
@@ -75,7 +76,9 @@ fn paint_features(
             painted.towns.insert(cell_index);
         }
     }
-    link_feature_pinches(grid, &mut painted.roads, |cell_index| cells[cell_index].is_land());
+    link_feature_pinches(grid, &mut painted.roads, |cell_index| {
+        cells[cell_index].is_land()
+    });
     link_feature_pinches(grid, &mut painted.towns, |_| true);
     (painted, kept)
 }
@@ -83,29 +86,29 @@ fn paint_features(
 /// Gaps up to this bridge freely.
 /// A tiny overshoot past the gentle anchor cell so the deck grounds just
 /// inside solid ground (bridges conform — no long inland ramp).
-const BRIDGE_ENTRY_OVERLAP: f32 = 3.0;
+pub(super) const BRIDGE_ENTRY_OVERLAP: f32 = 3.0;
 /// A river/lake crossing longer than this isn't a bridge — the water is too
 /// wide (that would be a ferry, not a footbridge).
-const BRIDGE_MAX_SPAN: f32 = 200.0;
+pub(super) const BRIDGE_MAX_SPAN: f32 = 200.0;
 /// Keep bridges apart: no two within this many meters.
-const BRIDGE_MIN_SPACING: f32 = 400.0;
-const BRIDGE_MAX_COUNT: usize = 12;
+pub(super) const BRIDGE_MIN_SPACING: f32 = 400.0;
+pub(super) const BRIDGE_MAX_COUNT: usize = 12;
 /// A land component smaller than this, ringed only by lake water, is an island
 /// in the lake and earns a bridge to the mainland.
-const LAKE_ISLAND_MAX_CELLS: usize = 1500;
+pub(super) const LAKE_ISLAND_MAX_CELLS: usize = 1500;
 /// An ocean island (small land ringed only by ocean) is bridged to the nearest
 /// other landmass, but only across a SHORT gap (islands are seeded near land).
-const OCEAN_ISLAND_MAX_CELLS: usize = 3000;
-const OCEAN_BRIDGE_MAX_SPAN: f32 = 700.0;
+pub(super) const OCEAN_ISLAND_MAX_CELLS: usize = 3000;
+pub(super) const OCEAN_BRIDGE_MAX_SPAN: f32 = 700.0;
 /// A bridge FOOTING must be this gentle (footing-scale slope, rise/run) — the
 /// immediate spot the deck grounds on. Measured at footing scale (not cell
 /// scale) because a bank cell is locally steep toward the channel yet has a
 /// flat footing on top.
-const BRIDGE_MAX_FOOTING_SLOPE: f32 = 0.25;
+pub(super) const BRIDGE_MAX_FOOTING_SLOPE: f32 = 0.25;
 
 /// Terrain a bridge may land on: gentle, walkable ground — never a mountain,
 /// cliff, snowfield, glacier or volcanic slope.
-fn bridge_walkable(t: Terrain) -> bool {
+pub(super) fn bridge_walkable(t: Terrain) -> bool {
     features::bridge_walkable(t)
 }
 
@@ -115,7 +118,7 @@ fn bridge_walkable(t: Terrain) -> bool {
 /// (river+its banks, or lake+its shores). Returns the far-side walkable cell,
 /// or None if the band doesn't end in walkable ground within `max` steps (e.g.
 /// it runs into a mountain, or the band is too wide).
-fn cross_band(
+pub(super) fn cross_band(
     grid: &Grid,
     cells: &[Terrain],
     land: usize,
@@ -167,7 +170,7 @@ fn cross_band(
 /// Bridges cross WATER LOCALLY:/// Bridges cross WATER LOCALLY: over a river from one walkable bank to the
 /// other, and over a lake to reach an island within it. Never oceans, never
 /// mountains — a short footbridge on gentle ground.
-fn build_bridges(
+pub(super) fn build_bridges(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
@@ -471,11 +474,17 @@ fn build_bridges(
         }
     }
 
-    link_feature_pinches(grid, &mut painted.bridge_entries, |cell_index| cells[cell_index].is_land());
+    link_feature_pinches(grid, &mut painted.bridge_entries, |cell_index| {
+        cells[cell_index].is_land()
+    });
     spans
 }
 
-fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> Vec<Terrain> {
+pub(super) fn resolve_transitions(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    base: &[Terrain],
+) -> Vec<Terrain> {
     // Shorelines are deterministic bands, not WFC cells: every land cell
     // touching water gets its shore tile, so the waterline is never zigzagged
     // by chance. The band widens onto the second ring where the coast is flat,
@@ -590,7 +599,10 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
                 .collect()
         })
         .collect();
-    let fallback: Vec<Terrain> = wfc_cells.iter().map(|&cell_index| base[cell_index]).collect();
+    let fallback: Vec<Terrain> = wfc_cells
+        .iter()
+        .map(|&cell_index| base[cell_index])
+        .collect();
 
     let solved = wfc::solve(
         &wfc::Compat::default(),
@@ -615,7 +627,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
 /// needs a River within band reach (2 cells), a lake shore a Lake, a beach
 /// or cliff the sea. Orphans (left behind when fills/trims move the water)
 /// join their most common plain land neighbor.
-fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
+pub(super) fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
     let dist_to = |pred: &dyn Fn(Terrain) -> bool| -> Vec<u8> {
         let sources: Vec<_> = grid
             .topology
@@ -635,7 +647,9 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
         let orphan = match cells[cell_index] {
             Terrain::RiverBank => river[cell_index] > 2,
             Terrain::LakeShore => lake[cell_index] > 2,
-            Terrain::Beach | Terrain::Cliff => sea[cell_index] > 2 && lake[cell_index] > 2 && river[cell_index] > 2,
+            Terrain::Beach | Terrain::Cliff => {
+                sea[cell_index] > 2 && lake[cell_index] > 2 && river[cell_index] > 2
+            }
             _ => false,
         };
         if !orphan {
@@ -674,7 +688,7 @@ fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]) {
 /// between the two. With cell-based tiles the boundary faces are simply the
 /// faces whose corner cells disagree — edge-connected strips by construction.
 /// Faces flanking a built feature blend toward it instead (feature codes).
-fn mark_blends(
+pub(super) fn mark_blends(
     grid: &Grid,
     cells: &[Terrain],
     tiles: &[Terrain],
@@ -732,7 +746,7 @@ fn mark_blends(
 /// normalize_water_bodies.
 /// Temporary index bridge for geometry-heavy algorithms whose state arrays are
 /// still densely indexed by cell.
-fn cell_neighbor_indices(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
+pub(super) fn cell_neighbor_indices(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
     grid.cell_neighbors(v).iter().map(|cell| cell.index())
 }
 
@@ -741,7 +755,7 @@ fn cell_neighbor_indices(grid: &Grid, v: usize) -> impl Iterator<Item = usize> +
 /// value type (biome cover, landform, …). `eligible` selects which values
 /// participate, `min_size` gives each value's floor, `absorbable` says which
 /// neighbor values a speckle may merge into.
-fn absorb_small_clusters<T: Copy + Ord>(
+pub(super) fn absorb_small_clusters<T: Copy + Ord>(
     grid: &Grid,
     out: &mut [T],
     eligible: impl Fn(T) -> bool,
@@ -788,7 +802,7 @@ fn absorb_small_clusters<T: Copy + Ord>(
     }
 }
 
-fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
+pub(super) fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
     let plain = |t: Terrain| {
         matches!(
             t,
@@ -813,7 +827,7 @@ fn absorb_small_patches(grid: &Grid, out: &mut [Terrain]) {
 /// a beach — the ground is raised first, the label follows). This pass only
 /// smooths single-cell islands in the band: a lone beach cell between two
 /// cliffs joins them, and vice versa.
-fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
+pub(super) fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
     for _ in 0..8 {
         let mut changed = false;
         for cell_index in 0..grid.cell_count() {
@@ -846,7 +860,11 @@ fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
 
 /// BFS distance (in cell steps, capped at `max_dist`) from each land cell to the
 /// nearest water cell, plus which water terrain is nearest (for shore tile choice).
-fn water_distance(grid: &Grid, base: &[Terrain], max_dist: u8) -> (Vec<u8>, Vec<Option<Terrain>>) {
+pub(super) fn water_distance(
+    grid: &Grid,
+    base: &[Terrain],
+    max_dist: u8,
+) -> (Vec<u8>, Vec<Option<Terrain>>) {
     let sources: Vec<_> = grid
         .topology
         .cells()

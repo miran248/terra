@@ -1,3 +1,5 @@
+use super::*;
+
 // ---- command implementations (single responsibility each) ----
 
 /// River polylines → River cells, with a distinct ground-contact Spring at
@@ -5,7 +7,7 @@
 /// its neighboring water body.
 /// Painted as an edge PAIR (chain + parallel partner line), like roads: a
 /// single chain's derived faces only touch at the chain vertices.
-fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
+pub(super) fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
     let sea = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::Lake);
     for path in &terrain.river_paths {
         let mut chain = cell_chain(grid, path);
@@ -62,7 +64,7 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
 
 /// The gap-free chain of cells a polyline passes over: nearest corner per
 /// sample, gaps bridged along cell adjacency.
-fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
+pub(super) fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
     let mut c: Vec<usize> = Vec::new();
     for seg in points.windows(2) {
         let steps = (seg[0].distance(seg[1]) / 2.0).ceil().max(1.0) as usize;
@@ -100,7 +102,7 @@ fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
     c
 }
 
-fn shortest_cell_path(grid: &Grid, from: usize, to: usize) -> Vec<usize> {
+pub(super) fn shortest_cell_path(grid: &Grid, from: usize, to: usize) -> Vec<usize> {
     let Some(from) = grid.topology.cell(from) else {
         return Vec::new();
     };
@@ -119,7 +121,11 @@ fn shortest_cell_path(grid: &Grid, from: usize, to: usize) -> Vec<usize> {
 }
 
 /// Majority coarse zone over a cell's face fan (deterministic tie-break).
-fn cell_zone(grid: &Grid, terrain: &TerrainGen, cell_index: usize) -> crate::zones::ZoneKind {
+pub(super) fn cell_zone(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    cell_index: usize,
+) -> crate::zones::ZoneKind {
     let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
     let cell = grid
         .topology
@@ -140,7 +146,7 @@ fn cell_zone(grid: &Grid, terrain: &TerrainGen, cell_index: usize) -> crate::zon
 /// an Ocean only if it reaches ocean-zone faces — otherwise it's an enclosed
 /// Lake, whatever its faces individually classified as. Rivers (painted channel
 /// faces) are their own linear feature and never merge into either.
-fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
+pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
     // Dam every lake rim first: a land-zone cell that classified as water and
     // touches lake-zone water is the start of a drain channel to the sea (they
     // sneak along coarse-face edges past the vertex clamps). Turn it into
@@ -195,9 +201,9 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
         // by land (a single coarse face — hence the tell-tale triangle shape)
         // is a lake, not a sea. Min ocean size sits well above any lake.
         let is_ocean = body.len() >= size_range(Terrain::Ocean).0
-            && body
-                .iter()
-                .any(|&cell_index| cell_zone(grid, terrain, cell_index) == crate::zones::ZoneKind::Ocean);
+            && body.iter().any(|&cell_index| {
+                cell_zone(grid, terrain, cell_index) == crate::zones::ZoneKind::Ocean
+            });
         if !is_ocean && body.len() < size_range(Terrain::Lake).0 {
             // A puddle isn't a lake: fill it with the most common surrounding
             // land kind so no 1-cell water ever survives.
@@ -296,7 +302,7 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
 /// or it is a sliver/neck → land. Rivers are linear by nature and exempt.
 /// (Vertex pinches no longer exist: cells are hexagonal, two same-type cells
 /// can only meet along an edge.) Iterated because fills can expose new slivers.
-fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
+pub(super) fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
     let fill_kind = |cells: &[Terrain], cell_index: usize| -> Terrain {
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
         for nb in cell_neighbor_indices(grid, cell_index) {
@@ -358,12 +364,12 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 /// others are `usize::MAX`, i.e. unbounded). Oceans and lakes are separated
 /// here: min-ocean sits one above max-lake, so a small isolated ocean-zone
 /// pocket falls through to Lake.
-fn size_range(t: Terrain) -> (usize, usize) {
+pub(super) fn size_range(t: Terrain) -> (usize, usize) {
     classification::size_range(t)
 }
 
 /// Nearest cell to a point: the closest corner of the face under it.
-fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
+pub(super) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
     let face_index = grid.planet.face_at(p.0)?;
     grid.face_cells(face_index).into_iter().max_by(|&a, &b| {
         grid.cell_direction(a)
@@ -384,7 +390,7 @@ fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
 /// Because it reads a smooth continuous field the bands are naturally ordered
 /// (no lowland directly against a peak). Speckle is absorbed into the
 /// surrounding landform so each is a coherent cluster.
-fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
+pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     let e: Vec<f32> = (0..grid.cell_count())
         .map(|cell_index| terrain.elevation_at(grid.cell_position(cell_index)))
         .collect();
@@ -430,9 +436,9 @@ fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     lf
 }
 
-const MIN_LANDFORM_CELLS: usize = 25;
+pub(super) const MIN_LANDFORM_CELLS: usize = 25;
 
-fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
+pub(super) fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
     absorb_small_clusters(
         grid,
         lf,
@@ -445,7 +451,12 @@ fn absorb_small_landforms(grid: &Grid, lf: &mut [u8]) {
 /// Cover per cell: the macro landform sets the base — high ground (mountains,
 /// plateaus) gets rock/snow/ice/volcanic, everything lower gets a climate
 /// biome. Water zones stay water. This is the landform → biome layering.
-fn classify_cover(grid: &Grid, terrain: &TerrainGen, landform: &[u8], cell_index: usize) -> Terrain {
+pub(super) fn classify_cover(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    landform: &[u8],
+    cell_index: usize,
+) -> Terrain {
     let pos = grid.cell_position(cell_index);
     let e = terrain.elevation_at(pos);
     match cell_zone(grid, terrain, cell_index) {
@@ -467,7 +478,7 @@ fn classify_cover(grid: &Grid, terrain: &TerrainGen, landform: &[u8], cell_index
     }
 }
 
-fn land_cover(terrain: &TerrainGen, landform: u8, pos: SpherePos) -> Terrain {
+pub(super) fn land_cover(terrain: &TerrainGen, landform: u8, pos: SpherePos) -> Terrain {
     let t = terrain.temperature_at(pos);
     let m = terrain.moisture_at(pos);
     let e = terrain.elevation_at(pos);
@@ -522,16 +533,16 @@ fn land_cover(terrain: &TerrainGen, landform: u8, pos: SpherePos) -> Terrain {
 }
 
 /// Slope-class thresholds (rise/run ≈ tan angle) on the solved field.
-const SLOPE_GENTLE_MAX: f32 = 0.18; // ~10°: flat/gentle boundary
-const SLOPE_STEEP_MAX: f32 = 0.45; // ~24°: gentle/steep (walkable) boundary
-const SLOPE_CLIFF_MAX: f32 = 0.90; // ~42°: steep/cliff (impassable) boundary
+pub(super) const SLOPE_GENTLE_MAX: f32 = 0.18; // ~10°: flat/gentle boundary
+pub(super) const SLOPE_STEEP_MAX: f32 = 0.45; // ~24°: gentle/steep (walkable) boundary
+pub(super) const SLOPE_CLIFF_MAX: f32 = 0.90; // ~42°: steep/cliff (impassable) boundary
 
 /// Per-cell steepness of the SOLVED surface — the micro landform layer.
 /// Measured at CELL scale (max rise/run to an edge-neighbor over the real
 /// ground distance), not at a sub-metre probe, so it reflects terrain the
 /// player traverses rather than interpolation noise. Passes (gentle cells in
 /// mountains) and escarpments (cliff cells) fall out of it automatically.
-fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
+pub(super) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     let alt: Vec<f32> = (0..grid.cell_count())
         .map(|cell_index| terrain.altitude(grid.cell_position(cell_index)))
         .collect();
@@ -553,14 +564,18 @@ fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
 
 /// The number of ascending `thresholds` a value reaches — turns a measurement
 /// into an ordered class (flat/gentle/steep/cliff, shallow/deep/abyss).
-fn bucket(value: f32, thresholds: &[f32]) -> u8 {
+pub(super) fn bucket(value: f32, thresholds: &[f32]) -> u8 {
     classification::bucket(value, thresholds)
 }
 
 /// Per-water-cell depth class from the solved surface: shore-shallows deepen
 /// to abyss offshore (and lake/river beds shallow-to-deep by their concavity).
 /// Land cells are DEPTH_SHALLOW (unused). The depth analogue of slope class.
-fn classify_water_depth(grid: &Grid, cells: &[Terrain], terrain: &TerrainGen) -> Vec<u8> {
+pub(super) fn classify_water_depth(
+    grid: &Grid,
+    cells: &[Terrain],
+    terrain: &TerrainGen,
+) -> Vec<u8> {
     (0..grid.cell_count())
         .map(|cell_index| {
             if !cells[cell_index].is_water() {

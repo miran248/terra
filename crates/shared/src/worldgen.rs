@@ -1099,15 +1099,20 @@ pub fn run(seed: u32, log: impl FnMut(&str)) -> CompletedWorld {
     }
 }
 
-include!("worldgen/classification_water_impl.rs");
+mod classification_water_impl;
+use classification_water_impl::*;
 
-include!("worldgen/features_bridges_impl.rs");
+mod features_bridges_impl;
+use features_bridges_impl::*;
 
-include!("worldgen/regions_impl.rs");
+mod regions_impl;
+use regions_impl::*;
 
-include!("worldgen/surface_placement_impl.rs");
+mod surface_placement_impl;
+use surface_placement_impl::*;
 
-include!("worldgen/elevation_impl.rs");
+mod elevation_impl;
+use elevation_impl::*;
 
 // ---- helpers ----
 

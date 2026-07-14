@@ -1,9 +1,11 @@
+use super::*;
+
 // ---- named regions: contiguous feature clusters (edge-connected) ----
 
 /// Which nameable feature a face belongs to. Tags win over terrain so towns and
 /// roads cluster as themselves; LakeShore/RiverBank separate regions and stay
 /// unnamed.
-fn region_class(
+pub(super) fn region_class(
     grid: &Grid,
     face_types: &[Terrain],
     painted: Option<&Painted>,
@@ -40,7 +42,7 @@ fn region_class(
 /// Flood-fill same-class faces into clusters via edge adjacency (tiles sharing
 /// only a single vertex are NOT linked), name each cluster, and record the
 /// per-face region id for HUD lookup.
-fn build_regions(
+pub(super) fn build_regions(
     grid: &Grid,
     terrain: &TerrainGen,
     face_types: &[Terrain],
@@ -113,7 +115,12 @@ fn build_regions(
     (regions, face_region)
 }
 
-fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -> String {
+pub(super) fn region_name(
+    kind: RegionKind,
+    idx: usize,
+    cent: Vec3,
+    terrain: &TerrainGen,
+) -> String {
     const OCEAN: [&str; 20] = [
         "Azure",
         "Cobalt",
@@ -221,4 +228,3 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
             .unwrap_or_else(|| format!("Town {idx}")),
     }
 }
-

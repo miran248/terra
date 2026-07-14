@@ -1,3 +1,5 @@
+use super::*;
+
 // ---- mesh ----
 
 /// Road surface material from the ground a road face crosses: sand on desert
@@ -12,7 +14,7 @@
 /// cells connect even when their terrain types differ. Cells outside the set
 /// have no typed label. An empty set has no components and duplicate types do
 /// not affect the result.
-fn cluster_cell_types(
+pub(super) fn cluster_cell_types(
     grid: &Grid,
     cells: &[Terrain],
     types: &[Terrain],
@@ -34,7 +36,7 @@ fn cluster_cell_types(
 /// group has one non-negative id. An empty set has no components and duplicate
 /// types do not affect the result.
 #[cfg(test)]
-fn cluster_face_types(
+pub(super) fn cluster_face_types(
     grid: &Grid,
     face_types: &[Terrain],
     types: &[Terrain],
@@ -64,7 +66,11 @@ fn cluster_face_types(
 /// the sheet only if it has no solid-land corner, so water never spills onto
 /// land; lake faces are any face touching the body's Lake tiles (fills to shore
 /// without drawing the outer shore band).
-fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
+pub(super) fn water_surface_radii(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    cells: &[Terrain],
+) -> Vec<f32> {
     let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
 
     let vert_r: Vec<f32> = grid
@@ -132,10 +138,9 @@ fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> 
             if idx.iter().any(|&cell| cells[cell].is_land_biome()) {
                 return 0.0;
             }
-            match idx
-                .iter()
-                .find_map(|&cell_index| lake_components.cell(grid.topology.cell(cell_index).unwrap()))
-            {
+            match idx.iter().find_map(|&cell_index| {
+                lake_components.cell(grid.topology.cell(cell_index).unwrap())
+            }) {
                 Some(component) => lake_r[component.index()],
                 None => 0.0,
             }
@@ -145,13 +150,13 @@ fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> 
 
 /// Extra clearance above the smooth River-only measurement field. This exceeds
 /// water-wave displacement, so the channel terrain cannot pierce the skin.
-const RIVER_SURFACE_CLEARANCE: f32 = 0.02;
+pub(super) const RIVER_SURFACE_CLEARANCE: f32 = 0.02;
 /// Pull exterior river-bank edges into their adjacent ground. This hides the
 /// open seam where a widened river surface meets uneven terrain.
-const RIVER_TERRAIN_CLIP: f32 = 0.25;
+pub(super) const RIVER_TERRAIN_CLIP: f32 = 0.25;
 /// Number of mesh-vertex rings over which a spring grows from its embedded
 /// source into the normal channel surface.
-const RIVER_SPRING_TAPER_RINGS: usize = 3;
+pub(super) const RIVER_SPRING_TAPER_RINGS: usize = 3;
 
 /// Bake a smooth, terrain-following river surface. River, RiverSpring, and
 /// RiverBank faces form the core; one non-water, non-cliff face apron widens
@@ -162,7 +167,7 @@ const RIVER_SPRING_TAPER_RINGS: usize = 3;
 /// component-wide clearance keeps the smooth field above every measured River
 /// corner without copying noisy bank terrain into the water. Cliffs stay
 /// excluded: a river mouth must not flood a coast.
-fn river_surface_radii(
+pub(super) fn river_surface_radii(
     grid: &Grid,
     mesh_tris: &[[[f32; 3]; 3]],
     face_types: &[Terrain],
@@ -218,7 +223,10 @@ fn river_surface_radii(
     let mut has_river = vec![false; components.count()];
     for face_index in 0..grid.face_count() {
         if let Some(component) = component[face_index]
-            && matches!(face_types[face_index], Terrain::River | Terrain::RiverSpring)
+            && matches!(
+                face_types[face_index],
+                Terrain::River | Terrain::RiverSpring
+            )
         {
             has_river[component.index()] = true;
         }
@@ -236,7 +244,9 @@ fn river_surface_radii(
     let mut outlet_anchor: Vec<f32> = Vec::new();
     let mut bank_edge_anchor: Vec<f32> = Vec::new();
     for face_index in 0..grid.face_count() {
-        let Some(c) = component[face_index] else { continue };
+        let Some(c) = component[face_index] else {
+            continue;
+        };
         if !has_river[c.index()] {
             continue;
         }
@@ -292,7 +302,9 @@ fn river_surface_radii(
     // bank. Sink it just below the ground to avoid a visible crack from tiny
     // precision differences between the independently drawn meshes.
     for face_index in 0..grid.face_count() {
-        let Some(c) = component[face_index] else { continue };
+        let Some(c) = component[face_index] else {
+            continue;
+        };
         if !has_river[c.index()] {
             continue;
         }
@@ -318,7 +330,9 @@ fn river_surface_radii(
     // a hard final anchor, so the two independently drawn meshes join without
     // a vertical seam or a dry gap.
     for face_index in 0..grid.face_count() {
-        let Some(c) = component[face_index] else { continue };
+        let Some(c) = component[face_index] else {
+            continue;
+        };
         if !has_river[c.index()] {
             continue;
         }
@@ -405,7 +419,9 @@ fn river_surface_radii(
     // across the channel. The buried apron only widens its footprint.
     let mut clearance = vec![RIVER_SURFACE_CLEARANCE; components.count()];
     for face_index in 0..grid.face_count() {
-        let Some(c) = component[face_index] else { continue };
+        let Some(c) = component[face_index] else {
+            continue;
+        };
         if face_types[face_index] != Terrain::River {
             continue;
         }
@@ -444,17 +460,17 @@ fn river_surface_radii(
         .collect()
 }
 
-fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+pub(super) fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     projection::face_max(grid, per_cell)
 }
 
 /// Reduce a per-cell u8 to per-face by majority corner (used for landform: the
 /// massif a face sits in).
-fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+pub(super) fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     projection::face_majority(grid, per_cell)
 }
 
-fn face_road_material(
+pub(super) fn face_road_material(
     grid: &Grid,
     cells: &[Terrain],
     landform: &[u8],
@@ -498,10 +514,10 @@ fn face_road_material(
 /// across its boundary faces — a hard color seam or single-vertex color pinch
 /// cannot exist. Built features override per face (they are solid structures),
 /// and feature flanks fade each corner halfway toward the feature color.
-type TerrainTriangles = Vec<[[f32; 3]; 3]>;
-type TerrainColors = Vec<[[f32; 4]; 3]>;
+pub(super) type TerrainTriangles = Vec<[[f32; 3]; 3]>;
+pub(super) type TerrainColors = Vec<[[f32; 4]; 3]>;
 
-fn build_mesh(
+pub(super) fn build_mesh(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
@@ -596,7 +612,13 @@ fn build_mesh(
         } else if face_solid(grid, &painted.towns, face_index) {
             [town_color; 3]
         } else if face_solid(grid, &painted.roads, face_index) {
-            [road_mat_color(face_road_material(grid, cells, landform, slope_class, face_index)); 3]
+            [road_mat_color(face_road_material(
+                grid,
+                cells,
+                landform,
+                slope_class,
+                face_index,
+            )); 3]
         } else {
             // Boundary faces render ONE flat color — the equal-weight average
             // of the distinct corner colors (50/50 for a pair) — so band
@@ -637,11 +659,11 @@ fn build_mesh(
 /// keep their ground clear including flanks; positions are uniform barycentric
 /// samples of the DISPLACED triangle so every prop sits exactly on the ground.
 /// Deterministic: one seeded stream in face order.
-const FLORA_RNG_SALT: u64 = 0x466c_6f72;
+pub(super) const FLORA_RNG_SALT: u64 = 0x466c_6f72;
 
 /// How a flora kind's density responds to ground moisture.
 #[derive(Clone, Copy)]
-enum FloraScale {
+pub(super) enum FloraScale {
     /// Denser on wet ground (greenery).
     Wet,
     /// Wet, squared — meadows bloom sharply with moisture (flowers).
@@ -655,7 +677,7 @@ enum FloraScale {
 /// Base per-face density (expected instances) for each flora kind on a tile,
 /// with its moisture response — the scatter analogue of `elev_range`. Faces
 /// are ~9m across at sub=7, so values are small. Empty ⇒ nothing grows here.
-fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, u8)> {
+pub(super) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, u8)> {
     use FloraScale::*;
     // (base, scale, kind). Kept sparse: only the kinds that grow on this tile.
     let v: &[(f32, FloraScale, u8)] = match t {
@@ -747,7 +769,7 @@ fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, u8)> {
     v.to_vec()
 }
 
-fn place_flora(
+pub(super) fn place_flora(
     grid: &Grid,
     terrain: &TerrainGen,
     tiles: &[Terrain],
@@ -809,14 +831,14 @@ fn place_flora(
     out
 }
 
-const STRUCT_RNG_SALT: u64 = 0x0053_7475_6375_7265;
+pub(super) const STRUCT_RNG_SALT: u64 = 0x0053_7475_6375_7265;
 
 /// Contextual structures, placed like towns/bridges: wells, campfires and
 /// farms cluster in and around towns; walls ring town edges; docks reach out
 /// from coastal town shores; watchtowers crown high ground near roads; ruins
 /// scatter through the wilderness. Positions sit on the displaced mesh (face
 /// centroids). Deterministic: one seeded stream in face order.
-fn place_structures(
+pub(super) fn place_structures(
     grid: &Grid,
     terrain: &TerrainGen,
     tiles: &[Terrain],
@@ -924,7 +946,10 @@ fn place_structures(
             continue;
         }
         // Watchtower: high ground overlooking a road.
-        if road_near(face_index) && terrain.elevation_at(grid.centroid(face_index)) > 0.25 && rng.f32() < 0.03 {
+        if road_near(face_index)
+            && terrain.elevation_at(grid.centroid(face_index)) > 0.25
+            && rng.f32() < 0.03
+        {
             push(&mut rng, face_index, STRUCT_WATCHTOWER);
             continue;
         }
@@ -942,7 +967,7 @@ fn place_structures(
     out
 }
 
-fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
+pub(super) fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
     let mut off = Vec::with_capacity(grid.face_count() + 1);
     let mut data = Vec::new();
     off.push(0u32);
@@ -963,4 +988,3 @@ fn build_face_tags(grid: &Grid, painted: &Painted) -> (Vec<u32>, Vec<u8>) {
     }
     (off, data)
 }
-

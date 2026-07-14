@@ -21,11 +21,11 @@ Private implementation modules for deterministic world generation.
 - `projection.rs` — deterministic cell-to-face reductions.
 - `regions.rs` — typed overlay-aware face partitioning with connector pass-through.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
-- `classification_water_impl.rs` — classification, river painting, and water normalization pipeline bodies included by the facade.
-- `features_bridges_impl.rs` — feature painting, transition bands, bridge selection, and shared cell-cluster helpers included by the facade.
-- `regions_impl.rs` — region classification and deterministic naming bodies included by the facade.
-- `surface_placement_impl.rs` — water/river surfaces, mesh projection, flora, structures, and face-tag bodies included by the facade.
-- `elevation_impl.rs` — elevation constraint construction and ordered solver passes included by the facade.
+- `classification_water_impl.rs` — classification, river painting, and water normalization module.
+- `features_bridges_impl.rs` — feature painting, transition bands, bridge selection, and shared cell-cluster module.
+- `regions_impl.rs` — region classification and deterministic naming module.
+- `surface_placement_impl.rs` — water/river surfaces, mesh projection, flora, structures, and face-tag module.
+- `elevation_impl.rs` — elevation constraint construction and ordered solver-pass module.
 
 # Verification
 
