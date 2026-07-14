@@ -1,4 +1,9 @@
-use super::super::super::*;
+use std::collections::BTreeMap;
+
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::CellId;
+use crate::wfc;
+use crate::worldgen::{Grid, link_tile_pinches};
 
 use super::clusters::{absorb_small_patches, smooth_coast_band, water_distance};
 

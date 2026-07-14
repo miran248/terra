@@ -1,5 +1,3 @@
-use super::super::*;
-
 pub(in crate::worldgen) fn face_road_material(
     grid: &Grid,
     cells: &[Terrain],
@@ -185,3 +183,9 @@ pub(in crate::worldgen) fn build_mesh(
     }
     (tris, cols)
 }
+use bevy::color::ColorToComponents;
+
+use crate::level::{Landform, RoadMaterial, SlopeClass, WaterDepth};
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::{CellId, FaceId};
+use crate::worldgen::{Grid, Painted, face_solid};

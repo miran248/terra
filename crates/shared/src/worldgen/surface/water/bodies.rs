@@ -1,4 +1,7 @@
-use super::super::super::*;
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::{CellId, FaceId};
+use crate::worldgen::Grid;
+
 use super::components::cluster_cell_types;
 
 /// Per-face water-surface radius (`0.0` = dry). Lake components use their shore

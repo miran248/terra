@@ -1,6 +1,14 @@
 use std::collections::VecDeque;
 
-use super::*;
+use super::{
+    CellField, FaceBlend, FaceTag, FloraData, GenState, Landform, Painted, RegionData,
+    RoadMaterial, SlopeClass, SpherePos, StructureData, Terrain, TerrainGen, WaterDepth,
+    build_bridges, build_face_tags, build_mesh, build_regions, classify_cover, classify_landform,
+    classify_slope, classify_water_depth, derive_tiles, face_majority, face_max,
+    face_road_material, mark_blends, normalize_water_bodies, paint_features, paint_rivers,
+    place_flora, place_structures, resolve_transitions, river_surface_radii, solve_elevation,
+    water_surface_radii,
+};
 
 // ---- commands & events ----
 

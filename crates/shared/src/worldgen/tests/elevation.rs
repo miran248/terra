@@ -1,4 +1,9 @@
 use super::*;
+use crate::level::BlendTarget;
+use crate::worldgen::elevation::generation::{
+    bank_water, elev_range, is_cover, landform_range, owner_cells, owner_landform,
+};
+use crate::worldgen::water::cell_zone;
 
 #[test]
 fn solved_field_invariants() {

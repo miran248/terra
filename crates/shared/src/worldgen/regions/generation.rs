@@ -1,5 +1,3 @@
-use super::super::*;
-
 // ---- named regions: contiguous feature clusters (edge-connected) ----
 
 /// Which nameable feature a face belongs to. Tags win over terrain so towns and
@@ -224,3 +222,9 @@ pub(in crate::worldgen) fn region_name(
             .unwrap_or_else(|| format!("Town {idx}")),
     }
 }
+use bevy::prelude::Vec3;
+
+use crate::level::{RegionData, RegionKind};
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::FaceId;
+use crate::worldgen::{Grid, Painted, face_solid, regions, size_range};

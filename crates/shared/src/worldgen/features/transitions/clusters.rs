@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 /// A contiguous cluster below its minimum size is absorbed into its most
 /// common eligible neighbor. The explicit rank preserves deterministic ties.
 pub(in crate::worldgen) fn absorb_small_clusters<T: Copy + Eq>(
@@ -141,3 +139,8 @@ pub(in crate::worldgen) fn water_distance(
         .collect();
     (dist, kind)
 }
+use std::collections::BTreeMap;
+
+use crate::terrain::Terrain;
+use crate::topology::CellId;
+use crate::worldgen::{Grid, classification, size_range};

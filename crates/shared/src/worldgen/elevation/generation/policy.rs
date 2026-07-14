@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 // ---- elevation synthesis (SolveElevation) ----
 //
 // The final elevation field is CONSTRAINT-SOLVED from the finished tile map:
@@ -165,3 +163,5 @@ pub(in crate::worldgen) fn max_gradient(a: Terrain, b: Terrain) -> f32 {
 pub(in crate::worldgen) const ROAD_EDGE_GRADIENT: f32 = 0.01;
 pub(in crate::worldgen) const SOLVER_MAX_ITERS: usize = 250;
 pub(in crate::worldgen) const SOLVER_EPS: f32 = 0.002;
+use crate::level::Landform;
+use crate::terrain::Terrain;

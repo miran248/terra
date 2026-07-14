@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 pub(in crate::worldgen) fn kernel_interp(kernel: &[(usize, f32); 6], values: &[f32]) -> f32 {
     let mut sum = 0.0f32;
     let mut weighted = 0.0f32;
@@ -87,3 +85,9 @@ pub(in crate::worldgen) fn owner_landform(
 ) -> Vec<Landform> {
     owner_of(grid, terrain, landform, Landform::Lowland)
 }
+use std::collections::BTreeMap;
+
+use crate::level::Landform;
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::{CellId, FaceId};
+use crate::worldgen::Grid;

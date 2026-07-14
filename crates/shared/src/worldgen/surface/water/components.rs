@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 // ---- mesh ----
 
 /// Road surface material from the ground a road face crosses: sand on desert
@@ -49,3 +47,8 @@ pub(in crate::worldgen) fn cluster_face_types(
     grid.topology
         .face_components(|face| types.contains(&face_types[face.index()]))
 }
+use crate::terrain::Terrain;
+#[cfg(test)]
+use crate::topology::FaceComponentId;
+use crate::topology::{CellComponentId, ComponentLabels};
+use crate::worldgen::Grid;

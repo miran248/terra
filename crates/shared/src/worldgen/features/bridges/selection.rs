@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 /// A tiny overshoot past the gentle anchor cell so the deck grounds just
 /// inside solid ground (bridges conform — no long inland ramp).
 pub(in crate::worldgen) const BRIDGE_ENTRY_OVERLAP: f32 = 3.0;
@@ -397,3 +395,10 @@ pub(in crate::worldgen) fn build_bridges(
     });
     output.spans
 }
+use bevy::prelude::Vec3;
+
+use crate::level::SlopeClass;
+use crate::sphere::SpherePos;
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::{CellId, FaceId};
+use crate::worldgen::{Grid, Painted, cell_chain, features, link_feature_pinches};

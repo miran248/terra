@@ -1,6 +1,11 @@
+use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
-use super::super::super::*;
+use bevy::prelude::Vec3;
+
+use crate::terrain::Terrain;
+use crate::topology::FaceId;
+use crate::worldgen::{Grid, elevation};
 
 pub(in crate::worldgen) const RIVER_SURFACE_CLEARANCE: f32 = 0.02;
 pub(in crate::worldgen) const RIVER_TERRAIN_CLIP: f32 = 0.25;

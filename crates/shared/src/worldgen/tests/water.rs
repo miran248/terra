@@ -1,4 +1,5 @@
 use super::*;
+use bevy::prelude::Vec3;
 
 #[test]
 fn river_surface_starts_on_springs_and_joins_body_water() {

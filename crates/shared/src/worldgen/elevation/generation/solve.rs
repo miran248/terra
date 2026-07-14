@@ -1,6 +1,15 @@
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
-use super::super::super::*;
+use crate::level::{BlendTarget, FaceBlend, Landform};
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::CellId;
+use crate::worldgen::{Grid, Painted, elevation};
+
+use super::{
+    ROAD_EDGE_GRADIENT, SOLVER_EPS, SOLVER_MAX_ITERS, bank_water, elev_range, is_cover,
+    kernel_interp, landform_edge_cap, landform_range, max_gradient, owner_cells, owner_landform,
+    water_concavity,
+};
 
 pub(in crate::worldgen) fn solve_elevation(
     grid: &Grid,

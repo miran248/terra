@@ -1,5 +1,3 @@
-use super::super::*;
-
 /// Sub-tile decoration scatter. Flora are points over the finished mesh.
 /// Placement is deterministic in face order.
 pub(in crate::worldgen) const FLORA_RNG_SALT: u64 = 0x466c_6f72;
@@ -338,3 +336,9 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
     }
     tags
 }
+use bevy::prelude::Vec3;
+
+use crate::level::{FaceTag, FloraData, FloraKind, SlopeClass, StructureData, StructureKind};
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::{CellId, FaceId};
+use crate::worldgen::{Grid, Painted, face_solid, painted_corners};

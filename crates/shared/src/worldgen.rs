@@ -8,21 +8,15 @@
 //! misbehaves. The public boundary returns only a completed runtime artifact
 //! and its summary statistics.
 
-use bevy::color::ColorToComponents;
-use bevy::prelude::Vec3;
 use std::collections::BTreeMap;
 
 use crate::level::{
-    BlendTarget, FaceBlend, FaceTag, FloraData, FloraKind, Landform, LevelData, RegionData,
-    RegionKind, RoadData, RoadKind, RoadMaterial, SettlementData, SlopeClass, StructureData,
-    StructureKind, WaterDepth,
+    FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RoadData, RoadKind,
+    RoadMaterial, SettlementData, SlopeClass, StructureData, WaterDepth,
 };
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
-#[cfg(test)]
-use crate::topology::FaceComponentId;
-use crate::topology::{CellComponentId, CellId, ComponentLabels, FaceId};
-use crate::wfc;
+use crate::topology::{CellId, FaceId};
 
 mod classification;
 mod domain;
@@ -508,13 +502,21 @@ pub fn run(seed: u32, log: impl FnMut(&str)) -> CompletedWorld {
 }
 
 mod water;
-use water::*;
+use water::{
+    cell_chain, classify_cover, classify_landform, classify_slope, classify_water_depth,
+    nearest_cell, normalize_water_bodies, paint_rivers,
+};
 
 mod surface;
-use surface::*;
+#[cfg(test)]
+use surface::{RIVER_TERRAIN_CLIP, cluster_cell_types, cluster_face_types};
+use surface::{
+    build_face_tags, build_mesh, face_road_material, place_flora, place_structures,
+    river_surface_radii, water_surface_radii,
+};
 
-use elevation::generation::*;
-use regions::generation::*;
+use elevation::generation::solve_elevation;
+use regions::generation::build_regions;
 
 #[cfg(test)]
 mod tests;

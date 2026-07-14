@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 /// Inland biome boundaries get a blend mark: the face keeps its derived
 /// kind, but carries the pair it links so rendering/solving can transition
 /// between the two. With cell-based tiles the boundary faces are simply the
@@ -62,3 +60,9 @@ pub(in crate::worldgen) fn mark_blends(
     }
     out
 }
+use std::collections::BTreeMap;
+
+use crate::level::{BlendTarget, FaceBlend};
+use crate::terrain::Terrain;
+use crate::topology::{CellId, FaceId};
+use crate::worldgen::{Grid, Painted, face_solid, painted_corners};

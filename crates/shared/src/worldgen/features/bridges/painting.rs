@@ -1,5 +1,3 @@
-use super::super::super::*;
-
 /// Roads may not cross water: a planned path whose cell chain touches a water
 /// cell is dropped entirely (crossing there needs a bridge, not a road).
 pub(in crate::worldgen) fn paint_features(
@@ -64,3 +62,10 @@ pub(in crate::worldgen) fn paint_features(
     link_feature_pinches(grid, &mut painted.towns, |_| true);
     (painted, kept)
 }
+use crate::level::SlopeClass;
+use crate::sphere::SpherePos;
+use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::CellId;
+use crate::worldgen::{
+    Grid, Painted, TOWN_RADIUS, features, link_feature_pinches, nearest_cell, router,
+};
