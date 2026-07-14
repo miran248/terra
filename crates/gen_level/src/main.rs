@@ -1,5 +1,4 @@
 use shared::worldgen::{run, GenState};
-use shared::level::{LevelData, RoadData, SettlementData, LEVEL_FORMAT_VERSION};
 use shared::terrain::Terrain;
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,43 +20,7 @@ fn main() {
 }
 
 fn serialize(state: &GenState, out: &PathBuf) {
-    let terrain = state.terrain.as_ref().expect("pipeline finished");
-    let unit_tris_arr: Vec<[[f32; 3]; 3]> = state.grid.unit_tris.iter()
-        .map(|[a, b, c]| [a.to_array(), b.to_array(), c.to_array()])
-        .collect();
-    let settlements = terrain.settlement_anchors.iter().enumerate()
-        .map(|(i, a)| SettlementData { name: shared::roads::settlement_name(i), pos: a.0.to_array() })
-        .collect();
-    let mut roads: Vec<RoadData> = state.roads.iter()
-        .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: false })
-        .collect();
-    roads.extend(state.bridges.iter()
-        .map(|p| RoadData { points: p.iter().map(|s| s.0.to_array()).collect(), is_bridge: true }));
-
-    let data = LevelData {
-        version: LEVEL_FORMAT_VERSION,
-        seed: state.grid.seed,
-        vert_elev: terrain.vert_elevations().to_vec(),
-        terrain_tris: state.mesh_tris.clone(),
-        terrain_colors: state.mesh_colors.clone(),
-        unit_tris: unit_tris_arr,
-        face_types: state.tiles.iter().map(|t| *t as u8).collect(),
-        face_water_r: state.water_r.clone(),
-        face_river_r: state.river_r.clone(),
-        face_blend: state.blends.clone(),
-        face_tag_off: state.tag_off.clone(),
-        face_tag_data: state.tag_data.clone(),
-        settlements,
-        roads,
-        regions: state.regions.clone(),
-        face_region: state.face_region.clone(),
-        flora: state.flora.clone(),
-        structures: state.structures.clone(),
-        slope_class: state.face_slope_class.clone(),
-        water_depth: state.face_water_depth.clone(),
-        landform: state.face_landform.clone(),
-        road_material: state.face_road_material.clone(),
-    };
+    let data = state.to_level_data();
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());
     fs::write(out, &bytes).expect("write");

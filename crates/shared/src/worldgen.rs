@@ -12,7 +12,7 @@ use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, LANDFORM_WATER, LANDFORM_LOWLAND, LANDFORM_VALLEY, LANDFORM_HILLS, LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, ROAD_MAT_DIRT, ROAD_MAT_GRAVEL, ROAD_MAT_ROCK, ROAD_MAT_SAND, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
+use crate::level::{FloraData, LevelData, RegionData, RegionKind, RoadData, SettlementData, StructureData, LEVEL_FORMAT_VERSION, SLOPE_CLIFF, SLOPE_FLAT, SLOPE_GENTLE, SLOPE_STEEP, slope_walkable, DEPTH_SHALLOW, DEPTH_DEEP, DEPTH_ABYSS, LANDFORM_WATER, LANDFORM_LOWLAND, LANDFORM_VALLEY, LANDFORM_HILLS, LANDFORM_MOUNTAINS, LANDFORM_PLATEAU, ROAD_MAT_DIRT, ROAD_MAT_GRAVEL, ROAD_MAT_ROCK, ROAD_MAT_SAND, FLORA_BERRY, FLORA_BUSH, FLORA_CACTUS, FLORA_DEADTREE, FLORA_FLOWER, FLORA_GRASS, FLORA_LOG, FLORA_MUSHROOM, FLORA_REED, FLORA_ROCK, FLORA_TREE, NO_REGION, STRUCT_CAMPFIRE, STRUCT_DOCK, STRUCT_FARM, STRUCT_RUIN, STRUCT_WALL, STRUCT_WATCHTOWER, STRUCT_WELL, TAG_BRIDGE, TAG_BRIDGE_ENTRY, TAG_ROAD, TAG_TOWN};
 use crate::planet::{unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -433,6 +433,55 @@ impl GenState {
 
     fn terrain(&self) -> &TerrainGen {
         self.terrain.as_ref().expect("terrain not generated yet")
+    }
+
+    /// Package a completed pipeline into the runtime artifact. This is the
+    /// single cell-to-runtime boundary; serializers only encode the result.
+    pub fn to_level_data(&self) -> LevelData {
+        let terrain = self.terrain.as_ref().expect("pipeline finished");
+        let settlements = terrain.settlement_anchors.iter().enumerate()
+            .map(|(i, anchor)| SettlementData {
+                name: crate::roads::settlement_name(i),
+                pos: anchor.0.to_array(),
+            })
+            .collect();
+        let mut roads: Vec<RoadData> = self.roads.iter()
+            .map(|path| RoadData {
+                points: path.iter().map(|point| point.0.to_array()).collect(),
+                is_bridge: false,
+            })
+            .collect();
+        roads.extend(self.bridges.iter().map(|path| RoadData {
+            points: path.iter().map(|point| point.0.to_array()).collect(),
+            is_bridge: true,
+        }));
+
+        LevelData {
+            version: LEVEL_FORMAT_VERSION,
+            seed: self.grid.seed,
+            vert_elev: terrain.vert_elevations().to_vec(),
+            terrain_tris: self.mesh_tris.clone(),
+            terrain_colors: self.mesh_colors.clone(),
+            unit_tris: self.grid.unit_tris.iter()
+                .map(|triangle| triangle.map(|point| point.to_array()))
+                .collect(),
+            face_types: self.tiles.iter().map(|terrain| *terrain as u8).collect(),
+            face_water_r: self.water_r.clone(),
+            face_river_r: self.river_r.clone(),
+            face_tag_off: self.tag_off.clone(),
+            face_tag_data: self.tag_data.clone(),
+            face_blend: self.blends.clone(),
+            settlements,
+            roads,
+            regions: self.regions.clone(),
+            face_region: self.face_region.clone(),
+            flora: self.flora.clone(),
+            structures: self.structures.clone(),
+            slope_class: self.face_slope_class.clone(),
+            water_depth: self.face_water_depth.clone(),
+            landform: self.face_landform.clone(),
+            road_material: self.face_road_material.clone(),
+        }
     }
 }
 
