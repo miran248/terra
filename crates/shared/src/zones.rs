@@ -133,15 +133,16 @@ pub struct ZoneConfig {
 impl Default for ZoneConfig {
     fn default() -> Self {
         Self {
-            // Three smaller continents beat one big one + empty ocean: more
-            // coastline, more bridges, more distinct places to travel between.
+            // Five substantial continents keep roughly half the planet as land:
+            // enough ocean for distinct shores and crossings without leaving
+            // most of the playable world underwater.
             land: vec![
                 FeatureSpec {
                     kind: ZoneKind::Continent,
-                    count: 3,
+                    count: 5,
                     target_area_m2: 5.5e6,
                     min_area_m2: 2.5e6,
-                    min_distance_m: 2200.0,
+                    min_distance_m: 1600.0,
                 },
                 FeatureSpec {
                     kind: ZoneKind::Island,
@@ -726,7 +727,7 @@ mod tests {
     fn feature_counts_and_containment() {
         let cfg = ZoneConfig::default();
         let z = make(42);
-        assert_eq!(z.zones_of_kind(ZoneKind::Continent).count(), 3);
+        assert_eq!(z.zones_of_kind(ZoneKind::Continent).count(), 5);
         assert_eq!(z.zones_of_kind(ZoneKind::Island).count(), 3);
         assert_eq!(z.zones_of_kind(ZoneKind::Lake).count(), 3);
         assert_eq!(z.zones_of_kind(ZoneKind::Settlement).count(), 12);

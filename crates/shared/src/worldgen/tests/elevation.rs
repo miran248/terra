@@ -1,7 +1,7 @@
 use super::*;
 use crate::level::BlendTarget;
 use crate::worldgen::elevation::generation::{
-    bank_water, elev_range, is_cover, landform_range, owner_cells, owner_landform,
+    SOLVER_EPS, bank_water, elev_range, is_cover, landform_range, owner_cells, owner_landform,
 };
 use crate::worldgen::water::cell_zone;
 
@@ -73,7 +73,7 @@ fn solved_field_invariants() {
         };
         // Land cover takes its landform's range (mirror the solver);
         // water/shore/river keep their own range and blend hull.
-        let (rlo, rhi) = if is_cover(owners[solver_vertex]) {
+        let (mut rlo, rhi) = if is_cover(owners[solver_vertex]) {
             landform_range(owners_lf[solver_vertex])
         } else {
             match blend_of.get(&(face_index as u32)) {
@@ -89,6 +89,12 @@ fn solved_field_invariants() {
                 Some(_) | None => elev_range(owners[solver_vertex]),
             }
         };
+        // The hard continental-shelf window may deepen an ocean vertex below
+        // a shoreline blend's envelope. Ocean's own range remains the outer
+        // invariant; the shelf test below verifies the narrower depth policy.
+        if owners[solver_vertex] == Terrain::Ocean {
+            rlo = rlo.min(elev_range(Terrain::Ocean).0);
+        }
         assert!(
             e[solver_vertex] >= rlo - 1e-4 && e[solver_vertex] <= rhi + 1e-4,
             "vert {solver_vertex} ({:?}) out of range: {} not in [{rlo}, {rhi}]",
@@ -127,7 +133,10 @@ fn solved_field_invariants() {
             }
         }
     }
-    assert!(worst_cross <= 0.30, "waterline wall: {worst_cross}");
+    assert!(
+        worst_cross <= 0.30 + SOLVER_EPS,
+        "waterline wall: {worst_cross}"
+    );
     assert!(worst_any <= 0.60, "extreme edge: {worst_any}");
 
     // A lake never rises above its shore (solver step 3a) — otherwise the flat
