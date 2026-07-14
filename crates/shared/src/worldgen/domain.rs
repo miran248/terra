@@ -13,6 +13,12 @@ macro_rules! field {
             }
         }
 
+        impl<T> $name<T> {
+            pub(super) fn dense(&self) -> &[T] {
+                &self.0
+            }
+        }
+
         impl<T> From<Vec<T>> for $name<T> {
             fn from(values: Vec<T>) -> Self {
                 Self(values)
@@ -41,23 +47,9 @@ macro_rules! field {
             }
         }
 
-        impl<T> Index<usize> for $name<T> {
-            type Output = T;
-
-            fn index(&self, index: usize) -> &Self::Output {
-                &self.0[index]
-            }
-        }
-
         impl<T> IndexMut<$id> for $name<T> {
             fn index_mut(&mut self, id: $id) -> &mut Self::Output {
                 &mut self.0[id.index()]
-            }
-        }
-
-        impl<T> IndexMut<usize> for $name<T> {
-            fn index_mut(&mut self, index: usize) -> &mut Self::Output {
-                &mut self.0[index]
             }
         }
 

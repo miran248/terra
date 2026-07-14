@@ -520,8 +520,8 @@ impl GenState {
             version: LEVEL_FORMAT_VERSION,
             seed: self.grid.seed,
             vert_elev: terrain.vert_elevations().to_vec(),
-            terrain_tris: self.mesh_tris.to_vec(),
-            terrain_colors: self.mesh_colors.to_vec(),
+            terrain_tris: self.mesh_tris.dense().to_vec(),
+            terrain_colors: self.mesh_colors.dense().to_vec(),
             unit_tris: self
                 .grid
                 .unit_tris
@@ -529,8 +529,8 @@ impl GenState {
                 .map(|triangle| triangle.map(|point| point.to_array()))
                 .collect(),
             face_types: self.tiles.iter().map(|terrain| *terrain as u8).collect(),
-            face_water_r: self.water_r.to_vec(),
-            face_river_r: self.river_r.to_vec(),
+            face_water_r: self.water_r.dense().to_vec(),
+            face_river_r: self.river_r.dense().to_vec(),
             face_tag_off: self.tag_off.clone(),
             face_tag_data: self.tag_data.clone(),
             face_blend: self.blends.clone(),
@@ -783,7 +783,7 @@ fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::ClassifySlope => {
             let slope = classify_slope(&state.grid, state.terrain());
-            let depth = classify_water_depth(&state.grid, &state.cells, state.terrain());
+            let depth = classify_water_depth(&state.grid, state.cells.dense(), state.terrain());
             vec![Event::SlopeClassified(slope, depth)]
         }
         Command::ClassifyTiles => {
@@ -1224,7 +1224,7 @@ mod tests {
                             .face_at(terrain.vert_dir(vi))
                             .is_some_and(|fi| {
                                 matches!(
-                                    state.tiles[fi],
+                                    state.tiles.dense()[fi],
                                     Terrain::Cliff | Terrain::Mountain | Terrain::Snow
                                 )
                             })
@@ -1257,9 +1257,9 @@ mod tests {
 
         // No enclosed water body smaller than the minimum (no 1-cell lakes).
         let components = state.grid.topology.cell_components(|cell| {
-            state.cells[cell.index()].is_water()
+            state.cells.dense()[cell.index()].is_water()
                 && !matches!(
-                    state.cells[cell.index()],
+                    state.cells.dense()[cell.index()],
                     Terrain::River | Terrain::RiverSpring
                 )
         });
@@ -1287,7 +1287,7 @@ mod tests {
         // the waterline (the depth class replaces the old DeepOcean tile).
         // (Depth is per grid CELL — sample the solved field at the cell.)
         for vi in 0..state.grid.cell_count() {
-            if state.water_depth[vi] == DEPTH_ABYSS {
+            if state.water_depth.dense()[vi] == DEPTH_ABYSS {
                 let d = terrain.elevation_at(state.grid.cell_position(vi));
                 assert!(d < -0.1, "abyss cell {vi} not deep: {d}");
             }
@@ -1297,7 +1297,10 @@ mod tests {
         // and per solid road face.
         for vi in 0..state.grid.cell_count() {
             if state.painted.roads.contains(vi) {
-                assert!(state.cells[vi].is_land(), "road painted on water cell {vi}");
+                assert!(
+                    state.cells.dense()[vi].is_land(),
+                    "road painted on water cell {vi}"
+                );
             }
         }
         for fi in 0..state.grid.face_count() {
@@ -1310,7 +1313,7 @@ mod tests {
                 == 3;
             if solid {
                 assert!(
-                    state.tiles[fi].is_land(),
+                    state.tiles.dense()[fi].is_land(),
                     "solid road face on water tile {fi}"
                 );
             }
@@ -1341,9 +1344,9 @@ mod tests {
                     .face_at(end.0)
                     .expect("deck end on a face");
                 assert!(
-                    bridge_walkable(state.tiles[fi]),
+                    bridge_walkable(state.tiles.dense()[fi]),
                     "bridge entry on non-walkable tile {:?}",
-                    state.tiles[fi]
+                    state.tiles.dense()[fi]
                 );
                 // The anchor CELL (where placement gated on the solved slope)
                 // is genuinely gentle — a bridge never lands on steep ground,
@@ -1378,9 +1381,9 @@ mod tests {
                 assert!(
                     corners
                         .iter()
-                        .any(|&cell| state.cells[cell] == state.tiles[fi]),
+                        .any(|&cell| state.cells.dense()[cell] == state.tiles.dense()[fi]),
                     "face {fi} derived {:?} not among its corner cells",
-                    state.tiles[fi]
+                    state.tiles.dense()[fi]
                 );
             }
             let mut tile_pinches = 0usize;
@@ -1391,9 +1394,9 @@ mod tests {
                 let ts: Vec<Terrain> = (0..n)
                     .map(|i| {
                         match classification::derive_face(
-                            state.cells[v],
-                            state.cells[ring[i]],
-                            state.cells[ring[(i + 1) % n]],
+                            state.cells.dense()[v],
+                            state.cells.dense()[ring[i]],
+                            state.cells.dense()[ring[(i + 1) % n]],
                         ) {
                             // Spring is a river source marker, not a separate
                             // traversable band; validate it as part of the river
@@ -1438,11 +1441,11 @@ mod tests {
                 .grid
                 .topology
                 .faces()
-                .filter(|face| state.tiles[face.index()] == Terrain::Ocean)
+                .filter(|face| state.tiles.dense()[face.index()] == Terrain::Ocean)
                 .collect();
             let ocean_distance = state.grid.topology.face_distances(&ocean_faces, 10);
             for fi in 0..state.grid.face_count() {
-                if state.tiles[fi] == Terrain::Lake {
+                if state.tiles.dense()[fi] == Terrain::Lake {
                     let face = state
                         .grid
                         .topology
@@ -1548,7 +1551,8 @@ mod tests {
         for &(fi, a, b) in &state.blends {
             assert_ne!(a, b);
             assert_eq!(
-                state.tiles[fi as usize] as u8, a,
+                state.tiles.dense()[fi as usize] as u8,
+                a,
                 "blend face kind mismatch"
             );
         }
@@ -1671,10 +1675,10 @@ mod tests {
         let mut spring_corners = 0usize;
         let mut outlet_corners = 0usize;
         for (fi, face_river_r) in river_r.iter().enumerate().take(state.grid.face_count()) {
-            if state.tiles[fi] == Terrain::RiverSpring {
+            if state.tiles.dense()[fi] == Terrain::RiverSpring {
                 for (corner, &radius) in face_river_r.iter().enumerate() {
                     spring_corners += 1;
-                    let ground = Vec3::from_array(state.mesh_tris[fi][corner]).length();
+                    let ground = Vec3::from_array(state.mesh_tris.dense()[fi][corner]).length();
                     assert!(
                         (radius - (ground - RIVER_TERRAIN_CLIP)).abs() < 1e-3,
                         "spring water must start embedded in the terrain"
@@ -1682,20 +1686,20 @@ mod tests {
                 }
             }
             if !matches!(
-                state.tiles[fi],
+                state.tiles.dense()[fi],
                 Terrain::River | Terrain::RiverSpring | Terrain::RiverBank
             ) {
                 continue;
             }
             for neighbor in state.grid.face_neighbors(fi) {
-                let waterline = state.water_r[neighbor];
+                let waterline = state.water_r.dense()[neighbor];
                 if waterline <= 0.0 {
                     continue;
                 }
                 for (corner, &radius) in face_river_r.iter().enumerate() {
-                    if state.mesh_tris[neighbor]
+                    if state.mesh_tris.dense()[neighbor]
                         .iter()
-                        .any(|&other| key(other) == key(state.mesh_tris[fi][corner]))
+                        .any(|&other| key(other) == key(state.mesh_tris.dense()[fi][corner]))
                     {
                         outlet_corners += 1;
                         assert!(
@@ -1721,9 +1725,9 @@ mod tests {
         let state = run_state(1337, |_| {});
         let terrain = state.terrain.as_ref().unwrap();
         let components = state.grid.topology.face_components(|face| {
-            state.tiles[face.index()].is_water()
+            state.tiles.dense()[face.index()].is_water()
                 && !matches!(
-                    state.tiles[face.index()],
+                    state.tiles.dense()[face.index()],
                     Terrain::River | Terrain::RiverSpring
                 )
         });
@@ -1766,8 +1770,10 @@ mod tests {
         let state = run_state(1337, |_| {});
         let mut visited = vec![false; state.grid.cell_count()];
         for start in 0..state.grid.cell_count() {
-            if !matches!(state.cells[start], Terrain::River | Terrain::RiverSpring)
-                || visited[start]
+            if !matches!(
+                state.cells.dense()[start],
+                Terrain::River | Terrain::RiverSpring
+            ) || visited[start]
             {
                 continue;
             }
@@ -1782,7 +1788,7 @@ mod tests {
                         .expect("cell index from topology range"),
                     |cell| {
                         matches!(
-                            state.cells[cell.index()],
+                            state.cells.dense()[cell.index()],
                             Terrain::River | Terrain::RiverSpring
                         )
                     },
@@ -1794,11 +1800,12 @@ mod tests {
                 visited[cell] = true;
             }
             let touches_sea = comp.iter().any(|&vi| {
-                state
-                    .grid
-                    .cell_neighbors(vi)
-                    .iter()
-                    .any(|nb| matches!(state.cells[nb.index()], Terrain::Ocean | Terrain::Lake))
+                state.grid.cell_neighbors(vi).iter().any(|nb| {
+                    matches!(
+                        state.cells.dense()[nb.index()],
+                        Terrain::Ocean | Terrain::Lake
+                    )
+                })
             });
             assert!(
                 touches_sea,
@@ -1809,7 +1816,10 @@ mod tests {
             // edge-adjacent to an Ocean/Lake face.
             let mut open = false;
             'faces: for fi in 0..state.grid.face_count() {
-                if !matches!(state.tiles[fi], Terrain::River | Terrain::RiverSpring) {
+                if !matches!(
+                    state.tiles.dense()[fi],
+                    Terrain::River | Terrain::RiverSpring
+                ) {
                     continue;
                 }
                 if !state
@@ -1821,7 +1831,7 @@ mod tests {
                     continue;
                 }
                 for nb in state.grid.face_neighbors(fi) {
-                    if matches!(state.tiles[nb], Terrain::Ocean | Terrain::Lake) {
+                    if matches!(state.tiles.dense()[nb], Terrain::Ocean | Terrain::Lake) {
                         open = true;
                         break 'faces;
                     }
@@ -1953,7 +1963,10 @@ mod tests {
         );
         for f in &state.flora {
             let fi = f.face as usize;
-            assert!(state.tiles[fi].is_land(), "flora on water face {fi}");
+            assert!(
+                state.tiles.dense()[fi].is_land(),
+                "flora on water face {fi}"
+            );
             for bits in [
                 &state.painted.roads,
                 &state.painted.towns,
