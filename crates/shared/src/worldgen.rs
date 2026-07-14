@@ -5,8 +5,8 @@
 //! into the state; `react` maps events to follow-up commands on a FIFO queue.
 //! The loop is deterministic (FIFO order, seeded RNG streams per pass), every
 //! re-enqueue is bounded, and the event log is the audit trail when a seed
-//! misbehaves. The runtime can later reuse `evolve` to replay events
-//! (terraforming, dynamic world changes).
+//! misbehaves. The public boundary returns only a completed runtime artifact
+//! and its summary statistics.
 
 use bevy::color::ColorToComponents;
 use bevy::prelude::Vec3;
@@ -16,7 +16,9 @@ use crate::level::{FloraData, LevelData, RegionData, RegionKind, RoadData, Settl
 use crate::planet::{unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellComponentId, ComponentLabels, FaceComponentId, TerrainTopology};
+use crate::topology::{CellComponentId, ComponentLabels, TerrainTopology};
+#[cfg(test)]
+use crate::topology::FaceComponentId;
 use crate::wfc;
 use crate::zones::FINE_SUB;
 
@@ -32,7 +34,7 @@ const TOWN_RADIUS: f32 = 55.0;
 /// touch at a single point — the zigzag/pinch problem is impossible by
 /// construction instead of being repaired after the fact. Faces derive their
 /// render type from their 3 corner cells (all-same → solid, mixed → blend).
-pub struct Grid {
+struct Grid {
     pub seed: u32,
     pub unit_tris: Vec<[Vec3; 3]>,
     pub planet: PlanetMesh,
@@ -97,7 +99,7 @@ impl Grid {
 /// junction face (3 distinct labels) goes to the transition kind if one is
 /// present, else water, else the lowest discriminant — deterministic and
 /// conservative at waterlines.
-pub fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> Vec<Terrain> {
+fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> Vec<Terrain> {
     grid.topology.faces().map(|face| {
         let idx = grid.face_cells(face.index());
         derive_one(cells[idx[0]], cells[idx[1]], cells[idx[2]])
@@ -285,7 +287,7 @@ fn link_feature_pinches(grid: &Grid, bits: &mut BitSet, passable: impl Fn(usize)
 // ---- bitset ----
 
 #[derive(Clone)]
-pub struct BitSet(pub Vec<u64>);
+struct BitSet(Vec<u64>);
 
 impl BitSet {
     pub fn new(n: usize) -> Self { Self(vec![0; n.div_ceil(64)]) }
@@ -300,7 +302,7 @@ impl BitSet {
 /// the edges through per-corner colors — the same construction as terrain,
 /// so feature footprints can never pinch or zigzag either.
 #[derive(Clone)]
-pub struct Painted {
+struct Painted {
     pub roads: BitSet,
     pub towns: BitSet,
     pub bridges: BitSet,
@@ -334,7 +336,7 @@ fn face_solid(grid: &Grid, bits: &BitSet, fi: usize) -> bool {
 
 // ---- state ----
 
-pub struct GenState {
+struct GenState {
     pub grid: Grid,
     pub terrain: Option<TerrainGen>,
     /// Per-vertex tile labels — the single source of truth for terrain identity.
@@ -377,8 +379,31 @@ pub struct GenState {
     pub face_road_material: Vec<u8>,
 }
 
+pub struct CompletedWorld {
+    level: LevelData,
+    stats: GenerationStats,
+}
+
+impl CompletedWorld {
+    pub fn level_data(&self) -> &LevelData { &self.level }
+    pub fn into_level_data(self) -> LevelData { self.level }
+    pub fn stats(&self) -> &GenerationStats { &self.stats }
+}
+
+pub struct GenerationStats {
+    pub min_elevation: f32,
+    pub max_elevation: f32,
+    pub terrain_faces: BTreeMap<&'static str, usize>,
+    pub water_faces: usize,
+    pub face_count: usize,
+    pub flora_count: usize,
+    pub structure_count: usize,
+    pub region_count: usize,
+    pub bridge_count: usize,
+}
+
 impl GenState {
-    pub fn new(seed: u32) -> Self {
+    fn new(seed: u32) -> Self {
         let grid = Grid::new(seed);
         let painted = Painted::empty(grid.cell_count());
         Self {
@@ -416,7 +441,7 @@ impl GenState {
 
     /// Package a completed pipeline into the runtime artifact. This is the
     /// single cell-to-runtime boundary; serializers only encode the result.
-    pub fn to_level_data(&self) -> LevelData {
+    fn to_level_data(&self) -> LevelData {
         let terrain = self.terrain.as_ref().expect("pipeline finished");
         let settlements = terrain.settlement_anchors.iter().enumerate()
             .map(|(i, anchor)| SettlementData {
@@ -462,12 +487,53 @@ impl GenState {
             road_material: self.face_road_material.clone(),
         }
     }
+
+    fn stats(&self) -> GenerationStats {
+        let terrain = self.terrain.as_ref().expect("pipeline finished");
+        let elevations = terrain.vert_elevations();
+        let mut terrain_faces = BTreeMap::new();
+        for &kind in &self.tiles {
+            let name = match kind {
+                Terrain::Ocean => "Ocean",
+                Terrain::Lake => "Lake",
+                Terrain::LakeShore => "LakeShore",
+                Terrain::River => "River",
+                Terrain::RiverBank => "RiverBank",
+                Terrain::RiverSpring => "RiverSpring",
+                Terrain::Beach => "Beach",
+                Terrain::Cliff => "Cliff",
+                Terrain::Desert => "Desert",
+                Terrain::Plains => "Plains",
+                Terrain::Forest => "Forest",
+                Terrain::Tundra => "Tundra",
+                Terrain::Mountain => "Mountain",
+                Terrain::Snow => "Snow",
+                Terrain::Swamp => "Swamp",
+                Terrain::Jungle => "Jungle",
+                Terrain::Savanna => "Savanna",
+                Terrain::Volcanic => "Volcanic",
+                Terrain::Glacier => "Glacier",
+            };
+            *terrain_faces.entry(name).or_default() += 1;
+        }
+        GenerationStats {
+            min_elevation: elevations.iter().copied().fold(f32::MAX, f32::min),
+            max_elevation: elevations.iter().copied().fold(f32::MIN, f32::max),
+            water_faces: self.tiles.iter().filter(|terrain| terrain.is_water()).count(),
+            face_count: self.grid.face_count(),
+            terrain_faces,
+            flora_count: self.flora.len(),
+            structure_count: self.structures.len(),
+            region_count: self.regions.len(),
+            bridge_count: self.bridges.len(),
+        }
+    }
 }
 
 // ---- commands & events ----
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Command {
+enum Command {
     /// L0/L1: grid, noise, coarse zones — the deterministic environment.
     InitTerrain,
     /// The proposed elevation field (classification hint, pre-solver).
@@ -522,7 +588,7 @@ pub enum Command {
     BakeOutputs,
 }
 
-pub enum Event {
+enum Event {
     TerrainInitialized(Box<TerrainGen>),
     ElevationProposed(Vec<f32>),
     ClimateComputed(Vec<f32>, Vec<f32>),
@@ -604,7 +670,7 @@ impl Event {
 
 // ---- decide / evolve / react ----
 
-pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
+fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
     match cmd {
         Command::InitTerrain => {
             vec![Event::TerrainInitialized(Box::new(TerrainGen::init(state.grid.seed)))]
@@ -742,7 +808,7 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
     }
 }
 
-pub fn evolve(mut state: GenState, event: Event) -> GenState {
+fn evolve(mut state: GenState, event: Event) -> GenState {
     match event {
         Event::TerrainInitialized(t) => state.terrain = Some(*t),
         Event::ElevationProposed(e) => {
@@ -810,7 +876,7 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
     state
 }
 
-pub fn react(event: &Event) -> Vec<Command> {
+fn react(event: &Event) -> Vec<Command> {
     match event {
         Event::TerrainInitialized(_) => vec![Command::ProposeElevation],
         // Climate follows every field change; FIFO runs it before the next step.
@@ -849,7 +915,7 @@ pub fn react(event: &Event) -> Vec<Command> {
 }
 
 /// Run the full pipeline for a seed. `log` receives one line per event.
-pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
+fn run_state(seed: u32, mut log: impl FnMut(&str)) -> GenState {
     let mut state = GenState::new(seed);
     let mut queue = VecDeque::from([Command::InitTerrain]);
     while let Some(cmd) = queue.pop_front() {
@@ -860,6 +926,14 @@ pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
         }
     }
     state
+}
+
+pub fn run(seed: u32, log: impl FnMut(&str)) -> CompletedWorld {
+    let state = run_state(seed, log);
+    CompletedWorld {
+        level: state.to_level_data(),
+        stats: state.stats(),
+    }
 }
 
 // ---- command implementations (single responsibility each) ----
@@ -2372,7 +2446,7 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 /// cells connect even when their terrain types differ. Cells outside the set
 /// have no typed label. An empty set has no components and duplicate types do
 /// not affect the result.
-pub fn cluster_cell_types(
+fn cluster_cell_types(
     grid: &Grid,
     cells: &[Terrain],
     types: &[Terrain],
@@ -2388,7 +2462,8 @@ pub fn cluster_cell_types(
 /// returned labels are `-1` for faces outside the set; each connected selected
 /// group has one non-negative id. An empty set has no components and duplicate
 /// types do not affect the result.
-pub fn cluster_face_types(
+#[cfg(test)]
+fn cluster_face_types(
     grid: &Grid,
     face_types: &[Terrain],
     types: &[Terrain],
@@ -2413,7 +2488,7 @@ pub fn cluster_face_types(
 /// the sheet only if it has no solid-land corner, so water never spills onto
 /// land; lake faces are any face touching the body's Lake tiles (fills to shore
 /// without drawing the outer shore band).
-pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
+fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
     let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
 
     let vert_r: Vec<f32> = grid.topology.cells()
@@ -2503,7 +2578,7 @@ const RIVER_SPRING_TAPER_RINGS: usize = 3;
 /// component-wide clearance keeps the smooth field above every measured River
 /// corner without copying noisy bank terrain into the water. Cliffs stay
 /// excluded: a river mouth must not flood a coast.
-pub fn river_surface_radii(
+fn river_surface_radii(
     grid: &Grid,
     mesh_tris: &[[[f32; 3]; 3]],
     face_types: &[Terrain],
@@ -2732,7 +2807,7 @@ pub fn river_surface_radii(
     }).collect()
 }
 
-pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.face_count())
         .map(|fi| grid.face_cells(fi).into_iter().map(|cell| per_cell[cell]).max().unwrap_or(0))
         .collect()
@@ -2740,7 +2815,7 @@ pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
 
 /// Reduce a per-cell u8 to per-face by majority corner (used for landform: the
 /// massif a face sits in).
-pub fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
+fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.face_count())
         .map(|fi| {
             let mut c: BTreeMap<u8, usize> = BTreeMap::new();
@@ -2752,7 +2827,7 @@ pub fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-pub fn face_road_material(
+fn face_road_material(
     grid: &Grid,
     cells: &[Terrain],
     landform: &[u8],
@@ -3785,7 +3860,7 @@ mod tests {
 
     #[test]
     fn solved_field_invariants() {
-        let state = run(1337, |_| {});
+        let state = run_state(1337, |_| {});
         let terrain = state.terrain.as_ref().unwrap();
 
         // Rivers descend monotonically on the SOLVED field.
@@ -4228,7 +4303,7 @@ mod tests {
 
     #[test]
     fn river_surface_starts_on_springs_and_joins_body_water() {
-        let state = run(1337, |_| {});
+        let state = run_state(1337, |_| {});
         let river_r = river_surface_radii(
             &state.grid,
             &state.mesh_tris,
@@ -4281,7 +4356,7 @@ mod tests {
         // No lake-zone water may connect to the ocean — the rim dam guarantees
         // every lake is its own body (guards the drain-channel bug where lakes
         // leaked to the sea along coarse-face edges and became ocean inlets).
-        let state = run(1337, |_| {});
+        let state = run_state(1337, |_| {});
         let terrain = state.terrain.as_ref().unwrap();
         let components = state.grid.topology.face_components(|face| {
             state.tiles[face.index()].is_water()
@@ -4314,7 +4389,7 @@ mod tests {
     fn rivers_reach_the_sea() {
         // Every river must join a larger water body — no thin terrain band
         // may cut a mouth off (guards the junction-face damming bug).
-        let state = run(1337, |_| {});
+        let state = run_state(1337, |_| {});
         let mut visited = vec![false; state.grid.cell_count()];
         for start in 0..state.grid.cell_count() {
             if !matches!(state.cells[start], Terrain::River | Terrain::RiverSpring) || visited[start] {
@@ -4368,7 +4443,7 @@ mod tests {
         // is a hole the player can drop through. On a closed surface each edge
         // is shared by EXACTLY two faces, and every vertex fan is a full ring.
         // Assert both on the baked mesh (the collider is built from it).
-        let state = run(1337, |_| {});
+        let state = run_state(1337, |_| {});
         let grid = &state.grid;
 
         // (a) each undirected edge belongs to exactly two faces.
@@ -4420,8 +4495,8 @@ mod tests {
 
     #[test]
     fn deterministic_pipeline() {
-        let a = run(42, |_| {});
-        let b = run(42, |_| {});
+        let a = run_state(42, |_| {});
+        let b = run_state(42, |_| {});
         assert_eq!(a.terrain.unwrap().vert_elevations(), b.terrain.unwrap().vert_elevations());
         assert_eq!(a.cells, b.cells);
         assert_eq!(a.tiles, b.tiles);
@@ -4437,7 +4512,7 @@ mod tests {
 
     #[test]
     fn flora_stays_off_water_and_features() {
-        let state = run(1337, |_| {});
+        let state = run_state(1337, |_| {});
         assert!(state.flora.len() > 1000, "flora nearly absent: {}", state.flora.len());
         for f in &state.flora {
             let fi = f.face as usize;
