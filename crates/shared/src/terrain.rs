@@ -38,16 +38,18 @@ pub enum Terrain {
     Savanna,
     Volcanic,
     Glacier,
+    /// Ground-contact source of a river; appended to preserve existing ids.
+    RiverSpring,
 }
 
 impl Terrain {
-    pub const ALL: [Terrain; 18] = [
+    pub const ALL: [Terrain; 19] = [
         Terrain::Ocean, Terrain::Lake, Terrain::LakeShore,
         Terrain::River, Terrain::RiverBank, Terrain::Beach, Terrain::Cliff,
         Terrain::Desert, Terrain::Plains, Terrain::Forest, Terrain::Tundra,
         Terrain::Mountain, Terrain::Snow,
         Terrain::Swamp, Terrain::Jungle, Terrain::Savanna, Terrain::Volcanic,
-        Terrain::Glacier,
+        Terrain::Glacier, Terrain::RiverSpring,
     ];
 
     pub fn color(&self) -> Color {
@@ -70,11 +72,12 @@ impl Terrain {
             Terrain::Savanna => Color::srgb(0.64, 0.60, 0.30),
             Terrain::Volcanic => Color::srgb(0.19, 0.15, 0.15),
             Terrain::Glacier => Color::srgb(0.80, 0.88, 0.93),
+            Terrain::RiverSpring => Color::srgb(0.32, 0.65, 0.88),
         }
     }
 
     pub fn is_water(&self) -> bool {
-        matches!(self, Terrain::Ocean | Terrain::Lake | Terrain::River)
+        matches!(self, Terrain::Ocean | Terrain::Lake | Terrain::River | Terrain::RiverSpring)
     }
 
     pub fn is_land(&self) -> bool { !self.is_water() }

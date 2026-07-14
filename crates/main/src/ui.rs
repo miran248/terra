@@ -510,7 +510,11 @@ fn update_terrain_hud(
 
     // Tile line: everything about the ground under the player, in one place —
     // type (both types when the face is a blend), built tags, habitability.
-    let mut tile_line = format!("{tile:?}");
+    let tile_name = |terrain: Terrain| match terrain {
+        Terrain::RiverSpring => "River Spring".to_string(),
+        _ => format!("{terrain:?}"),
+    };
+    let mut tile_line = tile_name(tile);
     let mut region_name = String::new();
     if let Some(planet) = planet {
         if let Some(fi) = planet.face_at(tf.translation.normalize()) {
@@ -518,8 +522,8 @@ fn update_terrain_hud(
                 if let Some(&(a, b)) = blends.0.get(&(fi as u32)) {
                     let other = if a == tile as u8 { b } else { a };
                     tile_line = match shared::level::blend_feature_name(other) {
-                        Some(name) => format!("{tile:?} + {name}"),
-                        None => format!("{tile:?} + {:?}", Terrain::ALL[other as usize]),
+                        Some(name) => format!("{} + {name}", tile_name(tile)),
+                        None => format!("{} + {}", tile_name(tile), tile_name(Terrain::ALL[other as usize])),
                     };
                 }
             }
@@ -591,7 +595,8 @@ fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
     match tile {
         shared::terrain::Terrain::Ocean |
         shared::terrain::Terrain::Lake |
-        shared::terrain::Terrain::River => Color::srgb(0.2, 0.5, 1.0),
+        shared::terrain::Terrain::River |
+        shared::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
         shared::terrain::Terrain::Beach |
         shared::terrain::Terrain::Cliff |
         shared::terrain::Terrain::LakeShore |

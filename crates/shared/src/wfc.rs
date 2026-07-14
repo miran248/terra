@@ -62,6 +62,8 @@ impl Default for Compat {
         allow(Lake, River);
         allow(LakeShore, RiverBank);
         allow(River, RiverBank);
+        allow(RiverSpring, River);
+        allow(RiverSpring, RiverBank);
         allow(RiverBank, Beach);
         Self(c)
     }

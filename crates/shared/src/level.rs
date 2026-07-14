@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bump on any incompatible LevelData change so stale binaries fail loudly.
-pub const LEVEL_FORMAT_VERSION: u32 = 19;
+pub const LEVEL_FORMAT_VERSION: u32 = 20;
 
 // Face tag ids (entries in face_tag_data).
 pub const TAG_ROAD: u8 = 0;
@@ -58,6 +58,11 @@ pub struct LevelData {
     /// at this radius — no runtime clustering. Water-body IDENTITY/naming comes
     /// from the region layer (`face_region`), not a parallel id.
     pub face_water_r: Vec<f32>,
+    /// Per-corner river-surface radii (all zero = dry), clustered and smoothed
+    /// at generation time from connected River + RiverSpring + RiverBank face
+    /// components. Springs anchor at the ground and outlets anchor to their
+    /// neighboring lake/ocean waterline; runtime consumes these directly.
+    pub face_river_r: Vec<[f32; 3]>,
     /// Variable-length tag lists per face: face fi's tags are
     /// `face_tag_data[face_tag_off[fi] as usize..face_tag_off[fi + 1] as usize]`.
     pub face_tag_off: Vec<u32>,

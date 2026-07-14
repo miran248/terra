@@ -586,7 +586,6 @@ fn setup_map(
     // gen-time per-face waterline (`face_water_r`) which clusters water into
     // connected bodies — so the sea can't flood an inland lake basin and lakes
     // can't spill onto land. Rivers are their own flowing mesh.
-    let centroids = crate::water::face_centroids(&level.terrain_tris);
     let water_mat = water_mats.add(crate::water::water_material());
     if let Some(water) = crate::water::build_water_surface(&level.terrain_tris, &level.face_water_r) {
         commands.spawn((
@@ -597,8 +596,9 @@ fn setup_map(
         ));
     }
 
-    // River surfaces (Phase 3): render River faces as downstream-flowing water.
-    if let Some(river) = crate::water::build_river_surfaces(&level.terrain_tris, &centroids, &level.face_types) {
+    // River surfaces use the generator-baked, smoothed corner radii so runtime
+    // rendering has no topology/clustering work and cannot introduce seams.
+    if let Some(river) = crate::water::build_river_surfaces(&level.terrain_tris, &level.face_river_r) {
         commands.spawn((
             Mesh3d(meshes.add(river)),
             MeshMaterial3d(water_mats.add(crate::water::river_material())),

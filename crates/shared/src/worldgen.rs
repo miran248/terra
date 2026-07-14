@@ -159,7 +159,8 @@ fn ring(grid: &Grid, v: usize) -> Vec<usize> {
     out
 }
 
-/// THE LINKING RULE, generic over every type: around any cell, the faces
+/// THE LINKING RULE, generic over every type except the compact RiverSpring
+/// point-feature patch: around any ordinary cell, the faces
 /// deriving to a given type must form ONE edge-connected fan — same-type
 /// triangles are never linked by a lone vertex. Where a fan splits into two
 /// runs, retype one gap cell (same land/water class, deterministic order,
@@ -216,7 +217,7 @@ fn link_tile_pinches(grid: &Grid, cells: &mut [Terrain]) {
                         // Rivers are planned linear features two cells wide —
                         // consuming a cell can sever the channel.
                         if cells[c] == t
-                            || cells[c] == Terrain::River
+                            || matches!(cells[c], Terrain::River | Terrain::RiverSpring)
                             || (cells[c].is_water() != t.is_water()) != cross
                         {
                             continue;
@@ -764,7 +765,9 @@ pub fn run(seed: u32, mut log: impl FnMut(&str)) -> GenState {
 
 // ---- command implementations (single responsibility each) ----
 
-/// River polylines → River cells (land only; the mouth is already water).
+/// River polylines → River cells, with a distinct ground-contact Spring at
+/// each upstream source. The mouth remains an ordinary mixed transition into
+/// its neighboring water body.
 /// Painted as an edge PAIR (chain + parallel partner line), like roads: a
 /// single chain's derived faces only touch at the chain vertices.
 fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
@@ -812,6 +815,23 @@ fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
         for vi in widen_band_sym(grid, &chain) {
             if cells[vi].is_land() {
                 cells[vi] = Terrain::River;
+            }
+        }
+        // A triangular three-cell source patch survives face derivation while
+        // keeping each Spring face edge-connected (a thinner patch pinches).
+        let mut spring_cells: Vec<usize> = chain.iter().take(2).copied().collect();
+        if let [a, b, ..] = spring_cells.as_slice() {
+            if let Some(&third) = grid.vert_adj[*a].iter()
+                .find(|&&candidate| candidate != *a as u32
+                    && candidate != *b as u32
+                    && grid.vert_adj[*b].contains(&candidate))
+            {
+                spring_cells.push(third as usize);
+            }
+        }
+        for source in spring_cells {
+            if cells[source] == Terrain::River {
+                cells[source] = Terrain::RiverSpring;
             }
         }
     }
@@ -922,11 +942,11 @@ fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrai
 
     let mut visited = vec![false; grid.nv];
     for start in 0..grid.nv {
-        if !cells[start].is_water() || cells[start] == Terrain::River || visited[start] {
+        if !cells[start].is_water() || matches!(cells[start], Terrain::River | Terrain::RiverSpring) || visited[start] {
             continue;
         }
         let body = flood_cells(grid, start, &mut visited,
-            |nb| cells[nb].is_water() && cells[nb] != Terrain::River);
+            |nb| cells[nb].is_water() && !matches!(cells[nb], Terrain::River | Terrain::RiverSpring));
         // A body is an OCEAN only if it reaches ocean-zone cells AND is large
         // enough to be one: an isolated pocket of ocean-zone faces walled off
         // by land (a single coarse face — hence the tell-tale triangle shape)
@@ -1038,7 +1058,7 @@ fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
             .map(|(&k, _)| Terrain::ALL[k as usize])
             .unwrap_or(Terrain::Plains)
     };
-    let wet = |t: Terrain| t.is_water() && t != Terrain::River;
+    let wet = |t: Terrain| t.is_water() && !matches!(t, Terrain::River | Terrain::RiverSpring);
 
     for _ in 0..4 {
         let mut changed = false;
@@ -1117,7 +1137,7 @@ fn size_range(t: Terrain) -> (usize, usize) {
         // ocean minimum so "min ocean > max lake" holds by construction.
         Lake => (60, 3999),
         // Linear water/bands — area minimums don't apply.
-        River | LakeShore | RiverBank => (1, INF),
+        River | RiverSpring | LakeShore | RiverBank => (1, INF),
         // Coastal bands: thin, with a min length and a max named-segment length.
         Beach => (20, 60),
         Cliff => (1, 24),
@@ -1790,7 +1810,7 @@ fn resolve_transitions(grid: &Grid, terrain: &TerrainGen, base: &[Terrain]) -> V
     let shore = |vi: usize, kind: Terrain| -> Terrain {
         match kind {
             Terrain::Lake => Terrain::LakeShore,
-            Terrain::River => Terrain::RiverBank,
+            Terrain::River | Terrain::RiverSpring => Terrain::RiverBank,
             _ => {
                 let steep = matches!(base[vi], Terrain::Mountain | Terrain::Snow)
                     || terrain.elevation_at(grid.vert_pos(vi)) > 0.15;
@@ -2187,7 +2207,7 @@ fn region_class(grid: &Grid, face_types: &[Terrain], painted: Option<&Painted>, 
     match face_types[fi] {
         Terrain::Ocean => Some(RegionKind::Ocean),
         Terrain::Lake => Some(RegionKind::Lake),
-        Terrain::River => Some(RegionKind::River),
+        Terrain::River | Terrain::RiverSpring => Some(RegionKind::River),
         Terrain::Beach => Some(RegionKind::Beach),
         Terrain::Cliff => Some(RegionKind::Cliff),
         Terrain::Forest => Some(RegionKind::Forest),
@@ -2364,6 +2384,38 @@ pub fn cluster_vertices(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32
     clusters(grid.nv, |v| vert_nbrs(grid, v), member)
 }
 
+/// Cluster authoritative terrain cells whose type occurs in `types`.
+///
+/// Every selected type belongs to the same membership class: adjacent selected
+/// cells connect even when their terrain types differ. The returned labels are
+/// `-1` for cells outside the set; each connected selected group has one
+/// non-negative id. An empty set has no components and duplicate types do not
+/// affect the result.
+pub fn cluster_cell_types(
+    grid: &Grid,
+    cells: &[Terrain],
+    types: &[Terrain],
+) -> (Vec<i32>, usize) {
+    assert_eq!(cells.len(), grid.nv, "cell type count must match the grid");
+    cluster_vertices(grid, |v| types.contains(&cells[v]))
+}
+
+/// Cluster derived face tiles whose type occurs in `types`.
+///
+/// Every selected type belongs to the same membership class: selected faces
+/// connect across shared edges even when their terrain types differ. The
+/// returned labels are `-1` for faces outside the set; each connected selected
+/// group has one non-negative id. An empty set has no components and duplicate
+/// types do not affect the result.
+pub fn cluster_face_types(
+    grid: &Grid,
+    face_types: &[Terrain],
+    types: &[Terrain],
+) -> (Vec<i32>, usize) {
+    assert_eq!(face_types.len(), grid.n, "face type count must match the grid");
+    cluster_faces(grid, |f| types.contains(&face_types[f]))
+}
+
 /// Per-face water-surface radius (0.0 = dry) — the GEOMETRY of the water sheet.
 /// Body IDENTITY/naming lives in the region clustering (`build_regions`: a lake
 /// is a `RegionKind::Lake` cluster, an ocean a `RegionKind::Ocean` one); this
@@ -2382,12 +2434,15 @@ pub fn cluster_vertices(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32
 /// without drawing the outer shore band).
 pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain]) -> Vec<f32> {
     let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
-    let ocean_member = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::Beach | Terrain::Cliff);
 
     let vert_r: Vec<f32> =
         grid.verts.iter().map(|d| terrain.render_radius(SpherePos::new(*d))).collect();
-    let (lake_c, nlake) = cluster_vertices(grid, |v| cells[v] == Terrain::Lake);
-    let (ocean_c, nocean) = cluster_vertices(grid, |v| ocean_member(cells[v]));
+    let (lake_c, nlake) = cluster_cell_types(grid, cells, &[Terrain::Lake]);
+    let (ocean_c, nocean) = cluster_cell_types(
+        grid,
+        cells,
+        &[Terrain::Ocean, Terrain::Beach, Terrain::Cliff],
+    );
 
     // Per lake body: waterline from the LakeShore RIM adjacent to its Lake tiles
     // (low percentile ≈ spill point). Sea bodies: only real ones (hold Ocean).
@@ -2438,6 +2493,261 @@ pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain])
             }
         })
         .collect()
+}
+
+/// Extra clearance above the smooth River-only measurement field. This exceeds
+/// water-wave displacement, so the channel terrain cannot pierce the skin.
+const RIVER_SURFACE_CLEARANCE: f32 = 0.02;
+/// Pull exterior river-bank edges into their adjacent ground. This hides the
+/// open seam where a widened river surface meets uneven terrain.
+const RIVER_TERRAIN_CLIP: f32 = 0.25;
+/// Number of mesh-vertex rings over which a spring grows from its embedded
+/// source into the normal channel surface.
+const RIVER_SPRING_TAPER_RINGS: usize = 3;
+
+/// Bake a smooth, terrain-following river surface. River, RiverSpring, and
+/// RiverBank faces form the core; one non-water, non-cliff face apron widens
+/// that core beneath the terrain. Bank/apron-only clusters remain dry. River
+/// faces measure channel height, Spring faces anchor beneath the ground,
+/// adjoining lake/ocean waterlines anchor outlets, and bank/apron vertices clip
+/// into terrain; RiverBank faces widen coverage and interpolate the nearby channel surface. A
+/// component-wide clearance keeps the smooth field above every measured River
+/// corner without copying noisy bank terrain into the water. Cliffs stay
+/// excluded: a river mouth must not flood a coast.
+pub fn river_surface_radii(
+    grid: &Grid,
+    mesh_tris: &[[[f32; 3]; 3]],
+    face_types: &[Terrain],
+    face_water_r: &[f32],
+) -> Vec<[f32; 3]> {
+    assert_eq!(mesh_tris.len(), grid.n, "river mesh must match the grid");
+    assert_eq!(face_types.len(), grid.n, "river face types must match the grid");
+    assert_eq!(face_water_r.len(), grid.n, "river waterlines must match the grid");
+    let core: Vec<bool> = face_types.iter()
+        .map(|&t| matches!(t, Terrain::River | Terrain::RiverSpring | Terrain::RiverBank))
+        .collect();
+    // The rendering apron is deliberately buried in its neighboring terrain:
+    // it adds a full face ring beyond irregular RiverBank tiles, so the water
+    // skin cannot end short of the visible bank. Do not spread into cliffs or
+    // another water body; outlet edges have their own exact waterline anchor.
+    let footprint: Vec<bool> = (0..grid.n).map(|fi| {
+        core[fi] || (
+            !face_types[fi].is_water()
+                && face_types[fi] != Terrain::Cliff
+                && grid.adj[fi].iter().any(|&neighbor| core[neighbor as usize])
+        )
+    }).collect();
+    let (component, count) = cluster_faces(grid, |fi| footprint[fi]);
+    let mut has_river = vec![false; count];
+    for fi in 0..grid.n {
+        if component[fi] >= 0 && matches!(face_types[fi], Terrain::River | Terrain::RiverSpring) {
+            has_river[component[fi] as usize] = true;
+        }
+    }
+
+    let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+    let mut node_of: BTreeMap<[u32; 3], usize> = BTreeMap::new();
+    let mut nodes = vec![[usize::MAX; 3]; grid.n];
+    let mut neighbors: Vec<Vec<usize>> = Vec::new();
+    let mut measured_sum: Vec<f32> = Vec::new();
+    let mut measured_count: Vec<u32> = Vec::new();
+    let mut river_corner: Vec<f32> = Vec::new();
+    let mut ground_radius: Vec<f32> = Vec::new();
+    let mut spring_anchor: Vec<f32> = Vec::new();
+    let mut outlet_anchor: Vec<f32> = Vec::new();
+    let mut bank_edge_anchor: Vec<f32> = Vec::new();
+    for fi in 0..grid.n {
+        let c = component[fi];
+        if c < 0 || !has_river[c as usize] {
+            continue;
+        }
+        for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+            let next = node_of.len();
+            let node = *node_of.entry(key(corner)).or_insert_with(|| {
+                neighbors.push(Vec::new());
+                measured_sum.push(0.0);
+                measured_count.push(0);
+                river_corner.push(f32::MIN);
+                ground_radius.push(Vec3::from_array(corner).length());
+                spring_anchor.push(f32::MIN);
+                outlet_anchor.push(f32::MIN);
+                bank_edge_anchor.push(f32::MIN);
+                next
+            });
+            nodes[fi][k] = node;
+        }
+        for edge in 0..3 {
+            let (a, b) = (nodes[fi][edge], nodes[fi][(edge + 1) % 3]);
+            if !neighbors[a].contains(&b) {
+                neighbors[a].push(b);
+                neighbors[b].push(a);
+            }
+        }
+        if face_types[fi] == Terrain::River {
+            let radius = mesh_tris[fi].iter()
+                .map(|&p| Vec3::from_array(p).length())
+                .sum::<f32>() / 3.0;
+            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+                let node = nodes[fi][k];
+                measured_sum[node] += radius;
+                measured_count[node] += 1;
+                river_corner[node] = river_corner[node].max(Vec3::from_array(corner).length());
+            }
+        }
+        if face_types[fi] == Terrain::RiverSpring {
+            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+                let node = nodes[fi][k];
+                let radius = Vec3::from_array(corner).length();
+                measured_sum[node] += radius;
+                measured_count[node] += 1;
+                river_corner[node] = river_corner[node].max(radius);
+                spring_anchor[node] = spring_anchor[node].max(radius);
+            }
+        }
+    }
+
+    // The outside edge of a widened RiverBank component must meet the ground,
+    // not a channel-height interpolation that can float beside a deep or wide
+    // bank. Sink it just below the ground to avoid a visible crack from tiny
+    // precision differences between the independently drawn meshes.
+    for fi in 0..grid.n {
+        let c = component[fi];
+        if c < 0 || !has_river[c as usize] {
+            continue;
+        }
+        for &neighbor in &grid.adj[fi] {
+            if component[neighbor as usize] == c {
+                continue;
+            }
+            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+                if mesh_tris[neighbor as usize]
+                    .iter()
+                    .any(|&other| key(other) == key(corner))
+                {
+                    let node = nodes[fi][k];
+                    bank_edge_anchor[node] = bank_edge_anchor[node]
+                        .max(ground_radius[node] - RIVER_TERRAIN_CLIP);
+                }
+            }
+        }
+    }
+
+    // An outlet shares its final edge with the already-baked lake/ocean mesh.
+    // Feed that exact waterline into the river interpolation and retain it as
+    // a hard final anchor, so the two independently drawn meshes join without
+    // a vertical seam or a dry gap.
+    for fi in 0..grid.n {
+        let c = component[fi];
+        if c < 0 || !has_river[c as usize] {
+            continue;
+        }
+        for &neighbor in &grid.adj[fi] {
+            let waterline = face_water_r[neighbor as usize];
+            if waterline <= 0.0 {
+                continue;
+            }
+            for (k, &corner) in mesh_tris[fi].iter().enumerate() {
+                if mesh_tris[neighbor as usize].iter().any(|&other| key(other) == key(corner)) {
+                    let node = nodes[fi][k];
+                    measured_sum[node] += waterline;
+                    measured_count[node] += 1;
+                    outlet_anchor[node] = outlet_anchor[node].max(waterline);
+                }
+            }
+        }
+    }
+
+    // Seed at River-only measurements, then extend them across RiverBank faces.
+    // The fixed River samples retain the smooth channel profile; bank-only
+    // vertices solve a discrete harmonic extension of that profile.
+    let mut surface: Vec<Option<f32>> = measured_sum.iter().zip(&measured_count)
+        .map(|(&sum, &count)| (count > 0).then(|| sum / count as f32))
+        .collect();
+    for _ in 0..surface.len() {
+        let mut changed = false;
+        for node in 0..surface.len() {
+            if surface[node].is_some() {
+                continue;
+            }
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            for &neighbor in &neighbors[node] {
+                if let Some(radius) = surface[neighbor] {
+                    sum += radius;
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                surface[node] = Some(sum / count as f32);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    // Shortest mesh-vertex distance from each Spring vertex. A linear blend
+    // through the first few rings lets water emerge from the ground naturally
+    // instead of ending as an abrupt, hovering cap at the source patch.
+    let mut spring_distance = vec![usize::MAX; surface.len()];
+    let mut frontier = VecDeque::new();
+    for node in 0..surface.len() {
+        if spring_anchor[node] > f32::MIN {
+            spring_distance[node] = 0;
+            frontier.push_back(node);
+        }
+    }
+    while let Some(node) = frontier.pop_front() {
+        if spring_distance[node] >= RIVER_SPRING_TAPER_RINGS {
+            continue;
+        }
+        for &neighbor in &neighbors[node] {
+            if spring_distance[neighbor] == usize::MAX {
+                spring_distance[neighbor] = spring_distance[node] + 1;
+                frontier.push_back(neighbor);
+            }
+        }
+    }
+    let surface: Vec<f32> = surface.into_iter().map(|radius| radius.unwrap_or(0.0)).collect();
+    // Keep one clearance per connected river. This is the intentionally smooth
+    // water field: a local terrain spike cannot add a visible crease or seam
+    // across the channel. The buried apron only widens its footprint.
+    let mut clearance = vec![RIVER_SURFACE_CLEARANCE; count];
+    for fi in 0..grid.n {
+        let c = component[fi];
+        if c < 0 || face_types[fi] != Terrain::River {
+            continue;
+        }
+        let c = c as usize;
+        for &node in &nodes[fi] {
+            clearance[c] = clearance[c]
+                .max(river_corner[node] - surface[node] + RIVER_SURFACE_CLEARANCE);
+        }
+    }
+    (0..grid.n).map(|fi| {
+        let c = component[fi];
+        if c < 0 || !has_river[c as usize] {
+            return [0.0; 3];
+        }
+        nodes[fi].map(|node| {
+            if outlet_anchor[node] > f32::MIN {
+                outlet_anchor[node]
+            } else if spring_anchor[node] > f32::MIN {
+                // Start slightly inside the source terrain. This prevents
+                // coplanar z-fighting while the following tapered rings let
+                // the water emerge naturally from the carved bed.
+                spring_anchor[node] - RIVER_TERRAIN_CLIP
+            } else if bank_edge_anchor[node] > f32::MIN {
+                bank_edge_anchor[node]
+            } else {
+                let channel = surface[node] + clearance[c as usize];
+                let rings = RIVER_SPRING_TAPER_RINGS as f32;
+                let taper = (spring_distance[node] as f32 / rings).min(1.0);
+                ground_radius[node] + (channel - ground_radius[node]) * taper
+            }
+        })
+    }).collect()
 }
 
 pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
@@ -2905,7 +3215,7 @@ fn water_concavity(t: Terrain) -> Option<f32> {
         // deeper the basin bowls (depth still grows with basin size). Lakes were
         // near-flat plates (0.005); deepen them so water pools with real depth.
         Terrain::Lake => Some(0.050),
-        Terrain::River => Some(0.035),
+        Terrain::River | Terrain::RiverSpring => Some(0.090),
         _ => None,
     }
 }
@@ -2914,7 +3224,7 @@ fn water_concavity(t: Terrain) -> Option<f32> {
 /// body). Empty for non-bank kinds.
 fn bank_water(t: Terrain) -> &'static [Terrain] {
     match t {
-        Terrain::RiverBank => &[Terrain::River],
+        Terrain::RiverBank => &[Terrain::River, Terrain::RiverSpring],
         Terrain::LakeShore => &[Terrain::Lake],
         Terrain::Beach => &[Terrain::Ocean],
         _ => &[],
@@ -2974,6 +3284,7 @@ fn elev_range(t: Terrain) -> (f32, f32) {
         LakeShore => (0.0, 0.60),
         // Rivers descend from mountains to the sea; their range must span it.
         River => (-1.0, 0.60),
+        RiverSpring => (0.0, 0.60),
         RiverBank => (0.0, 0.65),
         Beach => (0.0, 0.05),
         // Cliff tiles are RAMPS, not plateaus: the toe verts sit at shore
@@ -3297,6 +3608,35 @@ fn solve_elevation(
                 }
             }
         }
+        // 1c) river-bed smoothing: a light Laplacian over the carved channel
+        // removes cell-to-cell chatter before the downstream constraint runs.
+        // It only samples other channel vertices, preserving the banks as the
+        // raised rim; the following monotone pass keeps flow downhill.
+        {
+            let mut delta = vec![0.0f32; nv];
+            for vi in 0..nv {
+                if owner[vi] != Terrain::River {
+                    continue;
+                }
+                let mut sum = 0.0;
+                let mut count = 0usize;
+                for &nb in terrain.adj_of(vi) {
+                    if owner[nb] == Terrain::River {
+                        sum += e[nb];
+                        count += 1;
+                    }
+                }
+                if count > 0 {
+                    delta[vi] = 0.15 * (sum / count as f32 - e[vi]);
+                }
+            }
+            for vi in 0..nv {
+                if delta[vi] != 0.0 {
+                    e[vi] += delta[vi];
+                    residual += delta[vi].abs();
+                }
+            }
+        }
         // 2) rivers descend monotonically (lower-only kernel clamp) — but only
         // until they reach the sea; below the surface the river IS the ocean
         // and fighting its ranges would oscillate forever.
@@ -3330,6 +3670,27 @@ fn solve_elevation(
             if e[vi] > cap {
                 residual += e[vi] - cap;
                 e[vi] = cap;
+            }
+        }
+        // Concavity can lower a downstream channel vertex more than its next
+        // neighbour, so reapply the directional constraint after carving. This
+        // permits a deeper bed without ever creating an uphill segment.
+        for kernels in &river_kernels {
+            let mut floor = f32::MAX;
+            for kernel in kernels {
+                let v = kernel_interp(kernel, &e);
+                if floor < -0.05 {
+                    break;
+                }
+                if v > floor + 0.001 {
+                    let delta = v - floor;
+                    for &(vi, _) in kernel {
+                        e[vi] -= delta;
+                    }
+                    residual += delta;
+                } else {
+                    floor = floor.min(v);
+                }
             }
         }
         // 3a) a lake never rises above its shore: clamp every lake vertex that
@@ -3456,6 +3817,16 @@ mod tests {
 
         // Rivers descend monotonically on the SOLVED field.
         assert!(!terrain.river_paths.is_empty(), "no rivers generated");
+        let (_, spring_components) = cluster_cell_types(
+            &state.grid,
+            &state.cells,
+            &[Terrain::RiverSpring],
+        );
+        assert_eq!(
+            spring_components,
+            terrain.river_paths.len(),
+            "every planned river has one connected ground-contact spring"
+        );
         for (ri, path) in terrain.river_paths.iter().enumerate() {
             let mut prev = f32::MAX;
             for p in path {
@@ -3564,7 +3935,7 @@ mod tests {
 
         // No enclosed water body smaller than the minimum (no 1-cell lakes).
         let (comp, ncomp) = cluster_vertices(&state.grid, |v| {
-            state.cells[v].is_water() && state.cells[v] != Terrain::River
+            state.cells[v].is_water() && !matches!(state.cells[v], Terrain::River | Terrain::RiverSpring)
         });
         let mut sizes = vec![0usize; ncomp];
         let mut is_ocean = vec![false; ncomp];
@@ -3662,9 +4033,15 @@ mod tests {
                 let ring = ring(&state.grid, v);
                 let n = ring.len();
                 let ts: Vec<Terrain> = (0..n)
-                    .map(|i| derive_one(
+                    .map(|i| match derive_one(
                         state.cells[v], state.cells[ring[i]], state.cells[ring[(i + 1) % n]],
-                    ))
+                    ) {
+                        // Spring is a river source marker, not a separate
+                        // traversable band; validate it as part of the river
+                        // water band for the no-pinch invariant.
+                        Terrain::RiverSpring => Terrain::River,
+                        t => t,
+                    })
                     .collect();
                 let mut types = ts.clone();
                 types.sort_by_key(|t| *t as u8);
@@ -3824,6 +4201,109 @@ mod tests {
     }
 
     #[test]
+    fn tile_type_sets_cluster_mixed_connected_groups() {
+        let grid = Grid::new(1);
+
+        let cell_neighbor = grid.vert_adj[0][0] as usize;
+        let cell_distant = (0..grid.nv).find(|&v| {
+            v != 0
+                && v != cell_neighbor
+                && !grid.vert_adj[0].contains(&(v as u32))
+                && !grid.vert_adj[cell_neighbor].contains(&(v as u32))
+        }).expect("grid needs a non-adjacent cell");
+        let mut cells = vec![Terrain::Plains; grid.nv];
+        cells[0] = Terrain::Forest;
+        cells[cell_neighbor] = Terrain::Mountain;
+        cells[cell_distant] = Terrain::Snow;
+        let (cell_components, cell_count) = cluster_cell_types(
+            &grid,
+            &cells,
+            &[Terrain::Forest, Terrain::Mountain, Terrain::Snow, Terrain::Forest],
+        );
+        assert_eq!(cell_count, 2);
+        assert_eq!(cell_components[0], cell_components[cell_neighbor]);
+        assert_ne!(cell_components[0], cell_components[cell_distant]);
+        let cell_nonmember = cells.iter().position(|&t| t == Terrain::Plains).unwrap();
+        assert_eq!(cell_components[cell_nonmember], -1);
+
+        let face_neighbor = grid.adj[0][0] as usize;
+        let face_distant = (0..grid.n).find(|&f| {
+            f != 0
+                && f != face_neighbor
+                && !grid.adj[0].contains(&(f as u32))
+                && !grid.adj[face_neighbor].contains(&(f as u32))
+        }).expect("grid needs a non-adjacent face");
+        let mut face_types = vec![Terrain::Plains; grid.n];
+        face_types[0] = Terrain::Beach;
+        face_types[face_neighbor] = Terrain::Cliff;
+        face_types[face_distant] = Terrain::Ocean;
+        let (face_components, face_count) = cluster_face_types(
+            &grid,
+            &face_types,
+            &[Terrain::Beach, Terrain::Cliff, Terrain::Ocean],
+        );
+        assert_eq!(face_count, 2);
+        assert_eq!(face_components[0], face_components[face_neighbor]);
+        assert_ne!(face_components[0], face_components[face_distant]);
+        let face_nonmember = face_types.iter().position(|&t| t == Terrain::Plains).unwrap();
+        assert_eq!(face_components[face_nonmember], -1);
+
+        let (empty_components, empty_count) = cluster_cell_types(&grid, &cells, &[]);
+        assert_eq!(empty_count, 0);
+        assert!(empty_components.iter().all(|&component| component == -1));
+    }
+
+    #[test]
+    fn river_surface_starts_on_springs_and_joins_body_water() {
+        let state = run(1337, |_| {});
+        let river_r = river_surface_radii(
+            &state.grid,
+            &state.mesh_tris,
+            &state.tiles,
+            &state.water_r,
+        );
+        let key = |p: [f32; 3]| [p[0].to_bits(), p[1].to_bits(), p[2].to_bits()];
+
+        let mut spring_corners = 0usize;
+        let mut outlet_corners = 0usize;
+        for fi in 0..state.grid.n {
+            if state.tiles[fi] == Terrain::RiverSpring {
+                for corner in 0..3 {
+                    spring_corners += 1;
+                    let ground = Vec3::from_array(state.mesh_tris[fi][corner]).length();
+                    assert!(
+                        (river_r[fi][corner] - (ground - RIVER_TERRAIN_CLIP)).abs() < 1e-3,
+                        "spring water must start embedded in the terrain"
+                    );
+                }
+            }
+            if !matches!(state.tiles[fi], Terrain::River | Terrain::RiverSpring | Terrain::RiverBank) {
+                continue;
+            }
+            for &neighbor in &state.grid.adj[fi] {
+                let waterline = state.water_r[neighbor as usize];
+                if waterline <= 0.0 {
+                    continue;
+                }
+                for corner in 0..3 {
+                    if state.mesh_tris[neighbor as usize]
+                        .iter()
+                        .any(|&other| key(other) == key(state.mesh_tris[fi][corner]))
+                    {
+                        outlet_corners += 1;
+                        assert!(
+                            (river_r[fi][corner] - waterline).abs() < 1e-3,
+                            "river outlet must share its neighboring waterline"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(spring_corners > 0, "seed must include Spring faces");
+        assert!(outlet_corners > 0, "seed must include water-connected river outlets");
+    }
+
+    #[test]
     fn lakes_stay_enclosed() {
         // No lake-zone water may connect to the ocean — the rim dam guarantees
         // every lake is its own body (guards the drain-channel bug where lakes
@@ -3831,7 +4311,7 @@ mod tests {
         let state = run(1337, |_| {});
         let terrain = state.terrain.as_ref().unwrap();
         let (comp, ncomp) = cluster_faces(&state.grid, |f| {
-            state.tiles[f].is_water() && state.tiles[f] != Terrain::River
+            state.tiles[f].is_water() && !matches!(state.tiles[f], Terrain::River | Terrain::RiverSpring)
         });
         let mut sizes = vec![0usize; ncomp];
         let mut has_lake = vec![false; ncomp];
@@ -3865,7 +4345,7 @@ mod tests {
         let state = run(1337, |_| {});
         let mut visited = vec![false; state.grid.nv];
         for start in 0..state.grid.nv {
-            if state.cells[start] != Terrain::River || visited[start] {
+            if !matches!(state.cells[start], Terrain::River | Terrain::RiverSpring) || visited[start] {
                 continue;
             }
             let mut comp = vec![start];
@@ -3874,7 +4354,7 @@ mod tests {
             while let Some(cur) = q.pop_front() {
                 for &nb in &state.grid.vert_adj[cur] {
                     let nb = nb as usize;
-                    if state.cells[nb] == Terrain::River && !visited[nb] {
+                    if matches!(state.cells[nb], Terrain::River | Terrain::RiverSpring) && !visited[nb] {
                         visited[nb] = true;
                         comp.push(nb);
                         q.push_back(nb);
@@ -3891,7 +4371,7 @@ mod tests {
             // edge-adjacent to an Ocean/Lake face.
             let mut open = false;
             'faces: for fi in 0..state.grid.n {
-                if state.tiles[fi] != Terrain::River {
+                if !matches!(state.tiles[fi], Terrain::River | Terrain::RiverSpring) {
                     continue;
                 }
                 if !state.grid.face_verts[fi].iter().any(|&vi| comp.contains(&(vi as usize))) {

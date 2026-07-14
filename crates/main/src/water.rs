@@ -10,22 +10,8 @@ use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
-use shared::terrain::Terrain;
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
-
-/// Per-face centroids `(v0+v1+v2)/3`, computed once and shared by every water
-/// builder (and river flow). Using a face's centroid radius to place its water
-/// skin — instead of each raw corner radius — divides a single outlier corner's
-/// influence by three and spreads it evenly across the face, so a lone spiking
-/// vertex no longer tents the surface.
-pub fn face_centroids(tris: &[[[f32; 3]; 3]]) -> Vec<Vec3> {
-    tris.iter()
-        .map(|t| {
-            (Vec3::from_array(t[0]) + Vec3::from_array(t[1]) + Vec3::from_array(t[2])) / 3.0
-        })
-        .collect()
-}
 
 /// Extension uniforms (group 2, binding 100). Colours are linear.
 #[derive(Clone, Copy, ShaderType, Reflect, Debug)]
@@ -129,43 +115,21 @@ pub fn build_water_surface(tris: &[[[f32; 3]; 3]], water_r: &[f32]) -> Option<Me
     Some(mesh)
 }
 
-/// Build a river-surface mesh over all `River` faces at the carved channel
-/// height. Each face carries its downhill flow direction (from its highest to
-/// lowest corner, projected onto the surface) encoded in vertex colour, which the
-/// water shader reads to scroll ripples downstream.
+/// Build the generator-baked, smooth terrain-following river mesh. Each face
+/// carries its downhill flow direction (from its highest to lowest corner,
+/// projected onto the surface) encoded in vertex colour, which the water shader
+/// reads to scroll ripples downstream.
 pub fn build_river_surfaces(
     tris: &[[[f32; 3]; 3]],
-    centroids: &[Vec3],
-    face_types: &[u8],
+    river_r: &[[f32; 3]],
 ) -> Option<Mesh> {
-    use std::collections::HashMap;
-    let river = Terrain::River as u8;
-    let vkey = |v: Vec3| [v.x.round() as i64, v.y.round() as i64, v.z.round() as i64];
-
-    // Per shared vertex: mean of the centroid radii of the river faces touching
-    // it. Sampling this at each corner gives ONE continuous surface — adjacent
-    // faces agree on their shared corner's height, so there are no steps — while
-    // the centroid-radius average still keeps any single outlier corner from
-    // tenting the water.
-    let mut vsum: HashMap<[i64; 3], (f32, u32)> = HashMap::new();
-    for (fi, t) in tris.iter().enumerate() {
-        if face_types.get(fi).copied() != Some(river) {
-            continue;
-        }
-        let cr = centroids[fi].length();
-        for k in 0..3 {
-            let e = vsum.entry(vkey(Vec3::from_array(t[k]))).or_insert((0.0, 0));
-            e.0 += cr;
-            e.1 += 1;
-        }
-    }
-
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut colors = Vec::new();
     for (fi, t) in tris.iter().enumerate() {
-        if face_types.get(fi).copied() != Some(river) {
+        let radii = river_r.get(fi).copied().unwrap_or([0.0; 3]);
+        if radii.iter().all(|&radius| radius <= 0.0) {
             continue;
         }
         let c = [
@@ -177,15 +141,13 @@ pub fn build_river_surfaces(
         // Downhill across the face: highest corner → lowest corner, made tangent.
         let hi = (0..3).max_by(|&a, &b| r[a].total_cmp(&r[b])).unwrap();
         let lo = (0..3).min_by(|&a, &b| r[a].total_cmp(&r[b])).unwrap();
-        let face_dir = centroids[fi].normalize();
+        let face_dir = (c[0] + c[1] + c[2]).normalize();
         let mut flow = c[lo] - c[hi];
         flow -= face_dir * flow.dot(face_dir);
         let flow = flow.normalize_or_zero() * 0.5 + Vec3::splat(0.5); // encode to 0..1
         for k in 0..3 {
             let dir = c[k].normalize();
-            let (sum, cnt) = vsum[&vkey(c[k])];
-            let fill_r = sum / cnt as f32 + 0.5;
-            positions.push((dir * fill_r).to_array());
+            positions.push((dir * radii[k]).to_array());
             normals.push(dir.to_array());
             uvs.push([0.0, 0.0]);
             colors.push([flow.x, flow.y, flow.z, 1.0]);
@@ -217,6 +179,7 @@ impl Plugin for WaterPlugin {
 mod tests {
     use super::*;
     use bevy::render::mesh::VertexAttributeValues;
+    use shared::terrain::Terrain;
     use std::collections::HashMap;
 
     /// A hexagonal lake — 6 fan faces around a centre, ringed by 6 LakeShore
@@ -315,5 +278,47 @@ mod tests {
                 "lake mesh is not one connected component"
             );
         }
+    }
+
+    #[test]
+    fn river_surface_uses_baked_smooth_corner_radii() {
+        let a = Vec3::new(0.0, 0.0, 100.0);
+        let b = Vec3::new(10.0, 0.0, 101.0);
+        let c = Vec3::new(0.0, 10.0, 98.0);
+        let d = Vec3::new(10.0, 10.0, 102.0);
+        let e = Vec3::new(30.0, 0.0, 100.0);
+        let f = Vec3::new(40.0, 0.0, 100.0);
+        let g = Vec3::new(30.0, 10.0, 100.0);
+        let tris = vec![
+            [a.to_array(), b.to_array(), c.to_array()],
+            [b.to_array(), d.to_array(), c.to_array()],
+            [e.to_array(), f.to_array(), g.to_array()],
+        ];
+        let river_r = vec![[100.5, 100.0, 99.5], [100.0, 101.0, 99.5], [0.0; 3]];
+        let mesh = build_river_surfaces(&tris, &river_r).expect("river mesh");
+        let Some(VertexAttributeValues::Float32x3(positions)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no river positions");
+        };
+        assert_eq!(positions.len(), 6, "channel and bank faces only");
+
+        let key = |p: &[f32; 3]| {
+            [
+                (p[0] * 100.0).round() as i64,
+                (p[1] * 100.0).round() as i64,
+                (p[2] * 100.0).round() as i64,
+            ]
+        };
+        let mut heights = HashMap::new();
+        for position in positions {
+            let height = Vec3::from_array(*position).length();
+            let existing = heights.insert(key(position), height);
+            if let Some(previous) = existing {
+                assert!((previous - height).abs() < 1e-3, "shared river vertex stepped");
+            }
+        }
+        let min_height = heights.values().copied().reduce(f32::min).unwrap();
+        let max_height = heights.values().copied().reduce(f32::max).unwrap();
+        assert!(max_height - min_height > 0.1, "river surface should follow terrain relief");
     }
 }
