@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 
 use super::Grid;
+use crate::topology::{CellId, FaceId};
 
 pub(super) fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.face_count())
         .map(|face| {
-            grid.face_cells_index(face)
+            grid.face_cells(FaceId::new(face))
+                .map(CellId::index)
                 .into_iter()
                 .map(|cell| per_cell[cell])
                 .max()
@@ -18,7 +20,7 @@ pub(super) fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.face_count())
         .map(|face| {
             let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-            for cell in grid.face_cells_index(face) {
+            for cell in grid.face_cells(FaceId::new(face)).map(CellId::index) {
                 *counts.entry(per_cell[cell]).or_default() += 1;
             }
             counts

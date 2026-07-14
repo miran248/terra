@@ -18,7 +18,7 @@ pub(super) fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terra
         let reaches = chain.iter().any(|&cell_index| {
             sea(cells[cell_index])
                 || grid
-                    .cell_neighbors_index(cell_index)
+                    .cell_neighbors(CellId::new(cell_index))
                     .iter()
                     .any(|nb| sea(cells[nb.index()]))
         });
@@ -46,11 +46,14 @@ pub(super) fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terra
         // keeping each Spring face edge-connected (a thinner patch pinches).
         let mut spring_cells: Vec<usize> = chain.iter().take(2).copied().collect();
         if let [a, b, ..] = spring_cells.as_slice()
-            && let Some(third) = grid.cell_neighbors_index(*a).iter().find(|candidate| {
-                candidate.index() != *a
-                    && candidate.index() != *b
-                    && grid.cell_neighbors_index(*b).contains(candidate)
-            })
+            && let Some(third) = grid
+                .cell_neighbors(CellId::new(*a))
+                .iter()
+                .find(|candidate| {
+                    candidate.index() != *a
+                        && candidate.index() != *b
+                        && grid.cell_neighbors(CellId::new(*b)).contains(candidate)
+                })
         {
             spring_cells.push(third.index());
         }
@@ -74,12 +77,13 @@ pub(super) fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
                 continue;
             };
             let cell_index = grid
-                .face_cells_index(face_index)
+                .face_cells(FaceId::new(face_index))
+                .map(CellId::index)
                 .into_iter()
                 .max_by(|&a, &b| {
-                    grid.cell_direction_index(a)
+                    grid.cell_direction(CellId::new(a))
                         .dot(p)
-                        .partial_cmp(&grid.cell_direction_index(b).dot(p))
+                        .partial_cmp(&grid.cell_direction(CellId::new(b)).dot(p))
                         .unwrap()
                 })
                 .unwrap();
@@ -88,7 +92,7 @@ pub(super) fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
             }
             if let Some(&prev) = c.last()
                 && !grid
-                    .cell_neighbors_index(prev)
+                    .cell_neighbors(CellId::new(prev))
                     .iter()
                     .any(|neighbor| neighbor.index() == cell_index)
             {
@@ -159,10 +163,13 @@ pub(super) fn normalize_water_bodies(grid: &Grid, terrain: &TerrainGen, cells: &
         .filter(|&cell_index| {
             cells[cell_index].is_water()
                 && !lake_zone[cell_index]
-                && grid.cell_neighbors_index(cell_index).iter().any(|nb| {
-                    let nb = nb.index();
-                    cells[nb].is_water() && lake_zone[nb]
-                })
+                && grid
+                    .cell_neighbors(CellId::new(cell_index))
+                    .iter()
+                    .any(|nb| {
+                        let nb = nb.index();
+                        cells[nb].is_water() && lake_zone[nb]
+                    })
         })
         .collect();
     for cell_index in dams {
@@ -371,12 +378,13 @@ pub(super) fn size_range(t: Terrain) -> (usize, usize) {
 /// Nearest cell to a point: the closest corner of the face under it.
 pub(super) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
     let face_index = grid.planet.face_at(p.0)?;
-    grid.face_cells_index(face_index)
+    grid.face_cells(FaceId::new(face_index))
+        .map(CellId::index)
         .into_iter()
         .max_by(|&a, &b| {
-            grid.cell_direction_index(a)
+            grid.cell_direction(CellId::new(a))
                 .dot(p.0)
-                .partial_cmp(&grid.cell_direction_index(b).dot(p.0))
+                .partial_cmp(&grid.cell_direction(CellId::new(b)).dot(p.0))
                 .unwrap()
         })
 }
@@ -394,7 +402,7 @@ pub(super) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
 /// surrounding landform so each is a coherent cluster.
 pub(super) fn classify_landform(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     let e: Vec<f32> = (0..grid.cell_count())
-        .map(|cell_index| terrain.elevation_at(grid.cell_position_index(cell_index)))
+        .map(|cell_index| terrain.elevation_at(grid.cell_position(CellId::new(cell_index))))
         .collect();
     let mut lf = vec![LANDFORM_WATER; grid.cell_count()];
     for cell_index in 0..grid.cell_count() {
@@ -459,7 +467,7 @@ pub(super) fn classify_cover(
     landform: &[u8],
     cell_index: usize,
 ) -> Terrain {
-    let pos = grid.cell_position_index(cell_index);
+    let pos = grid.cell_position(CellId::new(cell_index));
     let e = terrain.elevation_at(pos);
     match cell_zone(grid, terrain, cell_index) {
         crate::zones::ZoneKind::Ocean => Terrain::Ocean,
@@ -546,14 +554,15 @@ pub(super) const SLOPE_CLIFF_MAX: f32 = 0.90; // ~42°: steep/cliff (impassable)
 /// mountains) and escarpments (cliff cells) fall out of it automatically.
 pub(super) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> Vec<u8> {
     let alt: Vec<f32> = (0..grid.cell_count())
-        .map(|cell_index| terrain.altitude(grid.cell_position_index(cell_index)))
+        .map(|cell_index| terrain.altitude(grid.cell_position(CellId::new(cell_index))))
         .collect();
     (0..grid.cell_count())
         .map(|cell_index| {
-            let a = grid.cell_direction_index(cell_index);
+            let a = grid.cell_direction(CellId::new(cell_index));
             let mut worst = 0.0f32;
             for nb in cell_neighbor_indices(grid, cell_index) {
-                let dist = a.distance(grid.cell_direction_index(nb)) * crate::sphere::PLANET_RADIUS;
+                let dist =
+                    a.distance(grid.cell_direction(CellId::new(nb))) * crate::sphere::PLANET_RADIUS;
                 if dist > 1.0 {
                     worst = worst.max((alt[cell_index] - alt[nb]).abs() / dist);
                 }
@@ -583,7 +592,7 @@ pub(super) fn classify_water_depth(
             if !cells[cell_index].is_water() {
                 return DEPTH_SHALLOW;
             }
-            let e = terrain.elevation_at(grid.cell_position_index(cell_index));
+            let e = terrain.elevation_at(grid.cell_position(CellId::new(cell_index)));
             bucket(-e, &[0.20, 0.55])
         })
         .collect()

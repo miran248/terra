@@ -80,41 +80,25 @@ field!(FaceField, FaceId);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct CellSet(Vec<u64>);
 
-pub(super) trait CellIndex {
-    fn cell_index(self) -> usize;
-}
-
-impl CellIndex for CellId {
-    fn cell_index(self) -> usize {
-        self.index()
-    }
-}
-
-impl CellIndex for usize {
-    fn cell_index(self) -> usize {
-        self
-    }
-}
-
 impl CellSet {
     pub(super) fn new(cell_count: usize) -> Self {
         Self(vec![0; cell_count.div_ceil(64)])
     }
 
-    pub(super) fn insert(&mut self, cell: impl CellIndex) {
-        let index = cell.cell_index();
+    pub(super) fn insert(&mut self, cell: CellId) {
+        let index = cell.index();
         self.0[index >> 6] |= 1u64 << (index & 63);
     }
 
-    pub(super) fn contains(&self, cell: impl CellIndex) -> bool {
-        let index = cell.cell_index();
+    pub(super) fn contains(&self, cell: CellId) -> bool {
+        let index = cell.index();
         self.0
             .get(index >> 6)
             .is_some_and(|word| word & (1u64 << (index & 63)) != 0)
     }
 
-    pub(super) fn remove(&mut self, cell: impl CellIndex) {
-        let index = cell.cell_index();
+    pub(super) fn remove(&mut self, cell: CellId) {
+        let index = cell.index();
         self.0[index >> 6] &= !(1u64 << (index & 63));
     }
 }
