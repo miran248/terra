@@ -40,7 +40,6 @@ pub struct Grid {
     /// Canonical unit direction per vertex (cell center).
     verts: Vec<Vec3>,
     /// The 3 cell ids at each face's corners.
-    face_verts: Vec<[u32; 3]>,
     /// Hexagonal cell adjacency: 5–6 edge-linked neighbor cells.
     vert_adj: Vec<Vec<u32>>,
     nv: usize,
@@ -55,44 +54,21 @@ impl Grid {
         let planet = PlanetMesh::new(unit_tris.clone());
         let n = unit_tris.len();
 
-        // Canonical vertex ids (exact-bit key: subdivision emits identical floats).
-        let mut vmap: BTreeMap<[u64; 3], u32> = BTreeMap::new();
-        let mut verts: Vec<Vec3> = Vec::new();
-        let mut face_verts: Vec<[u32; 3]> = Vec::with_capacity(n);
-        for tri in &unit_tris {
-            let mut idx = [0u32; 3];
-            for (k, v) in tri.iter().enumerate() {
-                let key = [v.x.to_bits() as u64, v.y.to_bits() as u64, v.z.to_bits() as u64];
-                idx[k] = *vmap.entry(key).or_insert_with(|| {
-                    verts.push(v.normalize());
-                    (verts.len() - 1) as u32
-                });
-            }
-            face_verts.push(idx);
-        }
-        let nv = verts.len();
-        let mut vert_adj: Vec<Vec<u32>> = vec![Vec::new(); nv];
-        for idx in &face_verts {
-            for k in 0..3 {
-                let (a, b) = (idx[k], idx[(k + 1) % 3]);
-                if !vert_adj[a as usize].contains(&b) {
-                    vert_adj[a as usize].push(b);
-                    vert_adj[b as usize].push(a);
-                }
-            }
-        }
-        for l in &mut vert_adj {
-            l.sort_unstable();
-        }
-        debug_assert!(vert_adj.iter().all(|a| (5..=6).contains(&a.len())), "hex adjacency broken");
-
         let topology_tris: Vec<[[f32; 3]; 3]> = unit_tris.iter()
             .map(|triangle| triangle.map(|position| position.to_array()))
             .collect();
         let topology = TerrainTopology::from_triangles(&topology_tris);
+        let verts: Vec<Vec3> = topology.cells()
+            .map(|cell| Vec3::from_array(topology.cell_position(cell)).normalize())
+            .collect();
+        let vert_adj: Vec<Vec<u32>> = topology.cells()
+            .map(|cell| topology.cell_neighbors(cell).iter().map(|neighbor| neighbor.index() as u32).collect())
+            .collect();
+        let nv = topology.cell_count();
+        debug_assert!(vert_adj.iter().all(|a| (5..=6).contains(&a.len())), "hex adjacency broken");
         debug_assert_eq!(topology.cell_count(), nv);
         debug_assert_eq!(topology.face_count(), n);
-        Self { seed, unit_tris, planet, n, verts, face_verts, vert_adj, nv, topology }
+        Self { seed, unit_tris, planet, n, verts, vert_adj, nv, topology }
     }
 
     pub fn centroid(&self, fi: usize) -> SpherePos {
@@ -113,6 +89,12 @@ impl Grid {
             .face_neighbors(self.topology.face(face).expect("face index from topology range"))
             .map(|neighbor| neighbor.index())
     }
+
+    fn face_cells(&self, face: usize) -> [usize; 3] {
+        self.topology
+            .face_cells(self.topology.face(face).expect("face index from topology range"))
+            .map(|cell| cell.index())
+    }
 }
 
 /// Face render type from its 3 corner cells: two agreeing corners win; a
@@ -120,8 +102,9 @@ impl Grid {
 /// present, else water, else the lowest discriminant — deterministic and
 /// conservative at waterlines.
 pub fn derive_tiles(grid: &Grid, cells: &[Terrain]) -> Vec<Terrain> {
-    grid.face_verts.iter().map(|idx| {
-        derive_one(cells[idx[0] as usize], cells[idx[1] as usize], cells[idx[2] as usize])
+    grid.topology.faces().map(|face| {
+        let idx = grid.face_cells(face.index());
+        derive_one(cells[idx[0]], cells[idx[1]], cells[idx[2]])
     }).collect()
 }
 
@@ -154,12 +137,12 @@ fn ring(grid: &Grid, v: usize) -> Vec<usize> {
     loop {
         let cell = grid.topology.cell(v).expect("cell index from topology range");
         let next = grid.topology.cell_faces(cell).iter().find_map(|&face| {
-            let idx = grid.face_verts[face.index()];
-            if !idx.contains(&(cur as u32)) {
+            let idx = grid.face_cells(face.index());
+            if !idx.contains(&cur) {
                 return None;
             }
-            let third = *idx.iter().find(|&&x| x as usize != v && x as usize != cur)?;
-            (!out.contains(&(third as usize))).then_some(third as usize)
+            let third = *idx.iter().find(|&&x| x != v && x != cur)?;
+            (!out.contains(&third)).then_some(third)
         });
         match next {
             Some(t) => {
@@ -341,7 +324,7 @@ impl Painted {
 
 /// How many of a face's corner cells are in the set.
 fn painted_corners(grid: &Grid, bits: &BitSet, fi: usize) -> usize {
-    grid.face_verts[fi].iter().filter(|&&vi| bits.contains(vi as usize)).count()
+    grid.face_cells(fi).iter().filter(|&&cell| bits.contains(cell)).count()
 }
 
 /// A face is a solid feature surface only when the feature owns ALL its
@@ -740,8 +723,8 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
         }
         Command::BakeOutputs => {
             let road_material = (0..state.grid.n).map(|fi| {
-                let solid = state.grid.face_verts[fi].iter()
-                    .filter(|&&vi| state.painted.roads.contains(vi as usize)).count() == 3;
+                let solid = state.grid.face_cells(fi).iter()
+                    .filter(|&&cell| state.painted.roads.contains(cell)).count() == 3;
                 if solid {
                     face_road_material(
                         &state.grid, &state.cells, &state.landform, &state.slope_class, fi,
@@ -945,12 +928,12 @@ fn cell_chain(grid: &Grid, points: &[SpherePos]) -> Vec<usize> {
         for k in 0..=steps {
             let p = seg[0].0.lerp(seg[1].0, k as f32 / steps as f32).normalize();
             let Some(fi) = grid.planet.face_at(p) else { continue };
-            let vi = grid.face_verts[fi].iter().copied()
+            let vi = grid.face_cells(fi).into_iter()
                 .max_by(|&a, &b| {
-                    grid.verts[a as usize].dot(p)
-                        .partial_cmp(&grid.verts[b as usize].dot(p)).unwrap()
+                    grid.verts[a].dot(p)
+                        .partial_cmp(&grid.verts[b].dot(p)).unwrap()
                 })
-                .unwrap() as usize;
+                .unwrap();
             if c.last() == Some(&vi) {
                 continue;
             }
@@ -1227,12 +1210,11 @@ fn size_range(t: Terrain) -> (usize, usize) {
 /// Nearest cell to a point: the closest corner of the face under it.
 fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<usize> {
     let fi = grid.planet.face_at(p.0)?;
-    grid.face_verts[fi].iter().copied()
+    grid.face_cells(fi).into_iter()
         .max_by(|&a, &b| {
-            grid.verts[a as usize].dot(p.0)
-                .partial_cmp(&grid.verts[b as usize].dot(p.0)).unwrap()
+            grid.verts[a].dot(p.0)
+                .partial_cmp(&grid.verts[b].dot(p.0)).unwrap()
         })
-        .map(|vi| vi as usize)
 }
 
 /// Lattice-aligned routing: A* over cells where changing direction costs
@@ -1478,14 +1460,14 @@ fn widen(grid: &Grid, chain: &[usize], both_sides: bool) -> Vec<usize> {
         let left = grid.verts[a].cross(grid.verts[b]);
         let cell = grid.topology.cell(a).expect("cell index from topology range");
         for &face in grid.topology.cell_faces(cell) {
-            let idx = grid.face_verts[face.index()];
-            if !idx.contains(&(b as u32)) {
+            let idx = grid.face_cells(face.index());
+            if !idx.contains(&b) {
                 continue;
             }
-            let third = idx.iter().find(|&&v| v as usize != a && v as usize != b).unwrap();
-            let side_ok = both_sides || grid.verts[*third as usize].dot(left) > 0.0;
-            if side_ok && !out.contains(&(*third as usize)) {
-                out.push(*third as usize);
+            let third = idx.iter().find(|&&v| v != a && v != b).unwrap();
+            let side_ok = both_sides || grid.verts[*third].dot(left) > 0.0;
+            if side_ok && !out.contains(third) {
+                out.push(*third);
             }
         }
     }
@@ -1716,8 +1698,7 @@ fn build_bridges(
         }
         for end in [span.first(), span.last()] {
             let Some(fi) = end.and_then(|p| grid.planet.face_at(p.0)) else { continue };
-            for &vi in &grid.face_verts[fi] {
-                let vi = vi as usize;
+            for vi in grid.face_cells(fi) {
                 if cells[vi].is_land() {
                     painted.bridge_entries.insert(vi);
                     for &nb in &grid.vert_adj[vi] {
@@ -2072,8 +2053,8 @@ fn mark_blends(grid: &Grid, cells: &[Terrain], tiles: &[Terrain], painted: &Pain
         // the linking tile between its kind and the most present other LAND
         // kind (water transitions are the shore band's job).
         let mut counts: BTreeMap<u8, usize> = BTreeMap::new();
-        for &vi in &grid.face_verts[fi] {
-            let t = cells[vi as usize];
+        for vi in grid.face_cells(fi) {
+            let t = cells[vi];
             if plain(t) && t != tiles[fi] {
                 *counts.entry(t as u8).or_default() += 1;
             }
@@ -2509,21 +2490,21 @@ pub fn water_surface_radii(grid: &Grid, terrain: &TerrainGen, cells: &[Terrain])
 
     (0..grid.n)
         .map(|fi| {
-            let idx = grid.face_verts[fi];
+            let idx = grid.face_cells(fi);
             // Sea: any corner in a real sea body (coast overdraw hidden by depth).
             let oc = idx.map(|cell| {
-                ocean_components.cell(grid.topology.cell(cell as usize).unwrap())
+                ocean_components.cell(grid.topology.cell(cell).unwrap())
             });
             if oc.iter().flatten().any(|component| is_sea[component.index()]) {
                 return sea_r;
             }
             // Lake: any corner on a lake body's Lake tiles, and no solid-land
             // corner (so it fills to the shore but never spills onto land).
-            if idx.iter().any(|&vi| cells[vi as usize].is_land_biome()) {
+            if idx.iter().any(|&cell| cells[cell].is_land_biome()) {
                 return 0.0;
             }
             match idx.iter().find_map(|&vi| {
-                lake_components.cell(grid.topology.cell(vi as usize).unwrap())
+                lake_components.cell(grid.topology.cell(vi).unwrap())
             }) {
                 Some(component) => lake_r[component.index()],
                 None => 0.0,
@@ -2782,7 +2763,7 @@ pub fn river_surface_radii(
 
 pub fn face_max(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.n)
-        .map(|fi| grid.face_verts[fi].iter().map(|&vi| per_cell[vi as usize]).max().unwrap_or(0))
+        .map(|fi| grid.face_cells(fi).into_iter().map(|cell| per_cell[cell]).max().unwrap_or(0))
         .collect()
 }
 
@@ -2792,8 +2773,8 @@ pub fn face_majority(grid: &Grid, per_cell: &[u8]) -> Vec<u8> {
     (0..grid.n)
         .map(|fi| {
             let mut c: BTreeMap<u8, usize> = BTreeMap::new();
-            for &vi in &grid.face_verts[fi] {
-                *c.entry(per_cell[vi as usize]).or_default() += 1;
+            for cell in grid.face_cells(fi) {
+                *c.entry(per_cell[cell]).or_default() += 1;
             }
             c.into_iter().max_by_key(|(_, n)| *n).map(|(k, _)| k).unwrap_or(0)
         })
@@ -2810,8 +2791,7 @@ pub fn face_road_material(
     let mut sand = false;
     let mut rock = false;
     let mut soil = false;
-    for &vi in &grid.face_verts[fi] {
-        let vi = vi as usize;
+    for vi in grid.face_cells(fi) {
         match cells[vi] {
             Terrain::Desert | Terrain::Beach | Terrain::Savanna => sand = true,
             Terrain::Mountain | Terrain::Volcanic | Terrain::Cliff => rock = true,
@@ -2863,7 +2843,8 @@ fn build_mesh(
     let entry_color = bevy::prelude::Color::srgb(0.42, 0.33, 0.24).to_linear().to_f32_array();
     let mut tris = Vec::with_capacity(grid.n);
     let mut cols = Vec::with_capacity(grid.n);
-    for (fi, idx) in grid.face_verts.iter().enumerate() {
+    for fi in 0..grid.n {
+        let idx = grid.face_cells(fi);
         // Features are built structures: a face the feature OWNS (≥2 painted
         // corners — the two-triangle quads along the painted cell chain)
         // renders solid with a hard edge. Faces with exactly one painted
@@ -3141,8 +3122,8 @@ fn place_structures(
     };
     // A structure needs buildable ground: skip any face with a steep/cliff
     // corner (watchtowers on a ridge are the exception — handled below).
-    let buildable = |fi: usize| grid.face_verts[fi].iter()
-        .all(|&vi| slope_walkable(slope_class[vi as usize]));
+    let buildable = |fi: usize| grid.face_cells(fi).into_iter()
+        .all(|cell| slope_walkable(slope_class[cell]));
     for fi in 0..grid.n {
         if tiles[fi].is_water() || !buildable(fi) {
             continue;
@@ -3398,11 +3379,11 @@ fn owner_of<T: Copy>(grid: &Grid, terrain: &TerrainGen, per_cell: &[T], default:
                 Some(&ci) => per_cell[ci as usize],
                 None => grid.planet.face_at(d)
                     .map(|fi| {
-                        let best = grid.face_verts[fi].iter().copied()
-                            .max_by(|&a, &b| grid.verts[a as usize].dot(d)
-                                .partial_cmp(&grid.verts[b as usize].dot(d)).unwrap())
+                        let best = grid.face_cells(fi).into_iter()
+                            .max_by(|&a, &b| grid.verts[a].dot(d)
+                                .partial_cmp(&grid.verts[b].dot(d)).unwrap())
                             .unwrap();
-                        per_cell[best as usize]
+                        per_cell[best]
                     })
                     .unwrap_or(default),
             }
@@ -3992,8 +3973,8 @@ mod tests {
             }
         }
         for fi in 0..state.grid.n {
-            let solid = state.grid.face_verts[fi].iter()
-                .filter(|&&vi| state.painted.roads.contains(vi as usize))
+            let solid = state.grid.face_cells(fi).iter()
+                .filter(|&&cell| state.painted.roads.contains(cell))
                 .count() == 3;
             if solid {
                 assert!(state.tiles[fi].is_land(), "solid road face on water tile {fi}");
@@ -4021,11 +4002,11 @@ mod tests {
                 // is genuinely gentle — a bridge never lands on steep ground,
                 // whatever the biome. (An omnidirectional slope at the exact
                 // water's-edge end would just read the natural bank drop.)
-                let cell = state.grid.face_verts[fi].iter().copied()
-                    .max_by(|&a, &b| state.grid.verts[a as usize].dot(end.0)
-                        .partial_cmp(&state.grid.verts[b as usize].dot(end.0)).unwrap())
+                let cell = state.grid.face_cells(fi).into_iter()
+                    .max_by(|&a, &b| state.grid.verts[a].dot(end.0)
+                        .partial_cmp(&state.grid.verts[b].dot(end.0)).unwrap())
                     .unwrap();
-                let slope = terrain.slope(state.grid.cell_position(cell as usize));
+                let slope = terrain.slope(state.grid.cell_position(cell));
                 assert!(slope < 0.3, "bridge anchor on steep ground: slope {slope}");
             }
         }
@@ -4037,9 +4018,9 @@ mod tests {
         // solid feature faces obey the same fan rule.
         {
             for fi in 0..state.grid.n {
-                let corners = state.grid.face_verts[fi];
+                let corners = state.grid.face_cells(fi);
                 assert!(
-                    corners.iter().any(|&vi| state.cells[vi as usize] == state.tiles[fi]),
+                    corners.iter().any(|&cell| state.cells[cell] == state.tiles[fi]),
                     "face {fi} derived {:?} not among its corner cells",
                     state.tiles[fi]
                 );
@@ -4391,7 +4372,7 @@ mod tests {
                 if !matches!(state.tiles[fi], Terrain::River | Terrain::RiverSpring) {
                     continue;
                 }
-                if !state.grid.face_verts[fi].iter().any(|&vi| comp.contains(&(vi as usize))) {
+                if !state.grid.face_cells(fi).iter().any(|cell| comp.contains(cell)) {
                     continue;
                 }
                 for nb in state.grid.face_neighbors(fi) {
@@ -4418,8 +4399,9 @@ mod tests {
         let grid = &state.grid;
 
         // (a) each undirected edge belongs to exactly two faces.
-        let mut edge_faces: BTreeMap<(u32, u32), u32> = BTreeMap::new();
-        for idx in &grid.face_verts {
+        let mut edge_faces: BTreeMap<(usize, usize), u32> = BTreeMap::new();
+        for fi in 0..grid.n {
+            let idx = grid.face_cells(fi);
             for k in 0..3 {
                 let (a, b) = (idx[k], idx[(k + 1) % 3]);
                 let key = if a < b { (a, b) } else { (b, a) };
@@ -4449,8 +4431,8 @@ mod tests {
                     }
                     // Adjacent in the fan iff they share an edge through v
                     // (two common vertices).
-                    let fi = grid.face_verts[faces[i].index()];
-                    let fj = grid.face_verts[faces[j].index()];
+                    let fi = grid.face_cells(faces[i].index());
+                    let fj = grid.face_cells(faces[j].index());
                     let shared = fi.iter().filter(|x| fj.contains(x)).count();
                     if shared == 2 {
                         seen[j] = true;
