@@ -43,12 +43,7 @@ fn serialize(state: &GenState, out: &PathBuf) {
         unit_tris: unit_tris_arr,
         face_types: state.tiles.iter().map(|t| *t as u8).collect(),
         face_water_r: state.water_r.clone(),
-        face_river_r: shared::worldgen::river_surface_radii(
-            &state.grid,
-            &state.mesh_tris,
-            &state.tiles,
-            &state.water_r,
-        ),
+        face_river_r: state.river_r.clone(),
         face_blend: state.blends.clone(),
         face_tag_off: state.tag_off.clone(),
         face_tag_data: state.tag_data.clone(),
@@ -58,16 +53,10 @@ fn serialize(state: &GenState, out: &PathBuf) {
         face_region: state.face_region.clone(),
         flora: state.flora.clone(),
         structures: state.structures.clone(),
-        // Per-FACE slope class = steepest corner cell (conservative for
-        // walkability/rendering).
-        slope_class: shared::worldgen::face_max(&state.grid, &state.slope_class),
-        water_depth: shared::worldgen::face_max(&state.grid, &state.water_depth),
-        landform: shared::worldgen::face_majority(&state.grid, &state.landform),
-        road_material: (0..state.grid.n).map(|fi| {
-            let solid = state.grid.face_verts[fi].iter()
-                .filter(|&&vi| state.painted.roads.contains(vi as usize)).count() == 3;
-            if solid { shared::worldgen::face_road_material(&state.grid, &state.cells, &state.landform, &state.slope_class, fi) } else { 0 }
-        }).collect(),
+        slope_class: state.face_slope_class.clone(),
+        water_depth: state.face_water_depth.clone(),
+        landform: state.face_landform.clone(),
+        road_material: state.face_road_material.clone(),
     };
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());

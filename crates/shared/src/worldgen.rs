@@ -16,6 +16,7 @@ use crate::level::{FloraData, RegionData, RegionKind, StructureData, SLOPE_CLIFF
 use crate::planet::{build_face_adjacency, unit_icosphere_tris, PlanetMesh};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
+use crate::topology::TerrainTopology;
 use crate::wfc;
 use crate::zones::FINE_SUB;
 
@@ -35,17 +36,20 @@ pub struct Grid {
     pub seed: u32,
     pub unit_tris: Vec<[Vec3; 3]>,
     pub planet: PlanetMesh,
-    pub adj: Vec<[u32; 3]>,
+    adj: Vec<[u32; 3]>,
     pub n: usize,
     /// Canonical unit direction per vertex (cell center).
-    pub verts: Vec<Vec3>,
+    verts: Vec<Vec3>,
     /// The 3 cell ids at each face's corners.
-    pub face_verts: Vec<[u32; 3]>,
+    face_verts: Vec<[u32; 3]>,
     /// Hexagonal cell adjacency: 5–6 edge-linked neighbor cells.
-    pub vert_adj: Vec<Vec<u32>>,
+    vert_adj: Vec<Vec<u32>>,
     /// The face fan around each cell (5–6 faces).
-    pub vert_faces: Vec<Vec<u32>>,
+    vert_faces: Vec<Vec<u32>>,
     pub nv: usize,
+    /// Typed project-owned connectivity. New traversal code must use this;
+    /// legacy arrays remain temporarily for geometry-heavy generation code.
+    pub topology: TerrainTopology,
 }
 
 impl Grid {
@@ -89,7 +93,13 @@ impl Grid {
         }
         debug_assert!(vert_adj.iter().all(|a| (5..=6).contains(&a.len())), "hex adjacency broken");
 
-        Self { seed, unit_tris, planet, adj, n, verts, face_verts, vert_adj, vert_faces, nv }
+        let topology_tris: Vec<[[f32; 3]; 3]> = unit_tris.iter()
+            .map(|triangle| triangle.map(|position| position.to_array()))
+            .collect();
+        let topology = TerrainTopology::from_triangles(&topology_tris);
+        debug_assert_eq!(topology.cell_count(), nv);
+        debug_assert_eq!(topology.face_count(), n);
+        Self { seed, unit_tris, planet, adj, n, verts, face_verts, vert_adj, vert_faces, nv, topology }
     }
 
     pub fn centroid(&self, fi: usize) -> SpherePos {
@@ -359,6 +369,9 @@ pub struct GenState {
     pub face_region: Vec<u32>,
     /// Per-face water-surface radius (0.0 = dry), clustered once (sea + lakes).
     pub water_r: Vec<f32>,
+    /// Generation-baked per-corner river surface. Runtime and serializers do
+    /// not derive river topology.
+    pub river_r: Vec<[f32; 3]>,
     pub mesh_tris: Vec<[[f32; 3]; 3]>,
     pub mesh_colors: Vec<[[f32; 4]; 3]>,
     pub tag_off: Vec<u32>,
@@ -374,6 +387,11 @@ pub struct GenState {
     pub water_depth: Vec<u8>,
     /// Per-cell macro landform (LANDFORM_*), from the proposed field.
     pub landform: Vec<u8>,
+    /// Final cell-to-face projections consumed by `LevelData`.
+    pub face_slope_class: Vec<u8>,
+    pub face_water_depth: Vec<u8>,
+    pub face_landform: Vec<u8>,
+    pub face_road_material: Vec<u8>,
 }
 
 impl GenState {
@@ -392,6 +410,7 @@ impl GenState {
             regions: Vec::new(),
             face_region: Vec::new(),
             water_r: Vec::new(),
+            river_r: Vec::new(),
             mesh_tris: Vec::new(),
             mesh_colors: Vec::new(),
             tag_off: Vec::new(),
@@ -401,6 +420,10 @@ impl GenState {
             slope_class: Vec::new(),
             water_depth: Vec::new(),
             landform: Vec::new(),
+            face_slope_class: Vec::new(),
+            face_water_depth: Vec::new(),
+            face_landform: Vec::new(),
+            face_road_material: Vec::new(),
         }
     }
 
@@ -462,6 +485,9 @@ pub enum Command {
     ClassifySlope,
     /// Per-cell macro landform from the proposed field (base layer).
     ClassifyLandform,
+    /// Bake every face projection and river geometry field after cell-owned
+    /// state and physical mesh output are final.
+    BakeOutputs,
 }
 
 pub enum Event {
@@ -487,6 +513,13 @@ pub enum Event {
     StructuresPlaced(Vec<StructureData>),
     SlopeClassified(Vec<u8>, Vec<u8>),
     LandformClassified(Vec<u8>),
+    OutputsBaked {
+        river_r: Vec<[f32; 3]>,
+        slope: Vec<u8>,
+        depth: Vec<u8>,
+        landform: Vec<u8>,
+        road_material: Vec<u8>,
+    },
 }
 
 impl Event {
@@ -529,6 +562,10 @@ impl Event {
                 let mtn = lf.iter().filter(|&&l| l == LANDFORM_MOUNTAINS || l == LANDFORM_PLATEAU).count();
                 format!("landform classified: {mtn} mountain/plateau cells")
             }
+            Event::OutputsBaked { river_r, .. } => format!(
+                "face outputs baked: {} river faces",
+                river_r.iter().filter(|r| **r != [0.0; 3]).count()
+            ),
         }
     }
 }
@@ -648,6 +685,28 @@ pub fn decide(state: &GenState, cmd: &Command) -> Vec<Event> {
                 &state.slope_class, &state.mesh_tris,
             ))]
         }
+        Command::BakeOutputs => {
+            let road_material = (0..state.grid.n).map(|fi| {
+                let solid = state.grid.face_verts[fi].iter()
+                    .filter(|&&vi| state.painted.roads.contains(vi as usize)).count() == 3;
+                if solid {
+                    face_road_material(
+                        &state.grid, &state.cells, &state.landform, &state.slope_class, fi,
+                    )
+                } else {
+                    0
+                }
+            }).collect();
+            vec![Event::OutputsBaked {
+                river_r: river_surface_radii(
+                    &state.grid, &state.mesh_tris, &state.tiles, &state.water_r,
+                ),
+                slope: face_max(&state.grid, &state.slope_class),
+                depth: face_max(&state.grid, &state.water_depth),
+                landform: face_majority(&state.grid, &state.landform),
+                road_material,
+            }]
+        }
     }
 }
 
@@ -708,6 +767,13 @@ pub fn evolve(mut state: GenState, event: Event) -> GenState {
             state.water_depth = wd;
         }
         Event::LandformClassified(lf) => state.landform = lf,
+        Event::OutputsBaked { river_r, slope, depth, landform, road_material } => {
+            state.river_r = river_r;
+            state.face_slope_class = slope;
+            state.face_water_depth = depth;
+            state.face_landform = landform;
+            state.face_road_material = road_material;
+        }
     }
     state
 }
@@ -745,7 +811,8 @@ pub fn react(event: &Event) -> Vec<Command> {
         Event::MeshBuilt(..) => vec![Command::BuildTags],
         Event::TagsBuilt(..) => vec![Command::PlaceFlora],
         Event::FloraPlaced(_) => vec![Command::PlaceStructures],
-        Event::StructuresPlaced(_) => vec![],
+        Event::StructuresPlaced(_) => vec![Command::BakeOutputs],
+        Event::OutputsBaked { .. } => vec![],
     }
 }
 
@@ -1617,7 +1684,7 @@ fn build_bridges(
     };
 
     // Commit a bridge between two bank cells if it clears the spacing rule.
-    let mut commit = |a: usize, b: usize, max_span: f32, spans: &mut Vec<Vec<SpherePos>>,
+    let commit = |a: usize, b: usize, max_span: f32, spans: &mut Vec<Vec<SpherePos>>,
                       mids: &mut Vec<SpherePos>, painted: &mut Painted| -> bool {
         let (pa, pb) = (grid.vert_pos(a), grid.vert_pos(b));
         let d = pa.distance(pb);
@@ -2041,42 +2108,19 @@ fn flood<I: IntoIterator<Item = usize>>(
 fn vert_nbrs(grid: &Grid, v: usize) -> impl Iterator<Item = usize> + '_ {
     grid.vert_adj[v].iter().map(|&x| x as usize)
 }
-fn face_nbrs(grid: &Grid, f: usize) -> impl Iterator<Item = usize> + '_ {
-    grid.adj[f].iter().map(|&x| x as usize)
-}
 
 /// Single-component flood over the VERTEX grid (the common case).
 fn flood_cells(grid: &Grid, start: usize, visited: &mut [bool], member: impl Fn(usize) -> bool) -> Vec<usize> {
     flood(start, visited, |c| vert_nbrs(grid, c), member)
 }
 
-/// Full-partition clustering over an arbitrary adjacency: labels every member
-/// node with its component id (-1 otherwise). `cluster_vertices` / `cluster_faces`
-/// are the grid-specific wrappers.
-fn clusters<I: IntoIterator<Item = usize>>(
-    n: usize,
-    neighbors: impl Fn(usize) -> I,
-    member: impl Fn(usize) -> bool,
-) -> (Vec<i32>, usize) {
-    let mut comp = vec![-1i32; n];
-    let mut visited = vec![false; n];
-    let mut count = 0usize;
-    for start in 0..n {
-        if visited[start] || !member(start) {
-            continue;
-        }
-        let id = count as i32;
-        count += 1;
-        for v in flood(start, &mut visited, &neighbors, &member) {
-            comp[v] = id;
-        }
-    }
-    (comp, count)
-}
-
 /// Cluster grid FACES into connected components (shared-edge adjacency).
 pub fn cluster_faces(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32>, usize) {
-    clusters(grid.n, |f| face_nbrs(grid, f), member)
+    let labels = grid.topology.face_components(|face| member(face.index()));
+    let out = grid.topology.faces().map(|face| {
+        labels.face(face).map_or(-1, |component| component.index() as i32)
+    }).collect();
+    (out, labels.count())
 }
 
 /// A contiguous cluster of equal values below its minimum size is speckle: it
@@ -2164,29 +2208,14 @@ fn smooth_coast_band(grid: &Grid, out: &mut [Terrain]) {
 /// BFS distance (in cell steps, capped at `max_dist`) from each land cell to the
 /// nearest water cell, plus which water terrain is nearest (for shore tile choice).
 fn water_distance(grid: &Grid, base: &[Terrain], max_dist: u8) -> (Vec<u8>, Vec<Option<Terrain>>) {
-    let mut dist = vec![u8::MAX; grid.nv];
-    let mut kind: Vec<Option<Terrain>> = vec![None; grid.nv];
-    let mut q = VecDeque::new();
-    for vi in 0..grid.nv {
-        if base[vi].is_water() {
-            dist[vi] = 0;
-            kind[vi] = Some(base[vi]);
-            q.push_back(vi);
-        }
-    }
-    while let Some(cur) = q.pop_front() {
-        if dist[cur] >= max_dist {
-            continue;
-        }
-        for &nb in &grid.vert_adj[cur] {
-            let nb = nb as usize;
-            if dist[nb] == u8::MAX {
-                dist[nb] = dist[cur] + 1;
-                kind[nb] = kind[cur];
-                q.push_back(nb);
-            }
-        }
-    }
+    let sources: Vec<_> = grid.topology.cells().filter(|cell| base[cell.index()].is_water()).collect();
+    let field = grid.topology.cell_distances(&sources, u32::from(max_dist));
+    let dist = grid.topology.cells().map(|cell| {
+        field.cell_steps(cell).map_or(u8::MAX, |steps| steps as u8)
+    }).collect();
+    let kind = grid.topology.cells().map(|cell| {
+        field.nearest_cell(cell).map(|source| base[source.index()])
+    }).collect();
     (dist, kind)
 }
 
@@ -2381,7 +2410,11 @@ fn region_name(kind: RegionKind, idx: usize, cent: Vec3, terrain: &TerrainGen) -
 /// "same id ⇒ same cluster". Run it with different predicates and a vertex can
 /// land in several (overlapping) clusterings.
 pub fn cluster_vertices(grid: &Grid, member: impl Fn(usize) -> bool) -> (Vec<i32>, usize) {
-    clusters(grid.nv, |v| vert_nbrs(grid, v), member)
+    let labels = grid.topology.cell_components(|cell| member(cell.index()));
+    let out = grid.topology.cells().map(|cell| {
+        labels.cell(cell).map_or(-1, |component| component.index() as i32)
+    }).collect();
+    (out, labels.count())
 }
 
 /// Cluster authoritative terrain cells whose type occurs in `types`.

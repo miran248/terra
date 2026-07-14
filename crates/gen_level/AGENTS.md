@@ -19,6 +19,7 @@ CLI tool for precomputing level data. Generates terrain meshes, road networks, s
 - Uses subdivision 4 icosphere (~5k tris) for both visual and physics
 - Bridge faces are raised to `PLANET_RADIUS + 1.5` in the trimesh so collision is seamless
 - Road/town/bridge face coloring is done during precompute (not at load time)
+- All topology derivation and cell-to-face projection completes in `shared::worldgen`; this crate only serializes completed `GenState` artifacts.
 - Run: `cargo run -p gen_level` (writes to default path) or `cargo run -p gen_level -- <output_path>`
 - Change seed: `PLANET_SEED=42 cargo run -p gen_level`
 
