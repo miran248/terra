@@ -142,30 +142,33 @@ impl TerrainTopology {
     pub fn face_centroid(&self, face: FaceId) -> [f32; 3] { self.face_centroids[face.index()] }
 
     pub fn cell_components(&self, member: impl Fn(CellId) -> bool) -> ComponentLabels<CellComponentId> {
-        components(self.cell_count(), CellId::new, |id| self.cell_neighbors(id).to_vec(), member, CellComponentId::new)
+        components(&self.cell_neighbors, CellId::new, member, CellComponentId::new)
     }
     pub fn face_components(&self, member: impl Fn(FaceId) -> bool) -> ComponentLabels<FaceComponentId> {
-        components(self.face_count(), FaceId::new, |id| self.face_neighbors(id), member, FaceComponentId::new)
+        components(&self.face_neighbors, FaceId::new, member, FaceComponentId::new)
     }
     pub fn cell_distances(&self, sources: &[CellId], max_steps: u32) -> DistanceField<CellId> {
-        distances(self.cell_count(), sources, max_steps, |id| self.cell_neighbors(id).to_vec())
+        distances(&self.cell_neighbors, sources, max_steps)
     }
     pub fn face_distances(&self, sources: &[FaceId], max_steps: u32) -> DistanceField<FaceId> {
-        distances(self.face_count(), sources, max_steps, |id| self.face_neighbors(id))
+        distances(&self.face_neighbors, sources, max_steps)
     }
     pub fn cell_shortest_path(&self, start: CellId, goal: CellId, max_steps: u32) -> Option<Vec<CellId>> {
-        shortest_path(self.cell_count(), start, goal, max_steps, |id| self.cell_neighbors(id).to_vec())
+        shortest_path(&self.cell_neighbors, start, goal, max_steps)
     }
     pub fn face_shortest_path(&self, start: FaceId, goal: FaceId, max_steps: u32) -> Option<Vec<FaceId>> {
-        shortest_path(self.face_count(), start, goal, max_steps, |id| self.face_neighbors(id))
+        shortest_path(&self.face_neighbors, start, goal, max_steps)
+    }
+    pub fn cell_shortest_path_to(&self, start: CellId, max_steps: u32, goal: impl Fn(CellId) -> bool) -> Option<Vec<CellId>> {
+        shortest_path_to(&self.cell_neighbors, start, max_steps, goal)
     }
 }
 
-fn components<I: Copy, C: Copy, N: IntoIterator<Item = I>>(n: usize, id: impl Fn(usize) -> I, neighbors: impl Fn(I) -> N, member: impl Fn(I) -> bool, component: impl Fn(usize) -> C) -> ComponentLabels<C>
+fn components<I: Copy + IdIndex, C: Copy>(adjacency: &[impl AsRef<[I]>], id: impl Fn(usize) -> I, member: impl Fn(I) -> bool, component: impl Fn(usize) -> C) -> ComponentLabels<C>
 where I: IdIndex {
-    let mut labels = vec![None; n];
+    let mut labels = vec![None; adjacency.len()];
     let mut count = 0;
-    for index in 0..n {
+    for index in 0..adjacency.len() {
         let start = id(index);
         if labels[index].is_some() || !member(start) { continue; }
         let label = component(count);
@@ -173,7 +176,7 @@ where I: IdIndex {
         labels[index] = Some(label);
         let mut queue = VecDeque::from([start]);
         while let Some(current) = queue.pop_front() {
-            for next in neighbors(current) {
+            for &next in adjacency[current.index()].as_ref() {
                 if labels[next.index()].is_none() && member(next) {
                     labels[next.index()] = Some(label);
                     queue.push_back(next);
@@ -188,9 +191,9 @@ trait IdIndex { fn index(self) -> usize; }
 impl IdIndex for CellId { fn index(self) -> usize { self.index() } }
 impl IdIndex for FaceId { fn index(self) -> usize { self.index() } }
 
-fn distances<I: Copy + IdIndex, N: IntoIterator<Item = I>>(n: usize, sources: &[I], max_steps: u32, neighbors: impl Fn(I) -> N) -> DistanceField<I> {
-    let mut steps = vec![None; n];
-    let mut nearest_source = vec![None; n];
+fn distances<I: Copy + IdIndex>(adjacency: &[impl AsRef<[I]>], sources: &[I], max_steps: u32) -> DistanceField<I> {
+    let mut steps = vec![None; adjacency.len()];
+    let mut nearest_source = vec![None; adjacency.len()];
     let mut queue = VecDeque::new();
     for &source in sources {
         if steps[source.index()].is_none() {
@@ -202,7 +205,7 @@ fn distances<I: Copy + IdIndex, N: IntoIterator<Item = I>>(n: usize, sources: &[
     while let Some(current) = queue.pop_front() {
         let step = steps[current.index()].unwrap();
         if step >= max_steps { continue; }
-        for next in neighbors(current) {
+        for &next in adjacency[current.index()].as_ref() {
             if steps[next.index()].is_none() {
                 steps[next.index()] = Some(step + 1);
                 nearest_source[next.index()] = nearest_source[current.index()];
@@ -213,25 +216,29 @@ fn distances<I: Copy + IdIndex, N: IntoIterator<Item = I>>(n: usize, sources: &[
     DistanceField { steps, nearest_source }
 }
 
-fn shortest_path<I: Copy + Eq + IdIndex, N: IntoIterator<Item = I>>(n: usize, start: I, goal: I, max_steps: u32, neighbors: impl Fn(I) -> N) -> Option<Vec<I>> {
-    let mut predecessor = vec![None; n];
-    let mut steps = vec![u32::MAX; n];
+fn shortest_path<I: Copy + Eq + IdIndex>(adjacency: &[impl AsRef<[I]>], start: I, goal: I, max_steps: u32) -> Option<Vec<I>> {
+    shortest_path_to(adjacency, start, max_steps, |candidate| candidate == goal)
+}
+
+fn shortest_path_to<I: Copy + Eq + IdIndex>(adjacency: &[impl AsRef<[I]>], start: I, max_steps: u32, goal: impl Fn(I) -> bool) -> Option<Vec<I>> {
+    let mut predecessor = vec![None; adjacency.len()];
+    let mut steps = vec![u32::MAX; adjacency.len()];
     predecessor[start.index()] = Some(start);
     steps[start.index()] = 0;
     let mut queue = VecDeque::from([start]);
-    while let Some(current) = queue.pop_front() {
-        if current == goal { break; }
+    let found = loop {
+        let current = queue.pop_front()?;
+        if goal(current) { break current; }
         if steps[current.index()] >= max_steps { continue; }
-        for next in neighbors(current) {
+        for &next in adjacency[current.index()].as_ref() {
             if predecessor[next.index()].is_none() {
                 predecessor[next.index()] = Some(current);
                 steps[next.index()] = steps[current.index()] + 1;
                 queue.push_back(next);
             }
         }
-    }
-    predecessor[goal.index()]?;
-    let mut path = vec![goal];
+    };
+    let mut path = vec![found];
     while *path.last().unwrap() != start { path.push(predecessor[path.last().unwrap().index()]?); }
     path.reverse();
     Some(path)
@@ -279,5 +286,7 @@ mod tests {
         assert_eq!(fd.nearest_face(faces[1]), Some(faces[0]));
         assert_eq!(topology.cell_shortest_path(cells[0], cells[1], 1), Some(vec![cells[0], cells[1]]));
         assert_eq!(topology.face_shortest_path(faces[0], faces[1], 1), Some(vec![faces[0], faces[1]]));
+        assert_eq!(topology.cell_shortest_path_to(cells[0], 1, |cell| cell == cells[2]), Some(vec![cells[0], cells[2]]));
+        assert_eq!(topology.cell_shortest_path_to(cells[0], 0, |cell| cell == cells[2]), None);
     }
 }

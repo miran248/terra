@@ -61,7 +61,7 @@ fn serialize(state: &GenState, out: &PathBuf) {
     let bytes = postcard::to_allocvec(&data).expect("serialize");
     let _ = fs::create_dir_all(out.parent().unwrap());
     fs::write(out, &bytes).expect("write");
-    println!("Wrote {} faces → {}", state.grid.n, out.display());
+    println!("Wrote {} faces → {}", state.grid.face_count(), out.display());
 }
 
 fn print_stats(state: &GenState) {
@@ -91,7 +91,7 @@ fn print_stats(state: &GenState) {
         }).or_default() += 1;
     }
     let water: usize = state.tiles.iter().filter(|t| t.is_water()).count();
-    println!("water: {:.1}%  breakdown: {:?}", water as f32 / state.grid.n as f32 * 100.0, counts);
+    println!("water: {:.1}%  breakdown: {:?}", water as f32 / state.grid.face_count() as f32 * 100.0, counts);
     println!("flora: {}  structures: {}", state.flora.len(), state.structures.len());
     println!("regions: {}  bridges: {}", state.regions.len(), state.bridges.len());
 }
