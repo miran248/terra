@@ -776,7 +776,7 @@ fn move_player(
 
     if input.jump {
         let v = forces.linear_velocity();
-        *forces.linear_velocity_mut() = v + up * 8.0;
+        *forces.linear_velocity_mut() = v + up * 14.0;
     }
 }
 

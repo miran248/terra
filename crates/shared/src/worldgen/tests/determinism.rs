@@ -39,6 +39,11 @@ fn serialized_fingerprint(bytes: &[u8]) -> u64 {
 #[test]
 fn locked_serialized_worlds() {
     let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
+    assert_eq!(
+        serialized_fingerprint(&seed_1337),
+        3196659778493325704,
+        "fingerprint changed — regenerate level_1337.bin and update this value"
+    );
     let expected_bytes = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../main/assets/level_1337.bin"
@@ -50,7 +55,6 @@ fn locked_serialized_worlds() {
             seed_1337.len()
         );
     }
-    assert_eq!(serialized_fingerprint(&seed_1337), 3196659778493325704);
 
     let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
     assert_eq!(serialized_fingerprint(&seed_42), 10393221671124118519);
