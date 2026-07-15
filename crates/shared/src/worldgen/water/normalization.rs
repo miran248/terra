@@ -189,9 +189,8 @@ pub(in crate::worldgen) fn normalize_water_bodies(
         }
     }
 
-    // Give each surviving authored lake one body-wide identity. Cold basins
-    // freeze; temperate basins near the sea become saline; the remainder stay
-    // freshwater. Identity never fragments within one connected lake.
+    // Give each surviving authored lake one body-wide salinity identity.
+    // Freezing is an orthogonal, local water property classified later.
     let ocean_sources = grid
         .topology
         .cells()
@@ -206,14 +205,7 @@ pub(in crate::worldgen) fn normalize_water_bodies(
         let body = grid
             .topology
             .cell_component(start, |cell| cells[cell.index()] == Terrain::Lake);
-        let mean_temperature = body
-            .iter()
-            .map(|&cell| terrain.temperature_at(grid.cell_position(cell)))
-            .sum::<f32>()
-            / body.len() as f32;
-        let kind = if mean_temperature <= 0.0 {
-            Terrain::FrozenLake
-        } else if body
+        let kind = if body
             .iter()
             .any(|&cell| near_ocean.cell_steps(cell).is_some())
         {

@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use crate::level::{
     FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RoadData, RoadKind,
-    RoadMaterial, SettlementData, SlopeClass, StructureData, WaterDepth,
+    RoadMaterial, SettlementData, SlopeClass, StructureData, WaterDepth, WaterPhase,
 };
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -318,6 +318,7 @@ struct GenState {
     /// Final cell-to-face projections consumed by `LevelData`.
     pub face_slope_class: FaceField<SlopeClass>,
     pub face_water_depth: FaceField<Option<WaterDepth>>,
+    pub face_water_phase: FaceField<Option<WaterPhase>>,
     pub face_landform: FaceField<Landform>,
     pub face_road_material: FaceField<Option<RoadMaterial>>,
 }
@@ -344,6 +345,7 @@ pub struct GenerationStats {
     pub max_elevation: f32,
     pub terrain_faces: BTreeMap<&'static str, usize>,
     pub water_faces: usize,
+    pub frozen_water_faces: usize,
     pub face_count: usize,
     pub flora_count: usize,
     pub structure_count: usize,
@@ -378,6 +380,7 @@ impl GenState {
             landform: CellField::default(),
             face_slope_class: FaceField::default(),
             face_water_depth: FaceField::default(),
+            face_water_phase: FaceField::default(),
             face_landform: FaceField::default(),
             face_road_material: FaceField::default(),
         }
@@ -429,6 +432,12 @@ impl GenState {
                 .map(|triangle| triangle.map(|point| point.to_array()))
                 .collect(),
             face_types: self.tiles.to_vec(),
+            face_corner_types: self
+                .grid
+                .topology
+                .faces()
+                .map(|face| self.grid.face_cells(face).map(|cell| self.cells[cell]))
+                .collect(),
             face_water_r: self.water_r.to_vec(),
             face_river_r: self.river_r.to_vec(),
             face_tags: self.face_tags.to_vec(),
@@ -441,6 +450,7 @@ impl GenState {
             structures: self.structures.clone(),
             slope_class: self.face_slope_class.to_vec(),
             water_depth: self.face_water_depth.to_vec(),
+            water_phase: self.face_water_phase.to_vec(),
             landform: self.face_landform.to_vec(),
             road_material: self.face_road_material.to_vec(),
         }
@@ -455,7 +465,6 @@ impl GenState {
                 Terrain::Ocean => "Ocean",
                 Terrain::Lake => "Lake",
                 Terrain::SaltLake => "SaltLake",
-                Terrain::FrozenLake => "FrozenLake",
                 Terrain::LakeShore => "LakeShore",
                 Terrain::River => "River",
                 Terrain::RiverBank => "RiverBank",
@@ -484,6 +493,12 @@ impl GenState {
                 .as_slice()
                 .iter()
                 .filter(|terrain| terrain.is_water())
+                .count(),
+            frozen_water_faces: self
+                .face_water_phase
+                .as_slice()
+                .iter()
+                .filter(|phase| **phase == Some(WaterPhase::Frozen))
                 .count(),
             face_count: self.grid.face_count(),
             terrain_faces,

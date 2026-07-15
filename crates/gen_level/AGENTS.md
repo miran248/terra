@@ -15,7 +15,7 @@ CLI tool for precomputing level data. Generates terrain meshes, road networks, s
 
 # Work Guidance
 
-- `LevelData` contains: displaced icosphere triangles (visual + physics), per-triangle base colors and typed terrain identities, direct per-face tag lists and optional region indices, baked water and river-surface radii, settlement positions+names, road/bridge paths
+- `LevelData` contains: displaced icosphere triangles (visual + physics), per-triangle base colors and typed face/corner terrain identities, direct per-face tag lists and optional region indices, baked water/river-surface radii and local water phase, settlement positions+names, road/bridge paths
 - Uses subdivision 4 icosphere (~5k tris) for both visual and physics
 - Bridge faces are raised to `PLANET_RADIUS + 1.5` in the trimesh so collision is seamless
 - Road/town/bridge face coloring is done during precompute (not at load time)

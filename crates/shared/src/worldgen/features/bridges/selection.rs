@@ -4,6 +4,8 @@ pub(in crate::worldgen) const BRIDGE_MAX_SPAN: f32 = 500.0;
 pub(in crate::worldgen) const BRIDGE_MIN_SPAN: f32 = 1.0;
 /// Keep bridges apart: no two within this many meters.
 pub(in crate::worldgen) const BRIDGE_MIN_SPACING: f32 = 1000.0;
+/// A bridge must shorten the available walkable route by at least this much.
+pub(in crate::worldgen) const BRIDGE_MIN_WALK_SAVING: f32 = 1000.0;
 /// Deck centrelines closer than their combined half-width would overlap.
 pub(in crate::worldgen) const BRIDGE_MIN_CLEARANCE: f32 = 8.0;
 /// A land component smaller than this, ringed only by lake water, is an island
@@ -152,6 +154,24 @@ fn commit_bridge(
     let Some((span, mid)) = bridge_span(context, a, b, max_span) else {
         return false;
     };
+    // A disconnected landmass has no finite walking route and therefore
+    // always benefits. On one landmass, reject cheap bay cuts and tiny local
+    // crossings whose dry detour is less than one kilometre longer.
+    if let Some(path) = grid.topology.cell_shortest_path_with(a, b, 256, |cell| {
+        features::bridge_walkable(cells[cell.index()])
+    }) {
+        let walking = path
+            .windows(2)
+            .map(|edge| {
+                grid.cell_position(edge[0])
+                    .distance(grid.cell_position(edge[1]))
+            })
+            .sum::<f32>();
+        let deck = span.first().unwrap().distance(*span.last().unwrap());
+        if walking - deck < BRIDGE_MIN_WALK_SAVING {
+            return false;
+        }
+    }
     if output
         .mids
         .iter()

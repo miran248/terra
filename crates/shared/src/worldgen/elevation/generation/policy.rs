@@ -17,7 +17,7 @@ pub(in crate::worldgen) fn water_concavity(t: Terrain) -> Option<f32> {
         // Per-iteration push below the neighbour average — the deeper this, the
         // deeper the basin bowls (depth still grows with basin size). Lakes were
         // near-flat plates (0.005); deepen them so water pools with real depth.
-        Terrain::Lake | Terrain::SaltLake | Terrain::FrozenLake => Some(0.050),
+        Terrain::Lake | Terrain::SaltLake => Some(0.050),
         Terrain::River | Terrain::RiverSpring => Some(0.090),
         _ => None,
     }
@@ -28,7 +28,7 @@ pub(in crate::worldgen) fn water_concavity(t: Terrain) -> Option<f32> {
 pub(in crate::worldgen) fn bank_water(t: Terrain) -> &'static [Terrain] {
     match t {
         Terrain::RiverBank => &[Terrain::River, Terrain::RiverSpring],
-        Terrain::LakeShore => &[Terrain::Lake, Terrain::SaltLake, Terrain::FrozenLake],
+        Terrain::LakeShore => &[Terrain::Lake, Terrain::SaltLake],
         Terrain::Beach => &[Terrain::Ocean],
         _ => &[],
     }
@@ -104,7 +104,7 @@ pub(in crate::worldgen) fn elev_range(t: Terrain) -> (f32, f32) {
         Ocean => (-1.0, -0.01),
         // Lakes and rivers carry their OWN water level — a mountain lake may
         // sit high above the sea; only its shores must stay above it.
-        Lake | SaltLake | FrozenLake => (-0.25, 0.55),
+        Lake | SaltLake => (-0.25, 0.55),
         LakeShore => (0.0, 0.60),
         // Rivers descend from mountains to the sea; their range must span it.
         River => (-1.0, 0.60),
@@ -133,7 +133,7 @@ pub(in crate::worldgen) fn elev_range(t: Terrain) -> (f32, f32) {
 /// Small at shores (continental shelf), large into mountains and at cliffs.
 pub(in crate::worldgen) fn max_gradient(a: Terrain, b: Terrain) -> f32 {
     use Terrain::*;
-    let water = |t: Terrain| matches!(t, Ocean | Lake | SaltLake | FrozenLake);
+    let water = |t: Terrain| matches!(t, Ocean | Lake | SaltLake);
     let peak = |t: Terrain| matches!(t, Mountain | Snow | Volcanic | Glacier);
     // Rivers are canyons: their walls may be steep wherever they cut through.
     // Caps are per vertex edge (~35m at field sub=6).

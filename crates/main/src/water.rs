@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
-use shared::terrain::Terrain;
+use shared::level::WaterPhase;
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 
@@ -90,14 +90,14 @@ pub fn river_material() -> WaterMaterial {
 pub fn build_water_surface(
     tris: &[[[f32; 3]; 3]],
     water_r: &[f32],
-    face_types: &[Terrain],
+    water_phase: &[Option<WaterPhase>],
 ) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     for (fi, t) in tris.iter().enumerate() {
         let r = water_r.get(fi).copied().unwrap_or(0.0);
-        if r <= 0.0 || face_types.get(fi) == Some(&Terrain::FrozenLake) {
+        if r <= 0.0 || water_phase.get(fi) == Some(&Some(WaterPhase::Frozen)) {
             continue;
         }
         for &corner in t {
@@ -124,12 +124,19 @@ pub fn build_water_surface(
 /// carries its downhill flow direction (from its highest to lowest corner,
 /// projected onto the surface) encoded in vertex colour, which the water shader
 /// reads to scroll ripples downstream.
-pub fn build_river_surfaces(tris: &[[[f32; 3]; 3]], river_r: &[[f32; 3]]) -> Option<Mesh> {
+pub fn build_river_surfaces(
+    tris: &[[[f32; 3]; 3]],
+    river_r: &[[f32; 3]],
+    water_phase: &[Option<WaterPhase>],
+) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     let mut colors = Vec::new();
     for (fi, t) in tris.iter().enumerate() {
+        if water_phase.get(fi) == Some(&Some(WaterPhase::Frozen)) {
+            continue;
+        }
         let radii = river_r.get(fi).copied().unwrap_or([0.0; 3]);
         if radii.iter().all(|&radius| radius <= 0.0) {
             continue;
@@ -167,6 +174,56 @@ pub fn build_river_surfaces(tris: &[[[f32; 3]; 3]], river_r: &[[f32; 3]]) -> Opt
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
     Some(mesh)
+}
+
+/// Collider-backed ice for locally frozen lake and river faces. The terrain
+/// below remains unchanged, so mixed shore faces close with their neighboring
+/// ground instead of being retyped into an ice terrain patch.
+pub fn build_ice_surface(
+    tris: &[[[f32; 3]; 3]],
+    water_r: &[f32],
+    river_r: &[[f32; 3]],
+    water_phase: &[Option<WaterPhase>],
+) -> Option<(Mesh, Vec<[[f32; 3]; 3]>)> {
+    let mut ice_tris = Vec::new();
+    for (fi, terrain_tri) in tris.iter().enumerate() {
+        if water_phase.get(fi) != Some(&Some(WaterPhase::Frozen)) {
+            continue;
+        }
+        let river = river_r.get(fi).copied().unwrap_or([0.0; 3]);
+        let radii = if river.iter().any(|&radius| radius > 0.0) {
+            river
+        } else {
+            [water_r.get(fi).copied().unwrap_or(0.0); 3]
+        };
+        if radii.iter().all(|&radius| radius <= 0.0) {
+            continue;
+        }
+        ice_tris.push(std::array::from_fn(|corner| {
+            (Vec3::from_array(terrain_tri[corner]).normalize() * radii[corner]).to_array()
+        }));
+    }
+    if ice_tris.is_empty() {
+        return None;
+    }
+    let mut positions = Vec::with_capacity(ice_tris.len() * 3);
+    let mut normals = Vec::with_capacity(ice_tris.len() * 3);
+    let mut uvs = Vec::with_capacity(ice_tris.len() * 3);
+    for tri in &ice_tris {
+        for &corner in tri {
+            positions.push(corner);
+            normals.push(Vec3::from_array(corner).normalize().to_array());
+            uvs.push([0.0, 0.0]);
+        }
+    }
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+    Some((mesh, ice_tris))
 }
 
 pub struct WaterPlugin;
@@ -231,8 +288,8 @@ mod tests {
         // Gen bakes one rim-locked radius per body; here the whole hex is one
         // body, so every face shares a single waterline radius.
         let water_r = vec![100.0f32; tris.len()];
-        let face_types = vec![Terrain::Lake; tris.len()];
-        let mesh = build_water_surface(&tris, &water_r, &face_types).expect("a lake mesh");
+        let phase = vec![Some(WaterPhase::Liquid); tris.len()];
+        let mesh = build_water_surface(&tris, &water_r, &phase).expect("a lake mesh");
         let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
             panic!("no positions");
@@ -298,7 +355,8 @@ mod tests {
             [e.to_array(), f.to_array(), g.to_array()],
         ];
         let river_r = vec![[100.5, 100.0, 99.5], [100.0, 101.0, 99.5], [0.0; 3]];
-        let mesh = build_river_surfaces(&tris, &river_r).expect("river mesh");
+        let phase = vec![Some(WaterPhase::Liquid); tris.len()];
+        let mesh = build_river_surfaces(&tris, &river_r, &phase).expect("river mesh");
         let Some(VertexAttributeValues::Float32x3(positions)) =
             mesh.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
@@ -330,5 +388,25 @@ mod tests {
             max_height - min_height > 0.1,
             "river surface should follow terrain relief"
         );
+    }
+
+    #[test]
+    fn frozen_faces_move_from_liquid_mesh_to_ice_collider() {
+        let tris = vec![
+            [[0.0, 0.0, 99.0], [1.0, 0.0, 99.0], [0.0, 1.0, 99.0]],
+            [[0.0, 0.0, 99.0], [-1.0, 0.0, 99.0], [0.0, -1.0, 99.0]],
+        ];
+        let water_r = vec![100.0; 2];
+        let river_r = vec![[0.0; 3]; 2];
+        let phase = vec![Some(WaterPhase::Frozen), Some(WaterPhase::Liquid)];
+        let liquid = build_water_surface(&tris, &water_r, &phase).unwrap();
+        let Some(VertexAttributeValues::Float32x3(liquid_positions)) =
+            liquid.attribute(Mesh::ATTRIBUTE_POSITION)
+        else {
+            panic!("no liquid positions");
+        };
+        assert_eq!(liquid_positions.len(), 3);
+        let (_, ice_tris) = build_ice_surface(&tris, &water_r, &river_r, &phase).unwrap();
+        assert_eq!(ice_tris.len(), 1);
     }
 }

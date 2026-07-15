@@ -257,6 +257,15 @@ impl TerrainTopology {
     ) -> Option<Vec<CellId>> {
         shortest_path(&self.cell_neighbors, start, goal, max_steps)
     }
+    pub fn cell_shortest_path_with(
+        &self,
+        start: CellId,
+        goal: CellId,
+        max_steps: u32,
+        member: impl Fn(CellId) -> bool,
+    ) -> Option<Vec<CellId>> {
+        shortest_path_with(&self.cell_neighbors, start, goal, max_steps, member)
+    }
     pub fn face_shortest_path(
         &self,
         start: FaceId,
@@ -387,6 +396,45 @@ fn shortest_path<I: Copy + Eq + IdIndex>(
     max_steps: u32,
 ) -> Option<Vec<I>> {
     shortest_path_to(adjacency, start, max_steps, |candidate| candidate == goal)
+}
+
+fn shortest_path_with<I: Copy + Eq + IdIndex>(
+    adjacency: &[impl AsRef<[I]>],
+    start: I,
+    goal: I,
+    max_steps: u32,
+    member: impl Fn(I) -> bool,
+) -> Option<Vec<I>> {
+    if !member(start) || !member(goal) {
+        return None;
+    }
+    let mut predecessor = vec![None; adjacency.len()];
+    let mut steps = vec![u32::MAX; adjacency.len()];
+    predecessor[start.index()] = Some(start);
+    steps[start.index()] = 0;
+    let mut queue = VecDeque::from([start]);
+    let found = loop {
+        let current = queue.pop_front()?;
+        if current == goal {
+            break current;
+        }
+        if steps[current.index()] >= max_steps {
+            continue;
+        }
+        for &next in adjacency[current.index()].as_ref() {
+            if predecessor[next.index()].is_none() && member(next) {
+                predecessor[next.index()] = Some(current);
+                steps[next.index()] = steps[current.index()] + 1;
+                queue.push_back(next);
+            }
+        }
+    };
+    let mut path = vec![found];
+    while *path.last().unwrap() != start {
+        path.push(predecessor[path.last().unwrap().index()]?);
+    }
+    path.reverse();
+    Some(path)
 }
 
 fn shortest_path_to<I: Copy + Eq + IdIndex>(

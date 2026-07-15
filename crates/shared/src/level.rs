@@ -62,6 +62,9 @@ pub struct LevelData {
     pub unit_tris: Vec<[[f32; 3]; 3]>,
     /// Per-face terrain type (precomputed, matches terrain_colors).
     pub face_types: Vec<Terrain>,
+    /// Authoritative terrain identity at each face corner, in the same order
+    /// as `unit_tris` and `terrain_colors`.
+    pub face_corner_types: Vec<[Terrain; 3]>,
     /// Per-face water-surface radius (0.0 = dry), from the gen-time water
     /// clustering (`worldgen::water_surface_radii`). The runtime draws each face
     /// at this radius — no runtime clustering. Water-body IDENTITY/naming comes
@@ -95,6 +98,8 @@ pub struct LevelData {
     pub slope_class: Vec<SlopeClass>,
     /// Per-face water depth class; `None` on dry faces.
     pub water_depth: Vec<Option<WaterDepth>>,
+    /// Local water phase; `None` on dry faces. It may vary along one body.
+    pub water_phase: Vec<Option<WaterPhase>>,
     /// Per-face macro landform.
     pub landform: Vec<Landform>,
     /// Per-face road surface material; `None` on non-road faces.
@@ -226,6 +231,23 @@ impl WaterDepth {
     }
 }
 
+/// Orthogonal physical state of water. Terrain retains geographic identity
+/// while phase can change locally along the same lake or river.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WaterPhase {
+    Liquid,
+    Frozen,
+}
+
+impl WaterPhase {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Liquid => "Liquid",
+            Self::Frozen => "Frozen",
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FloraKind {
     Tree,
@@ -283,11 +305,13 @@ impl LevelData {
             ("terrain_tris", self.terrain_tris.len()),
             ("terrain_colors", self.terrain_colors.len()),
             ("face_types", self.face_types.len()),
+            ("face_corner_types", self.face_corner_types.len()),
             ("face_water_r", self.face_water_r.len()),
             ("face_river_r", self.face_river_r.len()),
             ("face_region", self.face_region.len()),
             ("slope_class", self.slope_class.len()),
             ("water_depth", self.water_depth.len()),
+            ("water_phase", self.water_phase.len()),
             ("landform", self.landform.len()),
             ("road_material", self.road_material.len()),
         ] {
@@ -333,7 +357,6 @@ pub enum RegionKind {
     Ocean,
     Lake,
     SaltLake,
-    FrozenLake,
     River,
     Beach,
     Cliff,
@@ -357,22 +380,21 @@ impl RegionKind {
             Self::Ocean => 0,
             Self::Lake => 1,
             Self::SaltLake => 2,
-            Self::FrozenLake => 3,
-            Self::River => 4,
-            Self::Beach => 5,
-            Self::Cliff => 6,
-            Self::Forest => 7,
-            Self::Desert => 8,
-            Self::Mountain => 9,
-            Self::Plains => 10,
-            Self::Tundra => 11,
-            Self::Swamp => 12,
-            Self::Jungle => 13,
-            Self::Savanna => 14,
-            Self::Volcano => 15,
-            Self::Glacier => 16,
-            Self::Town => 17,
-            Self::Road => 18,
+            Self::River => 3,
+            Self::Beach => 4,
+            Self::Cliff => 5,
+            Self::Forest => 6,
+            Self::Desert => 7,
+            Self::Mountain => 8,
+            Self::Plains => 9,
+            Self::Tundra => 10,
+            Self::Swamp => 11,
+            Self::Jungle => 12,
+            Self::Savanna => 13,
+            Self::Volcano => 14,
+            Self::Glacier => 15,
+            Self::Town => 16,
+            Self::Road => 17,
         }
     }
 }
@@ -399,7 +421,7 @@ pub enum RoadKind {
 mod tests {
     use super::{
         FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass, StructureKind,
-        WaterDepth,
+        WaterDepth, WaterPhase,
     };
     use serde::{Serialize, de::DeserializeOwned};
 
@@ -447,6 +469,7 @@ mod tests {
     fn typed_schema_enums_round_trip_and_reject_invalid_discriminants() {
         round_trip(SlopeClass::Cliff);
         round_trip(WaterDepth::Abyss);
+        round_trip(WaterPhase::Frozen);
         round_trip(Landform::Plateau);
         round_trip(RoadMaterial::Rock);
         round_trip(FloraKind::Reed);

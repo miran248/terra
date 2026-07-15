@@ -1,5 +1,36 @@
 use super::*;
+use crate::level::WaterPhase;
 use bevy::prelude::Vec3;
+
+#[test]
+fn freezing_is_local_across_lakes_and_rivers() {
+    let state = run_state(1337, |_| {});
+    let mut frozen_lake = 0;
+    let mut frozen_river = 0;
+    let mut liquid_river = 0;
+    for face in state.grid.topology.faces() {
+        let phase = state.face_water_phase[face];
+        if state.water_r[face] > 0.0
+            && matches!(
+                state.tiles[face],
+                Terrain::Lake | Terrain::SaltLake | Terrain::LakeShore
+            )
+            && phase == Some(WaterPhase::Frozen)
+        {
+            frozen_lake += 1;
+        }
+        if state.river_r[face].iter().any(|&radius| radius > 0.0) {
+            match phase {
+                Some(WaterPhase::Frozen) => frozen_river += 1,
+                Some(WaterPhase::Liquid) => liquid_river += 1,
+                None => {}
+            }
+        }
+    }
+    assert!(frozen_lake > 0, "seed must include frozen lake surface");
+    assert!(frozen_river > 0, "seed must include frozen river surface");
+    assert!(liquid_river > 0, "one river must retain flowing sections");
+}
 
 #[test]
 fn river_surface_starts_on_springs_and_joins_body_water() {
@@ -165,7 +196,7 @@ fn rivers_reach_the_sea() {
                 .any(|nb| {
                     matches!(
                         state.cells.as_slice()[nb.index()],
-                        Terrain::Ocean | Terrain::Lake | Terrain::SaltLake | Terrain::FrozenLake
+                        Terrain::Ocean | Terrain::Lake | Terrain::SaltLake
                     )
                 })
         });

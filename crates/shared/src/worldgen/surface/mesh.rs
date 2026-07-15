@@ -52,30 +52,15 @@ pub(in crate::worldgen) fn build_mesh(
     terrain: &TerrainGen,
     cells: &[Terrain],
     painted: &Painted,
-    water: (&[f32], &[Option<WaterDepth>]),
+    water_depth: &[Option<WaterDepth>],
     landform: &[Landform],
     slope_class: &[SlopeClass],
 ) -> (TerrainTriangles, TerrainColors) {
-    let (water_r, water_depth) = water;
-    let mut vert_r: Vec<f32> = grid
+    let vert_r: Vec<f32> = grid
         .topology
         .cells()
         .map(|cell| terrain.render_radius(grid.cell_position(cell)))
         .collect();
-    for cell in grid.topology.cells() {
-        if cells[cell.index()] == Terrain::FrozenLake {
-            let ice_r = grid
-                .topology
-                .cell_faces(cell)
-                .iter()
-                .map(|face| water_r[face.index()])
-                .fold(0.0, f32::max);
-            if ice_r > 0.0 {
-                vert_r[cell.index()] = ice_r;
-            }
-        }
-    }
-
     let road_color = bevy::prelude::Color::srgb(0.5, 0.42, 0.3)
         .to_linear()
         .to_f32_array();
@@ -112,7 +97,7 @@ pub(in crate::worldgen) fn build_mesh(
                 road_color
             } else {
                 let mut c = cells[cell_index].color().to_linear().to_f32_array();
-                if cells[cell_index].is_water() && cells[cell_index] != Terrain::FrozenLake {
+                if cells[cell_index].is_water() {
                     // Water darkens with depth (shallow shore → dark abyss).
                     let f = match water_depth[cell_index] {
                         Some(WaterDepth::Shallow) => 1.0,

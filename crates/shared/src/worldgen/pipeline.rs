@@ -3,8 +3,8 @@ use std::collections::VecDeque;
 use super::{
     CellField, FaceBlend, FaceTag, FloraData, GenState, Landform, Painted, RegionData,
     RoadMaterial, SlopeClass, SpherePos, StructureData, Terrain, TerrainGen, WaterDepth,
-    build_bridges, build_face_tags, build_mesh, build_regions, classify_cover, classify_landform,
-    classify_slope, classify_water_depth, derive_tiles, face_majority, face_max,
+    WaterPhase, build_bridges, build_face_tags, build_mesh, build_regions, classify_cover,
+    classify_landform, classify_slope, classify_water_depth, derive_tiles, face_majority, face_max,
     face_road_material, mark_blends, normalize_water_bodies, paint_features, paint_rivers,
     place_flora, place_structures, resolve_transitions, river_surface_radii, solve_elevation,
     water_surface_radii,
@@ -99,6 +99,7 @@ enum Event {
         river_r: Vec<[f32; 3]>,
         slope: Vec<SlopeClass>,
         depth: Vec<Option<WaterDepth>>,
+        phase: Vec<Option<WaterPhase>>,
         landform: Vec<Landform>,
         road_material: Vec<Option<RoadMaterial>>,
     },
@@ -287,7 +288,7 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
                 state.terrain(),
                 state.cells.as_slice(),
                 &state.painted,
-                (state.water_r.as_slice(), state.water_depth.as_slice()),
+                state.water_depth.as_slice(),
                 state.landform.as_slice(),
                 state.slope_class.as_slice(),
             );
@@ -344,19 +345,44 @@ fn bake_outputs(state: &GenState) -> Event {
             })
         })
         .collect();
+    let river_r = river_surface_radii(
+        &state.grid,
+        state.mesh_tris.as_slice(),
+        state.tiles.as_slice(),
+        state.water_r.as_slice(),
+    );
+    let phase = state
+        .grid
+        .topology
+        .faces()
+        .map(|face| {
+            let has_lake = state.water_r[face] > 0.0
+                && matches!(
+                    state.tiles[face],
+                    Terrain::Lake | Terrain::SaltLake | Terrain::LakeShore
+                );
+            let has_river = river_r[face.index()].iter().any(|&radius| radius > 0.0);
+            if !has_lake && !has_river {
+                return None;
+            }
+            let tri = state.grid.unit_tris[face.index()];
+            let point = SpherePos::new((tri[0] + tri[1] + tri[2]).normalize());
+            Some(if state.terrain().temperature_at(point) <= 0.0 {
+                WaterPhase::Frozen
+            } else {
+                WaterPhase::Liquid
+            })
+        })
+        .collect();
     Event::OutputsBaked {
-        river_r: river_surface_radii(
-            &state.grid,
-            state.mesh_tris.as_slice(),
-            state.tiles.as_slice(),
-            state.water_r.as_slice(),
-        ),
+        river_r,
         slope: face_max(
             &state.grid,
             state.slope_class.as_slice(),
             SlopeClass::severity,
         ),
         depth,
+        phase,
         landform: face_majority(&state.grid, state.landform.as_slice(), Landform::rank),
         road_material,
     }
@@ -420,12 +446,14 @@ fn evolve(state: &mut GenState, event: Event) {
             river_r,
             slope,
             depth,
+            phase,
             landform,
             road_material,
         } => {
             state.river_r = river_r.into();
             state.face_slope_class = slope.into();
             state.face_water_depth = depth.into();
+            state.face_water_phase = phase.into();
             state.face_landform = landform.into();
             state.face_road_material = road_material.into();
         }

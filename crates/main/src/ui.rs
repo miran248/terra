@@ -1,6 +1,8 @@
 use crate::combat::ScrapCounter;
 use crate::loot::LootState;
-use crate::map::{LevelFaceTypes, LevelRegions, LevelSlope, LevelTags, Player, PlayerHp};
+use crate::map::{
+    LevelFaceCornerTypes, LevelFaceTypes, LevelRegions, LevelSlope, LevelTags, Player, PlayerHp,
+};
 use crate::wave::WaveManager;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
@@ -512,9 +514,15 @@ fn update_terrain_hud(
     tags: Option<Res<LevelTags>>,
     regions: Option<Res<LevelRegions>>,
     blends: Option<Res<crate::map::LevelBlends>>,
-    face_types: Option<Res<LevelFaceTypes>>,
+    terrain_faces: (
+        Option<Res<LevelFaceTypes>>,
+        Option<Res<LevelFaceCornerTypes>>,
+    ),
     slope_class: Option<Res<LevelSlope>>,
-    water_depth: Option<Res<crate::map::LevelWaterDepth>>,
+    water: (
+        Option<Res<crate::map::LevelWaterDepth>>,
+        Option<Res<crate::map::LevelWaterPhase>>,
+    ),
     landform_r: Option<Res<crate::map::LevelLandform>>,
     road_mat: Option<Res<crate::map::LevelRoadMaterial>>,
     hud_q: Query<&Children, With<TerrainHud>>,
@@ -528,6 +536,8 @@ fn update_terrain_hud(
     mut timer: ResMut<TerrainHudTimer>,
 ) {
     let (tod, weather) = sky;
+    let (water_depth, water_phase) = water;
+    let (face_types, face_corner_types) = terrain_faces;
     let Ok(children) = hud_q.single() else { return };
     let Some(child) = children.first() else {
         return;
@@ -549,11 +559,29 @@ fn update_terrain_hud(
     }
     let pos = shared::sphere::SpherePos::new(tf.translation);
     // Read precomputed face type from level data — guaranteed to match terrain colors.
-    let tile = if let (Some(planet), Some(ft)) = (planet.as_ref(), face_types.as_ref()) {
-        planet
-            .face_at(tf.translation.normalize())
-            .map(|fi| ft.0.get(fi).copied().unwrap_or(Terrain::Plains))
-            .unwrap_or(Terrain::Plains)
+    let tile = if let (Some(planet), Some(ft), Some(corners)) = (
+        planet.as_ref(),
+        face_types.as_ref(),
+        face_corner_types.as_ref(),
+    ) {
+        let direction = tf.translation.normalize();
+        planet.face_at(direction).map_or(Terrain::Plains, |face| {
+            let fallback = ft.0.get(face).copied().unwrap_or(Terrain::Plains);
+            let Some(triangle) = planet.triangle(face) else {
+                return fallback;
+            };
+            let Some(types) = corners.0.get(face) else {
+                return fallback;
+            };
+            let nearest = (0..3)
+                .max_by(|&a, &b| {
+                    triangle[a]
+                        .dot(direction)
+                        .total_cmp(&triangle[b].dot(direction))
+                })
+                .unwrap();
+            types[nearest]
+        })
     } else {
         terrain.classify(pos)
     };
@@ -566,11 +594,20 @@ fn update_terrain_hud(
             .face_at(tf.translation.normalize())
             .map(|fi| {
                 if tile.is_water() {
-                    water_depth
+                    let depth = water_depth
                         .as_ref()
                         .and_then(|wd| wd.0.get(fi).copied().flatten())
                         .map(|d| d.name().to_string())
-                        .unwrap_or_default()
+                        .unwrap_or_default();
+                    if water_phase
+                        .as_ref()
+                        .and_then(|phase| phase.0.get(fi).copied().flatten())
+                        == Some(shared::level::WaterPhase::Frozen)
+                    {
+                        format!("Frozen {depth}")
+                    } else {
+                        depth
+                    }
                 } else {
                     let lf = landform_r
                         .as_ref()
@@ -697,7 +734,6 @@ fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
         | shared::terrain::Terrain::SaltLake
         | shared::terrain::Terrain::River
         | shared::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
-        shared::terrain::Terrain::FrozenLake => Color::srgb(0.68, 0.86, 0.94),
         shared::terrain::Terrain::Beach
         | shared::terrain::Terrain::Cliff
         | shared::terrain::Terrain::LakeShore

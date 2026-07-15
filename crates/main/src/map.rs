@@ -6,11 +6,11 @@ use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
     BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass,
-    StructureKind, WaterDepth,
+    StructureKind, WaterDepth, WaterPhase,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
-use shared::terrain::{Terrain, TerrainGen};
+use shared::terrain::TerrainGen;
 
 /// Speculative collision skin added to the thin terrain trimesh so fast movement
 /// doesn't tunnel through it. The player mesh is dropped by this much to hide the
@@ -59,10 +59,16 @@ pub struct LevelTags(pub Vec<Vec<FaceTag>>);
 pub struct LevelFaceTypes(pub Vec<shared::terrain::Terrain>);
 
 #[derive(Resource)]
+pub struct LevelFaceCornerTypes(pub Vec<[shared::terrain::Terrain; 3]>);
+
+#[derive(Resource)]
 pub struct LevelSlope(pub Vec<SlopeClass>);
 
 #[derive(Resource)]
 pub struct LevelWaterDepth(pub Vec<Option<WaterDepth>>);
+
+#[derive(Resource)]
+pub struct LevelWaterPhase(pub Vec<Option<WaterPhase>>);
 
 #[derive(Resource)]
 pub struct LevelLandform(pub Vec<Landform>);
@@ -665,7 +671,7 @@ fn setup_map(
     if let Some(water) = crate::water::build_water_surface(
         &level.terrain_tris,
         &level.face_water_r,
-        &level.face_types,
+        &level.water_phase,
     ) {
         commands.spawn((
             Mesh3d(meshes.add(water)),
@@ -677,12 +683,35 @@ fn setup_map(
 
     // River surfaces use the generator-baked, smoothed corner radii so runtime
     // rendering has no topology/clustering work and cannot introduce seams.
-    if let Some(river) =
-        crate::water::build_river_surfaces(&level.terrain_tris, &level.face_river_r)
-    {
+    if let Some(river) = crate::water::build_river_surfaces(
+        &level.terrain_tris,
+        &level.face_river_r,
+        &level.water_phase,
+    ) {
         commands.spawn((
             Mesh3d(meshes.add(river)),
             MeshMaterial3d(water_mats.add(crate::water::river_material())),
+            Transform::default(),
+            Ground,
+        ));
+    }
+
+    if let Some((ice, ice_tris)) = crate::water::build_ice_surface(
+        &level.terrain_tris,
+        &level.face_water_r,
+        &level.face_river_r,
+        &level.water_phase,
+    ) {
+        commands.spawn((
+            Mesh3d(meshes.add(ice)),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::srgb(0.68, 0.86, 0.94),
+                perceptual_roughness: 0.28,
+                metallic: 0.05,
+                ..default()
+            })),
+            RigidBody::Static,
+            build_collider(&ice_tris),
             Transform::default(),
             Ground,
         ));
@@ -771,8 +800,10 @@ fn setup_map(
     commands.insert_resource(planet_mesh);
     commands.insert_resource(LevelTags(tags));
     commands.insert_resource(LevelFaceTypes(face_types));
+    commands.insert_resource(LevelFaceCornerTypes(level.face_corner_types.clone()));
     commands.insert_resource(LevelSlope(level.slope_class.clone()));
     commands.insert_resource(LevelWaterDepth(level.water_depth.clone()));
+    commands.insert_resource(LevelWaterPhase(level.water_phase.clone()));
     commands.insert_resource(LevelLandform(level.landform.clone()));
     commands.insert_resource(LevelRoadMaterial(level.road_material.clone()));
     commands.insert_resource(LevelRegions {
@@ -934,7 +965,7 @@ fn move_player(
     time: Res<Time>,
     input: Res<PlayerInput>,
     planet: Res<PlanetMesh>,
-    face_types: Res<LevelFaceTypes>,
+    water_phase: Res<LevelWaterPhase>,
     mut player_q: Query<(&mut Player, &Position, Forces)>,
 ) {
     let Ok((mut player, pos, mut forces)) = player_q.single_mut() else {
@@ -951,11 +982,11 @@ fn move_player(
     player.heading = (player.heading - up * player.heading.dot(up)).normalize();
 
     let underwater = world_r < PLANET_RADIUS;
-    let on_frozen_lake = planet
+    let on_frozen_water = planet
         .face_at(up)
-        .and_then(|face| face_types.0.get(face))
-        .is_some_and(|terrain| *terrain == Terrain::FrozenLake);
-    let slowed_by_water = underwater || on_frozen_lake;
+        .and_then(|face| water_phase.0.get(face))
+        .is_some_and(|phase| *phase == Some(WaterPhase::Frozen));
+    let slowed_by_water = underwater || on_frozen_water;
     let speed = PLAYER_SPEED
         * if slowed_by_water { 0.4 } else { 1.0 }
         * if input.sprint { 2.5 } else { 1.0 };

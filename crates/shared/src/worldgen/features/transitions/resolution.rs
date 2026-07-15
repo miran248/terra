@@ -24,7 +24,7 @@ pub(in crate::worldgen) fn resolve_transitions(
     let (water_dist, water_kind) = water_distance(grid, base, 2);
     let shore = |cell_index: usize, kind: Terrain| -> Terrain {
         match kind {
-            Terrain::Lake | Terrain::SaltLake | Terrain::FrozenLake => Terrain::LakeShore,
+            Terrain::Lake | Terrain::SaltLake => Terrain::LakeShore,
             Terrain::River | Terrain::RiverSpring => Terrain::RiverBank,
             _ => {
                 let steep = matches!(base[cell_index], Terrain::Mountain | Terrain::Snow)

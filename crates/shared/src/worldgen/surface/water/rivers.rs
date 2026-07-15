@@ -144,10 +144,10 @@ pub(in crate::worldgen) fn river_surface_radii(
         }
     }
 
-    // The outside edge of a widened RiverBank component must meet the ground,
-    // not a channel-height interpolation that can float beside a deep or wide
-    // bank. Sink it just below the ground to avoid a visible crack from tiny
-    // precision differences between the independently drawn meshes.
+    // The outside edge of the actual RiverBank must meet the ground. The extra
+    // rendering apron remains buried beyond that edge; anchoring only at the
+    // apron's outer edge can leave visible water laid across a low downstream
+    // bank before the surface finally tapers underground.
     for face_index in 0..grid.face_count() {
         let Some(c) = component[face_index] else {
             continue;
@@ -159,7 +159,7 @@ pub(in crate::worldgen) fn river_surface_radii(
             .face_neighbors(FaceId::new(face_index))
             .map(FaceId::index)
         {
-            if component[neighbor] == Some(c) {
+            if core[neighbor] {
                 continue;
             }
             for (k, &corner) in mesh_tris[face_index].iter().enumerate() {

@@ -51,6 +51,10 @@ impl PlanetMesh {
         Self { tris, grid }
     }
 
+    pub fn triangle(&self, face: usize) -> Option<&[Vec3; 3]> {
+        self.tris.get(face)
+    }
+
     pub fn triangle_count(&self) -> usize {
         self.tris.len()
     }

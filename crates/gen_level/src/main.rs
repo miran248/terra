@@ -37,8 +37,9 @@ fn print_stats(world: &CompletedWorld) {
         max_e.max(0.0).powf(1.15) * shared::terrain::MAX_MOUNTAIN,
     );
     println!(
-        "water: {:.1}%  breakdown: {:?}",
+        "water: {:.1}% ({} frozen faces)  breakdown: {:?}",
         stats.water_faces as f32 / stats.face_count as f32 * 100.0,
+        stats.frozen_water_faces,
         stats.terrain_faces,
     );
     println!(

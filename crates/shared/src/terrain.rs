@@ -28,7 +28,6 @@ pub enum Terrain {
     Ocean,
     Lake,
     SaltLake,
-    FrozenLake,
     LakeShore,
     River,
     RiverBank,
@@ -50,11 +49,10 @@ pub enum Terrain {
 }
 
 impl Terrain {
-    pub const ALL: [Terrain; 21] = [
+    pub const ALL: [Terrain; 20] = [
         Terrain::Ocean,
         Terrain::Lake,
         Terrain::SaltLake,
-        Terrain::FrozenLake,
         Terrain::LakeShore,
         Terrain::River,
         Terrain::RiverBank,
@@ -79,7 +77,6 @@ impl Terrain {
             Terrain::Ocean => Color::srgb(0.10, 0.25, 0.55),
             Terrain::Lake => Color::srgb(0.15, 0.35, 0.65),
             Terrain::SaltLake => Color::srgb(0.18, 0.48, 0.58),
-            Terrain::FrozenLake => Color::srgb(0.68, 0.86, 0.94),
             Terrain::LakeShore => Color::srgb(0.20, 0.48, 0.55),
             Terrain::River => Color::srgb(0.20, 0.45, 0.75),
             Terrain::RiverBank => Color::srgb(0.25, 0.50, 0.55),
@@ -106,17 +103,13 @@ impl Terrain {
             Terrain::Ocean
                 | Terrain::Lake
                 | Terrain::SaltLake
-                | Terrain::FrozenLake
                 | Terrain::River
                 | Terrain::RiverSpring
         )
     }
 
     pub fn is_lake(&self) -> bool {
-        matches!(
-            self,
-            Terrain::Lake | Terrain::SaltLake | Terrain::FrozenLake
-        )
+        matches!(self, Terrain::Lake | Terrain::SaltLake)
     }
 
     pub fn is_land(&self) -> bool {
