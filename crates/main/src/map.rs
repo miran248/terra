@@ -715,6 +715,23 @@ fn setup_map(
         })
         .collect();
     let ground = PlanetMesh::new(displaced);
+
+    // Roads are visual ribbons over the authoritative terrain collider. Their
+    // narrow width reads as a path without changing traversal or level data.
+    let (road_tris, road_colors) = build_road_ribbons(&level, &ground, 4.0);
+    if !road_tris.is_empty() {
+        commands.spawn((
+            Mesh3d(meshes.add(build_smooth_mesh(&road_tris, &road_colors))),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                perceptual_roughness: 0.95,
+                ..default()
+            })),
+            Transform::default(),
+            Ground,
+        ));
+    }
+
     let bridge_color = Color::srgb(0.35, 0.25, 0.18).to_linear();
     for road in level.roads.iter().filter(|r| r.kind == RoadKind::Bridge) {
         let span: Vec<shared::sphere::SpherePos> = road
@@ -915,6 +932,84 @@ fn setup_map(
             .map(|blend| (blend.face, (blend.base, blend.target)))
             .collect(),
     ));
+}
+
+fn road_color(material: RoadMaterial) -> [f32; 4] {
+    let color = match material {
+        RoadMaterial::Gravel => Color::srgb(0.40, 0.39, 0.36),
+        RoadMaterial::Dirt => Color::srgb(0.45, 0.33, 0.22),
+        RoadMaterial::Sand => Color::srgb(0.78, 0.70, 0.50),
+        RoadMaterial::Rock => Color::srgb(0.32, 0.31, 0.30),
+    };
+    color.to_linear().to_f32_array()
+}
+
+type RenderTriangle = [[f32; 3]; 3];
+type TriangleColors = [[f32; 4]; 3];
+
+fn build_road_ribbons(
+    level: &LevelData,
+    ground: &PlanetMesh,
+    width: f32,
+) -> (Vec<RenderTriangle>, Vec<TriangleColors>) {
+    let mut triangles = Vec::new();
+    let mut colors = Vec::new();
+    for road in level
+        .roads
+        .iter()
+        .filter(|road| road.kind == RoadKind::Road)
+    {
+        let mut directions = Vec::new();
+        for pair in road.points.windows(2) {
+            let from = Vec3::from_array(pair[0]).normalize();
+            let to = Vec3::from_array(pair[1]).normalize();
+            let angle = from.dot(to).clamp(-1.0, 1.0).acos();
+            let steps = ((angle * PLANET_RADIUS / 4.0).ceil() as usize).max(1);
+            for step in 0..steps {
+                directions.push(from.slerp(to, step as f32 / steps as f32).normalize());
+            }
+        }
+        if let Some(last) = road.points.last() {
+            directions.push(Vec3::from_array(*last).normalize());
+        }
+        if directions.len() < 2 {
+            continue;
+        }
+        let mut edges = Vec::with_capacity(directions.len());
+        let mut edge_materials = Vec::with_capacity(directions.len());
+        for index in 0..directions.len() {
+            let up = directions[index];
+            let previous = directions[index.saturating_sub(1)];
+            let next = directions[(index + 1).min(directions.len() - 1)];
+            let forward = (next - previous).reject_from(up).normalize_or(Vec3::X);
+            let side = up.cross(forward).normalize_or(Vec3::Z) * (width * 0.5);
+            let edge = |offset: Vec3| {
+                let direction = (up * PLANET_RADIUS + offset).normalize();
+                direction * (ground.facet_radius(direction, PLANET_RADIUS) + 0.08)
+            };
+            edges.push([edge(side), edge(-side)]);
+            let material = ground
+                .face_at(up)
+                .and_then(|face| level.road_material[face])
+                .unwrap_or(RoadMaterial::Gravel);
+            edge_materials.push(material);
+        }
+        for index in 0..edges.len() - 1 {
+            let [left, right] = edges[index];
+            let [next_left, next_right] = edges[index + 1];
+            triangles.push([left.to_array(), right.to_array(), next_left.to_array()]);
+            triangles.push([
+                right.to_array(),
+                next_right.to_array(),
+                next_left.to_array(),
+            ]);
+            let first = road_color(edge_materials[index]);
+            let second = road_color(edge_materials[index + 1]);
+            colors.push([first, first, second]);
+            colors.push([first, second, second]);
+        }
+    }
+    (triangles, colors)
 }
 
 fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
@@ -1276,4 +1371,33 @@ fn drive_fog(
     // drive it by the camera's day factor: a dim moonlit floor at night rising to
     // full fill by day. Fixed-bright ambient made objects glow at night.
     ambient.brightness = 35.0 + 130.0 * day;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn road_ribbons_are_finite_complete_and_four_metres_wide() {
+        let level: LevelData = postcard::from_bytes(include_bytes!("../assets/level_1337.bin"))
+            .expect("tracked level should deserialize");
+        let displaced = level
+            .terrain_tris
+            .iter()
+            .map(|triangle| triangle.map(Vec3::from_array))
+            .collect();
+        let ground = PlanetMesh::new(displaced);
+        let (triangles, colors) = build_road_ribbons(&level, &ground, 4.0);
+        assert!(!triangles.is_empty());
+        assert_eq!(triangles.len(), colors.len());
+        assert!(
+            triangles
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|value| value.is_finite())
+        );
+        let first = triangles[0].map(Vec3::from_array);
+        assert!((first[0].distance(first[1]) - 4.0).abs() < 0.1);
+    }
 }
