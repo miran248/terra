@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 
 use super::{
-    CellField, FaceBlend, FaceTag, FloraData, GenState, Landform, Painted, RegionData,
-    RoadMaterial, SlopeClass, SpherePos, StructureData, Terrain, TerrainGen, WaterDepth,
-    WaterPhase, build_bridges, build_face_tags, build_mesh, build_regions, classify_cover,
-    classify_landform, classify_slope, classify_water_depth, derive_tiles, face_majority, face_max,
-    face_road_material, mark_blends, normalize_water_bodies, paint_features, paint_rivers,
-    place_flora, place_structures, resolve_transitions, river_surface_radii, solve_elevation,
-    water_surface_radii,
+    CellField, FaceBlend, FaceId, FaceTag, FloraData, GenState, Landform, Painted, RegionData,
+    RoadMaterial, SlopeClass, SpherePos, StructureData, SurfaceCondition, Terrain, TerrainGen,
+    WaterDepth, WaterPhase, build_bridges, build_face_tags, build_mesh, build_regions,
+    classify_cover, classify_landform, classify_slope, classify_water_depth, derive_tiles,
+    face_majority, face_max, face_road_material, mark_blends, normalize_water_bodies,
+    paint_features, paint_rivers, place_flora, place_structures, resolve_transitions,
+    river_surface_radii, solve_elevation, water_surface_radii,
 };
 
 // ---- commands & events ----
@@ -100,6 +100,7 @@ enum Event {
         slope: Vec<SlopeClass>,
         depth: Vec<Option<WaterDepth>>,
         phase: Vec<Option<WaterPhase>>,
+        surface_condition: Vec<SurfaceCondition>,
         landform: Vec<Landform>,
         road_material: Vec<Option<RoadMaterial>>,
     },
@@ -315,13 +316,14 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
 }
 
 fn bake_outputs(state: &GenState) -> Event {
-    let depth = face_max(&state.grid, state.water_depth.as_slice(), |depth| {
-        depth.map_or(0, |d| d.severity() + 1)
-    })
-    .into_iter()
-    .zip(state.tiles.as_slice())
-    .map(|(depth, terrain)| terrain.is_water().then_some(depth).flatten())
-    .collect();
+    let depth: Vec<Option<WaterDepth>> =
+        face_max(&state.grid, state.water_depth.as_slice(), |depth| {
+            depth.map_or(0, |d| d.severity() + 1)
+        })
+        .into_iter()
+        .zip(state.tiles.as_slice())
+        .map(|(depth, terrain)| terrain.is_water().then_some(depth).flatten())
+        .collect();
     let road_material = state
         .grid
         .topology
@@ -351,29 +353,175 @@ fn bake_outputs(state: &GenState) -> Event {
         state.tiles.as_slice(),
         state.water_r.as_slice(),
     );
-    let phase = state
+    let has_surface = state
         .grid
         .topology
         .faces()
         .map(|face| {
-            let has_lake = state.water_r[face] > 0.0
+            state.water_r[face] > 0.0 || river_r[face.index()].iter().any(|&radius| radius > 0.0)
+        })
+        .collect::<Vec<_>>();
+    let mut phase = state
+        .grid
+        .topology
+        .faces()
+        .map(|face| {
+            let has_ocean = state.water_r[face] > 0.0
                 && matches!(
                     state.tiles[face],
-                    Terrain::Lake | Terrain::SaltLake | Terrain::LakeShore
+                    Terrain::Ocean | Terrain::Beach | Terrain::Cliff
                 );
-            let has_river = river_r[face.index()].iter().any(|&radius| radius > 0.0);
-            if !has_lake && !has_river {
+            if !has_surface[face.index()] {
                 return None;
             }
             let tri = state.grid.unit_tris[face.index()];
             let point = SpherePos::new((tri[0] + tri[1] + tri[2]).normalize());
-            Some(if state.terrain().temperature_at(point) <= 0.0 {
-                WaterPhase::Frozen
-            } else {
-                WaterPhase::Liquid
-            })
+            Some(
+                if !has_ocean && state.terrain().temperature_at(point) <= 0.0 {
+                    WaterPhase::Frozen
+                } else {
+                    WaterPhase::Liquid
+                },
+            )
         })
-        .collect();
+        .collect::<Vec<_>>();
+
+    // Saltwater needs colder conditions than inland water. Form candidate sea
+    // ice on shallow ocean below -2 C, or any ocean depth below -15 C, then
+    // discard tiny disconnected patches before extending coherent sheets to
+    // their beach edge.
+    const MIN_SEA_ICE_FACES: usize = 12;
+    let sea_ice_candidate = state
+        .grid
+        .topology
+        .faces()
+        .map(|face| {
+            if state.tiles[face] != Terrain::Ocean || state.water_r[face] <= 0.0 {
+                return false;
+            }
+            let tri = state.grid.unit_tris[face.index()];
+            let point = SpherePos::new((tri[0] + tri[1] + tri[2]).normalize());
+            let temperature = state.terrain().temperature_at(point);
+            temperature <= -15.0
+                || (temperature <= -2.0 && depth[face.index()] == Some(WaterDepth::Shallow))
+        })
+        .collect::<Vec<_>>();
+    let sea_ice_components = state
+        .grid
+        .topology
+        .face_components(|face| sea_ice_candidate[face.index()]);
+    let mut sea_ice_sizes = vec![0usize; sea_ice_components.count()];
+    for face in state.grid.topology.faces() {
+        if let Some(component) = sea_ice_components.face(face) {
+            sea_ice_sizes[component.index()] += 1;
+        }
+    }
+    let coherent_sea_ice = state
+        .grid
+        .topology
+        .faces()
+        .map(|face| {
+            sea_ice_components
+                .face(face)
+                .is_some_and(|component| sea_ice_sizes[component.index()] >= MIN_SEA_ICE_FACES)
+        })
+        .collect::<Vec<_>>();
+    let sea_ice_sources = state
+        .grid
+        .topology
+        .faces()
+        .filter(|face| coherent_sea_ice[face.index()])
+        .collect::<Vec<_>>();
+    let ocean_footprint = |face: FaceId| {
+        state.water_r[face] > 0.0
+            && matches!(
+                state.tiles[face],
+                Terrain::Ocean | Terrain::Beach | Terrain::Cliff
+            )
+    };
+    let sea_ice_edge =
+        state
+            .grid
+            .topology
+            .face_distances_with(&sea_ice_sources, 2, ocean_footprint);
+    for face in state.grid.topology.faces() {
+        if sea_ice_edge.face_steps(face).is_some() {
+            phase[face.index()] = Some(WaterPhase::Frozen);
+        }
+    }
+
+    // Smooth one-face liquid notches along the ice front even when they remain
+    // technically connected to a large open-water component.
+    for _ in 0..3 {
+        let fill = state
+            .grid
+            .topology
+            .faces()
+            .filter(|face| {
+                has_surface[face.index()]
+                    && phase[face.index()] == Some(WaterPhase::Liquid)
+                    && state
+                        .grid
+                        .face_neighbors(*face)
+                        .into_iter()
+                        .filter(|neighbor| phase[neighbor.index()] == Some(WaterPhase::Frozen))
+                        .count()
+                        >= 2
+            })
+            .collect::<Vec<_>>();
+        if fill.is_empty() {
+            break;
+        }
+        for face in fill {
+            phase[face.index()] = Some(WaterPhase::Frozen);
+        }
+    }
+
+    // Local face-centre climate can leave one- or two-triangle liquid holes
+    // inside otherwise continuous ice. Close only small, fully surface-bound
+    // liquid components that actually touch ice; large components remain the
+    // intentional transition to open water.
+    const MAX_LIQUID_HOLE_FACES: usize = 11;
+    let liquid_components = state.grid.topology.face_components(|face| {
+        has_surface[face.index()] && phase[face.index()] == Some(WaterPhase::Liquid)
+    });
+    let mut liquid_sizes = vec![0usize; liquid_components.count()];
+    let mut liquid_touches_ice = vec![false; liquid_components.count()];
+    for face in state.grid.topology.faces() {
+        let Some(component) = liquid_components.face(face) else {
+            continue;
+        };
+        liquid_sizes[component.index()] += 1;
+        liquid_touches_ice[component.index()] |= state
+            .grid
+            .face_neighbors(face)
+            .into_iter()
+            .any(|neighbor| phase[neighbor.index()] == Some(WaterPhase::Frozen));
+    }
+    for face in state.grid.topology.faces() {
+        if let Some(component) = liquid_components.face(face)
+            && liquid_sizes[component.index()] <= MAX_LIQUID_HOLE_FACES
+            && liquid_touches_ice[component.index()]
+        {
+            phase[face.index()] = Some(WaterPhase::Frozen);
+        }
+    }
+    let surface_condition = state
+        .grid
+        .topology
+        .faces()
+        .map(|face| {
+            let tri = state.grid.unit_tris[face.index()];
+            let point = SpherePos::new((tri[0] + tri[1] + tri[2]).normalize());
+            if phase[face.index()] == Some(WaterPhase::Frozen)
+                || state.terrain().temperature_at(point) <= 0.0
+            {
+                SurfaceCondition::Frozen
+            } else {
+                SurfaceCondition::Normal
+            }
+        })
+        .collect::<Vec<_>>();
     Event::OutputsBaked {
         river_r,
         slope: face_max(
@@ -383,6 +531,7 @@ fn bake_outputs(state: &GenState) -> Event {
         ),
         depth,
         phase,
+        surface_condition,
         landform: face_majority(&state.grid, state.landform.as_slice(), Landform::rank),
         road_material,
     }
@@ -447,6 +596,7 @@ fn evolve(state: &mut GenState, event: Event) {
             slope,
             depth,
             phase,
+            surface_condition,
             landform,
             road_material,
         } => {
@@ -454,6 +604,7 @@ fn evolve(state: &mut GenState, event: Event) {
             state.face_slope_class = slope.into();
             state.face_water_depth = depth.into();
             state.face_water_phase = phase.into();
+            state.face_surface_condition = surface_condition.into();
             state.face_landform = landform.into();
             state.face_road_material = road_material.into();
         }

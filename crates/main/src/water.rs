@@ -191,11 +191,8 @@ pub fn build_ice_surface(
             continue;
         }
         let river = river_r.get(fi).copied().unwrap_or([0.0; 3]);
-        let radii = if river.iter().any(|&radius| radius > 0.0) {
-            river
-        } else {
-            [water_r.get(fi).copied().unwrap_or(0.0); 3]
-        };
+        let body_radius = water_r.get(fi).copied().unwrap_or(0.0);
+        let radii = river.map(|radius| if radius > 0.0 { radius } else { body_radius });
         if radii.iter().all(|&radius| radius <= 0.0) {
             continue;
         }
@@ -397,7 +394,7 @@ mod tests {
             [[0.0, 0.0, 99.0], [-1.0, 0.0, 99.0], [0.0, -1.0, 99.0]],
         ];
         let water_r = vec![100.0; 2];
-        let river_r = vec![[0.0; 3]; 2];
+        let river_r = vec![[101.0, 0.0, 102.0], [0.0; 3]];
         let phase = vec![Some(WaterPhase::Frozen), Some(WaterPhase::Liquid)];
         let liquid = build_water_surface(&tris, &water_r, &phase).unwrap();
         let Some(VertexAttributeValues::Float32x3(liquid_positions)) =
@@ -408,5 +405,9 @@ mod tests {
         assert_eq!(liquid_positions.len(), 3);
         let (_, ice_tris) = build_ice_surface(&tris, &water_r, &river_r, &phase).unwrap();
         assert_eq!(ice_tris.len(), 1);
+        let radii = ice_tris[0].map(|corner| Vec3::from_array(corner).length());
+        for (actual, expected) in radii.into_iter().zip([101.0, 100.0, 102.0]) {
+            assert!((actual - expected).abs() < 1e-3);
+        }
     }
 }

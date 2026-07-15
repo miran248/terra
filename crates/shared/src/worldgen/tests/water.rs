@@ -1,5 +1,5 @@
 use super::*;
-use crate::level::WaterPhase;
+use crate::level::{SurfaceCondition, WaterPhase};
 use bevy::prelude::Vec3;
 
 #[test]
@@ -30,6 +30,48 @@ fn freezing_is_local_across_lakes_and_rivers() {
     assert!(frozen_lake > 0, "seed must include frozen lake surface");
     assert!(frozen_river > 0, "seed must include frozen river surface");
     assert!(liquid_river > 0, "one river must retain flowing sections");
+
+    for face in state.grid.topology.faces() {
+        let rendered =
+            state.water_r[face] > 0.0 || state.river_r[face].iter().any(|&radius| radius > 0.0);
+        assert_eq!(
+            state.face_water_phase[face].is_some(),
+            rendered,
+            "rendered water face {} must own exactly one phase",
+            face.index()
+        );
+    }
+    assert!(state.grid.topology.faces().any(|face| {
+        !state.tiles[face].is_water()
+            && state.face_surface_condition[face] == SurfaceCondition::Frozen
+    }));
+}
+
+#[test]
+fn polar_sea_ice_forms_coherent_partial_sheets() {
+    let state = run_state(1337, |_| {});
+    let frozen_ocean = state.grid.topology.face_components(|face| {
+        state.tiles[face] == Terrain::Ocean
+            && state.face_water_phase[face] == Some(WaterPhase::Frozen)
+    });
+    let mut sizes = vec![0usize; frozen_ocean.count()];
+    let mut liquid_ocean = 0usize;
+    for face in state.grid.topology.faces() {
+        if let Some(component) = frozen_ocean.face(face) {
+            sizes[component.index()] += 1;
+        }
+        if state.tiles[face] == Terrain::Ocean
+            && state.face_water_phase[face] == Some(WaterPhase::Liquid)
+        {
+            liquid_ocean += 1;
+        }
+    }
+    assert!(!sizes.is_empty(), "seed must include polar sea ice");
+    assert!(
+        sizes.iter().all(|&size| size >= 12),
+        "orphan sea-ice patch: {sizes:?}"
+    );
+    assert!(liquid_ocean > 0, "ocean must remain partially liquid");
 }
 
 #[test]

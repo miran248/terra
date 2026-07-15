@@ -98,8 +98,10 @@ pub struct LevelData {
     pub slope_class: Vec<SlopeClass>,
     /// Per-face water depth class; `None` on dry faces.
     pub water_depth: Vec<Option<WaterDepth>>,
-    /// Local water phase; `None` on dry faces. It may vary along one body.
+    /// Local rendered-water phase. It may vary along one body.
     pub water_phase: Vec<Option<WaterPhase>>,
+    /// General ground/surface condition for terrain and water alike.
+    pub surface_condition: Vec<SurfaceCondition>,
     /// Per-face macro landform.
     pub landform: Vec<Landform>,
     /// Per-face road surface material; `None` on non-road faces.
@@ -248,6 +250,14 @@ impl WaterPhase {
     }
 }
 
+/// Climate/material condition of any world surface, independent of terrain
+/// identity and whether the face carries water.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SurfaceCondition {
+    Normal,
+    Frozen,
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FloraKind {
     Tree,
@@ -312,6 +322,7 @@ impl LevelData {
             ("slope_class", self.slope_class.len()),
             ("water_depth", self.water_depth.len()),
             ("water_phase", self.water_phase.len()),
+            ("surface_condition", self.surface_condition.len()),
             ("landform", self.landform.len()),
             ("road_material", self.road_material.len()),
         ] {
@@ -421,7 +432,7 @@ pub enum RoadKind {
 mod tests {
     use super::{
         FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass, StructureKind,
-        WaterDepth, WaterPhase,
+        SurfaceCondition, WaterDepth, WaterPhase,
     };
     use serde::{Serialize, de::DeserializeOwned};
 
@@ -470,6 +481,7 @@ mod tests {
         round_trip(SlopeClass::Cliff);
         round_trip(WaterDepth::Abyss);
         round_trip(WaterPhase::Frozen);
+        round_trip(SurfaceCondition::Frozen);
         round_trip(Landform::Plateau);
         round_trip(RoadMaterial::Rock);
         round_trip(FloraKind::Reed);

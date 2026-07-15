@@ -12,7 +12,8 @@ use std::collections::BTreeMap;
 
 use crate::level::{
     FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RoadData, RoadKind,
-    RoadMaterial, SettlementData, SlopeClass, StructureData, WaterDepth, WaterPhase,
+    RoadMaterial, SettlementData, SlopeClass, StructureData, SurfaceCondition, WaterDepth,
+    WaterPhase,
 };
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -319,6 +320,7 @@ struct GenState {
     pub face_slope_class: FaceField<SlopeClass>,
     pub face_water_depth: FaceField<Option<WaterDepth>>,
     pub face_water_phase: FaceField<Option<WaterPhase>>,
+    pub face_surface_condition: FaceField<SurfaceCondition>,
     pub face_landform: FaceField<Landform>,
     pub face_road_material: FaceField<Option<RoadMaterial>>,
 }
@@ -381,6 +383,7 @@ impl GenState {
             face_slope_class: FaceField::default(),
             face_water_depth: FaceField::default(),
             face_water_phase: FaceField::default(),
+            face_surface_condition: FaceField::default(),
             face_landform: FaceField::default(),
             face_road_material: FaceField::default(),
         }
@@ -451,6 +454,7 @@ impl GenState {
             slope_class: self.face_slope_class.to_vec(),
             water_depth: self.face_water_depth.to_vec(),
             water_phase: self.face_water_phase.to_vec(),
+            surface_condition: self.face_surface_condition.to_vec(),
             landform: self.face_landform.to_vec(),
             road_material: self.face_road_material.to_vec(),
         }

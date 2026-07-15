@@ -71,6 +71,9 @@ pub struct LevelWaterDepth(pub Vec<Option<WaterDepth>>);
 pub struct LevelWaterPhase(pub Vec<Option<WaterPhase>>);
 
 #[derive(Resource)]
+pub struct LevelIceSurface(pub Vec<bool>);
+
+#[derive(Resource)]
 pub struct LevelLandform(pub Vec<Landform>);
 
 #[derive(Resource)]
@@ -712,6 +715,7 @@ fn setup_map(
             })),
             RigidBody::Static,
             build_collider(&ice_tris),
+            CollisionMargin(TERRAIN_MARGIN),
             Transform::default(),
             Ground,
         ));
@@ -804,6 +808,18 @@ fn setup_map(
     commands.insert_resource(LevelSlope(level.slope_class.clone()));
     commands.insert_resource(LevelWaterDepth(level.water_depth.clone()));
     commands.insert_resource(LevelWaterPhase(level.water_phase.clone()));
+    commands.insert_resource(LevelIceSurface(
+        level
+            .water_phase
+            .iter()
+            .enumerate()
+            .map(|(face, phase)| {
+                *phase == Some(WaterPhase::Frozen)
+                    && (level.face_water_r[face] > 0.0
+                        || level.face_river_r[face].iter().any(|&radius| radius > 0.0))
+            })
+            .collect(),
+    ));
     commands.insert_resource(LevelLandform(level.landform.clone()));
     commands.insert_resource(LevelRoadMaterial(level.road_material.clone()));
     commands.insert_resource(LevelRegions {
@@ -965,7 +981,7 @@ fn move_player(
     time: Res<Time>,
     input: Res<PlayerInput>,
     planet: Res<PlanetMesh>,
-    water_phase: Res<LevelWaterPhase>,
+    ice_surface: Res<LevelIceSurface>,
     mut player_q: Query<(&mut Player, &Position, Forces)>,
 ) {
     let Ok((mut player, pos, mut forces)) = player_q.single_mut() else {
@@ -984,8 +1000,9 @@ fn move_player(
     let underwater = world_r < PLANET_RADIUS;
     let on_frozen_water = planet
         .face_at(up)
-        .and_then(|face| water_phase.0.get(face))
-        .is_some_and(|phase| *phase == Some(WaterPhase::Frozen));
+        .and_then(|face| ice_surface.0.get(face))
+        .copied()
+        .unwrap_or(false);
     let slowed_by_water = underwater || on_frozen_water;
     let speed = PLAYER_SPEED
         * if slowed_by_water { 0.4 } else { 1.0 }
