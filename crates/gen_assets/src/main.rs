@@ -613,6 +613,41 @@ fn generate_mesh(name: &str) -> MeshData {
             // Cross braces
             add_box(&mut mesh, [-0.15, 0.46, -0.12], [0.15, 0.56, 0.12], wood);
         }
+        // --- Phase 4: road decoration structures ---
+        "structure.lamp_post" => {
+            let pole = [0.35, 0.35, 0.35, 1.0];
+            let light = [0.95, 0.8, 0.3, 1.0];
+            add_box(&mut mesh, [-0.04, 0.0, -0.04], [0.04, 1.2, 0.04], pole);
+            add_box(&mut mesh, [-0.15, 1.1, -0.08], [-0.04, 1.22, 0.08], pole);
+            add_box(&mut mesh, [-0.15, 1.15, -0.06], [-0.04, 1.22, 0.06], light);
+        }
+        "structure.signpost" => {
+            let pole = [0.4, 0.25, 0.12, 1.0];
+            let board = [0.55, 0.45, 0.3, 1.0];
+            add_box(&mut mesh, [-0.04, 0.0, -0.04], [0.04, 1.1, 0.04], pole);
+            add_box(&mut mesh, [-0.3, 0.8, -0.02], [0.3, 1.05, 0.02], board);
+        }
+        "structure.guardrail" => {
+            let silver = [0.55, 0.55, 0.6, 1.0];
+            add_box(&mut mesh, [-0.03, 0.0, -0.03], [0.03, 0.5, 0.03], silver);
+            add_box(&mut mesh, [-0.03, 0.5, -0.03], [0.53, 0.55, 0.03], silver);
+            add_box(&mut mesh, [-0.5, 0.35, -0.02], [0.5, 0.4, 0.02], silver);
+        }
+        "structure.railing" => {
+            let wood = [0.45, 0.28, 0.12, 1.0];
+            add_box(&mut mesh, [-0.03, 0.0, -0.03], [0.03, 0.7, 0.03], wood);
+            add_box(&mut mesh, [-0.5, 0.65, -0.02], [0.5, 0.72, 0.02], wood);
+        }
+        "structure.suspension" => {
+            let cable = [0.2, 0.2, 0.22, 1.0];
+            // Vertical tower
+            add_box(&mut mesh, [-0.06, 0.0, -0.06], [0.06, 1.5, 0.06], cable);
+            // Horizontal crossbar
+            add_box(&mut mesh, [-0.4, 1.3, -0.04], [0.4, 1.4, 0.04], cable);
+            // Downward cables (simulated as thin boxes)
+            add_box(&mut mesh, [-0.35, 0.3, -0.02], [-0.3, 1.3, 0.02], cable);
+            add_box(&mut mesh, [0.3, 0.3, -0.02], [0.35, 1.3, 0.02], cable);
+        }
         "material.metal" => {
             let color = [0.75, 0.75, 0.8, 1.0];
             add_box(&mut mesh, [-0.25, 0.0, -0.12], [0.25, 0.08, 0.12], color);

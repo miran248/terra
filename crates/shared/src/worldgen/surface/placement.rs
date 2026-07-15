@@ -327,6 +327,35 @@ pub(in crate::worldgen) fn place_structures(
             }
             continue;
         }
+        // Road decorations: barricades, lamp posts, signposts, guardrails on road faces.
+        if road(face_index) {
+            // Barricade: road face away from town.
+            if town_dist[face_index] > 2 && rng.f32() < 0.008 {
+                push(&mut rng, face_index, StructureKind::Barricade);
+                continue;
+            }
+            let r = rng.f32();
+            if r < 0.015 {
+                push(&mut rng, face_index, StructureKind::LampPost);
+            } else if r < 0.025 {
+                push(&mut rng, face_index, StructureKind::Signpost);
+            } else if r < 0.040 {
+                push(&mut rng, face_index, StructureKind::Guardrail);
+            }
+            continue;
+        }
+        // Bridge decorations: railings and suspension cables.
+        let is_bridge = painted_corners(grid, &painted.bridges, FaceId::new(face_index)) > 0
+            || painted_corners(grid, &painted.bridge_entries, FaceId::new(face_index)) > 0;
+        if is_bridge {
+            let r = rng.f32();
+            if r < 0.15 {
+                push(&mut rng, face_index, StructureKind::Railing);
+            } else if r < 0.17 {
+                push(&mut rng, face_index, StructureKind::Suspension);
+            }
+            continue;
+        }
         if feature(face_index) {
             continue;
         }
@@ -347,11 +376,6 @@ pub(in crate::worldgen) fn place_structures(
             && rng.f32() < 0.03
         {
             push(&mut rng, face_index, StructureKind::Watchtower);
-            continue;
-        }
-        // Barricade: road face away from town (zombie apocalypse checkpoint).
-        if road(face_index) && town_dist[face_index] > 2 && rng.f32() < 0.008 {
-            push(&mut rng, face_index, StructureKind::Barricade);
             continue;
         }
         // Ruins: rare, deep in the wilderness (far from any town).

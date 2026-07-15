@@ -301,6 +301,11 @@ pub enum StructureKind {
     Crate,
     Fence,
     Barricade,
+    LampPost,
+    Signpost,
+    Guardrail,
+    Railing,
+    Suspension,
 }
 impl StructureKind {
     pub const fn name(self) -> &'static str {
@@ -316,6 +321,11 @@ impl StructureKind {
             Self::Crate => "Crate",
             Self::Fence => "Fence",
             Self::Barricade => "Barricade",
+            Self::LampPost => "Lamp Post",
+            Self::Signpost => "Signpost",
+            Self::Guardrail => "Guardrail",
+            Self::Railing => "Railing",
+            Self::Suspension => "Suspension Cable",
         }
     }
 }

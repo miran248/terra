@@ -107,8 +107,15 @@ fn apply_foliage_materials(
 
         let Some(name) = flora_name else { continue };
 
+        // Strip variant suffix (e.g. "flora.tree.2" → "flora.tree") for matching
+        let stripped = if let Some((prefix, suffix)) = name.rsplit_once('.') {
+            if suffix.chars().all(|c| c.is_ascii_digit()) { prefix } else { name }
+        } else {
+            name
+        };
+
         // Determine wind parameters based on foliage type
-        let (speed, amplitude, trample_radius, trample_strength) = match name {
+        let (speed, amplitude, trample_radius, trample_strength) = match stripped {
             "flora.grass" | "flora.reed" | "flora.seaweed" | "flora.lilypad" | "flora.flower" | "flora.mushroom" => (1.8, 0.12, 1.2, 0.8),
             "flora.tree" | "flora.dead_tree" => (0.8, 0.04, 2.0, 0.2), // trees bend slightly when stepped on
             "flora.bush" | "flora.berry" => (1.2, 0.07, 1.5, 0.5),
