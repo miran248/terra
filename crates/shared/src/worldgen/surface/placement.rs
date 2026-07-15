@@ -91,6 +91,14 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.06, Dry, FloraKind::Cactus),
             (0.02, Flat, FloraKind::DeadTree),
         ],
+        Terrain::Lake | Terrain::River => &[
+            (0.15, Wet, FloraKind::Lilypad),
+            (0.08, Wet, FloraKind::Seaweed),
+        ],
+        Terrain::Ocean => &[
+            (0.05, Flat, FloraKind::Coral),
+            (0.12, Wet, FloraKind::Seaweed),
+        ],
         Terrain::RiverBank | Terrain::LakeShore => &[
             (0.02, Wet, FloraKind::Tree),
             (0.05, Wet, FloraKind::Bush),
@@ -138,13 +146,15 @@ pub(in crate::worldgen) fn place_flora(
         let wet = (1.0 + m).clamp(0.3, 1.8);
         let dry = (1.0 - m).clamp(0.5, 1.6);
         for &(base, scale, kind) in &mix {
+            let multiplier = if matches!(kind, FloraKind::Rock) { 1.0 } else { 10.0 };
             let density = base
                 * match scale {
                     FloraScale::Wet => wet,
                     FloraScale::WetSq => wet * wet,
                     FloraScale::Dry => dry,
                     FloraScale::Flat => 1.0,
-                };
+                }
+                * multiplier;
             let mut n = density.trunc() as u32;
             if rng.f32() < density.fract() {
                 n += 1;

@@ -11,7 +11,7 @@ pub const ITEMS_CATALOG: &str = "models/items.glb";
 pub const ACTORS_CATALOG: &str = "models/actors.glb";
 pub const ACTOR_ANIMATIONS: [&str; 3] = ["idle", "walk", "attack"];
 
-pub const FLORA_KINDS: [FloraKind; 11] = [
+pub const FLORA_KINDS: [FloraKind; 14] = [
     FloraKind::Tree,
     FloraKind::Bush,
     FloraKind::Flower,
@@ -23,6 +23,9 @@ pub const FLORA_KINDS: [FloraKind; 11] = [
     FloraKind::Berry,
     FloraKind::DeadTree,
     FloraKind::Reed,
+    FloraKind::Seaweed,
+    FloraKind::Lilypad,
+    FloraKind::Coral,
 ];
 pub const STRUCTURE_KINDS: [StructureKind; 7] = [
     StructureKind::Ruin,
@@ -59,6 +62,9 @@ impl AssetName for FloraKind {
             Self::Berry => "flora.berry",
             Self::DeadTree => "flora.dead_tree",
             Self::Reed => "flora.reed",
+            Self::Seaweed => "flora.seaweed",
+            Self::Lilypad => "flora.lilypad",
+            Self::Coral => "flora.coral",
         }
     }
 }
@@ -102,15 +108,7 @@ impl AssetName for WeaponKind {
 
 pub fn flora_collider(kind: FloraKind) -> ColliderSpec {
     match kind {
-        FloraKind::Tree | FloraKind::DeadTree => ColliderSpec::Capsule {
-            radius: 0.45,
-            half_length: 2.0,
-        },
-        FloraKind::Cactus => ColliderSpec::Capsule {
-            radius: 0.3,
-            half_length: 0.8,
-        },
-        FloraKind::Rock | FloraKind::Log => ColliderSpec::Box {
+        FloraKind::Rock => ColliderSpec::Box {
             half_extents: [0.7, 0.5, 0.7],
         },
         _ => ColliderSpec::None,

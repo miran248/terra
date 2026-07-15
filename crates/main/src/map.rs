@@ -96,7 +96,7 @@ fn flora_cull(kind: FloraKind) -> f32 {
     // fog visibility (main.rs) is set beyond the largest of these so props fade
     // into haze before this hard cull edge rather than popping.
     match kind {
-        FloraKind::Flower | FloraKind::Grass | FloraKind::Mushroom | FloraKind::Reed => 150.0,
+        FloraKind::Flower | FloraKind::Grass | FloraKind::Mushroom | FloraKind::Reed | FloraKind::Lilypad | FloraKind::Seaweed | FloraKind::Coral => 150.0,
         FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
         FloraKind::Log => 420.0,
         FloraKind::Tree | FloraKind::DeadTree => 880.0,
@@ -474,7 +474,7 @@ fn setup_map(
                             .with_scale(Vec3::splat(scale)),
                     ));
                 }
-                FloraKind::Reed => {
+                FloraKind::Seaweed | FloraKind::Lilypad | FloraKind::Coral => {}, FloraKind::Reed => {
                     commands.spawn((
                         CullRange(cull),
                         Mesh3d(reed_mesh.clone()),
@@ -514,6 +514,8 @@ fn setup_map(
                         half_extents[1] * scale,
                         half_extents[2] * scale,
                     ),
+                    Friction::ZERO,
+                    Restitution::ZERO,
                 ));
             }
             ColliderSpec::Capsule {

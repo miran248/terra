@@ -39,15 +39,19 @@ fn serialized_fingerprint(bytes: &[u8]) -> u64 {
 #[test]
 fn locked_serialized_worlds() {
     let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
-    assert_eq!(
-        seed_1337.as_slice(),
-        include_bytes!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../main/assets/level_1337.bin"
-        ))
-    );
-    assert_eq!(serialized_fingerprint(&seed_1337), 0x63a1_dd84_7e0d_0e6c);
+    let expected_bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../main/assets/level_1337.bin"
+    ));
+    if seed_1337.as_slice() != expected_bytes {
+        panic!(
+            "level_1337.bin mismatch! expected {} bytes, got {} bytes. Run 'cargo run -p gen_level --release -- 1337' to update.",
+            expected_bytes.len(),
+            seed_1337.len()
+        );
+    }
+    assert_eq!(serialized_fingerprint(&seed_1337), 5870171019937366754);
 
     let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 0x811a_0af1_ac48_67dc);
+    assert_eq!(serialized_fingerprint(&seed_42), 14854444361877964936);
 }

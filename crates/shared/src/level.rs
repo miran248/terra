@@ -271,6 +271,9 @@ pub enum FloraKind {
     Berry,
     DeadTree,
     Reed,
+    Seaweed,
+    Lilypad,
+    Coral,
 }
 
 // Structures: built props placed contextually (like towns and bridges).

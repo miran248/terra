@@ -10,9 +10,17 @@ fn flora_stays_off_water_and_features() {
     );
     for f in &state.flora {
         let face_index = f.face as usize;
-        assert!(
-            state.tiles.as_slice()[face_index].is_land(),
-            "flora on water face {face_index}"
+        let is_land = state.tiles.as_slice()[face_index].is_land();
+        let is_aquatic = matches!(
+            f.kind,
+            crate::level::FloraKind::Seaweed
+                | crate::level::FloraKind::Lilypad
+                | crate::level::FloraKind::Coral
+        );
+        assert_eq!(
+            is_land, !is_aquatic,
+            "flora kind {:?} placed on land={} face {face_index}",
+            f.kind, is_land
         );
         for bits in [
             &state.painted.roads,

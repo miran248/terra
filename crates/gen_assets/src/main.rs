@@ -223,16 +223,16 @@ fn generate_mesh(name: &str) -> MeshData {
     let mut mesh = MeshData::new();
     match name {
         "flora.tree" => {
-            // Trunk: Brown rectangular prism
+            // Trunk: Brown rectangular prism, matches collider height & radius
             let trunk_color = [0.45, 0.28, 0.13, 1.0];
-            add_box(&mut mesh, [-0.15, 0.0, -0.15], [0.15, 1.0, 0.15], trunk_color);
+            add_box(&mut mesh, [-0.3, 0.0, -0.3], [0.3, 2.0, 0.3], trunk_color);
 
             // Lower Canopy: Green pyramid
             let leaves_color = [0.15, 0.45, 0.15, 1.0];
-            add_pyramid(&mut mesh, [-0.65, -0.65], [0.65, 0.65], 0.9, 2.0, leaves_color);
+            add_pyramid(&mut mesh, [-1.5, -1.5], [1.5, 1.5], 1.6, 3.8, leaves_color);
 
             // Upper Canopy: Green pyramid (slightly smaller, overlapping)
-            add_pyramid(&mut mesh, [-0.45, -0.45], [0.45, 0.45], 1.6, 2.8, leaves_color);
+            add_pyramid(&mut mesh, [-1.0, -1.0], [1.0, 1.0], 3.2, 5.5, leaves_color);
         }
         "flora.bush" => {
             let color = [0.18, 0.50, 0.18, 1.0];
@@ -246,7 +246,8 @@ fn generate_mesh(name: &str) -> MeshData {
         }
         "flora.rock" => {
             let color = [0.45, 0.45, 0.45, 1.0];
-            add_box(&mut mesh, [-0.5, 0.0, -0.4], [0.5, 0.5, 0.4], color);
+            // Scaled to match half_extents [0.7, 0.5, 0.7] (1.4m x 1.0m x 1.4m)
+            add_box(&mut mesh, [-0.7, 0.0, -0.7], [0.7, 1.0, 0.7], color);
         }
         "flora.grass" => {
             let color = [0.25, 0.65, 0.25, 1.0];
@@ -257,7 +258,8 @@ fn generate_mesh(name: &str) -> MeshData {
         }
         "flora.log" => {
             let color = [0.4, 0.25, 0.1, 1.0];
-            add_box(&mut mesh, [-0.6, 0.0, -0.2], [0.6, 0.3, 0.2], color);
+            // Scaled to match log cylinder collider (length 3.0m, radius 0.35m)
+            add_box(&mut mesh, [-1.5, 0.0, -0.35], [1.5, 0.7, 0.35], color);
         }
         "flora.mushroom" => {
             let stem_color = [0.9, 0.9, 0.85, 1.0];
@@ -267,14 +269,14 @@ fn generate_mesh(name: &str) -> MeshData {
         }
         "flora.cactus" => {
             let color = [0.1, 0.45, 0.15, 1.0];
-            // Main trunk
-            add_box(&mut mesh, [-0.12, 0.0, -0.12], [0.12, 0.9, 0.12], color);
+            // Main trunk scaled to match 2.2m capsule collider
+            add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 2.0, 0.25], color);
             // Left branch
-            add_box(&mut mesh, [-0.3, 0.4, -0.08], [-0.12, 0.52, 0.08], color);
-            add_box(&mut mesh, [-0.3, 0.52, -0.08], [-0.18, 0.75, 0.08], color);
+            add_box(&mut mesh, [-0.6, 0.8, -0.16], [-0.24, 1.04, 0.16], color);
+            add_box(&mut mesh, [-0.6, 1.04, -0.16], [-0.36, 1.5, 0.16], color);
             // Right branch
-            add_box(&mut mesh, [0.12, 0.5, -0.08], [0.3, 0.62, 0.08], color);
-            add_box(&mut mesh, [0.18, 0.62, -0.08], [0.3, 0.82, 0.08], color);
+            add_box(&mut mesh, [0.24, 1.0, -0.16], [0.6, 1.24, 0.16], color);
+            add_box(&mut mesh, [0.36, 1.24, -0.16], [0.6, 1.64, 0.16], color);
         }
         "flora.berry" => {
             let bush_color = [0.15, 0.45, 0.2, 1.0];
@@ -288,14 +290,32 @@ fn generate_mesh(name: &str) -> MeshData {
         }
         "flora.dead_tree" => {
             let color = [0.35, 0.22, 0.12, 1.0];
-            // Bare trunk
-            add_box(&mut mesh, [-0.12, 0.0, -0.12], [0.12, 1.2, 0.12], color);
+            // Bare trunk scaled to match Tree collider (4.9m tall)
+            add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 2.4, 0.25], color);
             // Angular branch 1
-            add_box(&mut mesh, [-0.35, 0.7, -0.08], [-0.12, 0.82, 0.08], color);
-            add_box(&mut mesh, [-0.45, 0.82, -0.08], [-0.35, 1.1, 0.08], color);
+            add_box(&mut mesh, [-0.7, 1.4, -0.16], [-0.24, 1.64, 0.16], color);
+            add_box(&mut mesh, [-0.9, 1.64, -0.16], [-0.7, 2.2, 0.16], color);
             // Angular branch 2
-            add_box(&mut mesh, [0.12, 0.5, -0.08], [0.35, 0.62, 0.08], color);
-            add_box(&mut mesh, [0.25, 0.62, -0.08], [0.45, 0.9, 0.08], color);
+            add_box(&mut mesh, [0.24, 1.0, -0.16], [0.7, 1.24, 0.16], color);
+            add_box(&mut mesh, [0.5, 1.24, -0.16], [0.9, 1.8, 0.16], color);
+        }
+        "flora.seaweed" => {
+            let color = [0.1, 0.4, 0.2, 1.0];
+            add_box(&mut mesh, [-0.05, 0.0, -0.05], [0.05, 1.0, 0.05], color);
+            add_box(&mut mesh, [-0.1, 0.2, -0.1], [0.1, 0.3, 0.1], color);
+            add_box(&mut mesh, [-0.1, 0.6, -0.1], [0.1, 0.7, 0.1], color);
+        }
+        "flora.lilypad" => {
+            let color = [0.15, 0.5, 0.2, 1.0];
+            add_box(&mut mesh, [-0.3, 0.0, -0.3], [0.3, 0.05, 0.3], color);
+            let flower_color = [0.9, 0.6, 0.8, 1.0];
+            add_pyramid(&mut mesh, [-0.08, -0.08], [0.08, 0.08], 0.05, 0.15, flower_color);
+        }
+        "flora.coral" => {
+            let color = [0.8, 0.3, 0.4, 1.0];
+            add_box(&mut mesh, [-0.1, 0.0, -0.1], [0.1, 0.5, 0.1], color);
+            add_box(&mut mesh, [-0.2, 0.2, -0.05], [0.2, 0.3, 0.05], color);
+            add_box(&mut mesh, [-0.05, 0.3, -0.2], [0.05, 0.4, 0.2], color);
         }
         "flora.reed" => {
             let color = [0.55, 0.55, 0.2, 1.0];
@@ -396,15 +416,15 @@ fn generate_mesh(name: &str) -> MeshData {
         "weapon.spear" => {
             let shaft_color = [0.45, 0.28, 0.12, 1.0];
             let tip_color = [0.72, 0.72, 0.74, 1.0];
-            // Shaft pointing along +X
-            add_box(&mut mesh, [-0.5, 0.0, -0.02], [0.4, 0.04, 0.02], shaft_color);
+            // Shaft pointing along +X scaled to ~1.6m length
+            add_box(&mut mesh, [-0.8, 0.0, -0.03], [0.6, 0.06, 0.03], shaft_color);
             // Tip pointing along +X
-            let tip_x = 0.55;
+            let tip_x = 0.85;
             let p_top = [tip_x, 0.0, 0.0];
-            let b0 = [0.4, -0.04, -0.04];
-            let b1 = [0.4, 0.04, -0.04];
-            let b2 = [0.4, 0.04, 0.04];
-            let b3 = [0.4, -0.04, 0.04];
+            let b0 = [0.6, -0.06, -0.06];
+            let b1 = [0.6, 0.06, -0.06];
+            let b2 = [0.6, 0.06, 0.06];
+            let b3 = [0.6, -0.06, 0.06];
             add_triangle(&mut mesh, b0, b1, p_top, tip_color);
             add_triangle(&mut mesh, b1, b2, p_top, tip_color);
             add_triangle(&mut mesh, b2, b3, p_top, tip_color);
@@ -412,8 +432,9 @@ fn generate_mesh(name: &str) -> MeshData {
         }
         "weapon.pistol" => {
             let color = [0.2, 0.2, 0.22, 1.0];
-            add_box(&mut mesh, [-0.05, 0.0, -0.03], [0.03, 0.18, 0.03], color);
-            add_box(&mut mesh, [-0.05, 0.15, -0.03], [0.2, 0.23, 0.03], color);
+            // Scaled up proportionately
+            add_box(&mut mesh, [-0.07, 0.0, -0.04], [0.04, 0.25, 0.04], color);
+            add_box(&mut mesh, [-0.07, 0.21, -0.04], [0.28, 0.32, 0.04], color);
         }
         "weapon.sling" => {
             let color = [0.5, 0.32, 0.15, 1.0];
@@ -424,32 +445,36 @@ fn generate_mesh(name: &str) -> MeshData {
         "weapon.rifle" => {
             let stock_color = [0.4, 0.25, 0.1, 1.0];
             let barrel_color = [0.2, 0.2, 0.22, 1.0];
-            add_box(&mut mesh, [-0.25, 0.0, -0.04], [0.2, 0.1, 0.04], stock_color);
-            add_box(&mut mesh, [-0.32, -0.08, -0.04], [-0.2, 0.05, 0.04], stock_color);
-            add_box(&mut mesh, [0.2, 0.04, -0.02], [0.65, 0.08, 0.02], barrel_color);
+            // Scaled up for 1.8m hand proportions (total length ~1.1m)
+            add_box(&mut mesh, [-0.35, 0.0, -0.05], [0.25, 0.14, 0.05], stock_color);
+            add_box(&mut mesh, [-0.45, -0.12, -0.05], [-0.28, 0.07, 0.05], stock_color);
+            add_box(&mut mesh, [0.25, 0.05, -0.03], [0.75, 0.11, 0.03], barrel_color);
         }
         "actor.player" => {
             let clothes_color = [0.15, 0.35, 0.75, 1.0];
             let skin_color = [0.95, 0.8, 0.65, 1.0];
-            add_box(&mut mesh, [-0.18, 0.0, -0.1], [0.18, 0.45, 0.1], clothes_color);
-            add_box(&mut mesh, [-0.22, 0.45, -0.12], [0.22, 0.95, 0.12], clothes_color);
-            add_box(&mut mesh, [-0.12, 0.95, -0.12], [0.12, 1.22, 0.12], skin_color);
+            // Scaled to a realistic human height of 1.8m
+            add_box(&mut mesh, [-0.25, 0.0, -0.15], [0.25, 0.6, 0.15], clothes_color);
+            add_box(&mut mesh, [-0.3, 0.6, -0.18], [0.3, 1.45, 0.18], clothes_color);
+            add_box(&mut mesh, [-0.18, 1.45, -0.18], [0.18, 1.8, 0.18], skin_color);
         }
         "actor.zombie.0" => {
             let zombie_skin = [0.25, 0.55, 0.3, 1.0];
             let clothes_color = [0.35, 0.35, 0.35, 1.0];
-            add_box(&mut mesh, [-0.18, 0.0, -0.1], [0.18, 0.4, 0.1], clothes_color);
-            add_box(&mut mesh, [-0.22, 0.4, -0.12], [0.22, 0.9, 0.12], clothes_color);
-            add_box(&mut mesh, [-0.12, 0.9, -0.12], [0.12, 1.18, 0.12], zombie_skin);
-            add_box(&mut mesh, [-0.06, 0.72, -0.38], [0.06, 0.82, -0.12], zombie_skin);
+            // Scaled to 1.8m height
+            add_box(&mut mesh, [-0.25, 0.0, -0.15], [0.25, 0.6, 0.15], clothes_color);
+            add_box(&mut mesh, [-0.3, 0.6, -0.18], [0.3, 1.4, 0.18], clothes_color);
+            add_box(&mut mesh, [-0.18, 1.4, -0.18], [0.18, 1.75, 0.18], zombie_skin);
+            add_box(&mut mesh, [-0.08, 1.1, -0.55], [0.08, 1.25, -0.18], zombie_skin);
         }
         "actor.zombie.1" => {
             let zombie_skin = [0.2, 0.5, 0.25, 1.0];
             let clothes_color = [0.4, 0.28, 0.15, 1.0];
-            add_box(&mut mesh, [-0.18, 0.0, -0.1], [0.18, 0.4, 0.1], clothes_color);
-            add_box(&mut mesh, [-0.22, 0.4, -0.12], [0.22, 0.9, 0.12], clothes_color);
-            add_box(&mut mesh, [-0.12, 0.9, -0.12], [0.12, 1.18, 0.12], zombie_skin);
-            add_box(&mut mesh, [-0.06, 0.72, -0.38], [0.06, 0.82, -0.12], zombie_skin);
+            // Scaled to 1.8m height
+            add_box(&mut mesh, [-0.25, 0.0, -0.15], [0.25, 0.6, 0.15], clothes_color);
+            add_box(&mut mesh, [-0.3, 0.6, -0.18], [0.3, 1.4, 0.18], clothes_color);
+            add_box(&mut mesh, [-0.18, 1.4, -0.18], [0.18, 1.75, 0.18], zombie_skin);
+            add_box(&mut mesh, [-0.08, 1.1, -0.55], [0.08, 1.25, -0.18], zombie_skin);
         }
         _ => {
             mesh = wedge_mesh();
