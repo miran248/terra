@@ -50,8 +50,8 @@ fn locked_serialized_worlds() {
             seed_1337.len()
         );
     }
-    assert_eq!(serialized_fingerprint(&seed_1337), 2582748109006833148);
+    assert_eq!(serialized_fingerprint(&seed_1337), 13589272420086346842);
 
     let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 14556487547956489689);
+    assert_eq!(serialized_fingerprint(&seed_42), 11523096714983799876);
 }

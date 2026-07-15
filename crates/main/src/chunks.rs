@@ -533,6 +533,7 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
         StructureKind::Guardrail => Vec3::new(3.0, 1.0, 0.4),
         StructureKind::Railing => Vec3::new(3.0, 1.0, 0.2),
         StructureKind::Suspension => Vec3::new(2.0, 6.0, 0.6),
+        StructureKind::House => Vec3::new(8.0, 5.0, 6.0),
     };
     let mut root = commands.spawn((
         Transform::from_translation(pos).with_rotation(rotation),

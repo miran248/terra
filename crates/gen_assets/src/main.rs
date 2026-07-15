@@ -648,6 +648,20 @@ fn generate_mesh(name: &str) -> MeshData {
             add_box(&mut mesh, [-0.35, 0.3, -0.02], [-0.3, 1.3, 0.02], cable);
             add_box(&mut mesh, [0.3, 0.3, -0.02], [0.35, 1.3, 0.02], cable);
         }
+        "structure.house" => {
+            let walls = [0.55, 0.45, 0.3, 1.0];
+            let roof = [0.35, 0.15, 0.12, 1.0];
+            let door = [0.2, 0.15, 0.1, 1.0];
+            // Walls
+            add_box(&mut mesh, [-0.4, 0.0, -0.3], [0.4, 0.9, 0.3], walls);
+            // Roof (pyramid)
+            add_pyramid(&mut mesh, [-0.45, -0.35], [0.45, 0.35], 0.9, 1.4, roof);
+            // Door
+            add_box(&mut mesh, [-0.1, 0.0, 0.31], [0.1, 0.55, 0.32], door);
+            // Window
+            let window = [0.85, 0.9, 0.95, 1.0];
+            add_box(&mut mesh, [-0.25, 0.4, 0.31], [-0.05, 0.7, 0.32], window);
+        }
         "material.metal" => {
             let color = [0.75, 0.75, 0.8, 1.0];
             add_box(&mut mesh, [-0.25, 0.0, -0.12], [0.25, 0.08, 0.12], color);

@@ -39,7 +39,7 @@ pub const FLORA_KINDS: [FloraKind; 25] = [
     FloraKind::Stump,
     FloraKind::Fern,
 ];
-pub const STRUCTURE_KINDS: [StructureKind; 16] = [
+pub const STRUCTURE_KINDS: [StructureKind; 17] = [
     StructureKind::Ruin,
     StructureKind::Watchtower,
     StructureKind::Dock,
@@ -56,6 +56,7 @@ pub const STRUCTURE_KINDS: [StructureKind; 16] = [
     StructureKind::Guardrail,
     StructureKind::Railing,
     StructureKind::Suspension,
+    StructureKind::House,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -120,6 +121,7 @@ impl AssetName for StructureKind {
             Self::Guardrail => "structure.guardrail",
             Self::Railing => "structure.railing",
             Self::Suspension => "structure.suspension",
+            Self::House => "structure.house",
         }
     }
 }

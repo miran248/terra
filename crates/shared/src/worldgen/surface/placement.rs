@@ -292,16 +292,18 @@ pub(in crate::worldgen) fn place_structures(
         if tiles[face_index].is_water() || !buildable(face_index) {
             continue;
         }
-        // Town interior: a well, campfire, or tent in a clearing.
+        // Town interior: houses, a well, campfire, or tent.
         if town(face_index) {
             let r = rng.f32();
-            if r < 0.010 {
+            if r < 0.055 {
+                push(&mut rng, face_index, StructureKind::House);
+            } else if r < 0.065 {
                 push(&mut rng, face_index, StructureKind::Well);
-            } else if r < 0.040 {
+            } else if r < 0.080 {
                 push(&mut rng, face_index, StructureKind::Campfire);
-            } else if r < 0.055 {
+            } else if r < 0.090 {
                 push(&mut rng, face_index, StructureKind::Tent);
-            } else if r < 0.060 {
+            } else if r < 0.095 {
                 push(&mut rng, face_index, StructureKind::Crate);
             }
             continue;
