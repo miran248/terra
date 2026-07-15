@@ -168,7 +168,7 @@ pub fn flora_collider(kind: FloraKind) -> ColliderSpec {
 /// How many mesh variants a flora kind has (indexed 0..count).
 pub fn flora_variant_count(kind: FloraKind) -> u32 {
     match kind {
-        FloraKind::Tree => 6,
+        FloraKind::Tree => 7,
         FloraKind::Bush => 2,
         FloraKind::Rock => 2,
         FloraKind::Cactus => 2,

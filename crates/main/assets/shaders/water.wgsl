@@ -40,7 +40,7 @@ fn swell_amp_now() -> f32 {
 }
 
 fn swell_drift(world_pos: vec3<f32>) -> vec3<f32> {
-    return (world_pos - water.wind * globals.time * 0.3) * water.swell_scale;
+    return (world_pos - water.wind * globals.time * 0.15) * water.swell_scale;
 }
 
 fn swell_height(world_pos: vec3<f32>) -> f32 {

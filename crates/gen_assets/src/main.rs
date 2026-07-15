@@ -334,8 +334,54 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_pyramid(&mut mesh, [-1.4, -1.4], [1.4, 1.4], 2.6, 4.2, leaves);
                 add_pyramid(&mut mesh, [-0.8, -0.8], [0.8, 0.8], 3.8, 5.2, leaves);
             }
+            5 => {
+                // Mesh-only leafy: scattered leaf boxes at branch tips
+                let trunk_color = [0.45, 0.28, 0.13, 1.0];
+                add_box(&mut mesh, [-0.2, 0.0, -0.2], [0.2, 1.4, 0.2], trunk_color);
+                // Branches
+                add_box(&mut mesh, [-0.5, 1.1, -0.08], [-0.2, 1.3, 0.08], trunk_color);
+                add_box(&mut mesh, [0.2, 1.1, -0.08], [0.5, 1.3, 0.08], trunk_color);
+                add_box(&mut mesh, [-0.4, 1.3, -0.06], [-0.2, 1.5, 0.06], trunk_color);
+                add_box(&mut mesh, [0.2, 1.3, -0.06], [0.4, 1.5, 0.06], trunk_color);
+                add_box(&mut mesh, [-0.08, 1.4, -0.4], [0.08, 1.6, -0.2], trunk_color);
+                add_box(&mut mesh, [-0.08, 1.4, 0.2], [0.08, 1.6, 0.4], trunk_color);
+                // Sub-branch tips
+                add_box(&mut mesh, [-0.35, 1.5, -0.04], [-0.15, 1.65, 0.04], trunk_color);
+                add_box(&mut mesh, [0.15, 1.5, -0.04], [0.35, 1.65, 0.04], trunk_color);
+                add_box(&mut mesh, [-0.04, 1.55, -0.28], [0.04, 1.7, -0.15], trunk_color);
+                add_box(&mut mesh, [-0.04, 1.55, 0.15], [0.04, 1.7, 0.28], trunk_color);
+                // Leaf clusters — small boxes scattered at branch tips
+                let leaf = [0.12, 0.48, 0.14, 1.0];
+                let leaf_light = [0.18, 0.55, 0.2, 1.0];
+                let leaf_dark = [0.08, 0.38, 0.1, 1.0];
+                let tips: &[([f32; 3], &[f32; 4])] = &[
+                    ([-0.55, 1.2, -0.1], &leaf),
+                    ([-0.5, 1.4, 0.15], &leaf_dark),
+                    ([0.55, 1.2, 0.1], &leaf),
+                    ([0.5, 1.4, -0.15], &leaf_light),
+                    ([-0.3, 1.6, -0.15], &leaf_light),
+                    ([0.3, 1.6, 0.15], &leaf),
+                    ([0.05, 1.7, -0.35], &leaf_dark),
+                    ([-0.05, 1.7, 0.35], &leaf),
+                    ([-0.45, 1.55, -0.05], &leaf_light),
+                    ([0.45, 1.55, 0.05], &leaf),
+                    ([0.0, 1.65, -0.05], &leaf_dark),
+                    ([0.0, 1.75, 0.2], &leaf_light),
+                    ([-0.2, 1.7, 0.1], &leaf),
+                    ([0.2, 1.7, -0.1], &leaf_dark),
+                    ([-0.1, 1.5, -0.3], &leaf_light),
+                    ([0.1, 1.5, 0.3], &leaf),
+                    ([-0.35, 1.65, 0.0], &leaf),
+                    ([0.35, 1.65, 0.0], &leaf_dark),
+                    ([0.0, 1.8, 0.0], &leaf_light),
+                ];
+                for &(center, color) in tips {
+                    let s = 0.12;
+                    add_box(&mut mesh, [center[0] - s, center[1] - s, center[2] - s], [center[0] + s, center[1] + s, center[2] + s], *color);
+                }
+            }
             _ => {
-                // Autumn deciduous: warm orange/gold canopy
+                // Autumn deciduous: warm orange/gold canopy (catch-all for 6+)
                 let trunk_color = [0.5, 0.32, 0.15, 1.0];
                 add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 1.8, 0.25], trunk_color);
                 add_box(&mut mesh, [-0.18, 1.8, -0.08], [0.18, 2.3, 0.08], trunk_color);
@@ -343,19 +389,6 @@ fn generate_mesh(name: &str) -> MeshData {
                 let gold = [0.95, 0.6, 0.15, 1.0];
                 add_pyramid(&mut mesh, [-1.3, -1.3], [1.3, 1.3], 1.5, 3.2, fall_color);
                 add_pyramid(&mut mesh, [-1.0, -1.0], [1.0, 1.0], 2.8, 4.5, gold);
-            }
-        }
-        "flora.bush" => match variant.unwrap_or(0) {
-            0 => {
-                let color = [0.18, 0.50, 0.18, 1.0];
-                add_box(&mut mesh, [-0.4, 0.0, -0.4], [0.4, 0.6, 0.4], color);
-            }
-            _ => {
-                // Snowy: white top cap on darker bush
-                let color = [0.15, 0.35, 0.15, 1.0];
-                add_box(&mut mesh, [-0.4, 0.0, -0.4], [0.4, 0.6, 0.4], color);
-                let snow = [0.9, 0.92, 0.95, 1.0];
-                add_box(&mut mesh, [-0.42, 0.45, -0.42], [0.42, 0.7, 0.42], snow);
             }
         }
         "flora.rock" => match variant.unwrap_or(0) {

@@ -78,7 +78,7 @@ pub fn water_material() -> WaterMaterial {
                 // ~11 m ripple wavelength; at 0.35 waves were ~18 m and read as
                 // a static sheen from the 2 m player's eye height.
                 wave_scale: 0.55,
-                wave_speed: 0.4,
+                wave_speed: 0.22,
                 flow: 0.0,
                 // Storm waves ≈ 2 m (1.5 × the 1.3 storm factor), calm ≈ 0.6 m,
                 // over a ~40 m wavelength — short enough to read against the
