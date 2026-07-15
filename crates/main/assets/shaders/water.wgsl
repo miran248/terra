@@ -1,10 +1,12 @@
-// Water surface extension over StandardMaterial. Depth-based colour/opacity from
-// the depth prepass (limited underwater visibility) + animated normals for swell.
+// Water surface extension over StandardMaterial. Geometric swell (vertex
+// displacement along the sphere normal) + depth-based colour/opacity from the
+// depth prepass (limited underwater visibility) + animated normals for chop.
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing, alpha_discard},
-    forward_io::{VertexOutput, FragmentOutput},
+    mesh_functions,
+    forward_io::{Vertex, VertexOutput, FragmentOutput},
     pbr_types::STANDARD_MATERIAL_FLAGS_UNLIT_BIT,
     mesh_view_bindings::{globals, view},
     view_transformations::depth_ndc_to_view_z,
@@ -23,9 +25,79 @@ struct WaterParams {
     wave_scale: f32,
     wave_speed: f32,
     flow: f32,
+    swell_amp: f32,
+    swell_scale: f32,
 };
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
+
+// Long-wavelength geometric swell height (world metres, ± around waterline).
+// Marches downwind: the sample point drifts against the wind so crests travel
+// with it. Amplitude swells with the wind: calm ≈ 40%, storm ≈ 130%.
+fn swell_amp_now() -> f32 {
+    let wind_speed = length(water.wind);
+    return water.swell_amp * (0.4 + min(wind_speed * 0.075, 0.9));
+}
+
+fn swell_drift(world_pos: vec3<f32>) -> vec3<f32> {
+    return (world_pos - water.wind * globals.time * 0.6) * water.swell_scale;
+}
+
+fn swell_height(world_pos: vec3<f32>) -> f32 {
+    let d = swell_drift(world_pos);
+    // Three non-axis-aligned wave trains so crests interfere instead of
+    // forming a world-axis grid on the sphere.
+    let h = sin(d.x + d.z * 0.6)
+        + sin(d.z * 1.3 - d.y * 0.8 + 2.1)
+        + sin(d.y * 1.1 + d.x * 0.5 + 4.3);
+    return h * (1.0 / 3.0) * swell_amp_now();
+}
+
+// Analytic world-space gradient of swell_height — used to shade the swell in
+// the fragment stage so the lighting shows the SAME waves the geometry moves
+// with, instead of two disconnected systems.
+fn swell_gradient(world_pos: vec3<f32>) -> vec3<f32> {
+    let d = swell_drift(world_pos);
+    let g = cos(d.x + d.z * 0.6) * vec3<f32>(1.0, 0.0, 0.6)
+        + cos(d.z * 1.3 - d.y * 0.8 + 2.1) * vec3<f32>(0.0, -0.8, 1.3)
+        + cos(d.y * 1.1 + d.x * 0.5 + 4.3) * vec3<f32>(0.5, 1.1, 0.0);
+    return g * (1.0 / 3.0) * swell_amp_now() * water.swell_scale;
+}
+
+@vertex
+fn vertex(vertex: Vertex) -> VertexOutput {
+    var out: VertexOutput;
+
+    let world_from_local = mesh_functions::get_world_from_local(vertex.instance_index);
+    out.world_position = mesh_functions::mesh_position_local_to_world(world_from_local, vec4<f32>(vertex.position, 1.0));
+
+    // Displace along the sphere normal (mesh normals are radial). Rivers and
+    // any flat-shaded water ship swell_amp = 0 and stay put.
+    if water.swell_amp > 0.0 {
+        let up = normalize(out.world_position.xyz);
+        out.world_position = vec4<f32>(
+            out.world_position.xyz + up * swell_height(out.world_position.xyz),
+            out.world_position.w,
+        );
+    }
+
+    out.position = view.clip_from_world * out.world_position;
+    out.world_normal = mesh_functions::mesh_normal_local_to_world(vertex.normal, vertex.instance_index);
+
+#ifdef VERTEX_UVS_A
+    out.uv = vertex.uv;
+#endif
+
+#ifdef VERTEX_COLORS
+    out.color = vertex.color;
+#endif
+
+#ifdef VERTEX_OUTPUT_INSTANCE_INDEX
+    out.instance_index = vertex.instance_index;
+#endif
+
+    return out;
+}
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
@@ -57,12 +129,17 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let base_n = pbr_input.N;
     let p = sample_pos * water.wave_scale;
     // Two octaves: broad swell + finer chop for close-up detail.
+    // The swell has NO time phase of its own: all of its motion comes from the
+    // drifted sample position, so it always marches exactly downwind/downstream
+    // (axis-local `+t` phases used to fight the drift and won).
     let swell = vec3<f32>(
-        sin(p.x + t) + sin(p.y * 0.7 - t * 1.3),
-        sin(p.y + t * 0.8) + sin(p.z * 0.6 + t),
-        cos(p.z + t) + cos(p.x * 0.7 + t * 1.1),
+        sin(p.x) + sin(p.y * 0.7 + 1.3),
+        sin(p.y) + sin(p.z * 0.6 + 4.1),
+        cos(p.z) + cos(p.x * 0.7 + 2.3),
     );
     let q = p * 3.1;
+    // Chop keeps time phases: a directionless shimmer that animates even in
+    // dead calm, too fine for the eye to read as travel direction.
     let chop = vec3<f32>(
         sin(q.x - t * 2.1) * cos(q.z + t * 1.7),
         sin(q.z + t * 1.9),
@@ -71,7 +148,12 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Wind roughens the surface: calm = glassy swell, storm (wind ~12) = chop
     // up to ~1.8x. Chop responds twice as strongly as the swell.
     let wind_boost = 1.0 + min(wind_speed * 0.07, 0.8);
-    let bump = (swell + chop * 0.35 * wind_boost) * water.wave_amp * (0.6 + 0.4 * wind_boost);
+    var bump = (swell + chop * 0.35 * wind_boost) * water.wave_amp * (0.6 + 0.4 * wind_boost);
+    // Shade the geometric swell with its analytic gradient so light rolls over
+    // the SAME crests the mesh displaces (paint and geometry agree).
+    if water.swell_amp > 0.0 {
+        bump -= swell_gradient(in.world_position.xyz);
+    }
     // Perturb in the surface's tangent plane only, so ripples tilt the normal
     // instead of shrinking it (keeps lighting stable at any planet latitude).
     let tangent_bump = bump - base_n * dot(bump, base_n);

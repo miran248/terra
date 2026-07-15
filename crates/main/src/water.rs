@@ -31,6 +31,11 @@ pub struct WaterParams {
     /// pattern scrolls downstream along the per-vertex flow direction (vertex
     /// colour), at this speed.
     pub flow: f32,
+    /// Geometric swell: radial vertex displacement amplitude (m). 0 disables
+    /// (rivers, and any mesh too coarse to carry it).
+    pub swell_amp: f32,
+    /// Swell spatial frequency (rad/m); wavelength = TAU / swell_scale.
+    pub swell_scale: f32,
 }
 
 #[derive(Asset, AsBindGroup, Clone, Reflect, Debug)]
@@ -40,6 +45,10 @@ pub struct WaterExt {
 }
 
 impl MaterialExtension for WaterExt {
+    fn vertex_shader() -> ShaderRef {
+        "shaders/water.wgsl".into()
+    }
+
     fn fragment_shader() -> ShaderRef {
         "shaders/water.wgsl".into()
     }
@@ -71,6 +80,12 @@ pub fn water_material() -> WaterMaterial {
                 wave_scale: 0.55,
                 wave_speed: 0.7,
                 flow: 0.0,
+                // Storm waves ≈ 2 m (1.5 × the 1.3 storm factor), calm ≈ 0.6 m,
+                // over a ~40 m wavelength — short enough to read against the
+                // ~11 m painted ripples, resolvable by the subdivided mesh
+                // (vertex spacing ~8 m → ~5 verts per wave).
+                swell_amp: 1.5,
+                swell_scale: std::f32::consts::TAU / 40.0,
             },
         },
     }
@@ -86,14 +101,55 @@ pub fn river_material() -> WaterMaterial {
     // Rivers are a few metres wide; tighter ripples than the open sea.
     m.extension.params.wave_scale = 1.1;
     m.extension.params.flow = 6.0;
+    // Rivers are metres wide and hug displaced terrain; geometric swell would
+    // clip through the banks.
+    m.extension.params.swell_amp = 0.0;
     m
+}
+
+/// Levels of 4-way triangle subdivision applied to sea/lake faces so the
+/// vertex-shader swell has geometry to displace. Base icosphere edges are
+/// ~131 m; 4 levels → ~8 m spacing, ~5 vertices per 40 m swell wave.
+const WATER_SUBDIV: u32 = 4;
+
+/// Recursively split a spherical-cap triangle, keeping every new vertex at
+/// radius `r` so the rest surface stays a flat waterline.
+fn subdivide_water_tri(
+    corners: [Vec3; 3],
+    r: f32,
+    depth: u32,
+    positions: &mut Vec<[f32; 3]>,
+    normals: &mut Vec<[f32; 3]>,
+    uvs: &mut Vec<[f32; 2]>,
+) {
+    if depth == 0 {
+        for c in corners {
+            let dir = c.normalize();
+            positions.push((dir * r).to_array());
+            normals.push(dir.to_array());
+            uvs.push([0.0, 0.0]);
+        }
+        return;
+    }
+    let m01 = ((corners[0] + corners[1]) * 0.5).normalize() * r;
+    let m12 = ((corners[1] + corners[2]) * 0.5).normalize() * r;
+    let m20 = ((corners[2] + corners[0]) * 0.5).normalize() * r;
+    for sub in [
+        [corners[0], m01, m20],
+        [m01, corners[1], m12],
+        [m20, m12, corners[2]],
+        [m01, m12, m20],
+    ] {
+        subdivide_water_tri(sub, r, depth - 1, positions, normals, uvs);
+    }
 }
 
 /// Build the flat water-surface mesh — sea and lakes together. The clustering
 /// into connected bodies + per-body waterline is done at gen time
 /// (`worldgen::water_surface_radii`); `water_r[fi]` is that per-face radius, 0.0
-/// for non-surface faces. Each face is simply drawn flat at its radius, so the
-/// sea can't flood an inland basin and a lake can't spill onto land.
+/// for non-surface faces. Each face is drawn at its radius (subdivided so the
+/// shader swell can displace it), so the sea can't flood an inland basin and a
+/// lake can't spill onto land.
 pub fn build_water_surface(
     tris: &[[[f32; 3]; 3]],
     water_r: &[f32],
@@ -107,12 +163,19 @@ pub fn build_water_surface(
         if r <= 0.0 || water_phase.get(fi) == Some(&Some(WaterPhase::Frozen)) {
             continue;
         }
-        for &corner in t {
-            let dir = Vec3::from_array(corner).normalize();
-            positions.push((dir * r).to_array());
-            normals.push(dir.to_array());
-            uvs.push([0.0, 0.0]);
-        }
+        let corners = [
+            Vec3::from_array(t[0]),
+            Vec3::from_array(t[1]),
+            Vec3::from_array(t[2]),
+        ];
+        subdivide_water_tri(
+            corners,
+            r,
+            WATER_SUBDIV,
+            &mut positions,
+            &mut normals,
+            &mut uvs,
+        );
     }
     if positions.is_empty() {
         return None;
@@ -422,7 +485,8 @@ mod tests {
         else {
             panic!("no liquid positions");
         };
-        assert_eq!(liquid_positions.len(), 3);
+        // One liquid face, subdivided: 4^WATER_SUBDIV sub-tris × 3 verts.
+        assert_eq!(liquid_positions.len(), 3 * 4usize.pow(WATER_SUBDIV));
         let (_, ice_tris) = build_ice_surface(&tris, &water_r, &river_r, &phase).unwrap();
         assert_eq!(ice_tris.len(), 1);
         let radii = ice_tris[0].map(|corner| Vec3::from_array(corner).length());
