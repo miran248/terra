@@ -92,6 +92,8 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.008, Wet, FloraKind::Berry),
             (0.03, Flat, FloraKind::DeadTree),
             (0.02, Flat, FloraKind::Snowdrift),
+            (0.015, Dry, FloraKind::Icicle),
+            (0.002, Flat, FloraKind::Snowman),
         ],
         Terrain::Desert => &[
             (0.012, Wet, FloraKind::Bush),
@@ -126,6 +128,14 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
         ],
         Terrain::Mountain => &[(0.005, Wet, FloraKind::Bush), (0.05, Dry, FloraKind::Rock)],
         Terrain::Cliff => &[(0.038, Dry, FloraKind::Rock)],
+        Terrain::Snow => &[
+            (0.004, Dry, FloraKind::DeadTree),
+            (0.04, Dry, FloraKind::Rock),
+            (0.06, Flat, FloraKind::Snowdrift),
+            (0.012, Flat, FloraKind::Stump),
+            (0.03, Dry, FloraKind::Icicle),
+            (0.003, Flat, FloraKind::Snowman),
+        ],
         Terrain::Beach => &[
             (0.01, Dry, FloraKind::Rock),
             (0.02, Flat, FloraKind::Shell),
@@ -134,6 +144,7 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
         Terrain::Glacier => &[
             (0.01, Dry, FloraKind::Rock),
             (0.04, Flat, FloraKind::Snowdrift),
+            (0.02, Dry, FloraKind::Icicle),
         ],
         _ => &[],
     };

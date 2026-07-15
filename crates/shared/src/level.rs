@@ -285,6 +285,8 @@ pub enum FloraKind {
     Snowdrift,
     Stump,
     Fern,
+    Icicle,
+    Snowman,
 }
 
 // Structures: built props placed contextually (like towns and bridges).

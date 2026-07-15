@@ -553,6 +553,28 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_grass_blade(&mut mesh, [0.0, 0.08, 0.0], a, 0.40, 0.04, color);
             }
         }
+        "flora.icicle" => {
+            let color = [0.8, 0.88, 0.95, 1.0];
+            add_box(&mut mesh, [-0.04, 0.0, -0.04], [0.04, 0.6, 0.04], color);
+            add_box(&mut mesh, [-0.06, 0.1, -0.04], [0.06, 0.2, 0.04], color);
+            add_box(&mut mesh, [-0.06, 0.4, -0.06], [0.06, 0.5, 0.06], color);
+        }
+        "flora.snowman" => {
+            let snow = [0.94, 0.95, 0.97, 1.0];
+            let coal = [0.08, 0.08, 0.1, 1.0];
+            let nose = [0.9, 0.5, 0.1, 1.0];
+            // Bottom ball
+            add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 0.4, 0.25], snow);
+            // Middle ball
+            add_box(&mut mesh, [-0.18, 0.4, -0.18], [0.18, 0.65, 0.18], snow);
+            // Head
+            add_box(&mut mesh, [-0.13, 0.65, -0.13], [0.13, 0.85, 0.13], snow);
+            // Eyes
+            add_box(&mut mesh, [-0.06, 0.78, 0.14], [-0.02, 0.82, 0.15], coal);
+            add_box(&mut mesh, [0.02, 0.78, 0.14], [0.06, 0.82, 0.15], coal);
+            // Carrot nose
+            add_box(&mut mesh, [-0.02, 0.74, 0.14], [0.02, 0.76, 0.22], nose);
+        }
         "structure.ruin" => {
             let color = [0.4, 0.4, 0.42, 1.0];
             // Fallen column blocks

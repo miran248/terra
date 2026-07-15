@@ -12,7 +12,7 @@ pub const ITEMS_CATALOG: &str = "models/items.glb";
 pub const ACTORS_CATALOG: &str = "models/actors.glb";
 pub const ACTOR_ANIMATIONS: [&str; 3] = ["idle", "walk", "attack"];
 
-pub const FLORA_KINDS: [FloraKind; 25] = [
+pub const FLORA_KINDS: [FloraKind; 27] = [
     FloraKind::Tree,
     FloraKind::Bush,
     FloraKind::Flower,
@@ -38,6 +38,8 @@ pub const FLORA_KINDS: [FloraKind; 25] = [
     FloraKind::Snowdrift,
     FloraKind::Stump,
     FloraKind::Fern,
+    FloraKind::Icicle,
+    FloraKind::Snowman,
 ];
 pub const STRUCTURE_KINDS: [StructureKind; 17] = [
     StructureKind::Ruin,
@@ -98,6 +100,8 @@ impl AssetName for FloraKind {
             Self::Snowdrift => "flora.snowdrift",
             Self::Stump => "flora.stump",
             Self::Fern => "flora.fern",
+            Self::Icicle => "flora.icicle",
+            Self::Snowman => "flora.snowman",
         }
     }
 }
