@@ -4,6 +4,7 @@ use crate::physics::RadialGravity;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
+use shared::art::{AssetName, ColliderSpec, flora_collider};
 use shared::level::{
     BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass,
     StructureKind, WaterDepth, WaterPhase,
@@ -278,7 +279,7 @@ fn setup_map(
     // Flora: instanced low-poly props on the baked positions (they sit exactly
     // on the displaced mesh). Shared mesh/material handles keep this cheap;
     // per-instance scale/yaw variety comes from hashing the position bits.
-    {
+    if false {
         let trunk_mesh = meshes.add(Cylinder::new(0.25, 4.5));
         let canopy_mesh = meshes.add(Sphere::new(2.0));
         let bush_mesh = meshes.add(Sphere::new(0.7));
@@ -487,9 +488,53 @@ fn setup_map(
         }
     }
 
+    // Catalog scenes are visual children; placement, culling, and collision
+    // remain on stable runtime-owned roots.
+    for f in &level.flora {
+        let pos = Vec3::from_array(f.pos);
+        let up = pos.normalize();
+        let hash = f.pos[0].to_bits()
+            ^ f.pos[1].to_bits().rotate_left(13)
+            ^ f.pos[2].to_bits().rotate_left(27);
+        let scale = 0.7 + (hash & 0xff) as f32 / 255.0 * 0.6;
+        let yaw = (hash >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+        let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
+        let mut root = commands.spawn((
+            CullRange(flora_cull(f.kind)),
+            Transform::from_translation(pos).with_rotation(rotation),
+            Visibility::default(),
+        ));
+        match flora_collider(f.kind) {
+            ColliderSpec::None => {}
+            ColliderSpec::Box { half_extents } => {
+                root.insert((
+                    RigidBody::Static,
+                    Collider::cuboid(
+                        half_extents[0] * scale,
+                        half_extents[1] * scale,
+                        half_extents[2] * scale,
+                    ),
+                ));
+            }
+            ColliderSpec::Capsule {
+                radius,
+                half_length,
+            } => {
+                root.insert((
+                    RigidBody::Static,
+                    Collider::capsule(radius * scale, half_length * 2.0 * scale),
+                ));
+            }
+        }
+        root.with_child((
+            WorldAssetRoot(catalog.scene(f.kind.asset_name())),
+            Transform::from_scale(Vec3::splat(scale)),
+        ));
+    }
+
     // Structures: contextual built props (wells, docks, walls, watchtowers,
     // ruins, farms, campfires), spawned from baked positions like bridges.
-    {
+    if false {
         let stone = materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.53, 0.50)));
         let dark_stone = materials.add(StandardMaterial::from_color(Color::srgb(0.40, 0.38, 0.36)));
         let wood = materials.add(StandardMaterial::from_color(Color::srgb(0.45, 0.32, 0.20)));
@@ -621,6 +666,38 @@ fn setup_map(
                 }
             }
         }
+    }
+
+    for structure in &level.structures {
+        let pos = Vec3::from_array(structure.pos);
+        let up = pos.normalize();
+        let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(structure.yaw);
+        let scale = match structure.kind {
+            StructureKind::Ruin => Vec3::new(6.0, 3.0, 6.0),
+            StructureKind::Watchtower => Vec3::new(4.5, 12.0, 4.5),
+            StructureKind::Dock => Vec3::new(3.0, 0.8, 10.0),
+            StructureKind::Farm => Vec3::new(9.0, 0.3, 9.0),
+            StructureKind::Wall => Vec3::new(6.0, 3.0, 1.2),
+            StructureKind::Well => Vec3::new(2.0, 1.2, 2.0),
+            StructureKind::Campfire => Vec3::splat(1.6),
+        };
+        let mut root = commands.spawn((
+            Transform::from_translation(pos).with_rotation(rotation),
+            Visibility::default(),
+        ));
+        if !matches!(
+            structure.kind,
+            StructureKind::Farm | StructureKind::Campfire
+        ) {
+            root.insert((
+                RigidBody::Static,
+                Collider::cuboid(scale.x * 0.5, scale.y * 0.5, scale.z * 0.5),
+            ));
+        }
+        root.with_child((
+            WorldAssetRoot(catalog.scene(structure.kind.asset_name())),
+            Transform::from_scale(scale),
+        ));
     }
 
     // Bridges: entities built at runtime from the recorded spans, like any building.
