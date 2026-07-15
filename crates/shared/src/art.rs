@@ -164,7 +164,7 @@ pub fn flora_collider(kind: FloraKind) -> ColliderSpec {
 /// How many mesh variants a flora kind has (indexed 0..count).
 pub fn flora_variant_count(kind: FloraKind) -> u32 {
     match kind {
-        FloraKind::Tree => 4,
+        FloraKind::Tree => 6,
         FloraKind::Bush => 2,
         FloraKind::Rock => 2,
         FloraKind::Cactus => 2,
@@ -190,16 +190,36 @@ pub fn flora_variant_for(kind: FloraKind, terrain: Terrain, hash: u64) -> u8 {
     if total <= 1 {
         return 0;
     }
-    // biome key — groups terrains that should share shapes
-    let biome_key: u8 = match terrain {
-        Terrain::Desert | Terrain::Savanna => 0,
-        Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => 1,
-        Terrain::Jungle | Terrain::Swamp => 2,
-        Terrain::Tundra | Terrain::Snow | Terrain::Glacier => 3,
-        _ => 1,
-    };
-    let seed = (biome_key as u64).wrapping_mul(0x9e37_79b9) ^ hash;
-    (seed % total as u64) as u8
+    // Trees use terrain to pick a plausible subset, then hash for variation.
+    // Other kinds use the simpler biome-key approach.
+    if kind == FloraKind::Tree {
+        let range: (u64, u64) = match terrain {
+            // Palm, sometimes oak on savanna
+            Terrain::Desert => (3, 4),
+            Terrain::Savanna => (0, 5),
+            // Complex deciduous, oak, autumn — temperate breadth
+            Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => (0, 5),
+            // Jungle canopy + occasional deciduous
+            Terrain::Jungle => (1, 3),
+            Terrain::Swamp => (1, 5),
+            // Pine + autumn for cold
+            Terrain::Tundra | Terrain::Snow => (2, 5),
+            Terrain::Glacier => (2, 3),
+            _ => (0, total as u64),
+        };
+        let span = range.1 - range.0;
+        (range.0 + (hash % span)) as u8
+    } else {
+        let biome_key: u8 = match terrain {
+            Terrain::Desert | Terrain::Savanna => 0,
+            Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => 1,
+            Terrain::Jungle | Terrain::Swamp => 2,
+            Terrain::Tundra | Terrain::Snow | Terrain::Glacier => 3,
+            _ => 1,
+        };
+        let seed = (biome_key as u64).wrapping_mul(0x9e37_79b9) ^ hash;
+        (seed % total as u64) as u8
+    }
 }
 
 pub fn deterministic_variant(seed: u32, stable_index: u32, variants: u32) -> u32 {

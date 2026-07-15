@@ -263,12 +263,22 @@ fn generate_mesh(name: &str) -> MeshData {
     match base_name {
         "flora.tree" => match variant.unwrap_or(0) {
             0 => {
-                // Broadleaf (temperate): standard green pyramid canopy
+                // Complex deciduous: branching trunk with ball canopy clusters
                 let trunk_color = [0.45, 0.28, 0.13, 1.0];
-                add_box(&mut mesh, [-0.3, 0.0, -0.3], [0.3, 2.0, 0.3], trunk_color);
-                let leaves_color = [0.15, 0.45, 0.15, 1.0];
-                add_pyramid(&mut mesh, [-1.5, -1.5], [1.5, 1.5], 1.6, 3.8, leaves_color);
-                add_pyramid(&mut mesh, [-1.0, -1.0], [1.0, 1.0], 3.2, 5.5, leaves_color);
+                add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 1.5, 0.25], trunk_color);
+                // Main branch split — two angled trunks
+                add_box(&mut mesh, [-0.15, 1.5, -0.08], [0.15, 2.0, 0.08], trunk_color);
+                add_box(&mut mesh, [-0.15, 1.6, -0.08], [0.08, 2.2, 0.08], trunk_color);
+                // Sub-branches
+                add_box(&mut mesh, [-0.5, 1.8, -0.06], [-0.15, 1.95, 0.06], trunk_color);
+                add_box(&mut mesh, [0.15, 1.9, -0.06], [0.5, 2.05, 0.06], trunk_color);
+                add_box(&mut mesh, [-0.06, 2.0, -0.35], [0.06, 2.15, -0.08], trunk_color);
+                // Ball canopy clusters
+                let leaves = [0.15, 0.5, 0.2, 1.0];
+                let dark_leaves = [0.1, 0.4, 0.15, 1.0];
+                add_pyramid(&mut mesh, [-0.9, -0.9], [0.9, 0.9], 1.8, 3.0, leaves);
+                add_pyramid(&mut mesh, [-0.6, -0.6], [0.6, 0.6], 2.6, 3.8, dark_leaves);
+                add_pyramid(&mut mesh, [-0.4, -0.4], [0.4, 0.4], 3.4, 4.8, leaves);
             }
             1 => {
                 // Jungle: tall trunk, dense round canopy (two stacked wide pyramids)
@@ -287,7 +297,7 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_pyramid(&mut mesh, [-0.7, -0.7], [0.7, 0.7], 2.5, 3.8, needles);
                 add_pyramid(&mut mesh, [-0.4, -0.4], [0.4, 0.4], 3.6, 5.0, needles);
             }
-            _ => {
+            3 => {
                 // Palm: thin trunk, flat radial leaves
                 let trunk_color = [0.55, 0.4, 0.2, 1.0];
                 add_box(&mut mesh, [-0.15, 0.0, -0.15], [0.15, 3.0, 0.15], trunk_color);
@@ -297,7 +307,6 @@ fn generate_mesh(name: &str) -> MeshData {
                     let tip_x = a.cos() * 1.8;
                     let tip_z = a.sin() * 1.8;
                     add_grass_blade(&mut mesh, [0.0, 3.0, 0.0], a, 1.2, 0.08, frond);
-                    // ponytail: fatter leaf planes at tips for visibility
                     add_triangle(
                         &mut mesh,
                         [0.0, 2.9, 0.0],
@@ -306,6 +315,34 @@ fn generate_mesh(name: &str) -> MeshData {
                         frond,
                     );
                 }
+            }
+            4 => {
+                // Gnarled oak: thick trunk, wide spreading canopy
+                let trunk_color = [0.4, 0.24, 0.1, 1.0];
+                add_box(&mut mesh, [-0.35, 0.0, -0.35], [0.35, 1.2, 0.35], trunk_color);
+                add_box(&mut mesh, [-0.25, 1.2, -0.25], [0.25, 1.8, 0.25], trunk_color);
+                // Spreading branches
+                add_box(&mut mesh, [-0.8, 1.3, -0.1], [-0.25, 1.5, 0.1], trunk_color);
+                add_box(&mut mesh, [0.25, 1.3, -0.1], [0.8, 1.5, 0.1], trunk_color);
+                add_box(&mut mesh, [-0.1, 1.6, -0.7], [0.1, 1.8, -0.25], trunk_color);
+                add_box(&mut mesh, [-0.1, 1.6, 0.25], [0.1, 1.8, 0.7], trunk_color);
+                add_box(&mut mesh, [-0.6, 1.4, -0.45], [-0.45, 1.55, -0.25], trunk_color);
+                add_box(&mut mesh, [0.45, 1.4, 0.25], [0.6, 1.55, 0.45], trunk_color);
+                // Wide canopy
+                let leaves = [0.12, 0.42, 0.12, 1.0];
+                add_pyramid(&mut mesh, [-2.0, -2.0], [2.0, 2.0], 1.2, 3.0, leaves);
+                add_pyramid(&mut mesh, [-1.4, -1.4], [1.4, 1.4], 2.6, 4.2, leaves);
+                add_pyramid(&mut mesh, [-0.8, -0.8], [0.8, 0.8], 3.8, 5.2, leaves);
+            }
+            _ => {
+                // Autumn deciduous: warm orange/gold canopy
+                let trunk_color = [0.5, 0.32, 0.15, 1.0];
+                add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 1.8, 0.25], trunk_color);
+                add_box(&mut mesh, [-0.18, 1.8, -0.08], [0.18, 2.3, 0.08], trunk_color);
+                let fall_color = [0.85, 0.4, 0.1, 1.0];
+                let gold = [0.95, 0.6, 0.15, 1.0];
+                add_pyramid(&mut mesh, [-1.3, -1.3], [1.3, 1.3], 1.5, 3.2, fall_color);
+                add_pyramid(&mut mesh, [-1.0, -1.0], [1.0, 1.0], 2.8, 4.5, gold);
             }
         }
         "flora.bush" => match variant.unwrap_or(0) {
