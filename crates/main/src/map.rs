@@ -4,7 +4,7 @@ use crate::physics::RadialGravity;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
-use shared::art::{AssetName, ColliderSpec, flora_collider};
+use shared::art::AssetName;
 use shared::level::{
     BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass,
     StructureKind, WaterDepth, WaterPhase,
@@ -100,6 +100,117 @@ fn flora_cull(kind: FloraKind) -> f32 {
         FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
         FloraKind::Log => 420.0,
         FloraKind::Tree | FloraKind::DeadTree => 880.0,
+    }
+}
+
+const FLORA_CHUNK_SIZE: f32 = 120.0;
+type ChunkId = [i32; 3];
+
+#[derive(Resource, Default)]
+pub struct FloraManager {
+    pub chunks: std::collections::HashMap<ChunkId, Vec<shared::level::FloraData>>,
+    pub loaded_chunks: std::collections::HashMap<ChunkId, Vec<Entity>>,
+}
+
+fn pos_to_chunk(pos: Vec3) -> ChunkId {
+    [
+        (pos.x / FLORA_CHUNK_SIZE).floor() as i32,
+        (pos.y / FLORA_CHUNK_SIZE).floor() as i32,
+        (pos.z / FLORA_CHUNK_SIZE).floor() as i32,
+    ]
+}
+
+#[allow(clippy::type_complexity)]
+fn manage_flora_chunks(
+    mut commands: Commands,
+    catalog: Res<crate::asset_catalog::AssetCatalog>,
+    camera: Query<&Transform, With<MainCamera>>,
+    mut manager: ResMut<FloraManager>,
+) {
+    let Some(cam) = camera.iter().next() else { return };
+    let eye = cam.translation;
+    let center_chunk = pos_to_chunk(eye);
+    
+    // Radius of chunks (each chunk is 120m, flora cull reaches up to 880m -> ~8 chunks)
+    let radius = 8;
+    
+    let mut visible_chunks = std::collections::HashSet::new();
+    for x in -radius..=radius {
+        for y in -radius..=radius {
+            for z in -radius..=radius {
+                if x*x + y*y + z*z <= radius*radius {
+                    visible_chunks.insert([center_chunk[0] + x, center_chunk[1] + y, center_chunk[2] + z]);
+                }
+            }
+        }
+    }
+
+    // Unload far chunks
+    manager.loaded_chunks.retain(|chunk_id, entities| {
+        if visible_chunks.contains(chunk_id) {
+            true // keep
+        } else {
+            for &e in entities.iter() {
+                commands.entity(e).despawn();
+            }
+            false // remove
+        }
+    });
+
+    // Load new chunks
+    for chunk_id in visible_chunks {
+        if !manager.loaded_chunks.contains_key(&chunk_id) {
+            if let Some(flora_list) = manager.chunks.get(&chunk_id) {
+                let mut spawned_entities = Vec::with_capacity(flora_list.len());
+                for f in flora_list {
+                    let pos = Vec3::from_array(f.pos);
+                    let up = pos.normalize();
+                    let hash = f.pos[0].to_bits()
+                        ^ f.pos[1].to_bits().rotate_left(13)
+                        ^ f.pos[2].to_bits().rotate_left(27);
+                    let scale = 0.7 + (hash & 0xff) as f32 / 255.0 * 0.6;
+                    let yaw = (hash >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
+                    let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
+                    
+                    let mut root = commands.spawn((
+                        CullRange(flora_cull(f.kind)),
+                        Transform::from_translation(pos).with_rotation(rotation),
+                        Visibility::default(),
+                        bevy::light::NotShadowCaster,
+                    ));
+
+                    match shared::art::flora_collider(f.kind) {
+                        shared::art::ColliderSpec::None => {}
+                        shared::art::ColliderSpec::Box { half_extents } => {
+                            root.insert((
+                                RigidBody::Static,
+                                Collider::cuboid(
+                                    half_extents[0] * scale,
+                                    half_extents[1] * scale,
+                                    half_extents[2] * scale,
+                                ),
+                                Friction::ZERO,
+                                Restitution::ZERO,
+                            ));
+                        }
+                        shared::art::ColliderSpec::Capsule { radius, half_length } => {
+                            root.insert((
+                                RigidBody::Static,
+                                Collider::capsule(radius * scale, half_length * 2.0 * scale),
+                            ));
+                        }
+                    }
+
+                    root.with_child((
+                        WorldAssetRoot(catalog.scene(f.kind.asset_name())),
+                        Transform::from_scale(Vec3::splat(scale)),
+                    ));
+                    
+                    spawned_entities.push(root.id());
+                }
+                manager.loaded_chunks.insert(chunk_id, spawned_entities);
+            }
+        }
     }
 }
 
@@ -208,6 +319,7 @@ impl Plugin for MapPlugin {
                     drive_fog,
                     toggle_sun_lock,
                     cull_props,
+                    manage_flora_chunks,
                 )
                     .run_if(in_state(AppState::Playing)),
             );
@@ -488,52 +600,12 @@ fn setup_map(
         }
     }
 
-    // Catalog scenes are visual children; placement, culling, and collision
-    // remain on stable runtime-owned roots.
+    let mut flora_manager = FloraManager::default();
     for f in &level.flora {
-        let pos = Vec3::from_array(f.pos);
-        let up = pos.normalize();
-        let hash = f.pos[0].to_bits()
-            ^ f.pos[1].to_bits().rotate_left(13)
-            ^ f.pos[2].to_bits().rotate_left(27);
-        let scale = 0.7 + (hash & 0xff) as f32 / 255.0 * 0.6;
-        let yaw = (hash >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
-        let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
-        let mut root = commands.spawn((
-            CullRange(flora_cull(f.kind)),
-            Transform::from_translation(pos).with_rotation(rotation),
-            Visibility::default(),
-            bevy::light::NotShadowCaster,
-        ));
-        match flora_collider(f.kind) {
-            ColliderSpec::None => {}
-            ColliderSpec::Box { half_extents } => {
-                root.insert((
-                    RigidBody::Static,
-                    Collider::cuboid(
-                        half_extents[0] * scale,
-                        half_extents[1] * scale,
-                        half_extents[2] * scale,
-                    ),
-                    Friction::ZERO,
-                    Restitution::ZERO,
-                ));
-            }
-            ColliderSpec::Capsule {
-                radius,
-                half_length,
-            } => {
-                root.insert((
-                    RigidBody::Static,
-                    Collider::capsule(radius * scale, half_length * 2.0 * scale),
-                ));
-            }
-        }
-        root.with_child((
-            WorldAssetRoot(catalog.scene(f.kind.asset_name())),
-            Transform::from_scale(Vec3::splat(scale)),
-        ));
+        let chunk_id = pos_to_chunk(Vec3::from_array(f.pos));
+        flora_manager.chunks.entry(chunk_id).or_default().push(f.clone());
     }
+    commands.insert_resource(flora_manager);
 
     // Structures: contextual built props (wells, docks, walls, watchtowers,
     // ruins, farms, campfires), spawned from baked positions like bridges.
