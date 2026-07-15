@@ -12,7 +12,7 @@ use super::super::{Grid, features};
 /// Painted as an edge PAIR (chain + parallel partner line), like roads: a
 /// single chain's derived faces only touch at the chain vertices.
 pub(in crate::worldgen) fn paint_rivers(grid: &Grid, terrain: &TerrainGen, cells: &mut [Terrain]) {
-    let sea = |t: Terrain| matches!(t, Terrain::Ocean | Terrain::Lake);
+    let sea = |t: Terrain| t == Terrain::Ocean || t.is_lake();
     for path in &terrain.river_paths {
         let mut chain = cell_chain(grid, path);
         // The planned endpoint sits on the PROPOSED waterline; normalization

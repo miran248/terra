@@ -18,12 +18,12 @@ Private implementation modules for deterministic world generation.
 - `domain.rs` — typed dense `CellField`, `FaceField`, and `CellSet` storage.
 - `grid.rs` — fine generation lattice and typed cell/face geometry access.
 - `pipeline.rs` — command/event orchestration and FIFO reaction order.
-- `elevation/` — constraint storage, ordered relaxation, typed solver-vertex graph, and policy/ownership/solve generation stages.
-- `features/` — typed feature ownership and widening, with separate bridge painting/selection and transition resolution/blend/cluster stages.
+- `elevation/` — constraint storage, ordered relaxation, typed solver-vertex graph, and policy/ownership/solve generation stages. River banks retain freeboard above the raised rendered channel surface so water stays contained.
+- `features/` — typed feature ownership and widening, with separate bridge painting/selection and transition resolution/blend/cluster stages. Every bridge kind shares a 1–500 m span range, gentle edge-trimmed footings, 1,000 m spacing, and explicit deck overlap rejection. Ocean candidates favor narrow passes and near-perpendicular shore approaches; spring-adjacent river crossings and propagated inland entry paint are forbidden.
 - `projection.rs` — deterministic cell-to-face reductions.
 - `regions/` — typed overlay-aware face partitioning, naming, and connector pass-through.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
-- `water/` — separate classification, river painting, and water normalization stages. Only components touching authored lake zones may normalize to `Lake`; isolated ocean-zone pockets are filled as land so coarse triangular fragments never become lakes.
+- `water/` — separate classification, river painting, and water normalization stages. Only components touching authored lake zones may normalize as lakes; each surviving body becomes freshwater, coastal saltwater, or frozen from proximity/climate, while isolated ocean-zone pockets are filled as land.
 - `surface/` — component/body/river water surfaces, mesh construction, flora, and structure placement.
 - `tests/` — private facade-level elevation, topology, water, mesh, placement, and determinism tests.
 

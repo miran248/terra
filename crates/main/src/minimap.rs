@@ -693,7 +693,11 @@ fn draw_overlay(
                     continue;
                 };
                 let color = match region.kind {
-                    RegionKind::Ocean | RegionKind::Lake | RegionKind::River => theme::INFO,
+                    RegionKind::Ocean
+                    | RegionKind::Lake
+                    | RegionKind::SaltLake
+                    | RegionKind::FrozenLake
+                    | RegionKind::River => theme::INFO,
                     RegionKind::Mountain | RegionKind::Volcano | RegionKind::Glacier => {
                         theme::ACCENT
                     }

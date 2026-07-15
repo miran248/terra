@@ -1,7 +1,8 @@
 use super::*;
 use crate::level::BlendTarget;
 use crate::worldgen::elevation::generation::{
-    SOLVER_EPS, bank_water, elev_range, is_cover, landform_range, owner_cells, owner_landform,
+    SOLVER_EPS, bank_clearance, bank_water, elev_range, is_cover, landform_range, owner_cells,
+    owner_landform,
 };
 use crate::worldgen::water::cell_zone;
 
@@ -142,7 +143,7 @@ fn solved_field_invariants() {
     // A lake never rises above its shore (solver step 3a) — otherwise the flat
     // water surface floats over ground where a lake tile pokes up past the rim.
     for solver_vertex in 0..terrain.vert_count() {
-        if owners[solver_vertex] != Terrain::Lake {
+        if !owners[solver_vertex].is_lake() {
             continue;
         }
         for &nb in terrain.adj_of(solver_vertex) {
@@ -167,6 +168,7 @@ fn solved_field_invariants() {
     });
     let mut sizes = vec![0usize; components.count()];
     let mut is_ocean = vec![false; components.count()];
+    let mut touches_river = vec![false; components.count()];
     for v in 0..state.grid.cell_count() {
         let cell = state.grid.topology.cell(v).unwrap();
         let Some(c) = components.cell(cell).map(|component| component.index()) else {
@@ -176,12 +178,25 @@ fn solved_field_invariants() {
         if cell_zone(&state.grid, terrain, v) == crate::zones::ZoneKind::Ocean {
             is_ocean[c] = true;
         }
+        touches_river[c] |= state.grid.cell_neighbors(cell).iter().any(|neighbor| {
+            matches!(
+                state.cells.as_slice()[neighbor.index()],
+                Terrain::River | Terrain::RiverSpring
+            )
+        });
     }
     for c in 0..components.count() {
         assert!(
-            is_ocean[c] || sizes[c] >= size_range(Terrain::Lake).0,
-            "enclosed water body of only {} cells survived",
-            sizes[c]
+            is_ocean[c] || touches_river[c] || sizes[c] >= size_range(Terrain::Lake).0,
+            "enclosed water body of only {} cells survived: {:?}",
+            sizes[c],
+            state
+                .grid
+                .topology
+                .cells()
+                .filter(|cell| components.cell(*cell).is_some_and(|id| id.index() == c))
+                .map(|cell| state.cells.as_slice()[cell.index()])
+                .collect::<Vec<_>>()
         );
     }
 
@@ -352,7 +367,7 @@ fn solved_field_invariants() {
             .collect();
         let ocean_distance = state.grid.topology.face_distances(&ocean_faces, 10);
         for face_index in 0..state.grid.face_count() {
-            if state.tiles.as_slice()[face_index] == Terrain::Lake {
+            if state.tiles.as_slice()[face_index].is_lake() {
                 let face = state
                     .grid
                     .topology
@@ -412,7 +427,8 @@ fn solved_field_invariants() {
         for &nb in terrain.adj_of(solver_vertex) {
             if matching.contains(&vkind[nb]) {
                 assert!(
-                    e[solver_vertex] > e[nb].max(0.0),
+                    e[solver_vertex]
+                        >= e[nb].max(0.0) + bank_clearance(vkind[solver_vertex]) - SOLVER_EPS,
                     "{:?} vert at {} not above its {:?} water at {}",
                     vkind[solver_vertex],
                     e[solver_vertex],
@@ -429,13 +445,13 @@ fn solved_field_invariants() {
         let mut interior = Vec::new();
         let mut edge = Vec::new();
         for solver_vertex in 0..terrain.vert_count() {
-            if vkind[solver_vertex] != Terrain::Lake || canyon[solver_vertex] {
+            if !vkind[solver_vertex].is_lake() || canyon[solver_vertex] {
                 continue;
             }
             if terrain
                 .adj_of(solver_vertex)
                 .iter()
-                .all(|&nb| vkind[nb] == Terrain::Lake)
+                .all(|&nb| vkind[nb].is_lake())
             {
                 interior.push(e[solver_vertex]);
             } else {

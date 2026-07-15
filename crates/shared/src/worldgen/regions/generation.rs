@@ -20,6 +20,8 @@ pub(in crate::worldgen) fn region_class(
     match face_types[face_index] {
         Terrain::Ocean => Some(RegionKind::Ocean),
         Terrain::Lake => Some(RegionKind::Lake),
+        Terrain::SaltLake => Some(RegionKind::SaltLake),
+        Terrain::FrozenLake => Some(RegionKind::FrozenLake),
         Terrain::River | Terrain::RiverSpring => Some(RegionKind::River),
         Terrain::Beach => Some(RegionKind::Beach),
         Terrain::Cliff => Some(RegionKind::Cliff),
@@ -59,7 +61,7 @@ pub(in crate::worldgen) fn build_regions(
 
     let mut face_region = vec![None; grid.face_count()];
     let mut regions: Vec<RegionData> = Vec::new();
-    let mut kind_counts = [0usize; 17];
+    let mut kind_counts = [0usize; 19];
 
     let partitioner = regions::RegionPartitioner::new(grid, &class, &terrain_class);
     for start in grid.topology.faces() {
@@ -198,6 +200,8 @@ pub(in crate::worldgen) fn region_name(
     match kind {
         RegionKind::Ocean => pick(&OCEAN, &["Ocean", "Sea"]),
         RegionKind::Lake => pick(&LAKE, &["Lake"]),
+        RegionKind::SaltLake => pick(&LAKE, &["Salt Lake"]),
+        RegionKind::FrozenLake => pick(&LAKE, &["Frozen Lake"]),
         RegionKind::River => pick(&RIVER, &["River"]),
         RegionKind::Beach => pick(&BEACH, &["Beach", "Coast", "Sands"]),
         RegionKind::Cliff => pick(&CLIFF, &["Cliffs", "Bluffs"]),

@@ -6,9 +6,9 @@ use crate::topology::CellId;
 use crate::worldgen::{Grid, Painted, elevation};
 
 use super::{
-    ROAD_EDGE_GRADIENT, SOLVER_EPS, SOLVER_MAX_ITERS, bank_water, elev_range, is_cover,
-    kernel_interp, landform_edge_cap, landform_range, max_gradient, owner_cells, owner_landform,
-    water_concavity,
+    ROAD_EDGE_GRADIENT, SOLVER_EPS, SOLVER_MAX_ITERS, bank_clearance, bank_water, elev_range,
+    is_cover, kernel_interp, landform_edge_cap, landform_range, max_gradient, owner_cells,
+    owner_landform, water_concavity,
 };
 
 pub(in crate::worldgen) fn solve_elevation(
@@ -105,7 +105,7 @@ pub(in crate::worldgen) fn solve_elevation(
                 continue;
             }
             // Lakes keep their own (concave) profile; only the open sea shelves.
-            if owner[solver_vertex] == Terrain::Lake {
+            if owner[solver_vertex].is_lake() {
                 continue;
             }
             // A narrow depth WINDOW per distance band, both bounds deepening
@@ -332,7 +332,7 @@ pub(in crate::worldgen) fn solve_elevation(
             // basin stays under its rim (otherwise the flat water surface floats over
             // ground where a lake tile pokes up past the shore).
             for solver_vertex in 0..solver_vertex_count {
-                if owner[solver_vertex] != Terrain::Lake {
+                if !owner[solver_vertex].is_lake() {
                     continue;
                 }
                 let mut min_shore = f32::MAX;
@@ -390,7 +390,7 @@ pub(in crate::worldgen) fn solve_elevation(
                     }
                 }
                 if water_surface > f32::MIN {
-                    let floor = water_surface + 0.01;
+                    let floor = water_surface + bank_clearance(owner[solver_vertex]);
                     if e[solver_vertex] < floor {
                         residual += floor - e[solver_vertex];
                         e[solver_vertex] = floor;
@@ -434,7 +434,7 @@ pub(in crate::worldgen) fn solve_elevation(
             }
         }
         if surface > f32::MIN {
-            e[solver_vertex] = e[solver_vertex].max(surface + 0.01);
+            e[solver_vertex] = e[solver_vertex].max(surface + bank_clearance(owner[solver_vertex]));
         }
     }
     elevation::classify_result(&mut e);

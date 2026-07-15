@@ -10,7 +10,7 @@ use shared::level::{
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
-use shared::terrain::TerrainGen;
+use shared::terrain::{Terrain, TerrainGen};
 
 /// Speculative collision skin added to the thin terrain trimesh so fast movement
 /// doesn't tunnel through it. The player mesh is dropped by this much to hide the
@@ -662,8 +662,11 @@ fn setup_map(
     // connected bodies — so the sea can't flood an inland lake basin and lakes
     // can't spill onto land. Rivers are their own flowing mesh.
     let water_mat = water_mats.add(crate::water::water_material());
-    if let Some(water) = crate::water::build_water_surface(&level.terrain_tris, &level.face_water_r)
-    {
+    if let Some(water) = crate::water::build_water_surface(
+        &level.terrain_tris,
+        &level.face_water_r,
+        &level.face_types,
+    ) {
         commands.spawn((
             Mesh3d(meshes.add(water)),
             MeshMaterial3d(water_mat.clone()),
@@ -930,6 +933,8 @@ fn read_player_input(keys: Res<ButtonInput<KeyCode>>, mut input: ResMut<PlayerIn
 fn move_player(
     time: Res<Time>,
     input: Res<PlayerInput>,
+    planet: Res<PlanetMesh>,
+    face_types: Res<LevelFaceTypes>,
     mut player_q: Query<(&mut Player, &Position, Forces)>,
 ) {
     let Ok((mut player, pos, mut forces)) = player_q.single_mut() else {
@@ -946,8 +951,14 @@ fn move_player(
     player.heading = (player.heading - up * player.heading.dot(up)).normalize();
 
     let underwater = world_r < PLANET_RADIUS;
-    let speed =
-        PLAYER_SPEED * if underwater { 0.4 } else { 1.0 } * if input.sprint { 2.5 } else { 1.0 };
+    let on_frozen_lake = planet
+        .face_at(up)
+        .and_then(|face| face_types.0.get(face))
+        .is_some_and(|terrain| *terrain == Terrain::FrozenLake);
+    let slowed_by_water = underwater || on_frozen_lake;
+    let speed = PLAYER_SPEED
+        * if slowed_by_water { 0.4 } else { 1.0 }
+        * if input.sprint { 2.5 } else { 1.0 };
 
     if input.fwd != 0 {
         let dir = player.heading * input.fwd as f32;

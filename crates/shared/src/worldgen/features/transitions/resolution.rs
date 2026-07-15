@@ -24,7 +24,7 @@ pub(in crate::worldgen) fn resolve_transitions(
     let (water_dist, water_kind) = water_distance(grid, base, 2);
     let shore = |cell_index: usize, kind: Terrain| -> Terrain {
         match kind {
-            Terrain::Lake => Terrain::LakeShore,
+            Terrain::Lake | Terrain::SaltLake | Terrain::FrozenLake => Terrain::LakeShore,
             Terrain::River | Terrain::RiverSpring => Terrain::RiverBank,
             _ => {
                 let steep = matches!(base[cell_index], Terrain::Mountain | Terrain::Snow)
@@ -169,7 +169,7 @@ pub(in crate::worldgen) fn prune_orphan_bands(grid: &Grid, cells: &mut [Terrain]
             .collect()
     };
     let river = dist_to(&|t| t == Terrain::River);
-    let lake = dist_to(&|t| t == Terrain::Lake);
+    let lake = dist_to(&|terrain| terrain.is_lake());
     let sea = dist_to(&|t| t == Terrain::Ocean);
     for cell_index in 0..grid.cell_count() {
         let orphan = match cells[cell_index] {

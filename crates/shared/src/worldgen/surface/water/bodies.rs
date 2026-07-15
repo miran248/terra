@@ -18,7 +18,11 @@ pub(in crate::worldgen) fn water_surface_radii(
         .cells()
         .map(|cell| terrain.render_radius(grid.cell_position(cell)))
         .collect();
-    let lake_components = cluster_cell_types(grid, cells, &[Terrain::Lake]);
+    let lake_components = cluster_cell_types(
+        grid,
+        cells,
+        &[Terrain::Lake, Terrain::SaltLake, Terrain::FrozenLake],
+    );
     let ocean_components = cluster_cell_types(
         grid,
         cells,

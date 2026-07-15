@@ -454,6 +454,8 @@ impl GenState {
             let name = match kind {
                 Terrain::Ocean => "Ocean",
                 Terrain::Lake => "Lake",
+                Terrain::SaltLake => "SaltLake",
+                Terrain::FrozenLake => "FrozenLake",
                 Terrain::LakeShore => "LakeShore",
                 Terrain::River => "River",
                 Terrain::RiverBank => "RiverBank",

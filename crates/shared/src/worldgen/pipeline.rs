@@ -287,7 +287,7 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
                 state.terrain(),
                 state.cells.as_slice(),
                 &state.painted,
-                state.water_depth.as_slice(),
+                (state.water_r.as_slice(), state.water_depth.as_slice()),
                 state.landform.as_slice(),
                 state.slope_class.as_slice(),
             );

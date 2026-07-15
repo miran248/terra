@@ -21,6 +21,7 @@ Binary crate for the rs-zombies Bevy application. Entry point, app bootstrap, an
 - Runtime consumes typed, face-oriented `LevelData` and performs no terrain-id decoding, tag-offset decoding, terrain clustering, pathfinding, or topology derivation. `PlanetMesh::face_at` remains the query bridge for arbitrary world positions.
 - Visual mesh and physics collider use the **same** icosphere triangles (subdivision 4, ~5k tris). Bridge faces are raised to sea level in the terrain trimesh so bridge collision is seamless.
 - Bridge planks are visual-only cuboids at constant radius, 200m spacing. No separate collider entities.
+- Frozen lakes replace their animated water surface with ice-colored collision terrain at the lake waterline; actors traverse the ice with the same 0.4 movement multiplier used underwater.
 - Actors use Avian3d physics (`RigidBody`, `Collider`, `Forces`) with custom `RadialGravity` for spherical gravity. Position of truth is `Transform.translation` from the physics engine. Never move physics bodies by editing `Transform` or `SpherePos` directly.
 - Player movement uses `Forces::linear_velocity_mut()` for instant velocity control (tangent override, radial preserved). Gravity applies force continuously in `physics.rs`.
 - Player controls: W/S move along `Player.heading`; A/D rotate heading. Input is decoupled: `PlayerInput` resource collected in `Update` (`read_player_input`), consumed in `FixedUpdate` (`move_player`). Rotation locked, orientation set in `Update` (`orient_player`).

@@ -188,6 +188,44 @@ pub(in crate::worldgen) fn normalize_water_bodies(
             }
         }
     }
+
+    // Give each surviving authored lake one body-wide identity. Cold basins
+    // freeze; temperate basins near the sea become saline; the remainder stay
+    // freshwater. Identity never fragments within one connected lake.
+    let ocean_sources = grid
+        .topology
+        .cells()
+        .filter(|cell| cells[cell.index()] == Terrain::Ocean)
+        .collect::<Vec<_>>();
+    let near_ocean = grid.topology.cell_distances(&ocean_sources, 15);
+    let mut typed = vec![false; grid.cell_count()];
+    for start in grid.topology.cells() {
+        if cells[start.index()] != Terrain::Lake || typed[start.index()] {
+            continue;
+        }
+        let body = grid
+            .topology
+            .cell_component(start, |cell| cells[cell.index()] == Terrain::Lake);
+        let mean_temperature = body
+            .iter()
+            .map(|&cell| terrain.temperature_at(grid.cell_position(cell)))
+            .sum::<f32>()
+            / body.len() as f32;
+        let kind = if mean_temperature <= 0.0 {
+            Terrain::FrozenLake
+        } else if body
+            .iter()
+            .any(|&cell| near_ocean.cell_steps(cell).is_some())
+        {
+            Terrain::SaltLake
+        } else {
+            Terrain::Lake
+        };
+        for cell in body {
+            typed[cell.index()] = true;
+            cells[cell.index()] = kind;
+        }
+    }
 }
 
 /// Water narrower than a few cells reads as a visual glitch: water within 2

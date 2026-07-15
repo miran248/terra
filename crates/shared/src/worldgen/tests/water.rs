@@ -99,7 +99,7 @@ fn lakes_stay_enclosed() {
                 .topology
                 .faces()
                 .filter(|face| components.face(*face).is_some_and(|id| id.index() == c))
-                .any(|face| state.tiles.as_slice()[face.index()] == Terrain::Lake)
+                .any(|face| state.tiles.as_slice()[face.index()].is_lake())
         {
             assert!(
                 has_lake[c],
@@ -165,14 +165,20 @@ fn rivers_reach_the_sea() {
                 .any(|nb| {
                     matches!(
                         state.cells.as_slice()[nb.index()],
-                        Terrain::Ocean | Terrain::Lake
+                        Terrain::Ocean | Terrain::Lake | Terrain::SaltLake | Terrain::FrozenLake
                     )
                 })
         });
         assert!(
             touches_sea,
-            "river component of {} cells cut off from any water body",
-            comp.len()
+            "river component of {} cells cut off from any water body at {:?}",
+            comp.len(),
+            comp.iter()
+                .map(|&cell| (
+                    state.cells.as_slice()[cell],
+                    state.grid.cell_position(CellId::new(cell)).0,
+                ))
+                .collect::<Vec<_>>()
         );
         // And the mouth is open at FACE level too: some River face is
         // edge-adjacent to an Ocean/Lake face.
@@ -198,7 +204,9 @@ fn rivers_reach_the_sea() {
                 .face_neighbors(FaceId::new(face_index))
                 .map(FaceId::index)
             {
-                if matches!(state.tiles.as_slice()[nb], Terrain::Ocean | Terrain::Lake) {
+                if state.tiles.as_slice()[nb] == Terrain::Ocean
+                    || state.tiles.as_slice()[nb].is_lake()
+                {
                     open = true;
                     break 'faces;
                 }

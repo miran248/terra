@@ -10,6 +10,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
+use shared::terrain::Terrain;
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 
@@ -86,13 +87,17 @@ pub fn river_material() -> WaterMaterial {
 /// (`worldgen::water_surface_radii`); `water_r[fi]` is that per-face radius, 0.0
 /// for non-surface faces. Each face is simply drawn flat at its radius, so the
 /// sea can't flood an inland basin and a lake can't spill onto land.
-pub fn build_water_surface(tris: &[[[f32; 3]; 3]], water_r: &[f32]) -> Option<Mesh> {
+pub fn build_water_surface(
+    tris: &[[[f32; 3]; 3]],
+    water_r: &[f32],
+    face_types: &[Terrain],
+) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
     let mut uvs = Vec::new();
     for (fi, t) in tris.iter().enumerate() {
         let r = water_r.get(fi).copied().unwrap_or(0.0);
-        if r <= 0.0 {
+        if r <= 0.0 || face_types.get(fi) == Some(&Terrain::FrozenLake) {
             continue;
         }
         for &corner in t {
@@ -226,7 +231,8 @@ mod tests {
         // Gen bakes one rim-locked radius per body; here the whole hex is one
         // body, so every face shares a single waterline radius.
         let water_r = vec![100.0f32; tris.len()];
-        let mesh = build_water_surface(&tris, &water_r).expect("a lake mesh");
+        let face_types = vec![Terrain::Lake; tris.len()];
+        let mesh = build_water_surface(&tris, &water_r, &face_types).expect("a lake mesh");
         let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
             panic!("no positions");

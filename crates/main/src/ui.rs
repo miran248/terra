@@ -694,8 +694,10 @@ fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
     match tile {
         shared::terrain::Terrain::Ocean
         | shared::terrain::Terrain::Lake
+        | shared::terrain::Terrain::SaltLake
         | shared::terrain::Terrain::River
         | shared::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
+        shared::terrain::Terrain::FrozenLake => Color::srgb(0.68, 0.86, 0.94),
         shared::terrain::Terrain::Beach
         | shared::terrain::Terrain::Cliff
         | shared::terrain::Terrain::LakeShore
