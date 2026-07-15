@@ -24,6 +24,9 @@ pub struct LootMaterial(pub Material);
 #[derive(Component, Clone, Copy)]
 pub struct LootWeapon(pub WeaponKind);
 
+#[derive(Component)]
+struct EquippedWeaponVisual(WeaponKind);
+
 #[derive(Resource)]
 pub struct LootAssets {
     material_scenes: [Handle<WorldAsset>; Material::ALL.len()],
@@ -75,6 +78,7 @@ impl Plugin for LootPlugin {
                     apply_magnet_upgrade,
                     drain_durability,
                     apply_weapon_fire_rate,
+                    sync_equipped_weapon,
                 )
                     .run_if(in_state(AppState::Playing)),
             )
@@ -279,4 +283,42 @@ fn apply_weapon_fire_rate(loot: Res<LootState>, mut player_q: Query<&mut Player>
         let rate = kind.stats().fire_rate;
         player.fire_timer = Timer::from_seconds(1.0 / rate, TimerMode::Repeating);
     }
+}
+
+fn sync_equipped_weapon(
+    mut commands: Commands,
+    loot: Res<LootState>,
+    assets: Res<LootAssets>,
+    sockets: Query<(Entity, &Name)>,
+    visuals: Query<(Entity, &EquippedWeaponVisual, &ChildOf)>,
+) {
+    let Some((socket, _)) = sockets
+        .iter()
+        .find(|(_, name)| name.as_str() == "socket.hand")
+    else {
+        return;
+    };
+    let equipped = loot.equipped.map(|(kind, _)| kind);
+    let mut attached = None;
+    for (entity, visual, parent) in &visuals {
+        if parent.parent() != socket || Some(visual.0) != equipped || attached.is_some() {
+            commands.entity(entity).despawn();
+        } else {
+            attached = Some(visual.0);
+        }
+    }
+    let Some(kind) = equipped else { return };
+    if attached == Some(kind) {
+        return;
+    }
+    let index = WeaponKind::ALL
+        .iter()
+        .position(|candidate| *candidate == kind)
+        .unwrap();
+    commands.entity(socket).with_child((
+        EquippedWeaponVisual(kind),
+        WorldAssetRoot(assets.weapon_scenes[index].clone()),
+        Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI))
+            .with_scale(Vec3::splat(0.7)),
+    ));
 }

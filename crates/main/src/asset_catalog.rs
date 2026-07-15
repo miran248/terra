@@ -12,6 +12,8 @@ pub struct AssetCatalog {
     catalogs: [Handle<Gltf>; 4],
     pub scenes: HashMap<String, Handle<WorldAsset>>,
     pub animations: HashMap<String, Handle<AnimationClip>>,
+    animation_graph: Option<Handle<AnimationGraph>>,
+    animation_nodes: Vec<AnimationNodeIndex>,
 }
 
 impl AssetCatalog {
@@ -28,7 +30,11 @@ pub struct AssetCatalogPlugin;
 impl Plugin for AssetCatalogPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Startup, begin_loading)
-            .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)));
+            .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)))
+            .add_systems(
+                Update,
+                bind_actor_animations.run_if(in_state(AppState::Playing)),
+            );
     }
 }
 
@@ -42,12 +48,15 @@ fn begin_loading(mut commands: Commands, server: Res<AssetServer>) {
         ],
         scenes: HashMap::new(),
         animations: HashMap::new(),
+        animation_graph: None,
+        animation_nodes: Vec::new(),
     });
 }
 
 fn finish_loading(
     mut catalog: ResMut<AssetCatalog>,
     gltfs: Res<Assets<Gltf>>,
+    mut graphs: ResMut<Assets<AnimationGraph>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
     let Some(loaded) = catalog
@@ -71,7 +80,30 @@ fn finish_loading(
             .unwrap_or_else(|| panic!("actors catalog is missing animation {name}"));
         catalog.animations.insert(name.to_owned(), clip.clone());
     }
+    let clips = ACTOR_ANIMATIONS.map(|name| catalog.animations[name].clone());
+    let (graph, nodes) = AnimationGraph::from_clips(clips);
+    catalog.animation_graph = Some(graphs.add(graph));
+    catalog.animation_nodes = nodes;
     next.set(AppState::Playing);
+}
+
+fn bind_actor_animations(
+    mut commands: Commands,
+    catalog: Res<AssetCatalog>,
+    mut players: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
+) {
+    let (Some(graph), Some(&idle)) = (
+        catalog.animation_graph.as_ref(),
+        catalog.animation_nodes.first(),
+    ) else {
+        return;
+    };
+    for (entity, mut player) in &mut players {
+        player.play(idle).repeat();
+        commands
+            .entity(entity)
+            .insert(AnimationGraphHandle(graph.clone()));
+    }
 }
 
 #[cfg(test)]

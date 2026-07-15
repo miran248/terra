@@ -162,9 +162,12 @@ fn catalog(names: &[&str], actors: bool) -> Vec<u8> {
         ACTOR_ANIMATIONS
             .iter()
             .map(|name| {
+                let channels: Vec<_> = (0..names.len())
+                    .map(|node| json!({"sampler":0,"target":{"node":node,"path":"rotation"}}))
+                    .collect();
                 json!({
                     "name":*name,"samplers":[{"input":4,"output":5,"interpolation":"LINEAR"}],
-                    "channels":[{"sampler":0,"target":{"node":0,"path":"rotation"}}]
+                    "channels":channels
                 })
             })
             .collect()
@@ -208,6 +211,10 @@ mod tests {
             if name == "actors.glb" {
                 let names: Vec<_> = gltf.animations().filter_map(|a| a.name()).collect();
                 assert_eq!(names, ACTOR_ANIMATIONS);
+                assert!(
+                    gltf.animations()
+                        .all(|animation| animation.channels().count() == 3)
+                );
                 assert!(gltf.nodes().any(|n| n.name() == Some("socket.hand")));
             }
         }
