@@ -93,6 +93,19 @@ fn lakes_stay_enclosed() {
     }
     let mut lake_faces = 0;
     for c in 0..components.count() {
+        if !has_ocean[c]
+            && state
+                .grid
+                .topology
+                .faces()
+                .filter(|face| components.face(*face).is_some_and(|id| id.index() == c))
+                .any(|face| state.tiles.as_slice()[face.index()] == Terrain::Lake)
+        {
+            assert!(
+                has_lake[c],
+                "lake component {c} does not touch an authored lake zone"
+            );
+        }
         if has_lake[c] {
             lake_faces += sizes[c];
             assert!(

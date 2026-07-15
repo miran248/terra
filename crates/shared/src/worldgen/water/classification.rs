@@ -87,7 +87,7 @@ pub(in crate::worldgen) fn classify_cover(
     match cell_zone(grid, terrain, cell_index) {
         crate::zones::ZoneKind::Ocean => Terrain::Ocean,
         crate::zones::ZoneKind::Lake => {
-            if terrain.is_lake_bed(pos, e) {
+            if terrain.is_lake_bed(pos) {
                 Terrain::Lake
             } else {
                 land_cover(terrain, landform[cell_index], pos)

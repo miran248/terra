@@ -23,7 +23,7 @@ Private implementation modules for deterministic world generation.
 - `projection.rs` — deterministic cell-to-face reductions.
 - `regions/` — typed overlay-aware face partitioning, naming, and connector pass-through.
 - `router.rs` — direction-aware road A* over dense `(CellId, incoming-edge)` state.
-- `water/` — separate classification, river painting, and water normalization stages.
+- `water/` — separate classification, river painting, and water normalization stages. Only components touching authored lake zones may normalize to `Lake`; isolated ocean-zone pockets are filled as land so coarse triangular fragments never become lakes.
 - `surface/` — component/body/river water surfaces, mesh construction, flora, and structure placement.
 - `tests/` — private facade-level elevation, topology, water, mesh, placement, and determinism tests.
 

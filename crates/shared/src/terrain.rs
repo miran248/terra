@@ -7,9 +7,10 @@ use crate::planet::{PlanetMesh, unit_icosphere_tris};
 use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
 use crate::zones::{COARSE_SUB, ZoneConfig, ZoneKind, Zones};
 
-/// Base proposed-elevation contour for the lake bed inside its coarse
-/// containment zone. Fine detail perturbs this threshold into an uneven shore.
-pub(crate) const LAKE_BED_ELEVATION: f32 = -0.18;
+/// Mean radius of the visible lake carved inside its larger coarse containment
+/// zone. Fine detail perturbs this radius into an uneven shoreline.
+const LAKE_RADIUS_M: f32 = 140.0;
+const LAKE_SHORE_VARIATION_M: f32 = 45.0;
 
 pub const MAX_MOUNTAIN: f32 = 200.0;
 pub const MAX_DEPTH: f32 = 200.0;
@@ -349,9 +350,17 @@ impl TerrainGen {
     /// Fine lake footprint within a safe coarse containment zone. Elevation
     /// supplies a connected basin; higher-frequency detail breaks the coarse
     /// triangular outline into coves and irregular banks.
-    pub(crate) fn is_lake_bed(&self, pos: SpherePos, elevation: f32) -> bool {
-        let shore_detail = self.detail.get(self.warped(pos)) as f32 * 0.10;
-        elevation < LAKE_BED_ELEVATION + shore_detail
+    pub(crate) fn is_lake_bed(&self, pos: SpherePos) -> bool {
+        let Some(coarse_face) = self.coarse_mesh.face_at(pos.0) else {
+            return false;
+        };
+        let zone = &self.zones.zones[self.zones.zone_of[coarse_face] as usize];
+        if zone.kind != ZoneKind::Lake {
+            return false;
+        }
+        let shore_detail = self.detail.get(self.warped(pos)) as f32;
+        let radius = LAKE_RADIUS_M + shore_detail * LAKE_SHORE_VARIATION_M;
+        zone.centroid.dot(pos.0).clamp(-1.0, 1.0).acos() * PLANET_RADIUS < radius
     }
 
     // ---- classification (zone-aware) ----
@@ -370,7 +379,7 @@ impl TerrainGen {
         match kind {
             ZoneKind::Ocean => Terrain::Ocean,
             ZoneKind::Lake => {
-                if self.is_lake_bed(pos, e) {
+                if self.is_lake_bed(pos) {
                     Terrain::Lake
                 } else {
                     self.land_biome(pos, e)

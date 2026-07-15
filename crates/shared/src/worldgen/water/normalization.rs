@@ -117,16 +117,19 @@ pub(in crate::worldgen) fn normalize_water_bodies(
             visited[cell.index()] = true
         }
         // A body is an OCEAN only if it reaches ocean-zone cells AND is large
-        // enough to be one: an isolated pocket of ocean-zone faces walled off
-        // by land (a single coarse face — hence the tell-tale triangle shape)
-        // is a lake, not a sea. Min ocean size sits well above any lake.
+        // enough to be one. Only authored lake-zone water may become a lake:
+        // isolated ocean-zone pockets inherit coarse triangular boundaries and
+        // are filled instead of creating rows of artificial triangular lakes.
         let is_ocean = body.len() >= classification::size_range(Terrain::Ocean).0
             && body.iter().any(|&cell| {
                 cell_zone(grid, terrain, cell.index()) == crate::zones::ZoneKind::Ocean
             });
-        if !is_ocean && body.len() < classification::size_range(Terrain::Lake).0 {
-            // A puddle isn't a lake: fill it with the most common surrounding
-            // land kind so no 1-cell water ever survives.
+        let is_authored_lake = body.iter().any(|&cell| lake_zone[cell.index()]);
+        if !is_ocean
+            && (!is_authored_lake || body.len() < classification::size_range(Terrain::Lake).0)
+        {
+            // Unauthored pockets and undersized authored puddles become the
+            // most common surrounding land kind.
             let fill = most_common_land(grid, cells, body.iter().copied());
             for &cell in &body {
                 cells[cell.index()] = fill;
@@ -241,8 +244,8 @@ pub(super) fn enforce_water_shape(grid: &Grid, cells: &mut [Terrain]) {
 /// and gets absorbed/filled/renamed away. `max`: a region larger than this is
 /// split (only kinds with a splitter — the coastal bands — enforce it; all
 /// others are `usize::MAX`, i.e. unbounded). Oceans and lakes are separated
-/// here: min-ocean sits one above max-lake, so a small isolated ocean-zone
-/// pocket falls through to Lake.
+/// here. Isolated ocean-zone pockets are filled; only authored lake-zone
+/// components may receive Lake identity.
 /// Nearest cell to a point: the closest corner of the face under it.
 pub(in crate::worldgen) fn nearest_cell(grid: &Grid, p: SpherePos) -> Option<CellId> {
     let face_index = grid.planet.face_at(p.0)?;

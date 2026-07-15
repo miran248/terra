@@ -172,6 +172,8 @@ impl Default for ZoneConfig {
                 FeatureSpec {
                     kind: ZoneKind::Lake,
                     count: 3,
+                    // This is a hidden containment basin around the smaller,
+                    // radial noise-shaped visible lake carved at fine scale.
                     target_area_m2: 2.5e5,
                     min_area_m2: 1.0e5,
                     min_distance_m: 600.0,

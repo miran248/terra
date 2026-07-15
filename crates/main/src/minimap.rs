@@ -1,5 +1,5 @@
 use crate::loot::{LootMaterial, LootWeapon};
-use crate::map::{Player, Settlement};
+use crate::map::{LevelRegions, Player, Settlement};
 use crate::ui::UiFont;
 use crate::zombie::Zombie;
 use avian3d::prelude::LinearVelocity;
@@ -8,6 +8,7 @@ use bevy::camera::RenderTarget;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use shared::level::RegionKind;
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
@@ -503,7 +504,7 @@ fn draw_overlay(
         Or<(With<MinimapCamera>, With<WorldMapCamera>)>,
     >,
     stale: Query<Entity, Or<(With<CompassLabel>, With<MinimapDot>)>>,
-    terrain: Option<Res<TerrainGen>>,
+    map_resources: (Option<Res<TerrainGen>>, Option<Res<LevelRegions>>),
     player_q: Query<(&Transform, &Player)>,
     zombies: Query<(&Transform, &ViewVisibility), With<Zombie>>,
     materials: Query<(&Transform, &ViewVisibility), With<LootMaterial>>,
@@ -524,6 +525,7 @@ fn draw_overlay(
     let Ok((player_tf, player)) = player_q.single() else {
         return;
     };
+    let (terrain, regions) = map_resources;
 
     for e in &stale {
         commands.entity(e).despawn();
@@ -682,6 +684,58 @@ fn draw_overlay(
                 MinimapDot,
                 ChildOf(map_entity),
             ));
+        }
+
+        if let Some(regions) = regions.as_deref() {
+            for region in &regions.regions {
+                let world_pos = Vec3::from_array(region.pos) * PLANET_RADIUS;
+                let Some(pt) = place(world_pos) else {
+                    continue;
+                };
+                let color = match region.kind {
+                    RegionKind::Ocean | RegionKind::Lake | RegionKind::River => theme::INFO,
+                    RegionKind::Mountain | RegionKind::Volcano | RegionKind::Glacier => {
+                        theme::ACCENT
+                    }
+                    RegionKind::Town | RegionKind::Road => theme::WARNING,
+                    RegionKind::Beach | RegionKind::Cliff => theme::PRIMARY,
+                    _ => theme::INK,
+                };
+                let s = 3.0 * marker_scale;
+                commands.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(pt.x - s / 2.0),
+                        top: Val::Px(pt.y - s / 2.0),
+                        width: Val::Px(s),
+                        height: Val::Px(s),
+                        border_radius: BorderRadius::all(Val::Percent(50.0)),
+                        ..default()
+                    },
+                    BackgroundColor(color),
+                    ZIndex(1),
+                    MinimapDot,
+                    ChildOf(map_entity),
+                ));
+                commands.spawn((
+                    Text::new(region.name.clone()),
+                    TextFont {
+                        font: font.0.clone().into(),
+                        font_size: FontSize::Px(8.0 * marker_scale),
+                        ..default()
+                    },
+                    TextColor(color),
+                    ZIndex(1),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(pt.x + 3.0 * marker_scale),
+                        top: Val::Px(pt.y - 5.0 * marker_scale),
+                        ..default()
+                    },
+                    MinimapDot,
+                    ChildOf(map_entity),
+                ));
+            }
         }
 
         let world_north = (WORLD_NORTH - up * WORLD_NORTH.dot(up)).normalize_or(north);
