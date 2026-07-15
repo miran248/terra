@@ -44,6 +44,21 @@ impl Plugin for FoliagePlugin {
     }
 }
 
+/// Fallible custom EntityCommand to safely swap materials at flush time.
+/// Guarantees 0 panics if the entity gets despawned before the queue flushes!
+struct SwapFoliageMaterial {
+    material: Handle<FoliageMaterial>,
+}
+
+impl bevy::ecs::system::EntityCommand for SwapFoliageMaterial {
+    type Out = ();
+
+    fn apply(self, mut entity: EntityWorldMut<'_>) {
+        entity.remove::<MeshMaterial3d<StandardMaterial>>();
+        entity.insert(MeshMaterial3d(self.material));
+    }
+}
+
 /// Automatically binds loaded catalog meshes to wind-swaying custom shaders.
 /// Extremely high-performance: caches material creations and uses direct parent lookups.
 #[allow(clippy::type_complexity)]
@@ -59,9 +74,7 @@ fn apply_foliage_materials(
     for (entity, mat_handle, parent) in &mesh_q {
         // If already cached, apply immediately and skip any traversal!
         if let Some(cached_handle) = cache.map.get(&mat_handle.0) {
-            commands.entity(entity).remove::<MeshMaterial3d<StandardMaterial>>().insert(
-                MeshMaterial3d(cached_handle.clone())
-            );
+            commands.entity(entity).queue(SwapFoliageMaterial { material: cached_handle.clone() });
             continue;
         }
 
@@ -113,9 +126,7 @@ fn apply_foliage_materials(
                 // ever have to run this traversal or asset allocation again!
                 cache.map.insert(mat_handle.0.clone(), foliage_mat_handle.clone());
 
-                commands.entity(entity).remove::<MeshMaterial3d<StandardMaterial>>().insert(
-                    MeshMaterial3d(foliage_mat_handle)
-                );
+                commands.entity(entity).queue(SwapFoliageMaterial { material: foliage_mat_handle });
             }
         }
     }
