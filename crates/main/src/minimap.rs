@@ -2,7 +2,7 @@ use crate::loot::{LootMaterial, LootWeapon};
 use crate::map::{LevelRegions, Player, Settlement};
 use crate::ui::UiFont;
 use crate::zombie::Zombie;
-use avian3d::prelude::LinearVelocity;
+use avian3d::prelude::{LinearVelocity, Position};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
 use bevy::image::Image;
@@ -297,7 +297,7 @@ fn world_map_click(
     terrain: Option<Res<TerrainGen>>,
     view: Res<WorldMapView>,
     mut player_q: Query<
-        (&mut Transform, &mut LinearVelocity, &mut SpherePos),
+        (&mut Position, &mut LinearVelocity),
         (With<Player>, Without<WorldMapCamera>),
     >,
 ) {
@@ -379,9 +379,8 @@ fn world_map_click(
     let r = terrain
         .surface_radius(SpherePos::new(dir))
         .max(PLANET_RADIUS);
-    if let Ok((mut tf, mut vel, mut sp)) = player_q.single_mut() {
-        tf.translation = dir * (r + 2.0);
-        *sp = SpherePos::new(dir);
+    if let Ok((mut position, mut vel)) = player_q.single_mut() {
+        position.0 = dir * (r + 2.0);
         vel.0 = Vec3::ZERO;
     }
 }

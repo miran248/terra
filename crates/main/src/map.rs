@@ -39,6 +39,11 @@ pub struct Player {
     pub heading: Vec3,
 }
 
+/// Render-only child whose orientation follows the spherical surface without
+/// writing to the dynamic body's physics-synchronized transform.
+#[derive(Component)]
+struct PlayerVisual;
+
 #[derive(Resource)]
 pub struct PlayerHp(pub f32);
 
@@ -199,6 +204,7 @@ impl Plugin for MapPlugin {
                 (
                     orient_player,
                     camera_follow,
+                    diagnose_player_fall,
                     drive_daynight,
                     drive_fog,
                     toggle_sun_lock,
@@ -748,13 +754,14 @@ fn setup_map(
             // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
             // tunneled through during fast falls.
             SweptCcd::default(),
+            // Populated by Avian's narrow phase for fall-through diagnostics.
+            CollidingEntities::default(),
             RadialGravity,
             Mass(80.0),
             ColliderDensity(1000.0),
             LockedAxes::ROTATION_LOCKED,
             Transform::from_translation(spawn_pos),
             Visibility::default(),
-            start,
             Player {
                 fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
                 damage: ATTACK_DAMAGE,
@@ -768,6 +775,7 @@ fn setup_map(
         // mesh onto a child so its base rests exactly on the collider's ground
         // contact point.
         .with_child((
+            PlayerVisual,
             Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
             MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
             // Rest the base on the ground contact point, then drop by the terrain
@@ -1023,15 +1031,63 @@ fn move_player(
     }
 }
 
-fn orient_player(mut q: Query<(&Player, &mut Transform), With<RigidBody>>) {
-    for (player, mut tf) in &mut q {
-        let up = tf.translation.normalize();
-        tf.rotation = Quat::from_mat3(&Mat3::from_cols(
-            player.heading.cross(up),
-            up,
-            -player.heading,
-        ));
+/// Emit one high-signal report when the player's center crosses beneath the
+/// terrain. Logging only the transition avoids flooding the console while the
+/// body continues falling and preserves the values from the failure frame.
+fn diagnose_player_fall(
+    real_time: Res<Time<Real>>,
+    fixed_time: Res<Time<Fixed>>,
+    terrain: Option<Res<TerrainGen>>,
+    player_q: Query<(&Position, &LinearVelocity, &CollidingEntities), With<Player>>,
+    mut was_below_surface: Local<bool>,
+) {
+    let Some(terrain) = terrain else { return };
+    let Ok((position, velocity, contacts)) = player_q.single() else {
+        return;
+    };
+    let radius = position.0.length();
+    let up = position.0.normalize_or_zero();
+    if up == Vec3::ZERO {
+        return;
     }
+    let surface_radius = terrain.surface_radius(shared::sphere::SpherePos::new(up));
+    let altitude = radius - surface_radius;
+    let below_surface = altitude < 0.0;
+
+    if below_surface && !*was_below_surface {
+        let radial_velocity = velocity.0.dot(up);
+        warn!(
+            altitude,
+            radius,
+            surface_radius,
+            radial_velocity,
+            speed = velocity.0.length(),
+            frame_ms = real_time.delta_secs() * 1000.0,
+            fixed_ms = fixed_time.delta_secs() * 1000.0,
+            contact_count = contacts.len(),
+            ?contacts,
+            "player crossed beneath terrain surface"
+        );
+    }
+    *was_below_surface = below_surface;
+}
+
+fn orient_player(
+    player_q: Query<(&Player, &Position)>,
+    mut visual_q: Query<&mut Transform, With<PlayerVisual>>,
+) {
+    let Ok((player, position)) = player_q.single() else {
+        return;
+    };
+    let Ok(mut visual_tf) = visual_q.single_mut() else {
+        return;
+    };
+    let up = position.0.normalize();
+    visual_tf.rotation = Quat::from_mat3(&Mat3::from_cols(
+        player.heading.cross(up),
+        up,
+        -player.heading,
+    ));
 }
 
 fn camera_follow(
