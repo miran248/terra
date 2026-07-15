@@ -40,7 +40,7 @@ fn swell_amp_now() -> f32 {
 }
 
 fn swell_drift(world_pos: vec3<f32>) -> vec3<f32> {
-    return (world_pos - water.wind * globals.time * 0.6) * water.swell_scale;
+    return (world_pos - water.wind * globals.time * 0.3) * water.swell_scale;
 }
 
 fn swell_height(world_pos: vec3<f32>) -> f32 {
@@ -122,7 +122,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (!drifted) {
         // Ripples travel downwind at a fraction of wind speed (deep-water
         // waves lag the wind); calm air leaves them drifting on time alone.
-        sample_pos = sample_pos - water.wind * globals.time * 0.35;
+        sample_pos = sample_pos - water.wind * globals.time * 0.2;
     }
     // Sample in all three world axes: on a spherical planet the surface plane
     // isn't world-XZ, so XZ-only ripples stretch into streaks near the poles.

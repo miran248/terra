@@ -6,19 +6,25 @@
 //! scheme `zones.rs` proves at subdiv 3→7). `faces_per_chunk` is derived from
 //! the level data, so terrain density can grow without touching this module.
 //!
-//! Every chunk is ALWAYS resident at LOD 1 (coarse terrain/water/river/ice
-//! visuals, spawned synchronously in `setup_map`) so the minimap and
-//! fullscreen-map cameras — which render the same world, there are no
-//! RenderLayers — never see holes. Closer chunks add detail:
+//! Every chunk is ALWAYS resident at LOD 1 (terrain/water/river/ice visuals,
+//! whole planet built on the first frames) so the minimap and fullscreen-map
+//! cameras — which render the same world, there are no RenderLayers — never
+//! see holes. Closer chunks add detail:
 //!
 //! - LOD 1: terrain slice, flat water, river, ice visual
-//! - LOD 2 (≤ 960 m): + structures (GLB + colliders), large flora, water subdiv 1
-//! - LOD 3 (≤ 300 m): + all flora, water subdiv 2
+//! - LOD 2 (≤ 960 m to chunk edge): + structures (GLB + colliders), large flora
+//! - LOD 3 (≤ 300 m to chunk edge): + small flora, water swell subdivision
 //!
-//! Downgrades use 15% hysteresis; rebuilds are budgeted per frame. Colliders
-//! for terrain/ice/bridges stay whole-planet in `setup_map` (physics never
-//! streams — no fall-through at chunk borders, teleports just work); only
-//! flora/structure colliders live in chunks.
+//! Transitions are INCREMENTAL: static meshes (terrain/river/ice/border) are
+//! built once and never respawned; the water mesh is rebuilt only when its
+//! subdivision changes (LOD 3 boundary); structures and flora are added or
+//! removed by delta. Nothing already on screen is torn down and re-added, so
+//! a LOD bounce never blinks the world (or the minimap).
+//!
+//! Downgrades use 15% hysteresis; flora spawning is budgeted per frame.
+//! Colliders for terrain/ice/bridges stay whole-planet in `setup_map`
+//! (physics never streams — no fall-through at chunk borders, teleports just
+//! work); only flora/structure colliders live in chunks.
 
 use crate::asset_catalog::AssetCatalog;
 use crate::map::{CullRange, Ground, MainCamera, flora_cull};
@@ -35,15 +41,14 @@ pub const CHUNK_COUNT: usize = 320;
 /// green = 3) so LOD rings are visually inspectable. Flip off to ship.
 const DEBUG_CHUNK_BORDERS: bool = true;
 
-/// Great-circle distances (m) for LOD entry. Zombie ring (120 m) sits well
-/// inside LOD 3, so actors always stand on fully-loaded chunks.
+/// Great-circle distances (m, camera → chunk edge) for LOD entry. Zombie ring
+/// (120 m) sits well inside LOD 3, so actors always stand on loaded chunks.
 const LOD3_DIST: f32 = 300.0;
 const LOD2_DIST: f32 = 960.0;
 /// Downgrade only past entry × this, so chunks don't thrash on the boundary.
 const HYSTERESIS: f32 = 1.15;
-/// Chunk rebuilds allowed per frame. Meshes and structures spawn with the
-/// rebuild; flora streams separately (below), so this only spreads mesh churn.
-const REBUILDS_PER_FRAME: usize = 8;
+/// LOD transitions applied per frame (water rebuilds + structure batches).
+const TRANSITIONS_PER_FRAME: usize = 8;
 /// Flora entities spawned per frame across all chunks. A dense forest chunk
 /// (~6.7k props) fills in a few frames — imperceptible next to the distance
 /// fog — instead of one hitchy burst.
@@ -61,11 +66,11 @@ fn water_subdiv(lod: u8) -> u32 {
 }
 
 /// Large flora visible from afar — resident from LOD 2; the rest joins at LOD 3.
-fn flora_min_lod(kind: FloraKind) -> u8 {
-    match kind {
-        FloraKind::Tree | FloraKind::DeadTree | FloraKind::Rock | FloraKind::Log => 2,
-        _ => 3,
-    }
+fn is_large_flora(kind: FloraKind) -> bool {
+    matches!(
+        kind,
+        FloraKind::Tree | FloraKind::DeadTree | FloraKind::Rock | FloraKind::Log
+    )
 }
 
 /// Baked per-chunk world data, sliced/binned once at setup from `LevelData`.
@@ -75,8 +80,29 @@ pub struct ChunkData {
     pub water_r: Vec<f32>,
     pub river_r: Vec<[f32; 3]>,
     pub water_phase: Vec<Option<WaterPhase>>,
-    pub flora: Vec<Vec<FloraData>>,
+    /// Flora resident from LOD 2 (trees, rocks, logs) per chunk.
+    pub flora_large: Vec<Vec<FloraData>>,
+    /// Flora resident only at LOD 3 (ground cover) per chunk.
+    pub flora_small: Vec<Vec<FloraData>>,
     pub structures: Vec<Vec<StructureData>>,
+}
+
+/// Live entity bookkeeping for one chunk. Split by lifetime so LOD
+/// transitions only touch the group that actually changes.
+#[derive(Default)]
+pub struct ChunkState {
+    pub lod: u8,
+    /// Terrain + river + ice: built once, never respawned.
+    pub static_ents: Vec<Entity>,
+    /// Water mesh; rebuilt only when `water_subdiv` changes.
+    pub water: Option<Entity>,
+    pub border: Option<Entity>,
+    pub structures: Vec<Entity>,
+    pub flora_large: Vec<Entity>,
+    pub flora_small: Vec<Entity>,
+    /// Streaming cursors into ChunkData::flora_*; entities below are spawned.
+    pub large_cursor: usize,
+    pub small_cursor: usize,
 }
 
 #[derive(Resource)]
@@ -85,13 +111,9 @@ pub struct ChunkManager {
     pub faces_per_chunk: usize,
     /// Unit direction of each chunk's centroid.
     pub centers: Vec<Vec3>,
-    /// Current LOD per chunk; 0 = not yet spawned.
-    pub lods: Vec<u8>,
-    /// Everything spawned for the chunk (meshes, flora, structures).
-    pub entities: Vec<Vec<Entity>>,
-    /// Per-chunk cursor into `data.flora`: entities below it are spawned.
-    /// Reset on every rebuild; the streaming pass advances it.
-    pub flora_cursor: Vec<usize>,
+    /// Surface distance (m) from each chunk's centroid to its farthest vertex.
+    pub radii: Vec<f32>,
+    pub chunks: Vec<ChunkState>,
     pub terrain_mat: Handle<StandardMaterial>,
     pub water_mat: Handle<crate::water::WaterMaterial>,
     pub river_mat: Handle<crate::water::WaterMaterial>,
@@ -124,7 +146,7 @@ impl ChunkManager {
             "render faces must divide into the subdiv-2 chunks"
         );
         let faces_per_chunk = terrain_tris.len() / CHUNK_COUNT;
-        let centers = (0..CHUNK_COUNT)
+        let centers: Vec<Vec3> = (0..CHUNK_COUNT)
             .map(|c| {
                 let mut sum = Vec3::ZERO;
                 for t in &terrain_tris[c * faces_per_chunk..(c + 1) * faces_per_chunk] {
@@ -135,9 +157,32 @@ impl ChunkManager {
                 sum.normalize()
             })
             .collect();
-        let mut chunk_flora = vec![Vec::new(); CHUNK_COUNT];
+        // Angular radius (m along the surface) of each chunk: centroid → the
+        // farthest of its vertices. LOD distance measures to the chunk's EDGE
+        // (centroid distance minus this), not its centroid — otherwise standing
+        // on a chunk corner reads ~350 m to all its neighbours and ground flora
+        // vanishes underfoot.
+        let radii: Vec<f32> = (0..CHUNK_COUNT)
+            .map(|c| {
+                let center = centers[c];
+                let mut min_cos = 1.0f32;
+                for t in &terrain_tris[c * faces_per_chunk..(c + 1) * faces_per_chunk] {
+                    for v in t {
+                        min_cos = min_cos.min(Vec3::from_array(*v).normalize().dot(center));
+                    }
+                }
+                min_cos.clamp(-1.0, 1.0).acos() * PLANET_RADIUS
+            })
+            .collect();
+        let mut flora_large = vec![Vec::new(); CHUNK_COUNT];
+        let mut flora_small = vec![Vec::new(); CHUNK_COUNT];
         for f in flora {
-            chunk_flora[f.face as usize / faces_per_chunk].push(f);
+            let c = f.face as usize / faces_per_chunk;
+            if is_large_flora(f.kind) {
+                flora_large[c].push(f);
+            } else {
+                flora_small[c].push(f);
+            }
         }
         let mut chunk_structures = vec![Vec::new(); CHUNK_COUNT];
         for s in structures {
@@ -150,14 +195,14 @@ impl ChunkManager {
                 water_r,
                 river_r,
                 water_phase,
-                flora: chunk_flora,
+                flora_large,
+                flora_small,
                 structures: chunk_structures,
             },
             faces_per_chunk,
             centers,
-            lods: vec![0; CHUNK_COUNT],
-            entities: vec![Vec::new(); CHUNK_COUNT],
-            flora_cursor: vec![0; CHUNK_COUNT],
+            radii,
+            chunks: (0..CHUNK_COUNT).map(|_| ChunkState::default()).collect(),
             terrain_mat,
             water_mat,
             river_mat,
@@ -191,6 +236,7 @@ fn lod_entry(lod: u8) -> f32 {
 }
 
 /// Promote/demote chunk LODs around the main camera, budgeted per frame.
+/// All transitions are incremental — see the module docs.
 pub fn update_chunk_lods(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -203,15 +249,17 @@ pub fn update_chunk_lods(
     };
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
 
-    let mut budget = REBUILDS_PER_FRAME;
+    let mut budget = TRANSITIONS_PER_FRAME;
     for chunk in 0..CHUNK_COUNT {
         if budget == 0 {
             return;
         }
-        let dist = mgr.centers[chunk].dot(eye_dir).clamp(-1.0, 1.0).acos() * PLANET_RADIUS;
-        let cur = mgr.lods[chunk];
+        // Distance to the chunk's nearest EDGE: 0 when standing inside it.
+        let center_dist = mgr.centers[chunk].dot(eye_dir).clamp(-1.0, 1.0).acos() * PLANET_RADIUS;
+        let dist = (center_dist - mgr.radii[chunk]).max(0.0);
+        let cur = mgr.chunks[chunk].lod;
         let want = desired_lod(dist);
-        let rebuild = if want > cur {
+        let transition = if want > cur {
             true
         } else if want < cur {
             // Hysteresis: drop out of `cur` only past its entry distance + 15%.
@@ -219,11 +267,10 @@ pub fn update_chunk_lods(
         } else {
             false
         };
-        if rebuild {
-            respawn_chunk(&mut commands, &mut meshes, &catalog, &mut mgr, chunk, want);
+        if transition {
+            set_chunk_lod(&mut commands, &mut meshes, &catalog, &mut mgr, chunk, want);
             // First-ever build (cur == 0) is free: the whole planet must appear
-            // on frame one (setup_map used to build it synchronously), only
-            // steady-state LOD churn is budgeted.
+            // immediately; only steady-state LOD churn is budgeted.
             if cur != 0 {
                 budget -= 1;
             }
@@ -231,7 +278,9 @@ pub fn update_chunk_lods(
     }
 }
 
-fn respawn_chunk(
+/// Apply a LOD transition incrementally: only what differs between `cur` and
+/// `lod` is spawned/despawned. Flora spawning is deferred to `stream_flora`.
+fn set_chunk_lod(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
     catalog: &AssetCatalog,
@@ -239,83 +288,63 @@ fn respawn_chunk(
     chunk: usize,
     lod: u8,
 ) {
-    for e in mgr.entities[chunk].drain(..) {
-        commands.entity(e).try_despawn();
-    }
+    let cur = mgr.chunks[chunk].lod;
     let range = mgr.face_range(chunk);
-    let mut spawned = Vec::new();
-
-    // Terrain slice (visual only — the whole-planet collider lives in setup_map).
-    let terrain = crate::map::build_visual_mesh(
-        &mgr.data.terrain_tris[range.clone()],
-        &mgr.data.terrain_colors[range.clone()],
-    );
-    spawned.push(
-        commands
-            .spawn((
-                Mesh3d(meshes.add(terrain)),
-                MeshMaterial3d(mgr.terrain_mat.clone()),
-                Transform::default(),
-                Ground,
-            ))
-            .id(),
-    );
-
     let tris = &mgr.data.terrain_tris[range.clone()];
-    let water_r = &mgr.data.water_r[range.clone()];
-    let river_r = &mgr.data.river_r[range.clone()];
-    let phase = &mgr.data.water_phase[range.clone()];
 
-    if let Some(water) = crate::water::build_water_surface(tris, water_r, phase, water_subdiv(lod))
-    {
-        spawned.push(
+    // Static geometry: first build only.
+    if cur == 0 {
+        let terrain = crate::map::build_visual_mesh(
+            tris,
+            &mgr.data.terrain_colors[range.clone()],
+        );
+        let mut static_ents = vec![
             commands
                 .spawn((
-                    Mesh3d(meshes.add(water)),
-                    MeshMaterial3d(mgr.water_mat.clone()),
+                    Mesh3d(meshes.add(terrain)),
+                    MeshMaterial3d(mgr.terrain_mat.clone()),
                     Transform::default(),
                     Ground,
                 ))
                 .id(),
-        );
-    }
-
-    if let Some(river) = crate::water::build_river_surfaces(tris, river_r, phase) {
-        spawned.push(
-            commands
-                .spawn((
-                    Mesh3d(meshes.add(river)),
-                    MeshMaterial3d(mgr.river_mat.clone()),
-                    Transform::default(),
-                    Ground,
-                ))
-                .id(),
-        );
-    }
-
-    // Ice visual (the whole-planet ice collider lives in setup_map).
-    if let Some((ice, _)) = crate::water::build_ice_surface(tris, water_r, river_r, phase) {
-        spawned.push(
-            commands
-                .spawn((
-                    Mesh3d(meshes.add(ice)),
-                    MeshMaterial3d(mgr.ice_mat.clone()),
-                    Transform::default(),
-                    Ground,
-                ))
-                .id(),
-        );
-    }
-
-    if lod >= 2 {
-        for s in &mgr.data.structures[chunk] {
-            spawned.push(spawn_structure(commands, catalog, s));
+        ];
+        if let Some(river) = crate::water::build_river_surfaces(
+            tris,
+            &mgr.data.river_r[range.clone()],
+            &mgr.data.water_phase[range.clone()],
+        ) {
+            static_ents.push(
+                commands
+                    .spawn((
+                        Mesh3d(meshes.add(river)),
+                        MeshMaterial3d(mgr.river_mat.clone()),
+                        Transform::default(),
+                        Ground,
+                    ))
+                    .id(),
+            );
         }
-    }
-
-    if DEBUG_CHUNK_BORDERS {
-        spawned.push(
-            commands
+        // Ice visual (the whole-planet ice collider lives in setup_map).
+        if let Some((ice, _)) = crate::water::build_ice_surface(
+            tris,
+            &mgr.data.water_r[range.clone()],
+            &mgr.data.river_r[range.clone()],
+            &mgr.data.water_phase[range.clone()],
+        ) {
+            static_ents.push(
+                commands
+                    .spawn((
+                        Mesh3d(meshes.add(ice)),
+                        MeshMaterial3d(mgr.ice_mat.clone()),
+                        Transform::default(),
+                        Ground,
+                    ))
+                    .id(),
+            );
+        }
+        mgr.chunks[chunk].static_ents = static_ents;
+        if DEBUG_CHUNK_BORDERS {
+            let border = commands
                 .spawn((
                     Mesh3d(meshes.add(build_border_mesh(tris))),
                     MeshMaterial3d(mgr.border_mats[(lod - 1) as usize].clone()),
@@ -323,15 +352,68 @@ fn respawn_chunk(
                     bevy::light::NotShadowCaster,
                     Ground,
                 ))
-                .id(),
-        );
+                .id();
+            mgr.chunks[chunk].border = Some(border);
+        }
+    } else if DEBUG_CHUNK_BORDERS && let Some(border) = mgr.chunks[chunk].border {
+        // Border: material swap only, no respawn.
+        commands
+            .entity(border)
+            .insert(MeshMaterial3d(mgr.border_mats[(lod - 1) as usize].clone()));
     }
 
-    mgr.entities[chunk] = spawned;
-    mgr.lods[chunk] = lod;
-    // Flora streams in over the following frames (stream_flora); despawned
-    // flora is already gone via the entity drain above.
-    mgr.flora_cursor[chunk] = 0;
+    // Water: rebuild only when the subdivision level actually changes.
+    if cur == 0 || water_subdiv(cur) != water_subdiv(lod) {
+        if let Some(water) = mgr.chunks[chunk].water.take() {
+            commands.entity(water).try_despawn();
+        }
+        if let Some(water) = crate::water::build_water_surface(
+            tris,
+            &mgr.data.water_r[range.clone()],
+            &mgr.data.water_phase[range.clone()],
+            water_subdiv(lod),
+        ) {
+            mgr.chunks[chunk].water = Some(
+                commands
+                    .spawn((
+                        Mesh3d(meshes.add(water)),
+                        MeshMaterial3d(mgr.water_mat.clone()),
+                        Transform::default(),
+                        Ground,
+                    ))
+                    .id(),
+            );
+        }
+    }
+
+    // Structures: join at LOD 2, leave below it.
+    if lod >= 2 && cur < 2 {
+        let ents: Vec<Entity> = mgr.data.structures[chunk]
+            .iter()
+            .map(|s| spawn_structure(commands, catalog, s))
+            .collect();
+        mgr.chunks[chunk].structures = ents;
+    } else if lod < 2 && cur >= 2 {
+        for e in mgr.chunks[chunk].structures.drain(..) {
+            commands.entity(e).try_despawn();
+        }
+    }
+
+    // Flora: only despawn here; spawning streams via `stream_flora`.
+    if lod < 2 && cur >= 2 {
+        for e in mgr.chunks[chunk].flora_large.drain(..) {
+            commands.entity(e).try_despawn();
+        }
+        mgr.chunks[chunk].large_cursor = 0;
+    }
+    if lod < 3 && cur >= 3 {
+        for e in mgr.chunks[chunk].flora_small.drain(..) {
+            commands.entity(e).try_despawn();
+        }
+        mgr.chunks[chunk].small_cursor = 0;
+    }
+
+    mgr.chunks[chunk].lod = lod;
 }
 
 /// Spawn pending flora for loaded chunks, a bounded number per frame. Nearest
@@ -347,9 +429,12 @@ pub fn stream_flora(
         return;
     };
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
-    let mut order: Vec<usize> = (0..CHUNK_COUNT)
-        .filter(|&c| mgr.flora_cursor[c] < mgr.data.flora[c].len())
-        .collect();
+    let pending = |mgr: &ChunkManager, c: usize| {
+        let st = &mgr.chunks[c];
+        (st.lod >= 2 && st.large_cursor < mgr.data.flora_large[c].len())
+            || (st.lod >= 3 && st.small_cursor < mgr.data.flora_small[c].len())
+    };
+    let mut order: Vec<usize> = (0..CHUNK_COUNT).filter(|&c| pending(&mgr, c)).collect();
     if order.is_empty() {
         return;
     }
@@ -361,24 +446,27 @@ pub fn stream_flora(
 
     let mut budget = FLORA_PER_FRAME;
     for chunk in order {
-        let lod = mgr.lods[chunk];
-        if lod < 2 {
-            // No flora at LOD 1 — skip the whole list instead of walking it.
-            mgr.flora_cursor[chunk] = mgr.data.flora[chunk].len();
-            continue;
-        }
-        while budget > 0 {
-            let i = mgr.flora_cursor[chunk];
-            let Some(f) = mgr.data.flora[chunk].get(i) else {
+        let lod = mgr.chunks[chunk].lod;
+        // Large flora (LOD 2+), then small (LOD 3).
+        while budget > 0 && lod >= 2 {
+            let i = mgr.chunks[chunk].large_cursor;
+            let Some(f) = mgr.data.flora_large[chunk].get(i).copied() else {
                 break;
             };
-            if lod >= flora_min_lod(f.kind) {
-                let f = *f;
-                let e = spawn_flora(&mut commands, &catalog, &f);
-                mgr.entities[chunk].push(e);
-                budget -= 1;
-            }
-            mgr.flora_cursor[chunk] = i + 1;
+            let e = spawn_flora(&mut commands, &catalog, &f);
+            mgr.chunks[chunk].flora_large.push(e);
+            mgr.chunks[chunk].large_cursor = i + 1;
+            budget -= 1;
+        }
+        while budget > 0 && lod >= 3 {
+            let i = mgr.chunks[chunk].small_cursor;
+            let Some(f) = mgr.data.flora_small[chunk].get(i).copied() else {
+                break;
+            };
+            let e = spawn_flora(&mut commands, &catalog, &f);
+            mgr.chunks[chunk].flora_small.push(e);
+            mgr.chunks[chunk].small_cursor = i + 1;
+            budget -= 1;
         }
         if budget == 0 {
             return;
