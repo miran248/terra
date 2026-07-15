@@ -202,7 +202,7 @@ pub fn flora_variant_for(kind: FloraKind, terrain: Terrain, hash: u64) -> u8 {
             Terrain::Desert => (3, 4),
             Terrain::Savanna => (0, 5),
             // Complex deciduous, oak, autumn — temperate breadth
-            Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => (0, 5),
+            Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => (0, 6),
             // Jungle canopy + occasional deciduous
             Terrain::Jungle => (1, 3),
             Terrain::Swamp => (1, 5),
