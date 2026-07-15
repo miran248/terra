@@ -1,3 +1,4 @@
+mod asset_catalog;
 mod combat;
 mod constants;
 mod loot;
@@ -61,6 +62,7 @@ fn main() {
         .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.07)))
         .init_state::<AppState>()
         .add_plugins((
+            asset_catalog::AssetCatalogPlugin,
             map::MapPlugin,
             wave::WavePlugin,
             zombie::ZombiePlugin,

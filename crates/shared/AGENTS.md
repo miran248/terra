@@ -14,6 +14,7 @@ Shared library crate for rs-zombies. Common types, utilities, and shared Bevy co
 
 # Work Guidance
 
+- `art.rs` — canonical procedural-art names, catalog paths, deterministic variants, and collider specifications shared by generator and runtime
 - `items.rs` — loot/crafting data: `Material`, `WeaponKind` (stats incl. durability), `Recipe`
 - `theme.rs` — UI palette (opencode "orng" dark theme) and bundled Monaspace Neon `FONT_PATH`
 - `sphere.rs` — planet model, unit system (`METER` = 1 m), `PLANET_RADIUS` = 2000 m, `SpherePos` (unit-vector), geodesic ops (`step_toward`, `step_tangent`, `distance`, `ring_point`, `random_point`, `slerp`), tangent bases. Used by terrain/road gen and precompute tool. Not used by game systems (physics provides real positions).

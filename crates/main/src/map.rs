@@ -49,8 +49,6 @@ pub struct PlayerHp(pub f32);
 
 #[derive(Resource)]
 pub struct GameAssets {
-    pub zombie_mesh: Handle<Mesh>,
-    pub zombie_mat: Handle<StandardMaterial>,
     pub projectile_mesh: Handle<Mesh>,
     pub projectile_mat: Handle<StandardMaterial>,
 }
@@ -219,6 +217,7 @@ use shared::state::AppState;
 
 fn setup_map(
     mut commands: Commands,
+    catalog: Res<crate::asset_catalog::AssetCatalog>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
@@ -234,8 +233,6 @@ fn setup_map(
     let terrain = TerrainGen::from_field(level.seed, level.vert_elev.clone());
 
     commands.insert_resource(GameAssets {
-        zombie_mesh: meshes.add(Sphere::new(ZOMBIE_SIZE * 0.5)),
-        zombie_mat: materials.add(StandardMaterial::from_color(ZOMBIE_COLOR)),
         projectile_mesh: meshes.add(Sphere::new(PROJECTILE_SIZE)),
         projectile_mat: materials.add(StandardMaterial {
             base_color: PROJECTILE_COLOR,
@@ -776,11 +773,11 @@ fn setup_map(
         // contact point.
         .with_child((
             PlayerVisual,
-            Mesh3d(meshes.add(Capsule3d::new(capsule_radius, PLAYER_SIZE))),
-            MeshMaterial3d(materials.add(StandardMaterial::from_color(PLAYER_COLOR))),
+            WorldAssetRoot(catalog.scene("actor.player")),
             // Rest the base on the ground contact point, then drop by the terrain
             // collision margin so the visual doesn't float above the terrain.
-            Transform::from_xyz(0.0, capsule_radius - TERRAIN_MARGIN, 0.0),
+            Transform::from_xyz(0.0, -capsule_radius + TERRAIN_MARGIN, 0.0)
+                .with_scale(Vec3::splat(PLAYER_SIZE)),
         ));
 
     // Settlement markers
@@ -1083,6 +1080,10 @@ fn orient_player(
         return;
     };
     let up = position.0.normalize();
+    // Child translation is expressed in the unrotated physics parent's space;
+    // rotating this child does not rotate its own offset. Keep the capsule lift
+    // radial explicitly so its base remains on the collider contact point.
+    visual_tf.translation = up * (PLAYER_SIZE * 0.4 - TERRAIN_MARGIN);
     visual_tf.rotation = Quat::from_mat3(&Mat3::from_cols(
         player.heading.cross(up),
         up,

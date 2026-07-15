@@ -1,5 +1,5 @@
 use crate::constants::*;
-use crate::map::{GameAssets, Player, PlayerHp};
+use crate::map::{Player, PlayerHp};
 use crate::physics::RadialGravity;
 use crate::wave::WaveManager;
 use avian3d::prelude::*;
@@ -34,7 +34,7 @@ fn spawn_zombies(
     mut commands: Commands,
     time: Res<Time>,
     mut wave: ResMut<WaveManager>,
-    assets: Res<GameAssets>,
+    catalog: Res<crate::asset_catalog::AssetCatalog>,
     player_q: Query<&Transform, With<Player>>,
 ) {
     if wave.zombies_spawned_this_wave >= wave.zombies_per_wave {
@@ -62,21 +62,29 @@ fn spawn_zombies(
     let w = wave.wave;
     let half = ZOMBIE_SIZE * 0.5;
     let spawn_r = PLANET_RADIUS + half + 1.0;
-    commands.spawn((
-        Mesh3d(assets.zombie_mesh.clone()),
-        MeshMaterial3d(assets.zombie_mat.clone()),
-        RigidBody::Dynamic,
-        RadialGravity,
-        Collider::sphere(ZOMBIE_SIZE * 0.5),
-        LockedAxes::ROTATION_LOCKED,
-        Restitution::ZERO,
-        Friction::ZERO,
-        Transform::from_translation(spawn_dir * spawn_r),
-        Zombie {
-            hp: crate::wave::zombie_hp(w),
-            speed: crate::wave::zombie_speed(w),
-        },
-    ));
+    commands
+        .spawn((
+            RigidBody::Dynamic,
+            RadialGravity,
+            Collider::sphere(ZOMBIE_SIZE * 0.5),
+            LockedAxes::ROTATION_LOCKED,
+            Restitution::ZERO,
+            Friction::ZERO,
+            Transform::from_translation(spawn_dir * spawn_r),
+            Visibility::default(),
+            Zombie {
+                hp: crate::wave::zombie_hp(w),
+                speed: crate::wave::zombie_speed(w),
+            },
+        ))
+        .with_child((
+            WorldAssetRoot(catalog.scene(if wave.wave.is_multiple_of(2) {
+                "actor.zombie.1"
+            } else {
+                "actor.zombie.0"
+            })),
+            Transform::from_xyz(0.0, -half, 0.0).with_scale(Vec3::splat(ZOMBIE_SIZE)),
+        ));
 }
 
 fn move_zombies(

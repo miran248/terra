@@ -5,6 +5,7 @@ use crate::ui::UpgradeLevels;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::Rng;
+use shared::art::AssetName;
 use shared::items::{Material, WeaponKind};
 use shared::sphere::{PLANET_RADIUS, random_point};
 use shared::state::AppState;
@@ -25,10 +26,8 @@ pub struct LootWeapon(pub WeaponKind);
 
 #[derive(Resource)]
 pub struct LootAssets {
-    material_mesh: Handle<Mesh>,
-    weapon_mesh: Handle<Mesh>,
-    material_mats: [Handle<StandardMaterial>; Material::ALL.len()],
-    weapon_mats: [Handle<StandardMaterial>; WeaponKind::ALL.len()],
+    material_scenes: [Handle<WorldAsset>; Material::ALL.len()],
+    weapon_scenes: [Handle<WorldAsset>; WeaponKind::ALL.len()],
 }
 
 #[derive(Resource, Default)]
@@ -103,24 +102,10 @@ fn apply_magnet_upgrade(levels: Res<UpgradeLevels>, mut magnet: ResMut<MagnetRad
     magnet.0 = Upgrade::MagnetRange.value(levels.levels[idx]);
 }
 
-fn setup_loot_assets(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut mats: ResMut<Assets<StandardMaterial>>,
-) {
-    let material_mats = Material::ALL.map(|m| {
-        let (r, g, b) = m.color();
-        mats.add(StandardMaterial::from_color(Color::srgb(r, g, b)))
-    });
-    let weapon_mats = WeaponKind::ALL.map(|w| {
-        let (r, g, b) = w.color();
-        mats.add(StandardMaterial::from_color(Color::srgb(r, g, b)))
-    });
+fn setup_loot_assets(mut commands: Commands, catalog: Res<crate::asset_catalog::AssetCatalog>) {
     commands.insert_resource(LootAssets {
-        material_mesh: meshes.add(Cuboid::from_length(SCRAP_SIZE)),
-        weapon_mesh: meshes.add(Cuboid::from_length(SCRAP_SIZE * 1.8)),
-        material_mats,
-        weapon_mats,
+        material_scenes: Material::ALL.map(|kind| catalog.scene(kind.asset_name())),
+        weapon_scenes: WeaponKind::ALL.map(|kind| catalog.scene(kind.asset_name())),
     });
 }
 
@@ -143,39 +128,48 @@ fn scatter_loot(mut commands: Commands, assets: Res<LootAssets>) {
 fn spawn_material(commands: &mut Commands, assets: &LootAssets, m: Material, dir: Vec3) {
     let i = Material::ALL.iter().position(|x| *x == m).unwrap();
     let r = PLANET_RADIUS + SCRAP_SIZE * 0.5 + 0.5;
-    commands.spawn((
-        Mesh3d(assets.material_mesh.clone()),
-        MeshMaterial3d(assets.material_mats[i].clone()),
-        RigidBody::Dynamic,
-        Collider::sphere(SCRAP_SIZE * 0.5),
-        GravityScale(0.0),
-        LinearDamping(0.95),
-        AngularDamping(1.0),
-        LockedAxes::ROTATION_LOCKED,
-        Restitution::ZERO,
-        Friction::ZERO,
-        Transform::from_translation(dir * r),
-        LootMaterial(m),
-    ));
+    commands
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::sphere(SCRAP_SIZE * 0.5),
+            GravityScale(0.0),
+            LinearDamping(0.95),
+            AngularDamping(1.0),
+            LockedAxes::ROTATION_LOCKED,
+            Restitution::ZERO,
+            Friction::ZERO,
+            Transform::from_translation(dir * r),
+            Visibility::default(),
+            LootMaterial(m),
+        ))
+        .with_child((
+            WorldAssetRoot(assets.material_scenes[i].clone()),
+            Transform::from_xyz(0.0, -SCRAP_SIZE * 0.5, 0.0).with_scale(Vec3::splat(SCRAP_SIZE)),
+        ));
 }
 
 fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, dir: Vec3) {
     let i = WeaponKind::ALL.iter().position(|x| *x == w).unwrap();
     let r = PLANET_RADIUS + SCRAP_SIZE * 1.8 * 0.5 + 0.5;
-    commands.spawn((
-        Mesh3d(assets.weapon_mesh.clone()),
-        MeshMaterial3d(assets.weapon_mats[i].clone()),
-        RigidBody::Dynamic,
-        Collider::sphere(SCRAP_SIZE * 1.8 * 0.5),
-        GravityScale(0.0),
-        LinearDamping(0.95),
-        AngularDamping(1.0),
-        LockedAxes::ROTATION_LOCKED,
-        Restitution::ZERO,
-        Friction::ZERO,
-        Transform::from_translation(dir * r),
-        LootWeapon(w),
-    ));
+    commands
+        .spawn((
+            RigidBody::Dynamic,
+            Collider::sphere(SCRAP_SIZE * 1.8 * 0.5),
+            GravityScale(0.0),
+            LinearDamping(0.95),
+            AngularDamping(1.0),
+            LockedAxes::ROTATION_LOCKED,
+            Restitution::ZERO,
+            Friction::ZERO,
+            Transform::from_translation(dir * r),
+            Visibility::default(),
+            LootWeapon(w),
+        ))
+        .with_child((
+            WorldAssetRoot(assets.weapon_scenes[i].clone()),
+            Transform::from_xyz(0.0, -SCRAP_SIZE * 0.9, 0.0)
+                .with_scale(Vec3::splat(SCRAP_SIZE * 1.8)),
+        ));
 }
 
 pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, dir: Vec3) {

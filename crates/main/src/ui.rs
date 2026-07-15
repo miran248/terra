@@ -75,7 +75,8 @@ impl Plugin for UiPlugin {
                     scroll_upgrades,
                     handle_craft_clicks,
                     update_craft_status,
-                ),
+                )
+                    .run_if(in_state(shared::state::AppState::Playing)),
             );
     }
 }

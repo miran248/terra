@@ -82,5 +82,6 @@ Default section order:
 ## Child DOX Index
 
 - `crates/main/` — binary entry point, Bevy app boot, game systems: [AGENTS.md](crates/main/AGENTS.md)
+- `crates/gen_assets/` — deterministic procedural GLB catalog generator: [AGENTS.md](crates/gen_assets/AGENTS.md)
 - `crates/gen_level/` — CLI tool for level precomputation: [AGENTS.md](crates/gen_level/AGENTS.md)
 - `crates/shared/` — shared library crate, common types and utilities: [AGENTS.md](crates/shared/AGENTS.md)
