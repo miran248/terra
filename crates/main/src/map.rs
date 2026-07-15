@@ -4,10 +4,9 @@ use crate::physics::RadialGravity;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
-use shared::art::AssetName;
 use shared::level::{
     BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass,
-    StructureKind, WaterDepth, WaterPhase,
+    WaterDepth, WaterPhase,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
@@ -90,7 +89,7 @@ pub struct CullRange(pub f32);
 
 /// Per-flora-kind cull distance (metres) — the smaller the prop, the sooner it
 /// stops being drawn in the distance.
-fn flora_cull(kind: FloraKind) -> f32 {
+pub fn flora_cull(kind: FloraKind) -> f32 {
     use shared::level::*;
     // ~1.6x the original ranges so props stay visible further out; the camera
     // fog visibility (main.rs) is set beyond the largest of these so props fade
@@ -100,117 +99,6 @@ fn flora_cull(kind: FloraKind) -> f32 {
         FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
         FloraKind::Log => 420.0,
         FloraKind::Tree | FloraKind::DeadTree => 880.0,
-    }
-}
-
-const FLORA_CHUNK_SIZE: f32 = 120.0;
-type ChunkId = [i32; 3];
-
-#[derive(Resource, Default)]
-pub struct FloraManager {
-    pub chunks: std::collections::HashMap<ChunkId, Vec<shared::level::FloraData>>,
-    pub loaded_chunks: std::collections::HashMap<ChunkId, Vec<Entity>>,
-}
-
-fn pos_to_chunk(pos: Vec3) -> ChunkId {
-    [
-        (pos.x / FLORA_CHUNK_SIZE).floor() as i32,
-        (pos.y / FLORA_CHUNK_SIZE).floor() as i32,
-        (pos.z / FLORA_CHUNK_SIZE).floor() as i32,
-    ]
-}
-
-#[allow(clippy::type_complexity)]
-fn manage_flora_chunks(
-    mut commands: Commands,
-    catalog: Res<crate::asset_catalog::AssetCatalog>,
-    camera: Query<&Transform, With<MainCamera>>,
-    mut manager: ResMut<FloraManager>,
-) {
-    let Some(cam) = camera.iter().next() else { return };
-    let eye = cam.translation;
-    let center_chunk = pos_to_chunk(eye);
-    
-    // Radius of chunks (each chunk is 120m, flora cull reaches up to 880m -> ~8 chunks)
-    let radius = 8;
-    
-    let mut visible_chunks = std::collections::HashSet::new();
-    for x in -radius..=radius {
-        for y in -radius..=radius {
-            for z in -radius..=radius {
-                if x*x + y*y + z*z <= radius*radius {
-                    visible_chunks.insert([center_chunk[0] + x, center_chunk[1] + y, center_chunk[2] + z]);
-                }
-            }
-        }
-    }
-
-    // Unload far chunks
-    manager.loaded_chunks.retain(|chunk_id, entities| {
-        if visible_chunks.contains(chunk_id) {
-            true // keep
-        } else {
-            for &e in entities.iter() {
-                commands.entity(e).despawn();
-            }
-            false // remove
-        }
-    });
-
-    // Load new chunks
-    for chunk_id in visible_chunks {
-        if !manager.loaded_chunks.contains_key(&chunk_id) {
-            if let Some(flora_list) = manager.chunks.get(&chunk_id) {
-                let mut spawned_entities = Vec::with_capacity(flora_list.len());
-                for f in flora_list {
-                    let pos = Vec3::from_array(f.pos);
-                    let up = pos.normalize();
-                    let hash = f.pos[0].to_bits()
-                        ^ f.pos[1].to_bits().rotate_left(13)
-                        ^ f.pos[2].to_bits().rotate_left(27);
-                    let scale = 0.7 + (hash & 0xff) as f32 / 255.0 * 0.6;
-                    let yaw = (hash >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
-                    let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
-                    
-                    let mut root = commands.spawn((
-                        CullRange(flora_cull(f.kind)),
-                        Transform::from_translation(pos).with_rotation(rotation),
-                        Visibility::default(),
-                        bevy::light::NotShadowCaster,
-                    ));
-
-                    match shared::art::flora_collider(f.kind) {
-                        shared::art::ColliderSpec::None => {}
-                        shared::art::ColliderSpec::Box { half_extents } => {
-                            root.insert((
-                                RigidBody::Static,
-                                Collider::cuboid(
-                                    half_extents[0] * scale,
-                                    half_extents[1] * scale,
-                                    half_extents[2] * scale,
-                                ),
-                                Friction::ZERO,
-                                Restitution::ZERO,
-                            ));
-                        }
-                        shared::art::ColliderSpec::Capsule { radius, half_length } => {
-                            root.insert((
-                                RigidBody::Static,
-                                Collider::capsule(radius * scale, half_length * 2.0 * scale),
-                            ));
-                        }
-                    }
-
-                    root.with_child((
-                        WorldAssetRoot(catalog.scene(f.kind.asset_name())),
-                        Transform::from_scale(Vec3::splat(scale)),
-                    ));
-                    
-                    spawned_entities.push(root.id());
-                }
-                manager.loaded_chunks.insert(chunk_id, spawned_entities);
-            }
-        }
     }
 }
 
@@ -319,7 +207,8 @@ impl Plugin for MapPlugin {
                     drive_fog,
                     toggle_sun_lock,
                     cull_props,
-                    manage_flora_chunks,
+                    crate::chunks::update_chunk_lods,
+                    crate::chunks::stream_flora,
                 )
                     .run_if(in_state(AppState::Playing)),
             );
@@ -358,23 +247,19 @@ fn setup_map(
         level.settlements.first().expect("no settlements").pos,
     )));
 
-    // Terrain layer
-    let terrain_mesh = build_visual_mesh(&level.terrain_tris, &level.terrain_colors);
-    commands.spawn((
-        Mesh3d(meshes.add(terrain_mesh)),
-        MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::WHITE,
-            perceptual_roughness: 0.95,
-            // The sun is re-aimed at the player's feet each frame, so its specular
-            // hotspot rides with the player; on the flat-shaded terrain that broad
-            // highlight aliases into moving grain. Near-zero reflectance removes
-            // the specular lobe (matte terrain) and kills the sparkle.
-            reflectance: 0.02,
-            ..default()
-        })),
-        Transform::default(),
-        Ground,
-    ));
+    // Terrain visuals are chunked (see crate::chunks) — only the whole-planet
+    // collider is global. Physics never streams: no fall-through at chunk
+    // borders, world-map teleports always land on solid ground.
+    let terrain_mat = materials.add(StandardMaterial {
+        base_color: Color::WHITE,
+        perceptual_roughness: 0.95,
+        // The sun is re-aimed at the player's feet each frame, so its specular
+        // hotspot rides with the player; on the flat-shaded terrain that broad
+        // highlight aliases into moving grain. Near-zero reflectance removes
+        // the specular lobe (matte terrain) and kills the sparkle.
+        reflectance: 0.02,
+        ..default()
+    });
     commands.spawn((
         RigidBody::Static,
         build_collider(&level.terrain_tris),
@@ -388,392 +273,7 @@ fn setup_map(
         Ground,
     ));
 
-    // Flora: instanced low-poly props on the baked positions (they sit exactly
-    // on the displaced mesh). Shared mesh/material handles keep this cheap;
-    // per-instance scale/yaw variety comes from hashing the position bits.
-    if false {
-        let trunk_mesh = meshes.add(Cylinder::new(0.25, 4.5));
-        let canopy_mesh = meshes.add(Sphere::new(2.0));
-        let bush_mesh = meshes.add(Sphere::new(0.7));
-        let rock_mesh = meshes.add(Sphere::new(0.6).mesh().ico(1).unwrap());
-        let grass_mesh = meshes.add(Cone {
-            radius: 0.22,
-            height: 0.55,
-        });
-        let flower_mesh = meshes.add(Sphere::new(0.16));
-        let trunk_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.42, 0.30, 0.18)));
-        let canopy_mats = [
-            materials.add(StandardMaterial::from_color(Color::srgb(0.13, 0.34, 0.16))),
-            materials.add(StandardMaterial::from_color(Color::srgb(0.18, 0.42, 0.18))),
-            materials.add(StandardMaterial::from_color(Color::srgb(0.24, 0.45, 0.14))),
-        ];
-        let bush_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.22, 0.40, 0.20)));
-        let rock_mats = [
-            materials.add(StandardMaterial::from_color(Color::srgb(0.45, 0.44, 0.42))),
-            materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.53, 0.50))),
-        ];
-        let grass_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.38, 0.52, 0.22)));
-        let log_mesh = meshes.add(Cylinder::new(0.35, 3.0));
-        let log_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.36, 0.26, 0.16)));
-        let mush_mesh = meshes.add(Sphere::new(0.18));
-        let mush_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.80, 0.35, 0.30)));
-        let cactus_mesh = meshes.add(Capsule3d::new(0.30, 1.6));
-        let cactus_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.28, 0.45, 0.24)));
-        let berry_mesh = meshes.add(Sphere::new(0.6));
-        let berry_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.30, 0.20, 0.35)));
-        let dead_mesh = meshes.add(Cylinder::new(0.22, 4.0));
-        let dead_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.34, 0.30, 0.24)));
-        let reed_mesh = meshes.add(Cone {
-            radius: 0.10,
-            height: 1.3,
-        });
-        let reed_mat = materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.58, 0.30)));
-        let flower_mats = [
-            materials.add(StandardMaterial::from_color(Color::srgb(0.90, 0.25, 0.30))),
-            materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.80, 0.25))),
-            materials.add(StandardMaterial::from_color(Color::srgb(0.75, 0.45, 0.90))),
-            materials.add(StandardMaterial::from_color(Color::srgb(0.95, 0.95, 0.95))),
-        ];
-        for f in &level.flora {
-            let pos = Vec3::from_array(f.pos);
-            let up = pos.normalize();
-            let h = f.pos[0].to_bits()
-                ^ f.pos[1].to_bits().rotate_left(13)
-                ^ f.pos[2].to_bits().rotate_left(27);
-            let scale = 0.7 + (h & 0xff) as f32 / 255.0 * 0.6;
-            let yaw = (h >> 8 & 0xff) as f32 / 255.0 * std::f32::consts::TAU;
-            let rot = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
-            let cull = flora_cull(f.kind);
-            match f.kind {
-                FloraKind::Tree => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(trunk_mesh.clone()),
-                        MeshMaterial3d(trunk_mat.clone()),
-                        RigidBody::Static,
-                        ColliderConstructor::Cylinder {
-                            radius: 0.3 * scale,
-                            height: 4.5 * scale,
-                        },
-                        Transform::from_translation(pos + up * 2.25 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(canopy_mesh.clone()),
-                        MeshMaterial3d(canopy_mats[(h >> 16) as usize % canopy_mats.len()].clone()),
-                        Transform::from_translation(pos + up * 5.2 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::new(scale, scale * 1.25, scale)),
-                    ));
-                }
-                FloraKind::Bush => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(bush_mesh.clone()),
-                        MeshMaterial3d(bush_mat.clone()),
-                        Transform::from_translation(pos + up * 0.45 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::new(scale, scale * 0.75, scale)),
-                    ));
-                }
-                FloraKind::Flower => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(flower_mesh.clone()),
-                        MeshMaterial3d(flower_mats[(h >> 16) as usize % flower_mats.len()].clone()),
-                        Transform::from_translation(pos + up * 0.22)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                }
-                FloraKind::Rock => {
-                    // Irregular via non-uniform scale; boulders block movement.
-                    let sx = 0.8 + (h >> 24 & 0x7) as f32 / 7.0 * 0.7;
-                    let sz = 0.8 + (h >> 27 & 0x7) as f32 / 7.0 * 0.7;
-                    let boulder = scale > 1.05;
-                    let size = if boulder { scale * 1.8 } else { scale };
-                    let mut e = commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(rock_mesh.clone()),
-                        MeshMaterial3d(rock_mats[(h >> 16) as usize % rock_mats.len()].clone()),
-                        Transform::from_translation(pos + up * 0.25 * size)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::new(size * sx, size * 0.7, size * sz)),
-                    ));
-                    if boulder {
-                        e.insert((
-                            RigidBody::Static,
-                            ColliderConstructor::Sphere { radius: 0.55 },
-                        ));
-                    }
-                }
-                FloraKind::Grass => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(grass_mesh.clone()),
-                        MeshMaterial3d(grass_mat.clone()),
-                        Transform::from_translation(pos + up * 0.18 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                }
-                FloraKind::Log => {
-                    // Fallen: lie along the ground (trunk axis tangent to up).
-                    let lie = rot * Quat::from_rotation_z(std::f32::consts::FRAC_PI_2);
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(log_mesh.clone()),
-                        MeshMaterial3d(log_mat.clone()),
-                        RigidBody::Static,
-                        ColliderConstructor::Cylinder {
-                            radius: 0.35 * scale,
-                            height: 3.0 * scale,
-                        },
-                        Transform::from_translation(pos + up * 0.35 * scale)
-                            .with_rotation(lie)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                }
-                FloraKind::Mushroom => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(mush_mesh.clone()),
-                        MeshMaterial3d(mush_mat.clone()),
-                        Transform::from_translation(pos + up * 0.16 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::new(scale, scale * 0.7, scale)),
-                    ));
-                }
-                FloraKind::Cactus => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(cactus_mesh.clone()),
-                        MeshMaterial3d(cactus_mat.clone()),
-                        RigidBody::Static,
-                        ColliderConstructor::Capsule {
-                            radius: 0.30 * scale,
-                            height: 1.6 * scale,
-                        },
-                        Transform::from_translation(pos + up * 0.9 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                }
-                FloraKind::Berry => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(berry_mesh.clone()),
-                        MeshMaterial3d(berry_mat.clone()),
-                        Transform::from_translation(pos + up * 0.4 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::new(scale, scale * 0.85, scale)),
-                    ));
-                }
-                FloraKind::DeadTree => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(dead_mesh.clone()),
-                        MeshMaterial3d(dead_mat.clone()),
-                        RigidBody::Static,
-                        ColliderConstructor::Cylinder {
-                            radius: 0.25 * scale,
-                            height: 4.0 * scale,
-                        },
-                        Transform::from_translation(pos + up * 2.0 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                }
-                FloraKind::Seaweed | FloraKind::Lilypad | FloraKind::Coral => {}, FloraKind::Reed => {
-                    commands.spawn((
-                        CullRange(cull),
-                        Mesh3d(reed_mesh.clone()),
-                        MeshMaterial3d(reed_mat.clone()),
-                        Transform::from_translation(pos + up * 0.65 * scale)
-                            .with_rotation(rot)
-                            .with_scale(Vec3::splat(scale)),
-                    ));
-                }
-            }
-        }
-    }
-
-    let mut flora_manager = FloraManager::default();
-    for f in &level.flora {
-        let chunk_id = pos_to_chunk(Vec3::from_array(f.pos));
-        flora_manager.chunks.entry(chunk_id).or_default().push(f.clone());
-    }
-    commands.insert_resource(flora_manager);
-
-    // Structures: contextual built props (wells, docks, walls, watchtowers,
-    // ruins, farms, campfires), spawned from baked positions like bridges.
-    if false {
-        let stone = materials.add(StandardMaterial::from_color(Color::srgb(0.55, 0.53, 0.50)));
-        let dark_stone = materials.add(StandardMaterial::from_color(Color::srgb(0.40, 0.38, 0.36)));
-        let wood = materials.add(StandardMaterial::from_color(Color::srgb(0.45, 0.32, 0.20)));
-        let plank = materials.add(StandardMaterial::from_color(Color::srgb(0.52, 0.40, 0.26)));
-        let soil = materials.add(StandardMaterial::from_color(Color::srgb(0.34, 0.24, 0.15)));
-        let ember = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.9, 0.4, 0.1),
-            emissive: LinearRgba::rgb(0.9, 0.35, 0.05),
-            ..default()
-        });
-        let box_mesh = meshes.add(Cuboid::new(1.0, 1.0, 1.0));
-        let cyl_mesh = meshes.add(Cylinder::new(0.5, 1.0));
-        for st in &level.structures {
-            let pos = Vec3::from_array(st.pos);
-            let up = pos.normalize();
-            let base = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(st.yaw);
-            let at = |cmd: &mut Commands,
-                      mesh: Handle<Mesh>,
-                      mat: Handle<StandardMaterial>,
-                      lift: f32,
-                      scale: Vec3,
-                      collide: bool| {
-                let mut e = cmd.spawn((
-                    Mesh3d(mesh),
-                    MeshMaterial3d(mat),
-                    Transform::from_translation(pos + up * lift)
-                        .with_rotation(base)
-                        .with_scale(scale),
-                ));
-                if collide {
-                    e.insert((RigidBody::Static, ColliderConstructor::ConvexHullFromMesh));
-                }
-            };
-            match st.kind {
-                StructureKind::Well => {
-                    at(
-                        &mut commands,
-                        cyl_mesh.clone(),
-                        stone.clone(),
-                        0.6,
-                        Vec3::new(2.0, 1.2, 2.0),
-                        true,
-                    );
-                }
-                StructureKind::Campfire => {
-                    at(
-                        &mut commands,
-                        cyl_mesh.clone(),
-                        dark_stone.clone(),
-                        0.2,
-                        Vec3::new(1.6, 0.4, 1.6),
-                        false,
-                    );
-                    at(
-                        &mut commands,
-                        box_mesh.clone(),
-                        ember.clone(),
-                        0.5,
-                        Vec3::splat(0.7),
-                        false,
-                    );
-                }
-                StructureKind::Wall => {
-                    at(
-                        &mut commands,
-                        box_mesh.clone(),
-                        dark_stone.clone(),
-                        1.5,
-                        Vec3::new(6.0, 3.0, 1.2),
-                        true,
-                    );
-                }
-                StructureKind::Dock => {
-                    at(
-                        &mut commands,
-                        box_mesh.clone(),
-                        plank.clone(),
-                        0.4,
-                        Vec3::new(3.0, 0.4, 10.0),
-                        true,
-                    );
-                }
-                StructureKind::Farm => {
-                    at(
-                        &mut commands,
-                        box_mesh.clone(),
-                        soil.clone(),
-                        0.1,
-                        Vec3::new(9.0, 0.2, 9.0),
-                        false,
-                    );
-                }
-                StructureKind::Watchtower => {
-                    at(
-                        &mut commands,
-                        box_mesh.clone(),
-                        wood.clone(),
-                        6.0,
-                        Vec3::new(3.0, 12.0, 3.0),
-                        true,
-                    );
-                    at(
-                        &mut commands,
-                        box_mesh.clone(),
-                        plank.clone(),
-                        12.5,
-                        Vec3::new(4.5, 1.0, 4.5),
-                        true,
-                    );
-                }
-                StructureKind::Ruin => {
-                    // A broken ring of stub columns.
-                    for k in 0..5 {
-                        let a = k as f32 / 5.0 * std::f32::consts::TAU;
-                        let (east, north) = shared::sphere::SpherePos::new(up).tangent_basis();
-                        let off = (east * a.cos() + north * a.sin()) * 3.0;
-                        let cpos = pos + off;
-                        let cup = cpos.normalize();
-                        commands.spawn((
-                            Mesh3d(box_mesh.clone()),
-                            MeshMaterial3d(stone.clone()),
-                            RigidBody::Static,
-                            ColliderConstructor::ConvexHullFromMesh,
-                            Transform::from_translation(cpos + cup * (1.0 + k as f32 % 2.0))
-                                .with_rotation(Quat::from_rotation_arc(Vec3::Y, cup))
-                                .with_scale(Vec3::new(1.0, 2.0 + (k % 3) as f32, 1.0)),
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    for structure in &level.structures {
-        let pos = Vec3::from_array(structure.pos);
-        let up = pos.normalize();
-        let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(structure.yaw);
-        let scale = match structure.kind {
-            StructureKind::Ruin => Vec3::new(6.0, 3.0, 6.0),
-            StructureKind::Watchtower => Vec3::new(4.5, 12.0, 4.5),
-            StructureKind::Dock => Vec3::new(3.0, 0.8, 10.0),
-            StructureKind::Farm => Vec3::new(9.0, 0.3, 9.0),
-            StructureKind::Wall => Vec3::new(6.0, 3.0, 1.2),
-            StructureKind::Well => Vec3::new(2.0, 1.2, 2.0),
-            StructureKind::Campfire => Vec3::splat(1.6),
-        };
-        let mut root = commands.spawn((
-            Transform::from_translation(pos).with_rotation(rotation),
-            Visibility::default(),
-        ));
-        if !matches!(
-            structure.kind,
-            StructureKind::Farm | StructureKind::Campfire
-        ) {
-            root.insert((
-                RigidBody::Static,
-                Collider::cuboid(scale.x * 0.5, scale.y * 0.5, scale.z * 0.5),
-            ));
-        }
-        root.with_child((
-            WorldAssetRoot(catalog.scene(structure.kind.asset_name())),
-            Transform::from_scale(scale),
-        ));
-    }
+    // Structures and flora spawn per-chunk with LOD (see crate::chunks).
 
     // Bridges: entities built at runtime from the recorded spans, like any building.
     // Deck heights come from the displaced terrain mesh (the surface that renders
@@ -838,53 +338,25 @@ fn setup_map(
         ));
     }
 
-    // Water (see crate::water): sea + lakes are one mesh, built from the
-    // gen-time per-face waterline (`face_water_r`) which clusters water into
-    // connected bodies — so the sea can't flood an inland lake basin and lakes
-    // can't spill onto land. Rivers are their own flowing mesh.
+    // Water/river visuals spawn per-chunk with LOD (see crate::chunks); the
+    // gen-time per-face waterline (`face_water_r`) clusters water into
+    // connected bodies, so the sea can't flood an inland lake basin. Only the
+    // ice COLLIDER is global here — walkable surfaces never stream.
     let water_mat = water_mats.add(crate::water::water_material());
-    if let Some(water) = crate::water::build_water_surface(
-        &level.terrain_tris,
-        &level.face_water_r,
-        &level.water_phase,
-    ) {
-        commands.spawn((
-            Mesh3d(meshes.add(water)),
-            MeshMaterial3d(water_mat.clone()),
-            Transform::default(),
-            Ground,
-        ));
-    }
-
-    // River surfaces use the generator-baked, smoothed corner radii so runtime
-    // rendering has no topology/clustering work and cannot introduce seams.
-    if let Some(river) = crate::water::build_river_surfaces(
-        &level.terrain_tris,
-        &level.face_river_r,
-        &level.water_phase,
-    ) {
-        commands.spawn((
-            Mesh3d(meshes.add(river)),
-            MeshMaterial3d(water_mats.add(crate::water::river_material())),
-            Transform::default(),
-            Ground,
-        ));
-    }
-
-    if let Some((ice, ice_tris)) = crate::water::build_ice_surface(
+    let river_mat = water_mats.add(crate::water::river_material());
+    let ice_mat = materials.add(StandardMaterial {
+        base_color: Color::srgb(0.68, 0.86, 0.94),
+        perceptual_roughness: 0.28,
+        metallic: 0.05,
+        ..default()
+    });
+    if let Some((_, ice_tris)) = crate::water::build_ice_surface(
         &level.terrain_tris,
         &level.face_water_r,
         &level.face_river_r,
         &level.water_phase,
     ) {
         commands.spawn((
-            Mesh3d(meshes.add(ice)),
-            MeshMaterial3d(materials.add(StandardMaterial {
-                base_color: Color::srgb(0.68, 0.86, 0.94),
-                perceptual_roughness: 0.28,
-                metallic: 0.05,
-                ..default()
-            })),
             RigidBody::Static,
             build_collider(&ice_tris),
             CollisionMargin(TERRAIN_MARGIN),
@@ -892,6 +364,35 @@ fn setup_map(
             Ground,
         ));
     }
+
+    // Bin all chunked world data; chunks::update_chunk_lods spawns the visuals
+    // (LOD 1 everywhere within the first frames, refined as the player moves).
+    let border_mat = |color: Color, materials: &mut Assets<StandardMaterial>| {
+        materials.add(StandardMaterial {
+            base_color: color,
+            unlit: true,
+            ..default()
+        })
+    };
+    let border_mats = [
+        border_mat(Color::srgb(1.0, 0.2, 0.2), &mut materials), // LOD 1: red
+        border_mat(Color::srgb(1.0, 0.9, 0.2), &mut materials), // LOD 2: yellow
+        border_mat(Color::srgb(0.2, 1.0, 0.3), &mut materials), // LOD 3: green
+    ];
+    commands.insert_resource(crate::chunks::ChunkManager::new(
+        level.terrain_tris.clone(),
+        level.terrain_colors.clone(),
+        level.face_water_r.clone(),
+        level.face_river_r.clone(),
+        level.water_phase.clone(),
+        level.flora.clone(),
+        level.structures.clone(),
+        terrain_mat,
+        water_mat,
+        river_mat,
+        ice_mat,
+        border_mats,
+    ));
 
     // Sun
     commands.spawn((
@@ -1087,7 +588,7 @@ fn build_road_ribbons(
     (triangles, colors)
 }
 
-fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
+pub fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
     let mut positions = Vec::with_capacity(tris.len() * 3);
     let mut normals_out = Vec::with_capacity(tris.len() * 3);
     let mut colors_out = Vec::with_capacity(tris.len() * 3);

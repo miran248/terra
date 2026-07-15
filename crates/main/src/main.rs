@@ -1,4 +1,5 @@
 mod asset_catalog;
+mod chunks;
 mod combat;
 mod constants;
 mod loot;

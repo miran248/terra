@@ -107,10 +107,11 @@ pub fn river_material() -> WaterMaterial {
     m
 }
 
-/// Levels of 4-way triangle subdivision applied to sea/lake faces so the
-/// vertex-shader swell has geometry to displace. Base icosphere edges are
-/// ~131 m; 4 levels → ~8 m spacing, ~5 vertices per 40 m swell wave.
-const WATER_SUBDIV: u32 = 4;
+/// Max levels of 4-way triangle subdivision applied to sea/lake faces so the
+/// vertex-shader swell has geometry to displace. Render faces are ~16 m on
+/// edge (subdiv-7 icosphere); 1 level → ~8 m spacing, ~5 vertices per 40 m
+/// swell wave. Distant chunks pass 0 (`chunks::water_subdiv`).
+pub const WATER_SUBDIV: u32 = 1;
 
 /// Recursively split a spherical-cap triangle, keeping every new vertex at
 /// radius `r` so the rest surface stays a flat waterline.
@@ -154,6 +155,7 @@ pub fn build_water_surface(
     tris: &[[[f32; 3]; 3]],
     water_r: &[f32],
     water_phase: &[Option<WaterPhase>],
+    subdiv: u32,
 ) -> Option<Mesh> {
     let mut positions = Vec::new();
     let mut normals = Vec::new();
@@ -171,7 +173,7 @@ pub fn build_water_surface(
         subdivide_water_tri(
             corners,
             r,
-            WATER_SUBDIV,
+            subdiv,
             &mut positions,
             &mut normals,
             &mut uvs,
@@ -369,7 +371,7 @@ mod tests {
         // body, so every face shares a single waterline radius.
         let water_r = vec![100.0f32; tris.len()];
         let phase = vec![Some(WaterPhase::Liquid); tris.len()];
-        let mesh = build_water_surface(&tris, &water_r, &phase).expect("a lake mesh");
+        let mesh = build_water_surface(&tris, &water_r, &phase, WATER_SUBDIV).expect("a lake mesh");
         let Some(VertexAttributeValues::Float32x3(pos)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
             panic!("no positions");
@@ -479,7 +481,7 @@ mod tests {
         let water_r = vec![100.0; 2];
         let river_r = vec![[101.0, 0.0, 102.0], [0.0; 3]];
         let phase = vec![Some(WaterPhase::Frozen), Some(WaterPhase::Liquid)];
-        let liquid = build_water_surface(&tris, &water_r, &phase).unwrap();
+        let liquid = build_water_surface(&tris, &water_r, &phase, WATER_SUBDIV).unwrap();
         let Some(VertexAttributeValues::Float32x3(liquid_positions)) =
             liquid.attribute(Mesh::ATTRIBUTE_POSITION)
         else {
