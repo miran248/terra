@@ -193,6 +193,26 @@ fn add_pyramid(mesh: &mut MeshData, base_min: [f32; 2], base_max: [f32; 2], base
     add_triangle(mesh, [x0, base_y, z0], [x0, base_y, z1], top, color);
 }
 
+fn add_grass_blade(mesh: &mut MeshData, origin: [f32; 3], yaw: f32, height: f32, width: f32, color: [f32; 4]) {
+    let c = yaw.cos();
+    let s = yaw.sin();
+    
+    // Bottom corners
+    let b0 = [origin[0] - c * width * 0.5, origin[1], origin[2] - s * width * 0.5];
+    let b1 = [origin[0] + c * width * 0.5, origin[1], origin[2] + s * width * 0.5];
+    
+    // Top tip (bent slightly outwards along the normal of the yaw)
+    let bend_dist = height * 0.22;
+    let tip = [
+        origin[0] - s * bend_dist,
+        origin[1] + height,
+        origin[2] + c * bend_dist,
+    ];
+    
+    add_triangle(mesh, b0, b1, tip, color);
+    add_triangle(mesh, b1, b0, tip, color);
+}
+
 fn wedge_mesh() -> MeshData {
     let positions = vec![
         -0.5, 0.0, 0.5,
@@ -250,11 +270,16 @@ fn generate_mesh(name: &str) -> MeshData {
             add_box(&mut mesh, [-0.7, 0.0, -0.7], [0.7, 1.0, 0.7], color);
         }
         "flora.grass" => {
-            let color = [0.25, 0.65, 0.25, 1.0];
-            // Grass clump made of three staggered small vertical boxes
-            add_box(&mut mesh, [-0.15, 0.0, -0.05], [-0.05, 0.35, 0.05], color);
-            add_box(&mut mesh, [0.02, 0.0, -0.12], [0.12, 0.4, -0.02], color);
-            add_box(&mut mesh, [-0.05, 0.0, 0.08], [0.05, 0.3, 0.18], color);
+            let color = [0.22, 0.60, 0.22, 1.0];
+            let dark_color = [0.15, 0.48, 0.15, 1.0];
+            
+            // Staggered, pointed, double-sided organic grass blades
+            add_grass_blade(&mut mesh, [-0.05, 0.0, -0.05], 0.0, 0.42, 0.05, color);
+            add_grass_blade(&mut mesh, [0.05, 0.0, 0.05], 1.1, 0.38, 0.045, color);
+            add_grass_blade(&mut mesh, [-0.08, 0.0, 0.08], 2.2, 0.35, 0.04, dark_color);
+            add_grass_blade(&mut mesh, [0.08, 0.0, -0.08], 3.5, 0.45, 0.05, color);
+            add_grass_blade(&mut mesh, [0.0, 0.0, 0.12], 4.8, 0.30, 0.035, dark_color);
+            add_grass_blade(&mut mesh, [-0.12, 0.0, -0.02], 5.8, 0.40, 0.04, color);
         }
         "flora.log" => {
             let color = [0.4, 0.25, 0.1, 1.0];

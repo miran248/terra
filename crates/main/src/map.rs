@@ -503,6 +503,7 @@ fn setup_map(
             CullRange(flora_cull(f.kind)),
             Transform::from_translation(pos).with_rotation(rotation),
             Visibility::default(),
+            bevy::light::NotShadowCaster,
         ));
         match flora_collider(f.kind) {
             ColliderSpec::None => {}

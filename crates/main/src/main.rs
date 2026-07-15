@@ -8,6 +8,7 @@ mod physics;
 mod prestige;
 mod turret;
 mod ui;
+mod foliage;
 mod water;
 mod wave;
 mod weather;
@@ -75,6 +76,7 @@ fn main() {
             physics::PhysicsPlugin,
             weather::WeatherPlugin,
             water::WaterPlugin,
+            foliage::FoliagePlugin,
         ))
         .add_systems(Startup, setup_camera)
         .run();

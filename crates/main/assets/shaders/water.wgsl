@@ -64,7 +64,28 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     let rgb = mix(water.shallow.rgb, water.deep.rgb, fade);
     let alpha = mix(0.45, 0.96, fade);
-    pbr_input.material.base_color = vec4<f32>(rgb, alpha);
+    
+    // Shoreline foam effect
+    var foam = 0.0;
+#ifdef DEPTH_PREPASS
+    let foam_width = 0.55;
+    if (thickness < foam_width) {
+        let edge_fade = 1.0 - (thickness / foam_width);
+        // Scrolling ripples towards the shoreline using wave frequencies
+        let wave_pulse = sin(globals.time * 2.8 - thickness * 18.0) * 0.5 + 0.5;
+        // Make the foam sparkly and noisy with high-frequency world position variations
+        let sparkles = fract(sin(dot(in.world_position.xz, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 0.15;
+        foam = edge_fade * (0.55 + 0.3 * wave_pulse + sparkles);
+    }
+#endif
+
+    var final_color = vec4<f32>(rgb, alpha);
+    if (foam > 0.02) {
+        let foam_color = vec3<f32>(0.95, 0.97, 1.0);
+        final_color = vec4<f32>(mix(final_color.rgb, foam_color, foam), max(final_color.a, foam * 0.9));
+    }
+
+    pbr_input.material.base_color = final_color;
     pbr_input.material.base_color =
         alpha_discard(pbr_input.material, pbr_input.material.base_color);
 

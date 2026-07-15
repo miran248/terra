@@ -146,7 +146,13 @@ pub(in crate::worldgen) fn place_flora(
         let wet = (1.0 + m).clamp(0.3, 1.8);
         let dry = (1.0 - m).clamp(0.5, 1.6);
         for &(base, scale, kind) in &mix {
-            let multiplier = if matches!(kind, FloraKind::Rock) { 1.0 } else { 10.0 };
+            let multiplier = if matches!(kind, FloraKind::Grass) {
+                300.0
+            } else if matches!(kind, FloraKind::Rock) {
+                1.0
+            } else {
+                3.0
+            };
             let density = base
                 * match scale {
                     FloraScale::Wet => wet,
