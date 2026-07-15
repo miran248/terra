@@ -19,6 +19,9 @@ pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 pub struct WaterParams {
     pub shallow: LinearRgba,
     pub deep: LinearRgba,
+    /// Weather wind (world units/s); drives ripple drift and chop. Pushed
+    /// per-frame from the `Weather` resource by `update_water_wind`.
+    pub wind: Vec3,
     /// View distance (world units) at which water becomes fully deep/opaque.
     pub max_visibility: f32,
     pub wave_amp: f32,
@@ -60,9 +63,12 @@ pub fn water_material() -> WaterMaterial {
             params: WaterParams {
                 shallow: LinearRgba::rgb(0.10, 0.42, 0.48),
                 deep: LinearRgba::rgb(0.01, 0.06, 0.18),
+                wind: Vec3::ZERO,
                 max_visibility: 14.0,
-                wave_amp: 0.05,
-                wave_scale: 0.35,
+                wave_amp: 0.06,
+                // ~11 m ripple wavelength; at 0.35 waves were ~18 m and read as
+                // a static sheen from the 2 m player's eye height.
+                wave_scale: 0.55,
                 wave_speed: 0.7,
                 flow: 0.0,
             },
@@ -76,8 +82,9 @@ pub fn river_material() -> WaterMaterial {
     m.extension.params.shallow = LinearRgba::rgb(0.12, 0.4, 0.5);
     m.extension.params.deep = LinearRgba::rgb(0.05, 0.2, 0.32);
     m.extension.params.max_visibility = 5.0;
-    m.extension.params.wave_amp = 0.08;
-    m.extension.params.wave_scale = 0.8;
+    m.extension.params.wave_amp = 0.09;
+    // Rivers are a few metres wide; tighter ripples than the open sea.
+    m.extension.params.wave_scale = 1.1;
     m.extension.params.flow = 6.0;
     m
 }
@@ -227,7 +234,20 @@ pub struct WaterPlugin;
 
 impl Plugin for WaterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<WaterMaterial>::default());
+        app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
+            .add_systems(Update, update_water_wind);
+    }
+}
+
+/// Push the weather wind into all water uniforms (same pattern as
+/// `foliage::update_foliage_wind`); the shader scales chop and drifts ripples
+/// downwind from it.
+fn update_water_wind(
+    weather: Res<crate::weather::Weather>,
+    mut materials: ResMut<Assets<WaterMaterial>>,
+) {
+    for (_, m) in materials.iter_mut() {
+        m.extension.params.wind = weather.wind;
     }
 }
 

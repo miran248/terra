@@ -27,6 +27,13 @@ impl MaterialExtension for FoliageExt {
     fn vertex_shader() -> ShaderRef {
         "shaders/foliage.wgsl".into()
     }
+
+    // TAA (main camera) forces depth + motion-vector prepasses. The prepass
+    // must sway identically to the main pass, otherwise main-pass fragments
+    // fail the depth test against un-swayed prepass depth and flicker black.
+    fn prepass_vertex_shader() -> ShaderRef {
+        "shaders/foliage_prepass.wgsl".into()
+    }
 }
 
 #[derive(Resource, Default)]
@@ -44,8 +51,10 @@ impl Plugin for FoliagePlugin {
     }
 }
 
-/// Fallible custom EntityCommand to safely swap materials at flush time.
-/// Guarantees 0 panics if the entity gets despawned before the queue flushes!
+/// Swap the standard material for the foliage-extended one at flush time.
+/// Queued with `queue_silenced`: the target may legitimately despawn between
+/// queue and flush (level reload, catalog re-instantiation), which must not
+/// panic.
 struct SwapFoliageMaterial {
     material: Handle<FoliageMaterial>,
 }
@@ -74,7 +83,7 @@ fn apply_foliage_materials(
     for (entity, mat_handle, parent) in &mesh_q {
         // If already cached, apply immediately and skip any traversal!
         if let Some(cached_handle) = cache.map.get(&mat_handle.0) {
-            commands.entity(entity).queue(SwapFoliageMaterial { material: cached_handle.clone() });
+            commands.entity(entity).queue_silenced(SwapFoliageMaterial { material: cached_handle.clone() });
             continue;
         }
 
@@ -106,28 +115,28 @@ fn apply_foliage_materials(
             _ => (0.0, 0.0, 0.0, 0.0),
         };
 
-        if speed > 0.0 {
-            if let Some(original_std) = standard_mats.get(&mat_handle.0) {
-                let foliage_mat_handle = foliage_mats.add(ExtendedMaterial {
-                    base: original_std.clone(),
-                    extension: FoliageExt {
-                        params: FoliageParams {
-                            wind: Vec3::ZERO,
-                            sway_speed: speed,
-                            sway_amplitude: amplitude,
-                            player_pos: Vec3::ZERO,
-                            trample_radius,
-                            trample_strength,
-                        },
+        if speed > 0.0
+            && let Some(original_std) = standard_mats.get(&mat_handle.0)
+        {
+            let foliage_mat_handle = foliage_mats.add(ExtendedMaterial {
+                base: original_std.clone(),
+                extension: FoliageExt {
+                    params: FoliageParams {
+                        wind: Vec3::ZERO,
+                        sway_speed: speed,
+                        sway_amplitude: amplitude,
+                        player_pos: Vec3::ZERO,
+                        trample_radius,
+                        trample_strength,
                     },
-                });
+                },
+            });
 
-                // Cache the mapping so that none of the other 120,000 instances
-                // ever have to run this traversal or asset allocation again!
-                cache.map.insert(mat_handle.0.clone(), foliage_mat_handle.clone());
+            // Cache the mapping so that none of the other 120,000 instances
+            // ever have to run this traversal or asset allocation again!
+            cache.map.insert(mat_handle.0.clone(), foliage_mat_handle.clone());
 
-                commands.entity(entity).queue(SwapFoliageMaterial { material: foliage_mat_handle });
-            }
+            commands.entity(entity).queue_silenced(SwapFoliageMaterial { material: foliage_mat_handle });
         }
     }
 }
