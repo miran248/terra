@@ -524,13 +524,17 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
         StructureKind::Wall => Vec3::new(6.0, 3.0, 1.2),
         StructureKind::Well => Vec3::new(2.0, 1.2, 2.0),
         StructureKind::Campfire => Vec3::splat(1.6),
+        StructureKind::Tent => Vec3::new(3.0, 2.0, 3.0),
+        StructureKind::Crate => Vec3::new(1.5, 1.5, 1.5),
+        StructureKind::Fence => Vec3::new(6.0, 1.5, 0.6),
+        StructureKind::Barricade => Vec3::new(4.0, 1.0, 0.5),
     };
     let mut root = commands.spawn((
         Transform::from_translation(pos).with_rotation(rotation),
         Visibility::default(),
         Ground,
     ));
-    if !matches!(s.kind, StructureKind::Farm | StructureKind::Campfire) {
+    if !matches!(s.kind, StructureKind::Farm | StructureKind::Campfire | StructureKind::Tent) {
         root.insert((
             RigidBody::Static,
             Collider::cuboid(scale.x * 0.5, scale.y * 0.5, scale.z * 0.5),
@@ -587,7 +591,9 @@ fn spawn_flora(commands: &mut Commands, catalog: &AssetCatalog, f: &FloraData) -
     }
 
     root.with_child((
-        WorldAssetRoot(catalog.scene(f.kind.asset_name())),
+        WorldAssetRoot(catalog.scene(
+            &shared::art::flora_variant_name(f.kind, f.variant as u32),
+        )),
         Transform::from_scale(Vec3::splat(scale)),
     ));
     root.id()

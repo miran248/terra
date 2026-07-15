@@ -16,7 +16,14 @@ fn flora_stays_off_water_and_features() {
             crate::level::FloraKind::Seaweed
                 | crate::level::FloraKind::Lilypad
                 | crate::level::FloraKind::Coral
+                | crate::level::FloraKind::Anemone
+                | crate::level::FloraKind::Starfish
+                | crate::level::FloraKind::Kelp
         );
+        // Shell appears on both beach and ocean — skip ambiguous domain check
+        if matches!(f.kind, crate::level::FloraKind::Shell) {
+            continue;
+        }
         assert_eq!(
             is_land, !is_aquatic,
             "flora kind {:?} placed on land={} face {face_index}",

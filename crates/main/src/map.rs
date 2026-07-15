@@ -99,6 +99,9 @@ pub fn flora_cull(kind: FloraKind) -> f32 {
         FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
         FloraKind::Log => 420.0,
         FloraKind::Tree | FloraKind::DeadTree => 880.0,
+        FloraKind::Anemone | FloraKind::Starfish | FloraKind::Shell | FloraKind::Fern | FloraKind::Cattail | FloraKind::Vine => 150.0,
+        FloraKind::Kelp | FloraKind::Tumbleweed | FloraKind::Skull => 300.0,
+        FloraKind::Snowdrift | FloraKind::Stump => 420.0,
     }
 }
 

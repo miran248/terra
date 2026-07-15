@@ -32,6 +32,8 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.06, Wet, FloraKind::Mushroom),
             (0.04, Wet, FloraKind::Berry),
             (0.01, Flat, FloraKind::DeadTree),
+            (0.02, Flat, FloraKind::Stump),
+            (0.04, Wet, FloraKind::Fern),
         ],
         Terrain::Jungle => &[
             (0.55, Wet, FloraKind::Tree),
@@ -43,6 +45,7 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.09, Wet, FloraKind::Mushroom),
             (0.05, Wet, FloraKind::Berry),
             (0.02, Wet, FloraKind::Reed),
+            (0.04, WetSq, FloraKind::Vine),
         ],
         Terrain::Swamp => &[
             (0.05, Wet, FloraKind::Tree),
@@ -54,6 +57,8 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.05, Wet, FloraKind::Mushroom),
             (0.06, Flat, FloraKind::DeadTree),
             (0.18, Wet, FloraKind::Reed),
+            (0.06, Wet, FloraKind::Cattail),
+            (0.03, WetSq, FloraKind::Vine),
         ],
         Terrain::Plains => &[
             (0.01, Wet, FloraKind::Tree),
@@ -63,6 +68,7 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.088, Wet, FloraKind::Grass),
             (0.004, Flat, FloraKind::Log),
             (0.02, Wet, FloraKind::Berry),
+            (0.015, Flat, FloraKind::Fern),
         ],
         Terrain::Savanna => &[
             (0.02, Wet, FloraKind::Tree),
@@ -74,6 +80,7 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.015, Dry, FloraKind::Cactus),
             (0.01, Wet, FloraKind::Berry),
             (0.02, Flat, FloraKind::DeadTree),
+            (0.012, Flat, FloraKind::Tumbleweed),
         ],
         Terrain::Tundra => &[
             (0.003, Wet, FloraKind::Tree),
@@ -84,20 +91,28 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.01, Flat, FloraKind::Log),
             (0.008, Wet, FloraKind::Berry),
             (0.03, Flat, FloraKind::DeadTree),
+            (0.02, Flat, FloraKind::Snowdrift),
         ],
         Terrain::Desert => &[
             (0.012, Wet, FloraKind::Bush),
             (0.025, Dry, FloraKind::Rock),
             (0.06, Dry, FloraKind::Cactus),
             (0.02, Flat, FloraKind::DeadTree),
+            (0.008, Flat, FloraKind::Skull),
+            (0.04, Flat, FloraKind::Tumbleweed),
         ],
         Terrain::Lake | Terrain::River => &[
             (0.15, Wet, FloraKind::Lilypad),
             (0.08, Wet, FloraKind::Seaweed),
+            (0.04, Wet, FloraKind::Kelp),
         ],
         Terrain::Ocean => &[
             (0.05, Flat, FloraKind::Coral),
             (0.12, Wet, FloraKind::Seaweed),
+            (0.06, Wet, FloraKind::Kelp),
+            (0.04, Flat, FloraKind::Anemone),
+            (0.03, Flat, FloraKind::Starfish),
+            (0.015, Flat, FloraKind::Shell),
         ],
         Terrain::RiverBank | Terrain::LakeShore => &[
             (0.02, Wet, FloraKind::Tree),
@@ -107,12 +122,19 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.075, Wet, FloraKind::Grass),
             (0.01, Flat, FloraKind::Log),
             (0.12, Wet, FloraKind::Reed),
+            (0.04, Wet, FloraKind::Cattail),
         ],
         Terrain::Mountain => &[(0.005, Wet, FloraKind::Bush), (0.05, Dry, FloraKind::Rock)],
         Terrain::Cliff => &[(0.038, Dry, FloraKind::Rock)],
-        Terrain::Beach => &[(0.01, Dry, FloraKind::Rock)],
+        Terrain::Beach => &[
+            (0.01, Dry, FloraKind::Rock),
+            (0.02, Flat, FloraKind::Shell),
+        ],
         Terrain::Volcanic => &[(0.06, Dry, FloraKind::Rock)],
-        Terrain::Glacier => &[(0.01, Dry, FloraKind::Rock)],
+        Terrain::Glacier => &[
+            (0.01, Dry, FloraKind::Rock),
+            (0.04, Flat, FloraKind::Snowdrift),
+        ],
         _ => &[],
     };
     v.to_vec()
@@ -178,10 +200,14 @@ pub(in crate::worldgen) fn place_flora(
                     Vec3::from_array(t[2]),
                 );
                 let pos = a + (b - a) * u + (c - a) * v;
+                let hash = (pos.x.to_bits() as u64)
+                    .wrapping_mul(0x9e37_79b9)
+                    ^ (pos.z.to_bits() as u64).rotate_left(17);
                 out.push(FloraData {
                     pos: pos.to_array(),
                     face: face_index as u32,
                     kind,
+                    variant: crate::art::flora_variant_for(kind, tiles[face_index], hash),
                 });
             }
         }
@@ -266,17 +292,21 @@ pub(in crate::worldgen) fn place_structures(
         if tiles[face_index].is_water() || !buildable(face_index) {
             continue;
         }
-        // Town interior: a well or a campfire in a clearing.
+        // Town interior: a well, campfire, or tent in a clearing.
         if town(face_index) {
             let r = rng.f32();
             if r < 0.010 {
                 push(&mut rng, face_index, StructureKind::Well);
-            } else if r < 0.045 {
+            } else if r < 0.040 {
                 push(&mut rng, face_index, StructureKind::Campfire);
+            } else if r < 0.055 {
+                push(&mut rng, face_index, StructureKind::Tent);
+            } else if r < 0.060 {
+                push(&mut rng, face_index, StructureKind::Crate);
             }
             continue;
         }
-        // Town edge (non-town land beside a town): a wall segment or a farm.
+        // Town edge (non-town land beside a town): walls, docks, fences.
         let touches_town = grid
             .face_neighbors(FaceId::new(face_index))
             .map(FaceId::index)
@@ -290,8 +320,10 @@ pub(in crate::worldgen) fn place_structures(
                 .any(|neighbor| tiles[neighbor].is_water());
             if coastal && rng.f32() < 0.5 {
                 push(&mut rng, face_index, StructureKind::Dock);
-            } else if rng.f32() < 0.4 {
+            } else if rng.f32() < 0.3 {
                 push(&mut rng, face_index, StructureKind::Wall);
+            } else if rng.f32() < 0.43 {
+                push(&mut rng, face_index, StructureKind::Fence);
             }
             continue;
         }
@@ -315,6 +347,11 @@ pub(in crate::worldgen) fn place_structures(
             && rng.f32() < 0.03
         {
             push(&mut rng, face_index, StructureKind::Watchtower);
+            continue;
+        }
+        // Barricade: road face away from town (zombie apocalypse checkpoint).
+        if road(face_index) && town_dist[face_index] > 2 && rng.f32() < 0.008 {
+            push(&mut rng, face_index, StructureKind::Barricade);
             continue;
         }
         // Ruins: rare, deep in the wilderness (far from any town).

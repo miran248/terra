@@ -274,6 +274,17 @@ pub enum FloraKind {
     Seaweed,
     Lilypad,
     Coral,
+    Anemone,
+    Starfish,
+    Shell,
+    Kelp,
+    Cattail,
+    Vine,
+    Tumbleweed,
+    Skull,
+    Snowdrift,
+    Stump,
+    Fern,
 }
 
 // Structures: built props placed contextually (like towns and bridges).
@@ -286,6 +297,10 @@ pub enum StructureKind {
     Wall,
     Well,
     Campfire,
+    Tent,
+    Crate,
+    Fence,
+    Barricade,
 }
 impl StructureKind {
     pub const fn name(self) -> &'static str {
@@ -297,6 +312,10 @@ impl StructureKind {
             Self::Wall => "Wall",
             Self::Well => "Well",
             Self::Campfire => "Campfire",
+            Self::Tent => "Tent",
+            Self::Crate => "Crate",
+            Self::Fence => "Fence",
+            Self::Barricade => "Barricade",
         }
     }
 }
@@ -308,6 +327,7 @@ pub struct FloraData {
     /// The face it sits on (for gameplay queries).
     pub face: u32,
     pub kind: FloraKind,
+    pub variant: u8,
 }
 
 impl LevelData {

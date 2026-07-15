@@ -3,6 +3,7 @@
 use crate::{
     items::{Material, WeaponKind},
     level::{FloraKind, StructureKind},
+    terrain::Terrain,
 };
 
 pub const ENVIRONMENT_CATALOG: &str = "models/environment.glb";
@@ -11,7 +12,7 @@ pub const ITEMS_CATALOG: &str = "models/items.glb";
 pub const ACTORS_CATALOG: &str = "models/actors.glb";
 pub const ACTOR_ANIMATIONS: [&str; 3] = ["idle", "walk", "attack"];
 
-pub const FLORA_KINDS: [FloraKind; 14] = [
+pub const FLORA_KINDS: [FloraKind; 25] = [
     FloraKind::Tree,
     FloraKind::Bush,
     FloraKind::Flower,
@@ -26,8 +27,19 @@ pub const FLORA_KINDS: [FloraKind; 14] = [
     FloraKind::Seaweed,
     FloraKind::Lilypad,
     FloraKind::Coral,
+    FloraKind::Anemone,
+    FloraKind::Starfish,
+    FloraKind::Shell,
+    FloraKind::Kelp,
+    FloraKind::Cattail,
+    FloraKind::Vine,
+    FloraKind::Tumbleweed,
+    FloraKind::Skull,
+    FloraKind::Snowdrift,
+    FloraKind::Stump,
+    FloraKind::Fern,
 ];
-pub const STRUCTURE_KINDS: [StructureKind; 7] = [
+pub const STRUCTURE_KINDS: [StructureKind; 11] = [
     StructureKind::Ruin,
     StructureKind::Watchtower,
     StructureKind::Dock,
@@ -35,6 +47,10 @@ pub const STRUCTURE_KINDS: [StructureKind; 7] = [
     StructureKind::Wall,
     StructureKind::Well,
     StructureKind::Campfire,
+    StructureKind::Tent,
+    StructureKind::Crate,
+    StructureKind::Fence,
+    StructureKind::Barricade,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -65,6 +81,17 @@ impl AssetName for FloraKind {
             Self::Seaweed => "flora.seaweed",
             Self::Lilypad => "flora.lilypad",
             Self::Coral => "flora.coral",
+            Self::Anemone => "flora.anemone",
+            Self::Starfish => "flora.starfish",
+            Self::Shell => "flora.shell",
+            Self::Kelp => "flora.kelp",
+            Self::Cattail => "flora.cattail",
+            Self::Vine => "flora.vine",
+            Self::Tumbleweed => "flora.tumbleweed",
+            Self::Skull => "flora.skull",
+            Self::Snowdrift => "flora.snowdrift",
+            Self::Stump => "flora.stump",
+            Self::Fern => "flora.fern",
         }
     }
 }
@@ -79,6 +106,10 @@ impl AssetName for StructureKind {
             Self::Wall => "structure.wall",
             Self::Well => "structure.well",
             Self::Campfire => "structure.campfire",
+            Self::Tent => "structure.tent",
+            Self::Crate => "structure.crate",
+            Self::Fence => "structure.fence",
+            Self::Barricade => "structure.barricade",
         }
     }
 }
@@ -111,8 +142,52 @@ pub fn flora_collider(kind: FloraKind) -> ColliderSpec {
         FloraKind::Rock => ColliderSpec::Box {
             half_extents: [0.7, 0.5, 0.7],
         },
+        FloraKind::Snowdrift => ColliderSpec::Box {
+            half_extents: [0.5, 0.3, 0.5],
+        },
         _ => ColliderSpec::None,
     }
+}
+
+/// How many mesh variants a flora kind has (indexed 0..count).
+pub fn flora_variant_count(kind: FloraKind) -> u32 {
+    match kind {
+        FloraKind::Tree => 4,
+        FloraKind::Bush => 2,
+        FloraKind::Rock => 2,
+        FloraKind::Cactus => 2,
+        FloraKind::DeadTree => 2,
+        _ => 1,
+    }
+}
+
+/// Stable scene name for a specific flora kind + variant index.
+pub fn flora_variant_name(kind: FloraKind, variant: u32) -> String {
+    if flora_variant_count(kind) <= 1 {
+        kind.asset_name().to_owned()
+    } else {
+        format!("{}.{variant}", kind.asset_name())
+    }
+}
+
+/// Pick the flora variant index for a given terrain context, deterministically
+/// from position hash so nearby instances of the same kind on the same terrain
+/// vary.
+pub fn flora_variant_for(kind: FloraKind, terrain: Terrain, hash: u64) -> u8 {
+    let total = flora_variant_count(kind);
+    if total <= 1 {
+        return 0;
+    }
+    // biome key — groups terrains that should share shapes
+    let biome_key: u8 = match terrain {
+        Terrain::Desert | Terrain::Savanna => 0,
+        Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => 1,
+        Terrain::Jungle | Terrain::Swamp => 2,
+        Terrain::Tundra | Terrain::Snow | Terrain::Glacier => 3,
+        _ => 1,
+    };
+    let seed = (biome_key as u64).wrapping_mul(0x9e37_79b9) ^ hash;
+    (seed % total as u64) as u8
 }
 
 pub fn deterministic_variant(seed: u32, stable_index: u32, variants: u32) -> u32 {
@@ -142,5 +217,20 @@ mod tests {
             deterministic_variant(42, 7, 3)
         );
         assert!(deterministic_variant(42, 7, 3) < 3);
+    }
+    #[test]
+    fn flora_variants_valid() {
+        for kind in FLORA_KINDS {
+            let n = flora_variant_count(kind);
+            assert!(n >= 1);
+            for v in 0..n {
+                let name = flora_variant_name(kind, v);
+                if n <= 1 {
+                    assert_eq!(name, kind.asset_name());
+                } else {
+                    assert!(name.starts_with(kind.asset_name()));
+                }
+            }
+        }
     }
 }
