@@ -2,7 +2,7 @@
 
 ![Screenshot](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
 
-3D spherical-planet procedural world generator experiment. Bevy 0.19 + Avian3d physics.
+3D spherical-planet procedural world experiment. Bevy 0.19 + Avian3d physics.
 
 ## Crates
 
@@ -71,6 +71,12 @@ Per-face properties: liquid or frozen water phase, normal or frozen surface cond
 
 Both are placed contextually per biome and streamed at 3 LOD levels (960 m / 300 m distances).
 
+## Time & Weather
+
+Day/night cycle with a world sun orbiting the planet's Y axis so the lit hemisphere is day and the far side night. Toggleable sun-lock (`1`) keeps noon overhead permanently.
+
+Dynamic weather: randomized fronts ease a global wind vector and precipitation intensity (rain or snow, resolved per-location by local temperature). 1500-particle camera-anchored pool renders streaks (rain) or flakes (snow), wrapping around the camera. Wind drives water swell, flora sway, and precipitation drift.
+
 ## Controls
 
 | Key | Action |
@@ -81,5 +87,3 @@ Both are placed contextually per biome and streamed at 3 LOD levels (960 m / 300
 | Space | Jump |
 | 1 | Toggle day/night cycle |
 | M | Toggle world map |
-
-
