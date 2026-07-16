@@ -159,9 +159,9 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
             // so its in-scattering shimmers/flickers on near geometry. Raise both
             // its resolution (esp. depth slices) and the per-froxel sample count
             // to smooth it out.
-            aerial_view_lut_size: UVec3::new(48, 48, 64),
-            aerial_view_lut_samples: 48,
-            sky_view_lut_samples: 30,
+            aerial_view_lut_size: UVec3::new(24, 24, 32),
+            aerial_view_lut_samples: 24,
+            sky_view_lut_samples: 16,
             ..default()
         },
         // Distance fog coloured to the horizon sky, kept moderate so the far

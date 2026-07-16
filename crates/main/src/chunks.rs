@@ -39,7 +39,7 @@ pub const CHUNK_COUNT: usize = 320;
 
 /// Debug: outline every chunk in its LOD color (red = 1, yellow = 2,
 /// green = 3) so LOD rings are visually inspectable. Flip off to ship.
-const DEBUG_CHUNK_BORDERS: bool = true;
+const DEBUG_CHUNK_BORDERS: bool = false;
 
 /// Great-circle distances (m, camera → chunk edge) for LOD entry. Zombie ring
 /// (120 m) sits well inside LOD 3, so actors always stand on loaded chunks.
@@ -316,6 +316,7 @@ fn set_chunk_lod(
                         Mesh3d(meshes.add(river)),
                         MeshMaterial3d(mgr.river_mat.clone()),
                         Transform::default(),
+                        bevy::light::NotShadowCaster,
                         Ground,
                     ))
                     .id(),
@@ -334,6 +335,7 @@ fn set_chunk_lod(
                         Mesh3d(meshes.add(ice)),
                         MeshMaterial3d(mgr.ice_mat.clone()),
                         Transform::default(),
+                        bevy::light::NotShadowCaster,
                         Ground,
                     ))
                     .id(),
@@ -376,6 +378,7 @@ fn set_chunk_lod(
                         Mesh3d(meshes.add(water)),
                         MeshMaterial3d(mgr.water_mat.clone()),
                         Transform::default(),
+                        bevy::light::NotShadowCaster,
                         Ground,
                     ))
                     .id(),
