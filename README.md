@@ -1,8 +1,8 @@
 # terra
 
-![Screenshot](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
-
 3D spherical-planet procedural world experiment. Bevy 0.19 + Avian3d physics.
+
+![Screenshot](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
 
 ## Crates
 
@@ -70,6 +70,14 @@ Per-face properties: liquid or frozen water phase, normal or frozen surface cond
 17 structure kinds (ruins, watchtowers, docks, farms, walls, wells, campfires, tents, crates, fences, barricades, lamp posts, signposts, guardrails, railings, suspension cables, houses)
 
 Both are placed contextually per biome and streamed at 3 LOD levels (960 m / 300 m distances).
+
+## Rendering
+
+Custom WGSL shaders: water with geometric swell, normal-perturbation chop, and analytic depth gradient; foliage with wind-driven vertex sway. TAA with depth + motion-vector prepasses. HDR tonemapping, bloom, and Rayleigh atmosphere.
+
+## Map
+
+2D minimap (heading-up, compass labels) and 3D full-screen globe map (north-up, pan/drag, ray-cast terrain). Named region labels from baked centroids. Toggled with `M`.
 
 ## Time & Weather
 
