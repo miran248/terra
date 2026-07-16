@@ -1265,7 +1265,7 @@ fn catalog(names: &[&str], actors: bool) -> Vec<u8> {
         vec![]
     };
     let root_value = json!({
-        "asset":{"version":"2.0","generator":"rs-zombies gen_assets"},
+        "asset":{"version":"2.0","generator":"terra gen_assets"},
         "scene":0,"scenes":scenes,"nodes":nodes,"meshes":meshes,"materials":materials,
         "buffers":[{"byteLength":bin.len()}],"bufferViews":views,"accessors":accessors,
         "animations":animations

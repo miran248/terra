@@ -1,6 +1,6 @@
 # Purpose
 
-Shared library crate for rs-zombies. Common types, utilities, and shared Bevy components/resources live here. Every crate in the workspace may depend on `shared`.
+Shared library crate for terra. Common types, utilities, and shared Bevy components/resources live here. Every crate in the workspace may depend on `shared`.
 
 # Ownership
 

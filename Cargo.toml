@@ -4,6 +4,9 @@ members = [
   "crates/*",
 ]
 
+[workspace.package]
+name = "terra"
+
 # Own crates get light optimization (fast compile, usable speed); all
 # dependencies (bevy, avian/parry physics, noise) compile fully optimized —
 # they rarely change, and debug-mode physics against the 82k-tri terrain

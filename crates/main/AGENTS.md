@@ -1,6 +1,6 @@
 # Purpose
 
-Binary crate for the rs-zombies Bevy application. Entry point, app bootstrap, and game systems live here.
+Binary crate for the terra Bevy application. Entry point, app bootstrap, and game systems live here.
 
 # Ownership
 
