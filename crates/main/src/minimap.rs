@@ -1,7 +1,7 @@
-use crate::loot::{LootMaterial, LootWeapon};
+// use crate::loot::{LootMaterial, LootWeapon};
 use crate::map::{LevelRegions, Player, Settlement};
 use crate::ui::UiFont;
-use crate::zombie::Zombie;
+// use crate::zombie::Zombie;
 use avian3d::prelude::{LinearVelocity, Position};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
@@ -505,9 +505,9 @@ fn draw_overlay(
     stale: Query<Entity, Or<(With<CompassLabel>, With<MinimapDot>)>>,
     map_resources: (Option<Res<TerrainGen>>, Option<Res<LevelRegions>>),
     player_q: Query<(&Transform, &Player)>,
-    zombies: Query<(&Transform, &ViewVisibility), With<Zombie>>,
-    materials: Query<(&Transform, &ViewVisibility), With<LootMaterial>>,
-    weapons: Query<(&Transform, &ViewVisibility), With<LootWeapon>>,
+    // zombies: Query<(&Transform, &ViewVisibility), With<Zombie>>,
+    // materials: Query<(&Transform, &ViewVisibility), With<LootMaterial>>,
+    // weapons: Query<(&Transform, &ViewVisibility), With<LootWeapon>>,
     settlements: Query<(&Transform, &Settlement)>,
     font: Res<UiFont>,
     time: Res<Time>,
@@ -626,21 +626,21 @@ fn draw_overlay(
                     ChildOf(map_entity),
                 ));
             };
-            for (tf, visible) in &materials {
-                if visible.get() {
-                    dot(tf.translation, theme::TEXT_WEAK, DOT * marker_scale);
-                }
-            }
-            for (tf, visible) in &weapons {
-                if visible.get() {
-                    dot(tf.translation, theme::SUCCESS, DOT * marker_scale);
-                }
-            }
-            for (tf, visible) in &zombies {
-                if visible.get() {
-                    dot(tf.translation, theme::ERROR, DOT * marker_scale);
-                }
-            }
+            // for (tf, visible) in &materials {
+            //     if visible.get() {
+            //         dot(tf.translation, theme::TEXT_WEAK, DOT * marker_scale);
+            //     }
+            // }
+            // for (tf, visible) in &weapons {
+            //     if visible.get() {
+            //         dot(tf.translation, theme::SUCCESS, DOT * marker_scale);
+            //     }
+            // }
+            // for (tf, visible) in &zombies {
+            //     if visible.get() {
+            //         dot(tf.translation, theme::ERROR, DOT * marker_scale);
+            //     }
+            // }
             dot(player_pos, theme::ACCENT, DOT * 2.0 * marker_scale);
         }
 
@@ -669,15 +669,15 @@ fn draw_overlay(
                 Text::new(settlement.name.clone()),
                 TextFont {
                     font: font.0.clone().into(),
-                    font_size: FontSize::Px(9.0),
+                    font_size: FontSize::Px(9.0 * marker_scale),
                     ..default()
                 },
                 TextColor(theme::INK),
                 ZIndex(1),
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(pt.x + 5.0),
-                    top: Val::Px(pt.y - 5.0),
+                    left: Val::Px(pt.x + 5.0 * marker_scale),
+                    top: Val::Px(pt.y - 5.0 * marker_scale),
                     ..default()
                 },
                 MinimapDot,

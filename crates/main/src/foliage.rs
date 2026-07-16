@@ -1,8 +1,8 @@
+use crate::weather::Weather;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::shader::ShaderRef;
-use crate::weather::Weather;
 
 pub type FoliageMaterial = ExtendedMaterial<StandardMaterial, FoliageExt>;
 
@@ -76,14 +76,19 @@ fn apply_foliage_materials(
     mut cache: ResMut<FoliageCache>,
     mut foliage_mats: ResMut<Assets<FoliageMaterial>>,
     standard_mats: Res<Assets<StandardMaterial>>,
-    mesh_q: Query<(Entity, &MeshMaterial3d<StandardMaterial>, &ChildOf), Added<MeshMaterial3d<StandardMaterial>>>,
+    mesh_q: Query<
+        (Entity, &MeshMaterial3d<StandardMaterial>, &ChildOf),
+        Added<MeshMaterial3d<StandardMaterial>>,
+    >,
     name_q: Query<&Name>,
     parent_q: Query<&ChildOf>,
 ) {
     for (entity, mat_handle, parent) in &mesh_q {
         // If already cached, apply immediately and skip any traversal!
         if let Some(cached_handle) = cache.map.get(&mat_handle.0) {
-            commands.entity(entity).queue_silenced(SwapFoliageMaterial { material: cached_handle.clone() });
+            commands.entity(entity).queue_silenced(SwapFoliageMaterial {
+                material: cached_handle.clone(),
+            });
             continue;
         }
 
@@ -109,14 +114,19 @@ fn apply_foliage_materials(
 
         // Strip variant suffix (e.g. "flora.tree.2" → "flora.tree") for matching
         let stripped = if let Some((prefix, suffix)) = name.rsplit_once('.') {
-            if suffix.chars().all(|c| c.is_ascii_digit()) { prefix } else { name }
+            if suffix.chars().all(|c| c.is_ascii_digit()) {
+                prefix
+            } else {
+                name
+            }
         } else {
             name
         };
 
         // Determine wind parameters based on foliage type
         let (speed, amplitude, trample_radius, trample_strength) = match stripped {
-            "flora.grass" | "flora.reed" | "flora.seaweed" | "flora.lilypad" | "flora.flower" | "flora.mushroom" => (1.8, 0.12, 1.2, 0.8),
+            "flora.grass" | "flora.reed" | "flora.seaweed" | "flora.lilypad" | "flora.flower"
+            | "flora.mushroom" => (1.8, 0.12, 1.2, 0.8),
             "flora.tree" | "flora.dead_tree" => (0.8, 0.04, 2.0, 0.2), // trees bend slightly when stepped on
             "flora.bush" | "flora.berry" => (1.2, 0.07, 1.5, 0.5),
             _ => (0.0, 0.0, 0.0, 0.0),
@@ -141,9 +151,13 @@ fn apply_foliage_materials(
 
             // Cache the mapping so that none of the other 120,000 instances
             // ever have to run this traversal or asset allocation again!
-            cache.map.insert(mat_handle.0.clone(), foliage_mat_handle.clone());
+            cache
+                .map
+                .insert(mat_handle.0.clone(), foliage_mat_handle.clone());
 
-            commands.entity(entity).queue_silenced(SwapFoliageMaterial { material: foliage_mat_handle });
+            commands.entity(entity).queue_silenced(SwapFoliageMaterial {
+                material: foliage_mat_handle,
+            });
         }
     }
 }
@@ -155,8 +169,12 @@ fn update_foliage_wind(
     mut materials: ResMut<Assets<FoliageMaterial>>,
 ) {
     let wind = weather.wind;
-    let player_pos = player_q.iter().next().map(|tf| tf.translation).unwrap_or(Vec3::ZERO);
-    
+    let player_pos = player_q
+        .iter()
+        .next()
+        .map(|tf| tf.translation)
+        .unwrap_or(Vec3::ZERO);
+
     for (_, m) in materials.iter_mut() {
         m.extension.params.wind = wind;
         m.extension.params.player_pos = player_pos;

@@ -294,10 +294,7 @@ fn set_chunk_lod(
 
     // Static geometry: first build only.
     if cur == 0 {
-        let terrain = crate::map::build_visual_mesh(
-            tris,
-            &mgr.data.terrain_colors[range.clone()],
-        );
+        let terrain = crate::map::build_visual_mesh(tris, &mgr.data.terrain_colors[range.clone()]);
         let mut static_ents = vec![
             commands
                 .spawn((
@@ -540,7 +537,10 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
         Visibility::default(),
         Ground,
     ));
-    if !matches!(s.kind, StructureKind::Farm | StructureKind::Campfire | StructureKind::Tent) {
+    if !matches!(
+        s.kind,
+        StructureKind::Farm | StructureKind::Campfire | StructureKind::Tent
+    ) {
         root.insert((
             RigidBody::Static,
             Collider::cuboid(scale.x * 0.5, scale.y * 0.5, scale.z * 0.5),
@@ -597,9 +597,7 @@ fn spawn_flora(commands: &mut Commands, catalog: &AssetCatalog, f: &FloraData) -
     }
 
     root.with_child((
-        WorldAssetRoot(catalog.scene(
-            &shared::art::flora_variant_name(f.kind, f.variant as u32),
-        )),
+        WorldAssetRoot(catalog.scene(&shared::art::flora_variant_name(f.kind, f.variant as u32))),
         Transform::from_scale(Vec3::splat(scale)),
     ));
     root.id()
@@ -655,9 +653,14 @@ mod tests {
         let mut sum = 0;
         for c in 0..CHUNK_COUNT {
             let r = c * faces_per_chunk..(c + 1) * faces_per_chunk;
-            sum += crate::water::build_water_surface(&tris[r.clone()], &water_r[r.clone()], &phase[r], 2)
-                .map(verts)
-                .unwrap_or(0);
+            sum += crate::water::build_water_surface(
+                &tris[r.clone()],
+                &water_r[r.clone()],
+                &phase[r],
+                2,
+            )
+            .map(verts)
+            .unwrap_or(0);
         }
         assert_eq!(sum, whole, "chunk water slices must tile the planet build");
     }

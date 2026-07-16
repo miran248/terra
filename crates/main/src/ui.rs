@@ -1,9 +1,9 @@
-use crate::combat::ScrapCounter;
-use crate::loot::LootState;
+// use crate::combat::ScrapCounter;
+// use crate::loot::LootState;
 use crate::map::{
-    LevelFaceCornerTypes, LevelFaceTypes, LevelRegions, LevelSlope, LevelTags, Player, PlayerHp,
+    LevelFaceCornerTypes, LevelFaceTypes, LevelRegions, LevelSlope, LevelTags, Player,
 };
-use crate::wave::WaveManager;
+// use crate::wave::WaveManager;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use shared::items::Recipe;
@@ -47,7 +47,7 @@ struct TerrainHudTimer(Timer);
 
 impl Default for TerrainHudTimer {
     fn default() -> Self {
-        Self(Timer::from_seconds(0.5, TimerMode::Repeating))
+        Self(Timer::from_seconds(0.05, TimerMode::Repeating))
     }
 }
 
@@ -68,13 +68,13 @@ impl Plugin for UiPlugin {
             .add_systems(
                 Update,
                 (
-                    update_stats,
+                    // update_stats,
                     update_terrain_hud,
-                    handle_upgrade_clicks,
-                    apply_upgrades,
+                    // handle_upgrade_clicks,
+                    // apply_upgrades,
                     scroll_upgrades,
-                    handle_craft_clicks,
-                    update_craft_status,
+                    // handle_craft_clicks,
+                    // update_craft_status,
                 )
                     .run_if(in_state(shared::state::AppState::Playing)),
             );
@@ -187,32 +187,33 @@ fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
         });
 }
 
-fn update_stats(
-    scrap: Res<ScrapCounter>,
-    wave: Res<WaveManager>,
-    hp: Res<PlayerHp>,
-    levels: Res<UpgradeLevels>,
-    mut q: Query<&mut Text, With<StatsText>>,
-) {
-    let Ok(mut t) = q.single_mut() else { return };
-
-    let dmg_idx = Upgrade::ALL
-        .iter()
-        .position(|u| *u == Upgrade::TurretDamage)
-        .unwrap();
-    let spd_idx = Upgrade::ALL
-        .iter()
-        .position(|u| *u == Upgrade::TurretSpeed)
-        .unwrap();
-    let dmg = Upgrade::TurretDamage.value(levels.levels[dmg_idx]);
-    let aps = Upgrade::TurretSpeed.value(levels.levels[spd_idx]);
-    let dps = dmg * aps;
-
-    t.0 = format!(
-        "Scrap: {}\nWave: {}  ({}/{})\nHP: {:.0}\nDPS: {:.1}\nAPS: {:.2}",
-        scrap.0, wave.wave, wave.zombies_spawned_this_wave, wave.zombies_per_wave, hp.0, dps, aps,
-    );
-}
+// ponytail: module refs disabled
+// fn update_stats(
+//     scrap: Res<ScrapCounter>,
+//     wave: Res<WaveManager>,
+//     hp: Res<PlayerHp>,
+//     levels: Res<UpgradeLevels>,
+//     mut q: Query<&mut Text, With<StatsText>>,
+// ) {
+//     let Ok(mut t) = q.single_mut() else { return };
+//
+//     let dmg_idx = Upgrade::ALL
+//         .iter()
+//         .position(|u| *u == Upgrade::TurretDamage)
+//         .unwrap();
+//     let spd_idx = Upgrade::ALL
+//         .iter()
+//         .position(|u| *u == Upgrade::TurretSpeed)
+//         .unwrap();
+//     let dmg = Upgrade::TurretDamage.value(levels.levels[dmg_idx]);
+//     let aps = Upgrade::TurretSpeed.value(levels.levels[spd_idx]);
+//     let dps = dmg * aps;
+//
+//     t.0 = format!(
+//         "Scrap: {}\nWave: {}  ({}/{})\nHP: {:.0}\nDPS: {:.1}\nAPS: {:.2}",
+//         scrap.0, wave.wave, wave.zombies_spawned_this_wave, wave.zombies_per_wave, hp.0, dps, aps,
+//     );
+// }
 
 #[expect(dead_code, reason = "crafting UI is intentionally dormant")]
 fn setup_crafting(mut commands: Commands, font: Res<UiFont>) {
@@ -294,117 +295,119 @@ fn recipe_label(recipe: &Recipe) -> String {
     )
 }
 
-fn handle_craft_clicks(
-    interactions: Query<(&Interaction, &CraftButton), Changed<Interaction>>,
-    mut loot: ResMut<LootState>,
-) {
-    for (interaction, button) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        let recipe = Recipe::ALL[button.recipe];
-        let affordable = recipe.cost.iter().all(|(m, n)| loot.count(*m) >= *n);
-        if !affordable {
-            continue;
-        }
-        for (m, n) in recipe.cost {
-            loot.try_spend(m, n);
-        }
-        loot.weapons.push(recipe.output);
-        if loot.equipped.is_none() {
-            loot.equipped = Some((recipe.output, recipe.output.stats().durability));
-        }
-    }
-}
+// ponytail: module refs disabled
+// fn handle_craft_clicks(
+//     interactions: Query<(&Interaction, &CraftButton), Changed<Interaction>>,
+//     mut loot: ResMut<LootState>,
+// ) {
+//     for (interaction, button) in &interactions {
+//         if *interaction != Interaction::Pressed {
+//             continue;
+//         }
+//         let recipe = Recipe::ALL[button.recipe];
+//         let affordable = recipe.cost.iter().all(|(m, n)| loot.count(*m) >= *n);
+//         if !affordable {
+//             continue;
+//         }
+//         for (m, n) in recipe.cost {
+//             loot.try_spend(m, n);
+//         }
+//         loot.weapons.push(recipe.output);
+//         if loot.equipped.is_none() {
+//             loot.equipped = Some((recipe.output, recipe.output.stats().durability));
+//         }
+//     }
+// }
+//
+// fn update_craft_status(loot: Res<LootState>, mut q: Query<&mut Text, With<CraftStatusText>>) {
+//     if !loot.is_changed() {
+//         return;
+//     }
+//     let Ok(mut t) = q.single_mut() else { return };
+//     use shared::items::Material::*;
+//     let weapon = match loot.equipped {
+//         Some((kind, dur)) => format!("{} (dur {})", kind.name(), dur),
+//         None => "none".to_string(),
+//     };
+//     t.0 = format!(
+//         "CRAFTING\nMetal {}  Wood {}\nRope {}  Cloth {}\nWeapon: {}",
+//         loot.count(Metal),
+//         loot.count(Wood),
+//         loot.count(Rope),
+//         loot.count(Cloth),
+//         weapon,
+//     );
+// }
 
-fn update_craft_status(loot: Res<LootState>, mut q: Query<&mut Text, With<CraftStatusText>>) {
-    if !loot.is_changed() {
-        return;
-    }
-    let Ok(mut t) = q.single_mut() else { return };
-    use shared::items::Material::*;
-    let weapon = match loot.equipped {
-        Some((kind, dur)) => format!("{} (dur {})", kind.name(), dur),
-        None => "none".to_string(),
-    };
-    t.0 = format!(
-        "CRAFTING\nMetal {}  Wood {}\nRope {}  Cloth {}\nWeapon: {}",
-        loot.count(Metal),
-        loot.count(Wood),
-        loot.count(Rope),
-        loot.count(Cloth),
-        weapon,
-    );
-}
-
-fn handle_upgrade_clicks(
-    interactions: Query<(&Interaction, &ShopButton, &Children), Changed<Interaction>>,
-    mut text_q: Query<&mut Text>,
-    mut scrap: ResMut<ScrapCounter>,
-    mut levels: ResMut<UpgradeLevels>,
-    mut player_hp: ResMut<PlayerHp>,
-) {
-    for (interaction, button, children) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
-        let idx = Upgrade::ALL
-            .iter()
-            .position(|u| *u == button.upgrade)
-            .unwrap();
-        let level = levels.levels[idx];
-        let cost = button.upgrade.cost(level);
-
-        if scrap.0 < cost {
-            continue;
-        }
-
-        scrap.0 -= cost;
-        levels.levels[idx] += 1;
-        let new_level = levels.levels[idx];
-
-        if button.upgrade == Upgrade::WallHp {
-            let val = button.upgrade.value(new_level);
-            player_hp.0 = val;
-        }
-
-        for &child in children {
-            if let Ok(mut t) = text_q.get_mut(child) {
-                let cur = button.upgrade.format_value(button.upgrade.value(new_level));
-                let (next_str, arrow) = if new_level < 99 {
-                    (
-                        button
-                            .upgrade
-                            .format_value(button.upgrade.value(new_level + 1)),
-                        "->".to_string(),
-                    )
-                } else {
-                    ("MAX".to_string(), "".to_string())
-                };
-                let delta = if new_level < 99 {
-                    format!(
-                        "+{:.0}%",
-                        button.upgrade.value(new_level + 1) / button.upgrade.value(new_level)
-                            * 100.0
-                            - 100.0
-                    )
-                } else {
-                    String::new()
-                };
-                t.0 = format!(
-                    "{} Lv.{}\n{} {} {}\n{} Cost: {}",
-                    button.upgrade.name(),
-                    new_level,
-                    cur,
-                    arrow,
-                    next_str,
-                    delta,
-                    button.upgrade.cost(new_level),
-                );
-            }
-        }
-    }
-}
+// ponytail: module refs disabled
+// fn handle_upgrade_clicks(
+//     interactions: Query<(&Interaction, &ShopButton, &Children), Changed<Interaction>>,
+//     mut text_q: Query<&mut Text>,
+//     mut scrap: ResMut<ScrapCounter>,
+//     mut levels: ResMut<UpgradeLevels>,
+//     mut player_hp: ResMut<PlayerHp>,
+// ) {
+//     for (interaction, button, children) in &interactions {
+//         if *interaction != Interaction::Pressed {
+//             continue;
+//         }
+//         let idx = Upgrade::ALL
+//             .iter()
+//             .position(|u| *u == button.upgrade)
+//             .unwrap();
+//         let level = levels.levels[idx];
+//         let cost = button.upgrade.cost(level);
+//
+//         if scrap.0 < cost {
+//             continue;
+//         }
+//
+//         scrap.0 -= cost;
+//         levels.levels[idx] += 1;
+//         let new_level = levels.levels[idx];
+//
+//         if button.upgrade == Upgrade::WallHp {
+//             let val = button.upgrade.value(new_level);
+//             player_hp.0 = val;
+//         }
+//
+//         for &child in children {
+//             if let Ok(mut t) = text_q.get_mut(child) {
+//                 let cur = button.upgrade.format_value(button.upgrade.value(new_level));
+//                 let (next_str, arrow) = if new_level < 99 {
+//                     (
+//                         button
+//                             .upgrade
+//                             .format_value(button.upgrade.value(new_level + 1)),
+//                         "->".to_string(),
+//                     )
+//                 } else {
+//                     ("MAX".to_string(), "".to_string())
+//                 };
+//                 let delta = if new_level < 99 {
+//                     format!(
+//                         "+{:.0}%",
+//                         button.upgrade.value(new_level + 1) / button.upgrade.value(new_level)
+//                             * 100.0
+//                             - 100.0
+//                     )
+//                 } else {
+//                     String::new()
+//                 };
+//                 t.0 = format!(
+//                     "{} Lv.{}\n{} {} {}\n{} Cost: {}",
+//                     button.upgrade.name(),
+//                     new_level,
+//                     cur,
+//                     arrow,
+//                     next_str,
+//                     delta,
+//                     button.upgrade.cost(new_level),
+//                 );
+//             }
+//         }
+//     }
+// }
 
 fn scroll_upgrades(
     mut commands: Commands,
@@ -447,43 +450,44 @@ fn reset_upgrade_buttons(buttons: Query<(&ShopButton, &Children)>, mut text_q: Q
     }
 }
 
-fn apply_upgrades(
-    levels: Res<UpgradeLevels>,
-    mut player_q: Query<&mut Player>,
-    mut p_speed: ResMut<crate::turret::ProjectileSpeed>,
-) {
-    if !levels.is_changed() {
-        return;
-    }
-
-    let dmg_idx = Upgrade::ALL
-        .iter()
-        .position(|u| *u == Upgrade::TurretDamage)
-        .unwrap();
-    let spd_idx = Upgrade::ALL
-        .iter()
-        .position(|u| *u == Upgrade::TurretSpeed)
-        .unwrap();
-    let rng_idx = Upgrade::ALL
-        .iter()
-        .position(|u| *u == Upgrade::TurretRange)
-        .unwrap();
-    let proj_idx = Upgrade::ALL
-        .iter()
-        .position(|u| *u == Upgrade::ProjectileSpeed)
-        .unwrap();
-
-    let damage = Upgrade::TurretDamage.value(levels.levels[dmg_idx]);
-    let speed = Upgrade::TurretSpeed.value(levels.levels[spd_idx]);
-    let range = Upgrade::TurretRange.value(levels.levels[rng_idx]);
-    p_speed.0 = Upgrade::ProjectileSpeed.value(levels.levels[proj_idx]);
-
-    for mut player in &mut player_q {
-        player.damage = damage;
-        player.range = range;
-        player.fire_timer = Timer::from_seconds(1.0 / speed, TimerMode::Repeating);
-    }
-}
+// ponytail: module refs disabled
+// fn apply_upgrades(
+//     levels: Res<UpgradeLevels>,
+//     mut player_q: Query<&mut Player>,
+//     mut p_speed: ResMut<crate::turret::ProjectileSpeed>,
+// ) {
+//     if !levels.is_changed() {
+//         return;
+//     }
+//
+//     let dmg_idx = Upgrade::ALL
+//         .iter()
+//         .position(|u| *u == Upgrade::TurretDamage)
+//         .unwrap();
+//     let spd_idx = Upgrade::ALL
+//         .iter()
+//         .position(|u| *u == Upgrade::TurretSpeed)
+//         .unwrap();
+//     let rng_idx = Upgrade::ALL
+//         .iter()
+//         .position(|u| *u == Upgrade::TurretRange)
+//         .unwrap();
+//     let proj_idx = Upgrade::ALL
+//         .iter()
+//         .position(|u| *u == Upgrade::ProjectileSpeed)
+//         .unwrap();
+//
+//     let damage = Upgrade::TurretDamage.value(levels.levels[dmg_idx]);
+//     let speed = Upgrade::TurretSpeed.value(levels.levels[spd_idx]);
+//     let range = Upgrade::TurretRange.value(levels.levels[rng_idx]);
+//     p_speed.0 = Upgrade::ProjectileSpeed.value(levels.levels[proj_idx]);
+//
+//     for mut player in &mut player_q {
+//         player.damage = damage;
+//         player.range = range;
+//         player.fire_timer = Timer::from_seconds(1.0 / speed, TimerMode::Repeating);
+//     }
+// }
 
 // ---- terrain HUD ----
 

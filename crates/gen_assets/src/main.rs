@@ -104,15 +104,23 @@ impl MeshData {
             self.colors.extend_from_slice(&color);
         }
         self.indices.extend_from_slice(&[
-            base_idx, base_idx + 1, base_idx + 2,
-            base_idx, base_idx + 2, base_idx + 3,
+            base_idx,
+            base_idx + 1,
+            base_idx + 2,
+            base_idx,
+            base_idx + 2,
+            base_idx + 3,
         ]);
     }
 }
 
 fn normalize(v: [f32; 3]) -> [f32; 3] {
     let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    if len == 0.0 { [0.0, 0.0, 0.0] } else { [v[0] / len, v[1] / len, v[2] / len] }
+    if len == 0.0 {
+        [0.0, 0.0, 0.0]
+    } else {
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
 }
 
 fn compute_normal(p0: [f32; 3], p1: [f32; 3], p2: [f32; 3]) -> [f32; 3] {
@@ -136,45 +144,63 @@ fn add_triangle(mesh: &mut MeshData, p0: [f32; 3], p1: [f32; 3], p2: [f32; 3], c
         mesh.normals.extend_from_slice(&normal);
         mesh.colors.extend_from_slice(&color);
     }
-    mesh.indices.extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2]);
+    mesh.indices
+        .extend_from_slice(&[base_idx, base_idx + 1, base_idx + 2]);
 }
 
 fn add_box(mesh: &mut MeshData, min: [f32; 3], max: [f32; 3], color: [f32; 4]) {
-    let x0 = min[0]; let y0 = min[1]; let z0 = min[2];
-    let x1 = max[0]; let y1 = max[1]; let z1 = max[2];
+    let x0 = min[0];
+    let y0 = min[1];
+    let z0 = min[2];
+    let x1 = max[0];
+    let y1 = max[1];
+    let z1 = max[2];
 
     // Front face (Z = max)
-    mesh.add_face([
-        [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]
-    ], color);
+    mesh.add_face(
+        [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]],
+        color,
+    );
 
     // Back face (Z = min)
-    mesh.add_face([
-        [x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]
-    ], color);
+    mesh.add_face(
+        [[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]],
+        color,
+    );
 
     // Left face (X = min)
-    mesh.add_face([
-        [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]
-    ], color);
+    mesh.add_face(
+        [[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]],
+        color,
+    );
 
     // Right face (X = max)
-    mesh.add_face([
-        [x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]
-    ], color);
+    mesh.add_face(
+        [[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]],
+        color,
+    );
 
     // Top face (Y = max)
-    mesh.add_face([
-        [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]
-    ], color);
+    mesh.add_face(
+        [[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]],
+        color,
+    );
 
     // Bottom face (Y = min)
-    mesh.add_face([
-        [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]
-    ], color);
+    mesh.add_face(
+        [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]],
+        color,
+    );
 }
 
-fn add_pyramid(mesh: &mut MeshData, base_min: [f32; 2], base_max: [f32; 2], base_y: f32, top_y: f32, color: [f32; 4]) {
+fn add_pyramid(
+    mesh: &mut MeshData,
+    base_min: [f32; 2],
+    base_max: [f32; 2],
+    base_y: f32,
+    top_y: f32,
+    color: [f32; 4],
+) {
     let x0 = base_min[0];
     let z0 = base_min[1];
     let x1 = base_max[0];
@@ -182,9 +208,15 @@ fn add_pyramid(mesh: &mut MeshData, base_min: [f32; 2], base_max: [f32; 2], base
     let top = [(x0 + x1) / 2.0, top_y, (z0 + z1) / 2.0];
 
     // Bottom face (quad)
-    mesh.add_face([
-        [x0, base_y, z0], [x1, base_y, z0], [x1, base_y, z1], [x0, base_y, z1]
-    ], color);
+    mesh.add_face(
+        [
+            [x0, base_y, z0],
+            [x1, base_y, z0],
+            [x1, base_y, z1],
+            [x0, base_y, z1],
+        ],
+        color,
+    );
 
     // 4 Sides:
     // Front side (Z = max)
@@ -200,14 +232,29 @@ fn add_pyramid(mesh: &mut MeshData, base_min: [f32; 2], base_max: [f32; 2], base
     add_triangle(mesh, [x0, base_y, z0], [x0, base_y, z1], top, color);
 }
 
-fn add_grass_blade(mesh: &mut MeshData, origin: [f32; 3], yaw: f32, height: f32, width: f32, color: [f32; 4]) {
+fn add_grass_blade(
+    mesh: &mut MeshData,
+    origin: [f32; 3],
+    yaw: f32,
+    height: f32,
+    width: f32,
+    color: [f32; 4],
+) {
     let c = yaw.cos();
     let s = yaw.sin();
-    
+
     // Bottom corners
-    let b0 = [origin[0] - c * width * 0.5, origin[1], origin[2] - s * width * 0.5];
-    let b1 = [origin[0] + c * width * 0.5, origin[1], origin[2] + s * width * 0.5];
-    
+    let b0 = [
+        origin[0] - c * width * 0.5,
+        origin[1],
+        origin[2] - s * width * 0.5,
+    ];
+    let b1 = [
+        origin[0] + c * width * 0.5,
+        origin[1],
+        origin[2] + s * width * 0.5,
+    ];
+
     // Top tip (bent slightly outwards along the normal of the yaw)
     let bend_dist = height * 0.22;
     let tip = [
@@ -215,35 +262,29 @@ fn add_grass_blade(mesh: &mut MeshData, origin: [f32; 3], yaw: f32, height: f32,
         origin[1] + height,
         origin[2] + c * bend_dist,
     ];
-    
+
     add_triangle(mesh, b0, b1, tip, color);
     add_triangle(mesh, b1, b0, tip, color);
 }
 
 fn wedge_mesh() -> MeshData {
     let positions = vec![
-        -0.5, 0.0, 0.5,
-        0.5, 0.0, 0.5,
-        0.42, 0.0, -0.6,
-        -0.42, 0.0, -0.6,
-        0.0, 1.0, 0.10,
+        -0.5, 0.0, 0.5, 0.5, 0.0, 0.5, 0.42, 0.0, -0.6, -0.42, 0.0, -0.6, 0.0, 1.0, 0.10,
     ];
     let normals = vec![
-        0.0, -1.0, 0.0,
-        0.0, -1.0, 0.0,
-        0.0, -1.0, 0.0,
-        0.0, -1.0, 0.0,
-        0.0, 1.0, 0.0,
+        0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 0.0,
     ];
     let indices = vec![0, 2, 1, 0, 3, 2, 0, 1, 4, 1, 2, 4, 2, 3, 4, 3, 0, 4];
     let colors = vec![
-        0.82, 0.28, 0.12, 1.0,
-        0.95, 0.55, 0.16, 1.0,
-        0.55, 0.16, 0.08, 1.0,
-        0.70, 0.22, 0.10, 1.0,
+        0.82, 0.28, 0.12, 1.0, 0.95, 0.55, 0.16, 1.0, 0.55, 0.16, 0.08, 1.0, 0.70, 0.22, 0.10, 1.0,
         0.95, 0.72, 0.20, 1.0,
     ];
-    MeshData { positions, normals, colors, indices }
+    MeshData {
+        positions,
+        normals,
+        colors,
+        indices,
+    }
 }
 
 fn generate_mesh(name: &str) -> MeshData {
@@ -265,14 +306,44 @@ fn generate_mesh(name: &str) -> MeshData {
             0 => {
                 // Complex deciduous: branching trunk with ball canopy clusters
                 let trunk_color = [0.45, 0.28, 0.13, 1.0];
-                add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 1.5, 0.25], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.25, 0.0, -0.25],
+                    [0.25, 1.5, 0.25],
+                    trunk_color,
+                );
                 // Main branch split — two angled trunks
-                add_box(&mut mesh, [-0.15, 1.5, -0.08], [0.15, 2.0, 0.08], trunk_color);
-                add_box(&mut mesh, [-0.15, 1.6, -0.08], [0.08, 2.2, 0.08], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.15, 1.5, -0.08],
+                    [0.15, 2.0, 0.08],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [-0.15, 1.6, -0.08],
+                    [0.08, 2.2, 0.08],
+                    trunk_color,
+                );
                 // Sub-branches
-                add_box(&mut mesh, [-0.5, 1.8, -0.06], [-0.15, 1.95, 0.06], trunk_color);
-                add_box(&mut mesh, [0.15, 1.9, -0.06], [0.5, 2.05, 0.06], trunk_color);
-                add_box(&mut mesh, [-0.06, 2.0, -0.35], [0.06, 2.15, -0.08], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.5, 1.8, -0.06],
+                    [-0.15, 1.95, 0.06],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [0.15, 1.9, -0.06],
+                    [0.5, 2.05, 0.06],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [-0.06, 2.0, -0.35],
+                    [0.06, 2.15, -0.08],
+                    trunk_color,
+                );
                 // Ball canopy clusters
                 let leaves = [0.15, 0.5, 0.2, 1.0];
                 let dark_leaves = [0.1, 0.4, 0.15, 1.0];
@@ -283,7 +354,12 @@ fn generate_mesh(name: &str) -> MeshData {
             1 => {
                 // Jungle: tall trunk, dense round canopy (two stacked wide pyramids)
                 let trunk_color = [0.35, 0.22, 0.12, 1.0];
-                add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 3.0, 0.25], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.25, 0.0, -0.25],
+                    [0.25, 3.0, 0.25],
+                    trunk_color,
+                );
                 let leaves_color = [0.1, 0.5, 0.2, 1.0];
                 add_pyramid(&mut mesh, [-1.8, -1.8], [1.8, 1.8], 2.5, 4.5, leaves_color);
                 add_pyramid(&mut mesh, [-1.2, -1.2], [1.2, 1.2], 4.0, 6.0, leaves_color);
@@ -300,7 +376,12 @@ fn generate_mesh(name: &str) -> MeshData {
             3 => {
                 // Palm: thin trunk, flat radial leaves
                 let trunk_color = [0.55, 0.4, 0.2, 1.0];
-                add_box(&mut mesh, [-0.15, 0.0, -0.15], [0.15, 3.0, 0.15], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.15, 0.0, -0.15],
+                    [0.15, 3.0, 0.15],
+                    trunk_color,
+                );
                 let frond = [0.15, 0.55, 0.2, 1.0];
                 for i in 0..5 {
                     let a = i as f32 * std::f32::consts::TAU / 5.0;
@@ -319,14 +400,29 @@ fn generate_mesh(name: &str) -> MeshData {
             4 => {
                 // Gnarled oak: thick trunk, wide spreading canopy
                 let trunk_color = [0.4, 0.24, 0.1, 1.0];
-                add_box(&mut mesh, [-0.35, 0.0, -0.35], [0.35, 1.2, 0.35], trunk_color);
-                add_box(&mut mesh, [-0.25, 1.2, -0.25], [0.25, 1.8, 0.25], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.35, 0.0, -0.35],
+                    [0.35, 1.2, 0.35],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [-0.25, 1.2, -0.25],
+                    [0.25, 1.8, 0.25],
+                    trunk_color,
+                );
                 // Spreading branches
                 add_box(&mut mesh, [-0.8, 1.3, -0.1], [-0.25, 1.5, 0.1], trunk_color);
                 add_box(&mut mesh, [0.25, 1.3, -0.1], [0.8, 1.5, 0.1], trunk_color);
                 add_box(&mut mesh, [-0.1, 1.6, -0.7], [0.1, 1.8, -0.25], trunk_color);
                 add_box(&mut mesh, [-0.1, 1.6, 0.25], [0.1, 1.8, 0.7], trunk_color);
-                add_box(&mut mesh, [-0.6, 1.4, -0.45], [-0.45, 1.55, -0.25], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.6, 1.4, -0.45],
+                    [-0.45, 1.55, -0.25],
+                    trunk_color,
+                );
                 add_box(&mut mesh, [0.45, 1.4, 0.25], [0.6, 1.55, 0.45], trunk_color);
                 // Wide canopy
                 let leaves = [0.12, 0.42, 0.12, 1.0];
@@ -339,17 +435,52 @@ fn generate_mesh(name: &str) -> MeshData {
                 let trunk_color = [0.45, 0.28, 0.13, 1.0];
                 add_box(&mut mesh, [-0.2, 0.0, -0.2], [0.2, 1.4, 0.2], trunk_color);
                 // Branches
-                add_box(&mut mesh, [-0.5, 1.1, -0.08], [-0.2, 1.3, 0.08], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.5, 1.1, -0.08],
+                    [-0.2, 1.3, 0.08],
+                    trunk_color,
+                );
                 add_box(&mut mesh, [0.2, 1.1, -0.08], [0.5, 1.3, 0.08], trunk_color);
-                add_box(&mut mesh, [-0.4, 1.3, -0.06], [-0.2, 1.5, 0.06], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.4, 1.3, -0.06],
+                    [-0.2, 1.5, 0.06],
+                    trunk_color,
+                );
                 add_box(&mut mesh, [0.2, 1.3, -0.06], [0.4, 1.5, 0.06], trunk_color);
-                add_box(&mut mesh, [-0.08, 1.4, -0.4], [0.08, 1.6, -0.2], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.08, 1.4, -0.4],
+                    [0.08, 1.6, -0.2],
+                    trunk_color,
+                );
                 add_box(&mut mesh, [-0.08, 1.4, 0.2], [0.08, 1.6, 0.4], trunk_color);
                 // Sub-branch tips
-                add_box(&mut mesh, [-0.35, 1.5, -0.04], [-0.15, 1.65, 0.04], trunk_color);
-                add_box(&mut mesh, [0.15, 1.5, -0.04], [0.35, 1.65, 0.04], trunk_color);
-                add_box(&mut mesh, [-0.04, 1.55, -0.28], [0.04, 1.7, -0.15], trunk_color);
-                add_box(&mut mesh, [-0.04, 1.55, 0.15], [0.04, 1.7, 0.28], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.35, 1.5, -0.04],
+                    [-0.15, 1.65, 0.04],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [0.15, 1.5, -0.04],
+                    [0.35, 1.65, 0.04],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [-0.04, 1.55, -0.28],
+                    [0.04, 1.7, -0.15],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [-0.04, 1.55, 0.15],
+                    [0.04, 1.7, 0.28],
+                    trunk_color,
+                );
                 // Leaf clusters — small boxes scattered at branch tips
                 let leaf = [0.12, 0.48, 0.14, 1.0];
                 let leaf_light = [0.18, 0.55, 0.2, 1.0];
@@ -377,20 +508,35 @@ fn generate_mesh(name: &str) -> MeshData {
                 ];
                 for &(center, color) in tips {
                     let s = 0.12;
-                    add_box(&mut mesh, [center[0] - s, center[1] - s, center[2] - s], [center[0] + s, center[1] + s, center[2] + s], *color);
+                    add_box(
+                        &mut mesh,
+                        [center[0] - s, center[1] - s, center[2] - s],
+                        [center[0] + s, center[1] + s, center[2] + s],
+                        *color,
+                    );
                 }
             }
             _ => {
                 // Autumn deciduous: warm orange/gold canopy (catch-all for 6+)
                 let trunk_color = [0.5, 0.32, 0.15, 1.0];
-                add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 1.8, 0.25], trunk_color);
-                add_box(&mut mesh, [-0.18, 1.8, -0.08], [0.18, 2.3, 0.08], trunk_color);
+                add_box(
+                    &mut mesh,
+                    [-0.25, 0.0, -0.25],
+                    [0.25, 1.8, 0.25],
+                    trunk_color,
+                );
+                add_box(
+                    &mut mesh,
+                    [-0.18, 1.8, -0.08],
+                    [0.18, 2.3, 0.08],
+                    trunk_color,
+                );
                 let fall_color = [0.85, 0.4, 0.1, 1.0];
                 let gold = [0.95, 0.6, 0.15, 1.0];
                 add_pyramid(&mut mesh, [-1.3, -1.3], [1.3, 1.3], 1.5, 3.2, fall_color);
                 add_pyramid(&mut mesh, [-1.0, -1.0], [1.0, 1.0], 2.8, 4.5, gold);
             }
-        }
+        },
         "flora.rock" => match variant.unwrap_or(0) {
             0 => {
                 let color = [0.45, 0.45, 0.45, 1.0];
@@ -401,17 +547,22 @@ fn generate_mesh(name: &str) -> MeshData {
                 let color = [0.18, 0.18, 0.2, 1.0];
                 add_box(&mut mesh, [-0.7, 0.0, -0.7], [0.7, 1.0, 0.7], color);
             }
-        }
+        },
         "flora.flower" => {
             let stem_color = [0.2, 0.6, 0.2, 1.0];
             let petal_color = [0.9, 0.2, 0.5, 1.0];
-            add_box(&mut mesh, [-0.03, 0.0, -0.03], [0.03, 0.4, 0.03], stem_color);
+            add_box(
+                &mut mesh,
+                [-0.03, 0.0, -0.03],
+                [0.03, 0.4, 0.03],
+                stem_color,
+            );
             add_pyramid(&mut mesh, [-0.1, -0.1], [0.1, 0.1], 0.4, 0.55, petal_color);
         }
         "flora.grass" => {
             let color = [0.22, 0.60, 0.22, 1.0];
             let dark_color = [0.15, 0.48, 0.15, 1.0];
-            
+
             // Staggered, pointed, double-sided organic grass blades
             add_grass_blade(&mut mesh, [-0.05, 0.0, -0.05], 0.0, 0.42, 0.05, color);
             add_grass_blade(&mut mesh, [0.05, 0.0, 0.05], 1.1, 0.38, 0.045, color);
@@ -428,7 +579,12 @@ fn generate_mesh(name: &str) -> MeshData {
         "flora.mushroom" => {
             let stem_color = [0.9, 0.9, 0.85, 1.0];
             let cap_color = [0.8, 0.15, 0.15, 1.0];
-            add_box(&mut mesh, [-0.06, 0.0, -0.06], [0.06, 0.25, 0.06], stem_color);
+            add_box(
+                &mut mesh,
+                [-0.06, 0.0, -0.06],
+                [0.06, 0.25, 0.06],
+                stem_color,
+            );
             add_box(&mut mesh, [-0.2, 0.22, -0.2], [0.2, 0.35, 0.2], cap_color);
         }
         "flora.cactus" => match variant.unwrap_or(0) {
@@ -447,15 +603,35 @@ fn generate_mesh(name: &str) -> MeshData {
                 let color = [0.18, 0.5, 0.25, 1.0];
                 add_box(&mut mesh, [-0.35, 0.0, -0.35], [0.35, 1.0, 0.35], color);
             }
-        }
+        },
         "flora.berry" => {
             let bush_color = [0.15, 0.45, 0.2, 1.0];
             let berry_color = [0.85, 0.1, 0.15, 1.0];
-            add_box(&mut mesh, [-0.35, 0.0, -0.35], [0.35, 0.55, 0.35], bush_color);
+            add_box(
+                &mut mesh,
+                [-0.35, 0.0, -0.35],
+                [0.35, 0.55, 0.35],
+                bush_color,
+            );
             // Red berry dots
-            add_box(&mut mesh, [-0.2, 0.4, 0.36], [-0.1, 0.48, 0.38], berry_color);
-            add_box(&mut mesh, [0.15, 0.3, 0.36], [0.25, 0.38, 0.38], berry_color);
-            add_box(&mut mesh, [-0.37, 0.35, -0.1], [-0.35, 0.43, 0.0], berry_color);
+            add_box(
+                &mut mesh,
+                [-0.2, 0.4, 0.36],
+                [-0.1, 0.48, 0.38],
+                berry_color,
+            );
+            add_box(
+                &mut mesh,
+                [0.15, 0.3, 0.36],
+                [0.25, 0.38, 0.38],
+                berry_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.37, 0.35, -0.1],
+                [-0.35, 0.43, 0.0],
+                berry_color,
+            );
             add_box(&mut mesh, [0.35, 0.25, 0.1], [0.37, 0.33, 0.2], berry_color);
         }
         "flora.dead_tree" => match variant.unwrap_or(0) {
@@ -480,7 +656,7 @@ fn generate_mesh(name: &str) -> MeshData {
                 let snow = [0.9, 0.92, 0.95, 1.0];
                 add_box(&mut mesh, [-0.22, 2.3, -0.22], [0.22, 2.5, 0.22], snow);
             }
-        }
+        },
         "flora.seaweed" => {
             let color = [0.1, 0.4, 0.2, 1.0];
             add_box(&mut mesh, [-0.05, 0.0, -0.05], [0.05, 1.0, 0.05], color);
@@ -491,7 +667,14 @@ fn generate_mesh(name: &str) -> MeshData {
             let color = [0.15, 0.5, 0.2, 1.0];
             add_box(&mut mesh, [-0.3, 0.0, -0.3], [0.3, 0.05, 0.3], color);
             let flower_color = [0.9, 0.6, 0.8, 1.0];
-            add_pyramid(&mut mesh, [-0.08, -0.08], [0.08, 0.08], 0.05, 0.15, flower_color);
+            add_pyramid(
+                &mut mesh,
+                [-0.08, -0.08],
+                [0.08, 0.08],
+                0.05,
+                0.15,
+                flower_color,
+            );
         }
         "flora.coral" => {
             let color = [0.8, 0.3, 0.4, 1.0];
@@ -626,7 +809,14 @@ fn generate_mesh(name: &str) -> MeshData {
             // Platform
             add_box(&mut mesh, [-0.5, 1.4, -0.5], [0.5, 1.55, 0.5], wood_color);
             // Roof
-            add_pyramid(&mut mesh, [-0.55, -0.55], [0.55, 0.55], 1.55, 2.1, roof_color);
+            add_pyramid(
+                &mut mesh,
+                [-0.55, -0.55],
+                [0.55, 0.55],
+                1.55,
+                2.1,
+                roof_color,
+            );
         }
         "structure.dock" => {
             let color = [0.38, 0.24, 0.10, 1.0];
@@ -658,10 +848,22 @@ fn generate_mesh(name: &str) -> MeshData {
             // Stone base
             add_box(&mut mesh, [-0.4, 0.0, -0.4], [0.4, 0.4, 0.4], stone_color);
             // 2 wooden posts
-            add_box(&mut mesh, [-0.03, 0.4, -0.3], [0.03, 1.0, -0.24], wood_color);
+            add_box(
+                &mut mesh,
+                [-0.03, 0.4, -0.3],
+                [0.03, 1.0, -0.24],
+                wood_color,
+            );
             add_box(&mut mesh, [-0.03, 0.4, 0.24], [0.03, 1.0, 0.3], wood_color);
             // Roof
-            add_pyramid(&mut mesh, [-0.45, -0.45], [0.45, 0.45], 1.0, 1.4, roof_color);
+            add_pyramid(
+                &mut mesh,
+                [-0.45, -0.45],
+                [0.45, 0.45],
+                1.0,
+                1.4,
+                roof_color,
+            );
         }
         "structure.campfire" => {
             let log_color = [0.35, 0.2, 0.08, 1.0];
@@ -671,7 +873,14 @@ fn generate_mesh(name: &str) -> MeshData {
             // Log 2 (crossed)
             add_box(&mut mesh, [-0.1, 0.0, -0.4], [0.1, 0.12, 0.4], log_color);
             // Fire cone
-            add_pyramid(&mut mesh, [-0.18, -0.18], [0.18, 0.18], 0.12, 0.55, fire_color);
+            add_pyramid(
+                &mut mesh,
+                [-0.18, -0.18],
+                [0.18, 0.18],
+                0.12,
+                0.55,
+                fire_color,
+            );
         }
         // --- Phase 3: new structures ---
         "structure.tent" => {
@@ -776,14 +985,29 @@ fn generate_mesh(name: &str) -> MeshData {
         "weapon.knife" => {
             let handle_color = [0.4, 0.25, 0.1, 1.0];
             let blade_color = [0.7, 0.7, 0.72, 1.0];
-            add_box(&mut mesh, [-0.15, 0.0, -0.03], [0.02, 0.06, 0.03], handle_color);
-            add_box(&mut mesh, [0.02, 0.0, -0.02], [0.3, 0.05, 0.02], blade_color);
+            add_box(
+                &mut mesh,
+                [-0.15, 0.0, -0.03],
+                [0.02, 0.06, 0.03],
+                handle_color,
+            );
+            add_box(
+                &mut mesh,
+                [0.02, 0.0, -0.02],
+                [0.3, 0.05, 0.02],
+                blade_color,
+            );
         }
         "weapon.spear" => {
             let shaft_color = [0.45, 0.28, 0.12, 1.0];
             let tip_color = [0.72, 0.72, 0.74, 1.0];
             // Shaft pointing along +X scaled to ~1.6m length
-            add_box(&mut mesh, [-0.8, 0.0, -0.03], [0.6, 0.06, 0.03], shaft_color);
+            add_box(
+                &mut mesh,
+                [-0.8, 0.0, -0.03],
+                [0.6, 0.06, 0.03],
+                shaft_color,
+            );
             // Tip pointing along +X
             let tip_x = 0.85;
             let p_top = [tip_x, 0.0, 0.0];
@@ -812,35 +1036,105 @@ fn generate_mesh(name: &str) -> MeshData {
             let stock_color = [0.4, 0.25, 0.1, 1.0];
             let barrel_color = [0.2, 0.2, 0.22, 1.0];
             // Scaled up for 1.8m hand proportions (total length ~1.1m)
-            add_box(&mut mesh, [-0.35, 0.0, -0.05], [0.25, 0.14, 0.05], stock_color);
-            add_box(&mut mesh, [-0.45, -0.12, -0.05], [-0.28, 0.07, 0.05], stock_color);
-            add_box(&mut mesh, [0.25, 0.05, -0.03], [0.75, 0.11, 0.03], barrel_color);
+            add_box(
+                &mut mesh,
+                [-0.35, 0.0, -0.05],
+                [0.25, 0.14, 0.05],
+                stock_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.45, -0.12, -0.05],
+                [-0.28, 0.07, 0.05],
+                stock_color,
+            );
+            add_box(
+                &mut mesh,
+                [0.25, 0.05, -0.03],
+                [0.75, 0.11, 0.03],
+                barrel_color,
+            );
         }
         "actor.player" => {
             let clothes_color = [0.15, 0.35, 0.75, 1.0];
             let skin_color = [0.95, 0.8, 0.65, 1.0];
             // Scaled to a realistic human height of 1.8m
-            add_box(&mut mesh, [-0.25, 0.0, -0.15], [0.25, 0.6, 0.15], clothes_color);
-            add_box(&mut mesh, [-0.3, 0.6, -0.18], [0.3, 1.45, 0.18], clothes_color);
-            add_box(&mut mesh, [-0.18, 1.45, -0.18], [0.18, 1.8, 0.18], skin_color);
+            add_box(
+                &mut mesh,
+                [-0.25, 0.0, -0.15],
+                [0.25, 0.6, 0.15],
+                clothes_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.3, 0.6, -0.18],
+                [0.3, 1.45, 0.18],
+                clothes_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.18, 1.45, -0.18],
+                [0.18, 1.8, 0.18],
+                skin_color,
+            );
         }
         "actor.zombie.0" => {
             let zombie_skin = [0.25, 0.55, 0.3, 1.0];
             let clothes_color = [0.35, 0.35, 0.35, 1.0];
             // Scaled to 1.8m height
-            add_box(&mut mesh, [-0.25, 0.0, -0.15], [0.25, 0.6, 0.15], clothes_color);
-            add_box(&mut mesh, [-0.3, 0.6, -0.18], [0.3, 1.4, 0.18], clothes_color);
-            add_box(&mut mesh, [-0.18, 1.4, -0.18], [0.18, 1.75, 0.18], zombie_skin);
-            add_box(&mut mesh, [-0.08, 1.1, -0.55], [0.08, 1.25, -0.18], zombie_skin);
+            add_box(
+                &mut mesh,
+                [-0.25, 0.0, -0.15],
+                [0.25, 0.6, 0.15],
+                clothes_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.3, 0.6, -0.18],
+                [0.3, 1.4, 0.18],
+                clothes_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.18, 1.4, -0.18],
+                [0.18, 1.75, 0.18],
+                zombie_skin,
+            );
+            add_box(
+                &mut mesh,
+                [-0.08, 1.1, -0.55],
+                [0.08, 1.25, -0.18],
+                zombie_skin,
+            );
         }
         "actor.zombie.1" => {
             let zombie_skin = [0.2, 0.5, 0.25, 1.0];
             let clothes_color = [0.4, 0.28, 0.15, 1.0];
             // Scaled to 1.8m height
-            add_box(&mut mesh, [-0.25, 0.0, -0.15], [0.25, 0.6, 0.15], clothes_color);
-            add_box(&mut mesh, [-0.3, 0.6, -0.18], [0.3, 1.4, 0.18], clothes_color);
-            add_box(&mut mesh, [-0.18, 1.4, -0.18], [0.18, 1.75, 0.18], zombie_skin);
-            add_box(&mut mesh, [-0.08, 1.1, -0.55], [0.08, 1.25, -0.18], zombie_skin);
+            add_box(
+                &mut mesh,
+                [-0.25, 0.0, -0.15],
+                [0.25, 0.6, 0.15],
+                clothes_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.3, 0.6, -0.18],
+                [0.3, 1.4, 0.18],
+                clothes_color,
+            );
+            add_box(
+                &mut mesh,
+                [-0.18, 1.4, -0.18],
+                [0.18, 1.75, 0.18],
+                zombie_skin,
+            );
+            add_box(
+                &mut mesh,
+                [-0.08, 1.1, -0.55],
+                [0.08, 1.25, -0.18],
+                zombie_skin,
+            );
         }
         _ => {
             mesh = wedge_mesh();
@@ -897,10 +1191,14 @@ fn catalog(names: &[&str], actors: bool) -> Vec<u8> {
         let base_acc = accessors.len();
         let pos_count = mesh_data.positions.len() / 3;
         let ind_count = mesh_data.indices.len();
-        
+
         accessors.push(json!({"bufferView":base_view,"componentType":5126,"count":pos_count,"type":"VEC3","min":min_pos,"max":max_pos}));
-        accessors.push(json!({"bufferView":base_view+1,"componentType":5126,"count":pos_count,"type":"VEC3"}));
-        accessors.push(json!({"bufferView":base_view+2,"componentType":5126,"count":pos_count,"type":"VEC4"}));
+        accessors.push(
+            json!({"bufferView":base_view+1,"componentType":5126,"count":pos_count,"type":"VEC3"}),
+        );
+        accessors.push(
+            json!({"bufferView":base_view+2,"componentType":5126,"count":pos_count,"type":"VEC4"}),
+        );
         accessors.push(json!({"bufferView":base_view+3,"componentType":5123,"count":ind_count,"type":"SCALAR"}));
 
         meshes.push(json!({
@@ -921,7 +1219,8 @@ fn catalog(names: &[&str], actors: bool) -> Vec<u8> {
         views.push(json!({"buffer":0,"byteOffset":to,"byteLength":tl}));
         views.push(json!({"buffer":0,"byteOffset":ro,"byteLength":rl}));
         accessors.push(json!({"bufferView":base_view,"componentType":5126,"count":3,"type":"SCALAR","min":[0.0],"max":[1.0]}));
-        accessors.push(json!({"bufferView":base_view+1,"componentType":5126,"count":3,"type":"VEC4"}));
+        accessors
+            .push(json!({"bufferView":base_view+1,"componentType":5126,"count":3,"type":"VEC4"}));
     }
 
     let materials: Vec<_> = names.iter().enumerate().map(|(i,n)| {
@@ -1017,7 +1316,10 @@ mod tests {
     #[test]
     fn required_catalog_names_are_complete() {
         let generated = catalogs();
-        let env_count: u32 = FLORA_KINDS.iter().map(|&k| shared::art::flora_variant_count(k)).sum();
+        let env_count: u32 = FLORA_KINDS
+            .iter()
+            .map(|&k| shared::art::flora_variant_count(k))
+            .sum();
         let expected = [
             env_count as usize,
             STRUCTURE_KINDS.len(),

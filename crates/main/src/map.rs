@@ -95,11 +95,22 @@ pub fn flora_cull(kind: FloraKind) -> f32 {
     // fog visibility (main.rs) is set beyond the largest of these so props fade
     // into haze before this hard cull edge rather than popping.
     match kind {
-        FloraKind::Flower | FloraKind::Grass | FloraKind::Mushroom | FloraKind::Reed | FloraKind::Lilypad | FloraKind::Seaweed | FloraKind::Coral => 150.0,
+        FloraKind::Flower
+        | FloraKind::Grass
+        | FloraKind::Mushroom
+        | FloraKind::Reed
+        | FloraKind::Lilypad
+        | FloraKind::Seaweed
+        | FloraKind::Coral => 150.0,
         FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
         FloraKind::Log => 420.0,
         FloraKind::Tree | FloraKind::DeadTree => 880.0,
-        FloraKind::Anemone | FloraKind::Starfish | FloraKind::Shell | FloraKind::Fern | FloraKind::Cattail | FloraKind::Vine => 150.0,
+        FloraKind::Anemone
+        | FloraKind::Starfish
+        | FloraKind::Shell
+        | FloraKind::Fern
+        | FloraKind::Cattail
+        | FloraKind::Vine => 150.0,
         FloraKind::Kelp | FloraKind::Tumbleweed | FloraKind::Skull => 300.0,
         FloraKind::Snowdrift | FloraKind::Stump | FloraKind::Snowman => 420.0,
         FloraKind::Icicle => 150.0,
@@ -162,7 +173,8 @@ pub struct TimeOfDay {
 impl Default for TimeOfDay {
     fn default() -> Self {
         Self {
-            angle: 0.0,
+            // Start around mid-morning so the player lands in daylight.
+            angle: std::f32::consts::FRAC_PI_4,
             day_length: 240.0,
             sun_dir: Vec3::X,
             day: 1,
@@ -193,7 +205,7 @@ struct PlayerInput {
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerInput>()
-            .init_resource::<TimeOfDay>()
+            // TimeOfDay is inserted manually in setup_map for accurate local noon.
             .init_resource::<SunLock>()
             .add_systems(OnEnter(AppState::Playing), setup_map)
             .add_systems(
@@ -413,6 +425,17 @@ fn setup_map(
     let s = level.settlements.first().expect("no settlements");
     let start = shared::sphere::SpherePos::new(Vec3::from_array(s.pos));
     let up = start.0;
+
+    // Start at local noon for the spawn settlement.
+    // Sun orbits around Y: sun_dir ≈ (cos(angle), 0.35, sin(angle)).normalize().
+    // Noon when sun_dir projected onto the XZ plane aligns with up projected onto XZ.
+    // angle = atan2(up.z, up.x) — the settlement's XZ azimuth.
+    let spawn_noon_angle = up.z.atan2(up.x);
+    commands.insert_resource(TimeOfDay {
+        angle: spawn_noon_angle,
+        sun_dir: Vec3::new(spawn_noon_angle.cos(), 0.35, spawn_noon_angle.sin()).normalize(),
+        ..Default::default()
+    });
     let capsule_radius = PLAYER_SIZE * 0.4;
     let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
     let spawn_pos = up * (spawn_surface_r + capsule_half + 0.5);
@@ -880,7 +903,7 @@ pub struct SunLock(pub bool);
 
 impl Default for SunLock {
     fn default() -> Self {
-        Self(true)
+        Self(false)
     }
 }
 

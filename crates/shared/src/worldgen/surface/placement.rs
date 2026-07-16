@@ -136,10 +136,7 @@ pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, Fl
             (0.03, Dry, FloraKind::Icicle),
             (0.003, Flat, FloraKind::Snowman),
         ],
-        Terrain::Beach => &[
-            (0.01, Dry, FloraKind::Rock),
-            (0.02, Flat, FloraKind::Shell),
-        ],
+        Terrain::Beach => &[(0.01, Dry, FloraKind::Rock), (0.02, Flat, FloraKind::Shell)],
         Terrain::Volcanic => &[(0.06, Dry, FloraKind::Rock)],
         Terrain::Glacier => &[
             (0.01, Dry, FloraKind::Rock),
@@ -186,14 +183,13 @@ pub(in crate::worldgen) fn place_flora(
             } else {
                 3.0
             };
-            let density = base
-                * match scale {
+            let density =
+                base * match scale {
                     FloraScale::Wet => wet,
                     FloraScale::WetSq => wet * wet,
                     FloraScale::Dry => dry,
                     FloraScale::Flat => 1.0,
-                }
-                * multiplier;
+                } * multiplier;
             let mut n = density.trunc() as u32;
             if rng.f32() < density.fract() {
                 n += 1;
@@ -211,8 +207,7 @@ pub(in crate::worldgen) fn place_flora(
                     Vec3::from_array(t[2]),
                 );
                 let pos = a + (b - a) * u + (c - a) * v;
-                let hash = (pos.x.to_bits() as u64)
-                    .wrapping_mul(0x9e37_79b9)
+                let hash = (pos.x.to_bits() as u64).wrapping_mul(0x9e37_79b9)
                     ^ (pos.z.to_bits() as u64).rotate_left(17);
                 out.push(FloraData {
                     pos: pos.to_array(),

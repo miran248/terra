@@ -170,14 +170,7 @@ pub fn build_water_surface(
             Vec3::from_array(t[1]),
             Vec3::from_array(t[2]),
         ];
-        subdivide_water_tri(
-            corners,
-            r,
-            subdiv,
-            &mut positions,
-            &mut normals,
-            &mut uvs,
-        );
+        subdivide_water_tri(corners, r, subdiv, &mut positions, &mut normals, &mut uvs);
     }
     if positions.is_empty() {
         return None;

@@ -1,19 +1,19 @@
 mod asset_catalog;
 mod chunks;
-mod combat;
+// mod combat;
 mod constants;
-mod loot;
+// mod loot;
 mod map;
 mod minimap;
 mod physics;
-mod prestige;
-mod turret;
-mod ui;
+// mod prestige;
+// mod turret;
 mod foliage;
+mod ui;
 mod water;
-mod wave;
+// mod wave;
 mod weather;
-mod zombie;
+// mod zombie;
 
 use avian3d::prelude::*;
 use bevy::anti_alias::taa::TemporalAntiAliasing;
@@ -66,14 +66,14 @@ fn main() {
         .add_plugins((
             asset_catalog::AssetCatalogPlugin,
             map::MapPlugin,
-            wave::WavePlugin,
-            zombie::ZombiePlugin,
-            turret::TurretPlugin,
-            combat::CombatPlugin,
-            loot::LootPlugin,
+            // wave::WavePlugin,
+            // zombie::ZombiePlugin,
+            // turret::TurretPlugin,
+            // combat::CombatPlugin,
+            // loot::LootPlugin,
             ui::UiPlugin,
             minimap::MinimapPlugin,
-            prestige::PrestigePlugin,
+            // prestige::PrestigePlugin,
             physics::PhysicsPlugin,
             weather::WeatherPlugin,
             water::WaterPlugin,
