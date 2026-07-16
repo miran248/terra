@@ -1,5 +1,7 @@
 # terra
 
+![Screenshot](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
+
 3D spherical-planet procedural world generator experiment. Bevy 0.19 + Avian3d physics.
 
 ## Crates
