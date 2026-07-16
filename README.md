@@ -2,7 +2,8 @@
 
 3D spherical-planet procedural world experiment. Bevy 0.19 + Avian3d physics.
 
-![Screenshot](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
+![1](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
+![2](https://github.com/user-attachments/assets/4631fd01-0fc6-4e84-aa10-97391faf8128)
 
 ## Crates
 
