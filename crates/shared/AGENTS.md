@@ -1,38 +1,24 @@
-# Purpose
+# Shared crate
 
-Shared library crate for terra. Common types, utilities, and shared Bevy components/resources live here. Every crate in the workspace may depend on `shared`.
+## Ownership
 
-# Ownership
+- Owns stable shared types, constants, utilities, terrain/topology/world generation, item data, app state, and procedural-art contracts.
+- Must not depend on `main`, `gen_level`, or another binary crate. Tests live in source `#[cfg(test)]` modules.
 
-- Owns `crates/shared/` — types, traits, constants, utility functions
-- Must not depend on `main`, `gen_level`, or any other binary crate
+## Local contracts
 
-# Local Contracts
+- Breaking public API or `LevelData` schema changes require workspace-wide checks and regenerated embedded assets.
+- `CellId` is authoritative terrain identity; `FaceId` is derived query/presentation identity.
+- `art.rs` names, catalog paths, deterministic variants, and collider specifications are shared runtime/generator API.
+- `sphere.rs` owns the meter-based 2000 m planet model and geodesic operations.
+- `worldgen.rs` exposes only finalized `CompletedWorld` data and statistics; mutable generation state stays private.
 
-- Public API must be stable or versioned; breaking changes require workspace-wide check
-- Tests live in `#[cfg(test)]` modules within source files
+Load [.agents/skills/terra-worldgen/SKILL.md](../../.agents/skills/terra-worldgen/SKILL.md) for architecture and determinism contracts. Load [.agents/skills/terra-assets/SKILL.md](../../.agents/skills/terra-assets/SKILL.md) when changing art or serialized assets.
 
-# Work Guidance
+## Verification
 
-- `art.rs` — canonical procedural-art names, catalog paths, deterministic variants, and collider specifications shared by generator and runtime
-- `items.rs` — loot/crafting data: `Material`, `WeaponKind` (stats incl. durability), `Recipe`
-- `theme.rs` — UI palette (opencode "orng" dark theme) and bundled Monaspace Neon `FONT_PATH`
-- `sphere.rs` — planet model, unit system (`METER` = 1 m), `PLANET_RADIUS` = 2000 m, `SpherePos` (unit-vector), geodesic ops (`step_toward`, `step_tangent`, `distance`, `ring_point`, `random_point`, `slerp`), tangent bases. Used by terrain/road gen and precompute tool. Not used by game systems (physics provides real positions).
-- `terrain.rs` — biomes and heightmap (`TerrainGen`, seed-based). Six-octave FBM uses mid-scale detail, stronger domain warp, and broad moisture/temperature fields for distinct regional relief and climate. Visible lakes are noise-distorted radial beds kept inside larger invisible coarse containment zones, then receive freshwater or coastal saltwater identity per connected body; freezing is separate face metadata. Flow accumulation on the icosphere cell grid and erosion carve elevation. Precomputed cell elevation/moisture/temperature enables fast barycentric interpolation. `RiverSpring` is the ground-contact source cell for each river. Bevy `Resource`.
-- `zones.rs` — coarse deterministic geography. Default worlds grow five separated medium continents plus three offshore islands, targeting an approximately even land/water split before shoreline transitions. Each world targets five mountain ranges, three lakes, and six river routes.
-- `coarse_river.rs` — deterministic BFS routing across coarse zones, preserving zone-adjacency tie order and avoiding prior rivers and settlements.
-- `topology.rs` — project-owned typed connectivity. `CellId` is authoritative terrain identity; `FaceId` identifies derived query/presentation triangles. Sole owner of canonical cell positions, cell/face adjacency, incidence, and generic component traversal; provides typed full/single components, bounded multi-source distances (optionally constrained by membership), predicate paths, and unweighted shortest paths without external graph or mesh types.
-- `worldgen.rs` — deterministic cell-first level-generation pipeline. Terrain, water bodies, rivers, feature paint, and region inputs are owned on cells; faces are derived once for mesh/query output. Mutable generation state stays internal; the public `CompletedWorld` boundary exposes only finalized `LevelData` and summary statistics.
-- `roads.rs` — settlement/road network (`Roads`, deterministic per seed). `Roads::generate(&terrain)` places 12 settlements, connects with shore-routed bridges. `PathKind::Bridge` for water crossings. Wobbled slerp with fallback to straight. Bevy `Resource`.
-- `planet.rs` — `PlanetMesh` (icosphere tris + grid-indexed ray intersection). `unit_icosphere_tris(n)` builds base triangles. `face_at(dir)` for face lookup. Used by `gen_level` for road/bridge face painting.
-- `level.rs` — typed Postcard `LevelData` schema: precomputed tris, face and authoritative corner terrain identities, blend identities, orthogonal per-face water depth/phase and general surface condition, per-face tag lists and optional region indices, settlements, and roads. Deserialized and validated by main on startup; schema changes regenerate the embedded asset.
-- `state.rs` — `AppState` enum (Loading, Playing, Paused, Restarting, GameOver, Title).
-- `upgrades.rs` — `Upgrade` definitions (Piercing, Bounces, Splits, etc.) and `UpgradeKind`.
+Run `cargo test -p shared` and `cargo clippy -p shared` from the workspace root.
 
-# Verification
+## Child context index
 
-`cargo test -p shared` and `cargo clippy -p shared` from workspace root.
-
-# Child DOX Index
-
-- `src/worldgen/` — private specialized generation algorithms: [AGENTS.md](src/worldgen/AGENTS.md)
+- `src/worldgen/`: [AGENTS.md](src/worldgen/AGENTS.md)
