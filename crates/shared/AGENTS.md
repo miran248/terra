@@ -7,7 +7,7 @@
 
 ## Local contracts
 
-- Breaking public API or `LevelData` schema changes require workspace-wide checks and regenerated embedded assets.
+- Public APIs must remain stable or be versioned. Breaking public API or `LevelData` schema changes require workspace-wide checks and regenerated embedded assets.
 - `CellId` is authoritative terrain identity; `FaceId` is derived query/presentation identity.
 - `art.rs` names, catalog paths, deterministic variants, and collider specifications are shared runtime/generator API.
 - `sphere.rs` owns the meter-based 2000 m planet model and geodesic operations.

@@ -13,7 +13,7 @@
 - `water.rs` renders generator-baked `River`, `RiverSpring`, and `RiverBank` face components plus a buried one-face land apron. Springs taper from inside ground, the apron clips into terrain, outlets share neighboring waterlines, each component contains a river/spring face, and cliffs stay excluded.
 - TAA requires depth and motion-vector prepasses. Any vertex-displacing material must provide a matching `prepass_vertex_shader` with identical math (`foliage.wgsl` and `foliage_prepass.wgsl`). Alpha-blended water does not enter the prepass.
 - Sea/lake water uses a subdivided rest-flat mesh. `water.wgsl` applies radial wind-driven geometric swell and analytic-gradient shading plus normal chop; `Weather.wind` is pushed every frame by `update_water_wind`. Rivers set swell amplitude/scale to zero. Colliders remain undisplaced.
-- Per-face `WaterPhase` replaces frozen liquid sections with collider-backed ice without changing terrain identity or shore geometry. One body may mix frozen/liquid sections. `SurfaceCondition` independently marks frozen ground. Ice and terrain use the same collision margin.
+- Per-face `WaterPhase` replaces frozen liquid sections with collider-backed ice without changing terrain identity or shore geometry. One body may mix frozen/liquid sections. Actors traversing frozen water use the same `0.4` movement multiplier as underwater movement. `SurfaceCondition` independently marks frozen ground. Ice and terrain use the same collision margin.
 
 ## Chunking, geometry, and collision
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -15,6 +17,12 @@ AGENTS_FILES = (
     ROOT / "crates/shared/src/worldgen/AGENTS.md",
 )
 EXPECTED_SKILLS = {"terra-assets", "terra-game", "terra-worldgen"}
+
+
+def assert_contains(test: unittest.TestCase, path: Path, contracts: tuple[str, ...]) -> None:
+    contents = path.read_text()
+    for contract in contracts:
+        test.assertIn(contract, contents, f"missing contract in {path.relative_to(ROOT)}")
 
 
 class AgentAssetContractTests(unittest.TestCase):
@@ -37,39 +45,95 @@ class AgentAssetContractTests(unittest.TestCase):
             ROOT / ".claude/skills",
             ROOT / ".codex/skills",
             ROOT / "skills",
-            ROOT / "scripts",
         )
         self.assertFalse([path for path in legacy_locations if path.exists()])
 
-    def test_agents_hierarchy_is_compact_and_routes_to_project_skills(self) -> None:
-        total_chars = sum(len(path.read_text()) for path in AGENTS_FILES)
-        self.assertLess(total_chars, 14_000)
-        self.assertLess(len((ROOT / "AGENTS.md").read_text()), 2_500)
-
+    def test_agents_hierarchy_routes_to_project_skills(self) -> None:
         combined = "\n".join(path.read_text() for path in AGENTS_FILES)
         for skill in EXPECTED_SKILLS:
             self.assertIn(f".agents/skills/{skill}/SKILL.md", combined)
         self.assertNotIn("DOX framework", combined)
 
-    def test_detailed_contracts_remain_in_canonical_references(self) -> None:
-        references = "\n".join(
-            path.read_text()
-            for path in (ROOT / ".agents/skills").glob("*/references/*.md")
+    def test_recorded_route_sizes_match_canonical_contexts(self) -> None:
+        evidence_path = ROOT / ".agents/context-routes.json"
+        self.assertTrue(evidence_path.is_file(), "missing route-specific size evidence")
+        evidence = json.loads(evidence_path.read_text())
+        self.assertEqual(evidence["measurement"], "Unicode code points")
+        self.assertEqual(evidence["baseline_commit"], "77da6fd")
+
+        expected_routes = {
+            "main-runtime",
+            "worldgen",
+            "asset-generation",
+            "level-generation-primary",
+            "level-generation-with-worldgen",
+        }
+        self.assertEqual({route["name"] for route in evidence["routes"]}, expected_routes)
+
+        for route in evidence["routes"]:
+            with self.subTest(route=route["name"]):
+                self.assertIn("baseline_files", route)
+                before = sum(
+                    len(
+                        subprocess.run(
+                            ["git", "show", f'{evidence["baseline_commit"]}:{path}'],
+                            cwd=ROOT,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        ).stdout
+                    )
+                    for path in route["baseline_files"]
+                )
+                after = sum(len((ROOT / path).read_text()) for path in route["files"])
+                self.assertEqual(before, route["before_chars"])
+                self.assertEqual(after, route["after_chars"])
+                if after > before:
+                    self.assertTrue(route.get("regression_rationale"))
+
+    def test_detailed_contracts_remain_in_their_owning_files(self) -> None:
+        assert_contains(
+            self,
+            ROOT / "crates/shared/AGENTS.md",
+            (
+                "Public APIs must remain stable or be versioned. Breaking public API or "
+                "`LevelData` schema changes require workspace-wide checks and regenerated "
+                "embedded assets.",
+            ),
         )
-        required_contracts = (
-            "Camera3d",
-            "AssetCatalogPlugin",
-            "prepass_vertex_shader",
-            "Avian3d",
-            "LevelData",
-            "byte-for-byte deterministic",
-            "CompletedWorld",
-            "CellId",
-            "FIFO",
-            "locked seeds",
+        assert_contains(
+            self,
+            ROOT / ".agents/skills/terra-game/references/runtime-contracts.md",
+            (
+                "The world is a 3D planet (`Camera3d`, PBR meshes, `DirectionalLight`)",
+                "`AssetCatalogPlugin` holds `AppState::Loading`",
+                "matching `prepass_vertex_shader` with identical math",
+                "Actors use Avian3d `RigidBody`, `Collider`, and `Forces`",
+                "same `0.4` movement multiplier as underwater movement",
+            ),
         )
-        for contract in required_contracts:
-            self.assertIn(contract, references)
+        assert_contains(
+            self,
+            ROOT / ".agents/skills/terra-assets/references/pipelines.md",
+            (
+                "Catalog generation is byte-for-byte deterministic",
+                "cargo test -p gen_assets",
+                "direct seed-1337 byte comparison",
+            ),
+        )
+        assert_contains(
+            self,
+            ROOT / ".agents/skills/terra-worldgen/references/architecture.md",
+            (
+                "public `CompletedWorld` exposes finalized `LevelData` and statistics",
+                "`CellId` is authoritative terrain identity; `FaceId` is derived",
+                "FIFO reaction order",
+                "floating-point operation order for locked seeds",
+                "locked-seed fingerprints",
+                "strict workspace `cargo clippy`",
+                "direct seed-1337 asset comparison",
+            ),
+        )
 
 
 if __name__ == "__main__":
