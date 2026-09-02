@@ -1,6 +1,6 @@
 {
   "measurement": "Unicode code points",
-  "method": "Sum the repository-relative files listed for each route. Baseline files are read from baseline_commit; current files are read from the working tree. Each route includes the root and nearest AGENTS.md plus only the explicitly loaded project skill and reference.",
+  "method": "Sum the repository-relative files listed for each route. Baseline files are read from baseline_commit; current files are read from the working tree. Each route includes every applicable AGENTS.md chain plus only the project skills and pipeline-specific references named by that route.",
   "baseline_commit": "77da6fd",
   "routes": [
     {
@@ -45,11 +45,10 @@
         "AGENTS.md",
         "crates/gen_assets/AGENTS.md",
         ".agents/skills/terra-assets/SKILL.md",
-        ".agents/skills/terra-assets/references/pipelines.md"
+        ".agents/skills/terra-assets/references/glb-pipeline.md"
       ],
       "before_chars": 5200,
-      "after_chars": 6301,
-      "regression_rationale": "The prior short crate context omitted canonical generation commands, no-write check behavior, serialized level boundaries, and deterministic comparison gates; the added detail is loaded only for asset work."
+      "after_chars": 4543
     },
     {
       "name": "level-generation-primary",
@@ -61,29 +60,31 @@
         "AGENTS.md",
         "crates/gen_level/AGENTS.md",
         ".agents/skills/terra-assets/SKILL.md",
-        ".agents/skills/terra-assets/references/pipelines.md"
+        ".agents/skills/terra-assets/references/level-pipeline.md"
       ],
       "before_chars": 5879,
-      "after_chars": 6370,
-      "regression_rationale": "The primary level-generation route now includes exact generation, serialization, benchmark, and deterministic asset gates that the prior crate context did not preserve."
+      "after_chars": 5026
     },
     {
       "name": "level-generation-with-worldgen",
       "baseline_files": [
         "AGENTS.md",
-        "crates/gen_level/AGENTS.md"
+        "crates/gen_level/AGENTS.md",
+        "crates/shared/AGENTS.md",
+        "crates/shared/src/worldgen/AGENTS.md"
       ],
       "files": [
         "AGENTS.md",
         "crates/gen_level/AGENTS.md",
+        "crates/shared/AGENTS.md",
+        "crates/shared/src/worldgen/AGENTS.md",
         ".agents/skills/terra-assets/SKILL.md",
-        ".agents/skills/terra-assets/references/pipelines.md",
+        ".agents/skills/terra-assets/references/level-pipeline.md",
         ".agents/skills/terra-worldgen/SKILL.md",
         ".agents/skills/terra-worldgen/references/architecture.md"
       ],
-      "before_chars": 5879,
-      "after_chars": 12592,
-      "regression_rationale": "This optional deep route intentionally loads both complete references for changes spanning serialization and generation policy; ordinary level output work uses the smaller primary route."
+      "before_chars": 13405,
+      "after_chars": 13284
     }
   ]
 }

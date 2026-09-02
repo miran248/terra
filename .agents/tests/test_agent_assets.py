@@ -17,6 +17,67 @@ AGENTS_FILES = (
     ROOT / "crates/shared/src/worldgen/AGENTS.md",
 )
 EXPECTED_SKILLS = {"terra-assets", "terra-game", "terra-worldgen"}
+EXPECTED_ROUTE_FILES = {
+    "main-runtime": {
+        "baseline_files": ["AGENTS.md", "crates/main/AGENTS.md"],
+        "files": [
+            "AGENTS.md",
+            "crates/main/AGENTS.md",
+            ".agents/skills/terra-game/SKILL.md",
+            ".agents/skills/terra-game/references/runtime-contracts.md",
+        ],
+    },
+    "worldgen": {
+        "baseline_files": [
+            "AGENTS.md",
+            "crates/shared/AGENTS.md",
+            "crates/shared/src/worldgen/AGENTS.md",
+        ],
+        "files": [
+            "AGENTS.md",
+            "crates/shared/AGENTS.md",
+            "crates/shared/src/worldgen/AGENTS.md",
+            ".agents/skills/terra-worldgen/SKILL.md",
+            ".agents/skills/terra-worldgen/references/architecture.md",
+        ],
+    },
+    "asset-generation": {
+        "baseline_files": ["AGENTS.md", "crates/gen_assets/AGENTS.md"],
+        "files": [
+            "AGENTS.md",
+            "crates/gen_assets/AGENTS.md",
+            ".agents/skills/terra-assets/SKILL.md",
+            ".agents/skills/terra-assets/references/glb-pipeline.md",
+        ],
+    },
+    "level-generation-primary": {
+        "baseline_files": ["AGENTS.md", "crates/gen_level/AGENTS.md"],
+        "files": [
+            "AGENTS.md",
+            "crates/gen_level/AGENTS.md",
+            ".agents/skills/terra-assets/SKILL.md",
+            ".agents/skills/terra-assets/references/level-pipeline.md",
+        ],
+    },
+    "level-generation-with-worldgen": {
+        "baseline_files": [
+            "AGENTS.md",
+            "crates/gen_level/AGENTS.md",
+            "crates/shared/AGENTS.md",
+            "crates/shared/src/worldgen/AGENTS.md",
+        ],
+        "files": [
+            "AGENTS.md",
+            "crates/gen_level/AGENTS.md",
+            "crates/shared/AGENTS.md",
+            "crates/shared/src/worldgen/AGENTS.md",
+            ".agents/skills/terra-assets/SKILL.md",
+            ".agents/skills/terra-assets/references/level-pipeline.md",
+            ".agents/skills/terra-worldgen/SKILL.md",
+            ".agents/skills/terra-worldgen/references/architecture.md",
+        ],
+    },
+}
 
 
 def assert_contains(test: unittest.TestCase, path: Path, contracts: tuple[str, ...]) -> None:
@@ -61,18 +122,15 @@ class AgentAssetContractTests(unittest.TestCase):
         self.assertEqual(evidence["measurement"], "Unicode code points")
         self.assertEqual(evidence["baseline_commit"], "77da6fd")
 
-        expected_routes = {
-            "main-runtime",
-            "worldgen",
-            "asset-generation",
-            "level-generation-primary",
-            "level-generation-with-worldgen",
-        }
-        self.assertEqual({route["name"] for route in evidence["routes"]}, expected_routes)
+        self.assertEqual(
+            [route["name"] for route in evidence["routes"]], list(EXPECTED_ROUTE_FILES)
+        )
 
         for route in evidence["routes"]:
             with self.subTest(route=route["name"]):
-                self.assertIn("baseline_files", route)
+                expected = EXPECTED_ROUTE_FILES[route["name"]]
+                self.assertEqual(route["baseline_files"], expected["baseline_files"])
+                self.assertEqual(route["files"], expected["files"])
                 before = sum(
                     len(
                         subprocess.run(
@@ -92,6 +150,12 @@ class AgentAssetContractTests(unittest.TestCase):
                     self.assertTrue(route.get("regression_rationale"))
 
     def test_detailed_contracts_remain_in_their_owning_files(self) -> None:
+        asset_skill = (ROOT / ".agents/skills/terra-assets/SKILL.md").read_text()
+        self.assertNotIn("cargo run -p gen_assets", asset_skill)
+        self.assertNotIn("cargo run -p gen_level", asset_skill)
+        self.assertIn("root and every applicable subtree `AGENTS.md`", asset_skill)
+        self.assertIn("generation-policy changes, also load `terra-worldgen`", asset_skill)
+
         assert_contains(
             self,
             ROOT / "crates/shared/AGENTS.md",
@@ -114,10 +178,16 @@ class AgentAssetContractTests(unittest.TestCase):
         )
         assert_contains(
             self,
-            ROOT / ".agents/skills/terra-assets/references/pipelines.md",
+            ROOT / ".agents/skills/terra-assets/references/glb-pipeline.md",
             (
                 "Catalog generation is byte-for-byte deterministic",
                 "cargo test -p gen_assets",
+            ),
+        )
+        assert_contains(
+            self,
+            ROOT / ".agents/skills/terra-assets/references/level-pipeline.md",
+            (
                 "direct seed-1337 byte comparison",
             ),
         )
