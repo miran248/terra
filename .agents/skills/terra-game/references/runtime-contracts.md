@@ -21,9 +21,9 @@
 - LOD 1 is always resident for terrain/water/river/ice and map cameras. LOD 2 at edge distance ≤960 m adds structures and large flora; LOD 3 at ≤300 m adds small flora and subdivided water swell.
 - Distance is camera to chunk edge (centroid distance minus radius). Transitions are incremental: static meshes build once, water rebuilds only on subdivision change, and structures/flora apply deltas. Downgrades use 15% hysteresis; transitions are budgeted and flora streams nearest-first under `FLORA_PER_FRAME`.
 - Chunk entities carry `Ground` for prestige cleanup. `DEBUG_CHUNK_BORDERS` is diagnostic-only and must be off for shipping.
-- Physics never streams. Whole-planet terrain, ice, and bridge trimeshes spawn in `setup_map`; flora/structure colliders live in chunks beyond the zombie ring.
+- Physics never streams. Whole-planet terrain, ice, and bridge trimeshes spawn in `setup_map`; flora/structure colliders live in chunks well beyond the 120 m zombie ring.
 - Terrain collision always uses full-resolution triangles. Bridge faces are raised to sea level in that trimesh. Bridge planks are visual-only cuboids at constant radius and 200 m spacing; there are no separate bridge collider entities.
-- Non-bridge roads are visual-only 4 m ribbons sampled against displaced terrain and vertex-colored from baked `RoadMaterial`; they never replace or add collision.
+- Non-bridge roads are visual-only 4 m ribbons subdivided at roughly 4 m intervals, sampled against displaced terrain at both edges, and vertex-colored from baked `RoadMaterial`; they never replace or add collision.
 
 ## Physics and input
 
@@ -35,7 +35,7 @@
 
 ## Maps, visuals, and gameplay state
 
-- Minimap is fixed heading-up 2D with a rotating edge compass. Fullscreen map is a north-up perspective `Camera3d` globe with pan/drag and release-without-drag terrain ray casting.
+- Minimap is fixed heading-up 2D with a rotating edge compass. Fullscreen map is a north-up perspective `Camera3d` globe with the same circular border and shared actor, loot, settlement, named-region, and edge-cardinal overlays; it supports pan/drag and release-without-drag terrain ray casting.
 - Named regions use baked `LevelRegions` centroids. Mesh-backed markers require `ViewVisibility`; hidden-side globe markers are excluded. Convert `ComputedNode` physical sizes to logical pixels for overlay projection.
 - `map::GameAssets` owns the procedural projectile. `loot::LootAssets` owns material/weapon GLB scenes. Player, zombie, loot, flora, and structure scenes are visual children of runtime-owned placement/physics roots; imported scenes never own gameplay collision.
 - Actor scenes bind to the shared animation graph after instantiation. The player scene owns `socket.hand`; `sync_equipped_weapon` mirrors `LootState::equipped` with a visual-only child.

@@ -174,6 +174,11 @@ class AgentAssetContractTests(unittest.TestCase):
                 "matching `prepass_vertex_shader` with identical math",
                 "Actors use Avian3d `RigidBody`, `Collider`, and `Forces`",
                 "same `0.4` movement multiplier as underwater movement",
+                "well beyond the 120 m zombie ring",
+                "subdivided at roughly 4 m intervals",
+                "sampled against displaced terrain at both edges",
+                "same circular border",
+                "shared actor, loot, settlement, named-region, and edge-cardinal overlays",
             ),
         )
         assert_contains(
