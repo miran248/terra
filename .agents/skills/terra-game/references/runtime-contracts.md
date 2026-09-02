@@ -4,7 +4,7 @@
 
 - Units are meters. Reference scale: planet radius 2000 m, actors 2 m, mountains ±500 m, player speed 60 m/s, attack range about 50 m.
 - `TerrainGen::habitable_spawn()` chooses a deterministic land spawn from `PLANET_SEED`.
-- The world is a 3D planet (`Camera3d`, PBR meshes, `DirectionalLight`). `gen_level` precomputes planet mesh, collision, roads, settlements, and typed face data into `assets/level_{seed}.bin`.
+- The world is a 3D planet (`Camera3d`, PBR meshes, `DirectionalLight`). `gen_level` precomputes planet mesh, collision, roads, settlements, and typed face data into tracked `assets/level_{seed}.bin`, embedded at compile time with `include_bytes!` and deserialized with Postcard.
 - Runtime consumes typed, face-oriented `LevelData`. It performs no terrain-id/tag-offset decoding, clustering, pathfinding, topology derivation, or generation policy. `PlanetMesh::face_at` bridges arbitrary positions; the HUD uses the nearest authoritative face-corner terrain identity.
 - `AssetCatalogPlugin` holds `AppState::Loading` until all four GLB catalogs and dependencies resolve. Systems requiring `setup_map` resources run only in `AppState::Playing`.
 
@@ -12,7 +12,7 @@
 
 - `water.rs` renders generator-baked `River`, `RiverSpring`, and `RiverBank` face components plus a buried one-face land apron. Springs taper from inside ground, the apron clips into terrain, outlets share neighboring waterlines, each component contains a river/spring face, and cliffs stay excluded.
 - TAA requires depth and motion-vector prepasses. Any vertex-displacing material must provide a matching `prepass_vertex_shader` with identical math (`foliage.wgsl` and `foliage_prepass.wgsl`). Alpha-blended water does not enter the prepass.
-- Sea/lake water uses a subdivided rest-flat mesh. `water.wgsl` applies radial wind-driven geometric swell and analytic-gradient shading plus normal chop; `Weather.wind` is pushed every frame by `update_water_wind`. Rivers set swell amplitude/scale to zero. Colliders remain undisplaced.
+- `WATER_SUBDIV` controls sea/lake mesh subdivision. In `water.wgsl`, `swell_amp` controls geometric-swell amplitude (`0` disables it for rivers), while `swell_scale` controls spatial frequency. Both swell and normal chop drift downwind from per-frame `Weather.wind`, pushed by `update_water_wind`; colliders remain undisplaced.
 - Per-face `WaterPhase` replaces frozen liquid sections with collider-backed ice without changing terrain identity or shore geometry. One body may mix frozen/liquid sections. Actors traversing frozen water use the same `0.4` movement multiplier as underwater movement. `SurfaceCondition` independently marks frozen ground. Ice and terrain use the same collision margin.
 
 ## Chunking, geometry, and collision
@@ -35,8 +35,8 @@
 
 ## Maps, visuals, and gameplay state
 
-- Minimap is fixed heading-up 2D with a rotating edge compass. Fullscreen map is a north-up perspective `Camera3d` globe with the same circular border and shared actor, loot, settlement, named-region, and edge-cardinal overlays; it supports pan/drag and release-without-drag terrain ray casting.
-- Named regions use baked `LevelRegions` centroids. Mesh-backed markers require `ViewVisibility`; hidden-side globe markers are excluded. Convert `ComputedNode` physical sizes to logical pixels for overlay projection.
+- Minimap is fixed heading-up 2D with a rotating edge compass. Minimap markers use flat projection. Fullscreen map is a north-up perspective `Camera3d` globe with the same circular border and shared actor, loot, settlement, named-region, and edge-cardinal overlays; it supports pan/drag and release-without-drag terrain ray casting.
+- Baked `LevelRegions` coverage includes named oceans, lakes, rivers, land biomes, ranges, coasts, towns, and roads; markers use region centroids. Mesh-backed markers require `ViewVisibility`; hidden-side globe markers are excluded. Convert `ComputedNode` physical sizes to logical pixels for overlay projection.
 - `map::GameAssets` owns the procedural projectile. `loot::LootAssets` owns material/weapon GLB scenes. Player, zombie, loot, flora, and structure scenes are visual children of runtime-owned placement/physics roots; imported scenes never own gameplay collision.
 - Actor scenes bind to the shared animation graph after instantiation. The player scene owns `socket.hand`; `sync_equipped_weapon` mirrors `LootState::equipped` with a visual-only child.
 - `LootState` is the single resource for materials, collected weapons, and equipped weapon; reset it on prestige. Weapons override fire stats, lose durability per shot, and auto-swap on break. Dead zombies drop loot; wave-start loot supports magnet collection, equipping, and crafting.
