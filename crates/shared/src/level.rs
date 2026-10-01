@@ -110,7 +110,7 @@ impl RegionMemberships {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FaceTag {
     Road,
-    Town,
+    Settlement,
     Bridge,
     BridgeEntry,
 }
@@ -119,7 +119,7 @@ impl FaceTag {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Road => "Road",
-            Self::Town => "Town",
+            Self::Settlement => "Settlement",
             Self::Bridge => "Bridge",
             Self::BridgeEntry => "Bridge Entry",
         }
@@ -130,7 +130,7 @@ impl FaceTag {
 pub enum BlendTarget {
     Terrain(Terrain),
     Road,
-    Town,
+    Settlement,
     BridgeEntry,
 }
 
@@ -139,7 +139,7 @@ impl BlendTarget {
         match self {
             Self::Terrain(_) => None,
             Self::Road => Some("Road"),
-            Self::Town => Some("Town"),
+            Self::Settlement => Some("Settlement"),
             Self::BridgeEntry => Some("Bridge Entry"),
         }
     }
@@ -156,6 +156,9 @@ pub struct FaceBlend {
 pub struct LevelData {
     /// TerrainGen seed — grid, zones, and climate are rebuilt from this.
     pub seed: u32,
+    /// Settlement kind targets and footprint sizes used to generate this level.
+    /// Runtime uses the same configuration when rebuilding terrain queries.
+    pub settlement_config: SettlementConfig,
     /// The SOLVED per-vertex elevation field (sub=5, ~10k). The tile map shapes
     /// this via the constraint solver at gen time; the runtime loads it directly
     /// (`TerrainGen::from_field`) so mesh, physics, and HUD agree exactly.
@@ -193,7 +196,7 @@ pub struct LevelData {
     /// a settlement entrance that also meets a bridge.
     pub road_endpoints: Vec<RoadEndpointData>,
     /// Named contiguous feature clusters: oceans, lakes, rivers, beaches,
-    /// forests, mountain ranges, towns, roads, …
+    /// forests, mountain ranges, settlements, roads, …
     pub regions: Vec<RegionData>,
     /// Named region memberships for each derived face, projected from the
     /// authoritative cell memberships.
@@ -502,6 +505,31 @@ impl LevelData {
         if self.settlements.is_empty() {
             return Err("level has no settlements".into());
         }
+        self.settlement_config.validate()?;
+        if self.settlement_config.total() != self.settlements.len() {
+            return Err(format!(
+                "settlement_config targets {} settlements, level has {}",
+                self.settlement_config.total(),
+                self.settlements.len()
+            ));
+        }
+        for (kind, expected) in [
+            (SettlementKind::Town, self.settlement_config.towns),
+            (SettlementKind::Village, self.settlement_config.villages),
+            (SettlementKind::Outpost, self.settlement_config.outposts),
+        ] {
+            let actual = self
+                .settlements
+                .iter()
+                .filter(|settlement| settlement.kind == kind)
+                .count();
+            if actual != expected {
+                return Err(format!(
+                    "level has {actual} {} settlements, expected {expected}",
+                    kind.name()
+                ));
+            }
+        }
         for (road_index, road) in self.roads.iter().enumerate() {
             if road.from_endpoint as usize >= self.road_endpoints.len()
                 || road.to_endpoint as usize >= self.road_endpoints.len()
@@ -560,7 +588,7 @@ pub enum RegionKind {
     Savanna,
     Volcano,
     Glacier,
-    Town,
+    Settlement,
     Road,
 }
 
@@ -583,8 +611,102 @@ impl RegionKind {
             Self::Savanna => 13,
             Self::Volcano => 14,
             Self::Glacier => 15,
-            Self::Town => 16,
+            Self::Settlement => 16,
             Self::Road => 17,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SettlementKind {
+    Town,
+    Village,
+    Outpost,
+}
+
+impl SettlementKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Town => "Town",
+            Self::Village => "Village",
+            Self::Outpost => "Outpost",
+        }
+    }
+}
+
+/// Configurable size and world-wide target counts for generated settlements.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Debug)]
+pub struct SettlementConfig {
+    pub towns: usize,
+    pub villages: usize,
+    pub outposts: usize,
+    pub town_radius_m: f32,
+    pub village_radius_m: f32,
+    pub outpost_radius_m: f32,
+}
+
+impl SettlementConfig {
+    pub const fn total(self) -> usize {
+        self.towns
+            .saturating_add(self.villages)
+            .saturating_add(self.outposts)
+    }
+
+    pub fn kind_at(self, index: usize) -> Option<SettlementKind> {
+        if index < self.towns {
+            Some(SettlementKind::Town)
+        } else if index < self.towns.saturating_add(self.villages) {
+            Some(SettlementKind::Village)
+        } else if index < self.total() {
+            Some(SettlementKind::Outpost)
+        } else {
+            None
+        }
+    }
+
+    pub const fn radius_m(self, kind: SettlementKind) -> f32 {
+        match kind {
+            SettlementKind::Town => self.town_radius_m,
+            SettlementKind::Village => self.village_radius_m,
+            SettlementKind::Outpost => self.outpost_radius_m,
+        }
+    }
+
+    pub fn validate(self) -> Result<(), String> {
+        if self.towns == 0 || self.villages == 0 || self.outposts == 0 {
+            return Err("settlement config must include towns, villages, and outposts".into());
+        }
+        if self
+            .towns
+            .checked_add(self.villages)
+            .and_then(|count| count.checked_add(self.outposts))
+            .is_none()
+        {
+            return Err("settlement target counts overflow usize".into());
+        }
+        if [
+            self.town_radius_m,
+            self.village_radius_m,
+            self.outpost_radius_m,
+        ]
+        .into_iter()
+        .any(|radius| !radius.is_finite() || radius <= 0.0)
+        {
+            return Err("settlement radii must be positive and finite".into());
+        }
+        Ok(())
+    }
+}
+
+impl Default for SettlementConfig {
+    fn default() -> Self {
+        Self {
+            towns: 3,
+            villages: 6,
+            outposts: 3,
+            town_radius_m: 55.0,
+            village_radius_m: 35.0,
+            outpost_radius_m: 20.0,
         }
     }
 }
@@ -593,6 +715,7 @@ impl RegionKind {
 pub struct SettlementData {
     pub name: String,
     pub pos: [f32; 3],
+    pub kind: SettlementKind,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -616,6 +739,7 @@ pub enum RoadEndpointRole {
     SettlementEntrance { settlement_index: u32 },
     Junction,
     BridgeEntrance,
+    RoadEnd,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]

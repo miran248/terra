@@ -12,7 +12,7 @@ pub(in crate::worldgen) fn mark_blends(
     let plain = |t: Terrain| t.is_land();
     let overlay = |face_index: usize| {
         face_solid(grid, &painted.roads, FaceId::new(face_index))
-            || face_solid(grid, &painted.towns, FaceId::new(face_index))
+            || face_solid(grid, &painted.settlements, FaceId::new(face_index))
             || face_solid(grid, &painted.bridge_entries, FaceId::new(face_index))
     };
     let mut out = Vec::new();
@@ -25,8 +25,8 @@ pub(in crate::worldgen) fn mark_blends(
         let feature = if painted_corners(grid, &painted.bridge_entries, FaceId::new(face_index)) > 0
         {
             Some(BlendTarget::BridgeEntry)
-        } else if painted_corners(grid, &painted.towns, FaceId::new(face_index)) > 0 {
-            Some(BlendTarget::Town)
+        } else if painted_corners(grid, &painted.settlements, FaceId::new(face_index)) > 0 {
+            Some(BlendTarget::Settlement)
         } else if painted_corners(grid, &painted.roads, FaceId::new(face_index)) > 0 {
             Some(BlendTarget::Road)
         } else {

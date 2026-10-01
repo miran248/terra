@@ -3,6 +3,7 @@ use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+use crate::level::{SettlementConfig, SettlementKind};
 use crate::planet::{PlanetMesh, unit_icosphere_tris};
 use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
 use crate::zones::{COARSE_SUB, ZoneConfig, ZoneKind, Zones};
@@ -165,6 +166,7 @@ pub struct TerrainGen {
     pub river_paths: Vec<Vec<SpherePos>>,
     pub settlement_anchors: Vec<SpherePos>,
     pub road_paths: Vec<Vec<SpherePos>>,
+    settlement_config: SettlementConfig,
     seed: u32,
 }
 
@@ -174,7 +176,11 @@ impl TerrainGen {
     /// (InitTerrain → ProposeElevation → PlanRivers → PlaceSettlements →
     /// PlanRoads) so each shows up in the event trace.
     pub fn new(seed: u32) -> Self {
-        let mut tg = Self::init(seed);
+        Self::new_with_settlement_config(seed, SettlementConfig::default())
+    }
+
+    pub fn new_with_settlement_config(seed: u32, settlement_config: SettlementConfig) -> Self {
+        let mut tg = Self::init_with_settlement_config(seed, settlement_config);
         tg.set_vert_elevations(tg.propose_elevation());
         let (moist, temp) = tg.compute_climate();
         tg.set_climate(moist, temp);
@@ -187,7 +193,15 @@ impl TerrainGen {
     /// Rebuild from a solved, baked elevation field (runtime path). Skips all
     /// topology planning — the level binary already carries its results.
     pub fn from_field(seed: u32, vert_elev: Vec<f32>) -> Self {
-        let mut tg = Self::init(seed);
+        Self::from_field_with_settlement_config(seed, vert_elev, SettlementConfig::default())
+    }
+
+    pub fn from_field_with_settlement_config(
+        seed: u32,
+        vert_elev: Vec<f32>,
+        settlement_config: SettlementConfig,
+    ) -> Self {
+        let mut tg = Self::init_with_settlement_config(seed, settlement_config);
         assert_eq!(vert_elev.len(), tg.verts.len(), "baked field size mismatch");
         tg.vert_elev = vert_elev;
         let (moist, temp) = tg.compute_climate();
@@ -198,6 +212,13 @@ impl TerrainGen {
     /// Grid, noise generators, and coarse zones — the deterministic
     /// environment every later planning step reads. No elevation yet.
     pub fn init(seed: u32) -> Self {
+        Self::init_with_settlement_config(seed, SettlementConfig::default())
+    }
+
+    pub fn init_with_settlement_config(seed: u32, settlement_config: SettlementConfig) -> Self {
+        settlement_config
+            .validate()
+            .unwrap_or_else(|error| panic!("invalid settlement config: {error}"));
         let sub = 6;
         let (verts, adj_off, adj_data) = build_ico_grid(sub);
         let vert_grid = build_vert_grid(&verts, Self::VERT_GRID_LATS, Self::VERT_GRID_LONS);
@@ -209,7 +230,14 @@ impl TerrainGen {
             .set_persistence(0.58);
         let sub_seed = |delta: u32| seed.wrapping_add(delta);
 
-        let zones = Zones::generate(seed, &ZoneConfig::default());
+        let mut zone_config = ZoneConfig::default();
+        zone_config
+            .interior
+            .iter_mut()
+            .find(|spec| spec.kind == ZoneKind::Settlement)
+            .expect("default zone config includes settlement zones")
+            .count = settlement_config.total();
+        let zones = Zones::generate(seed, &zone_config);
         let coarse_mesh = PlanetMesh::new(unit_icosphere_tris(COARSE_SUB));
 
         Self {
@@ -239,8 +267,19 @@ impl TerrainGen {
             river_paths: Vec::new(),
             settlement_anchors: Vec::new(),
             road_paths: Vec::new(),
+            settlement_config,
             seed,
         }
+    }
+
+    pub fn settlement_config(&self) -> SettlementConfig {
+        self.settlement_config
+    }
+
+    pub fn settlement_kind(&self, index: usize) -> SettlementKind {
+        self.settlement_config
+            .kind_at(index)
+            .expect("settlement index must be in configured range")
     }
 
     // ---- solver access (worldgen::SolveElevation) ----

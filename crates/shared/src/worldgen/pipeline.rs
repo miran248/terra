@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 use super::network;
 use super::{
     CellField, CellSet, FaceBlend, FaceId, FaceTag, FloraData, GenState, Landform, Painted,
-    RegionData, RegionMemberships, RoadMaterial, RoadPath, SlopeClass, SpherePos, StructureData,
-    SurfaceCondition, Terrain, TerrainGen, WaterDepth, WaterPhase, build_bridges, build_face_tags,
-    build_mesh, build_regions, classify_cover, classify_landform, classify_slope,
+    RegionData, RegionMemberships, RoadMaterial, RoadPath, SettlementConfig, SlopeClass, SpherePos,
+    StructureData, SurfaceCondition, Terrain, TerrainGen, WaterDepth, WaterPhase, build_bridges,
+    build_face_tags, build_mesh, build_regions, classify_cover, classify_landform, classify_slope,
     classify_water_depth, derive_tiles, face_majority, face_max, face_road_material, mark_blends,
     normalize_water_bodies, paint_features, paint_rivers, place_flora, place_structures,
     resolve_transitions, river_surface_radii, solve_elevation, water_surface_radii,
@@ -34,7 +34,7 @@ enum Command {
     PaintRivers,
     /// Water identity from connectivity (ocean vs enclosed lake).
     NormalizeWater,
-    /// Roads + towns face sets.
+    /// Road and settlement face sets.
     PaintFeatures,
     /// Shore banding, micro WFC, coast segmentation, forest min-size.
     ResolveTransitions,
@@ -96,6 +96,7 @@ enum Event {
         Painted,
         Vec<RoadPath>,
         super::network::RoadGraph,
+        Vec<super::StructureSite>,
     ),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
     TagsBuilt(Vec<Vec<FaceTag>>),
@@ -135,7 +136,7 @@ impl Event {
             Event::RiversPainted(_) => "rivers painted".into(),
             Event::WaterNormalized(_) => "water bodies normalized".into(),
             Event::FeaturesPainted(_, roads) => {
-                format!("roads + towns painted: {} roads kept", roads.len())
+                format!("roads + settlements painted: {} roads kept", roads.len())
             }
             Event::TransitionsResolved(_) => "transitions resolved".into(),
             Event::BlendsMarked(b) => format!("blends marked: {}", b.len()),
@@ -186,9 +187,9 @@ impl Event {
 
 fn decide(state: &GenState, cmd: &Command) -> Event {
     match cmd {
-        Command::InitTerrain => {
-            Event::TerrainInitialized(Box::new(TerrainGen::init(state.grid.seed)))
-        }
+        Command::InitTerrain => Event::TerrainInitialized(Box::new(
+            TerrainGen::init_with_settlement_config(state.grid.seed, state.settlement_config),
+        )),
         Command::ProposeElevation => Event::ElevationProposed(state.terrain().propose_elevation()),
         Command::ComputeClimate => {
             let (moist, temp) = state.terrain().compute_climate();
@@ -297,14 +298,17 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
             let mut painted = state.painted.clone();
             let mut roads = state.roads.clone();
             let settlements = &state.terrain().settlement_anchors;
-            let settlement_entrances = network::connect_settlements(
-                &state.grid,
-                state.cells.as_slice(),
-                state.slope_class.as_slice(),
-                settlements,
-                &mut painted,
-                &mut roads,
-            );
+            let (settlement_entrances, layout_entrances, settlement_structures) =
+                network::connect_settlements(
+                    &state.grid,
+                    state.terrain(),
+                    state.cells.as_slice(),
+                    state.slope_class.as_slice(),
+                    settlements,
+                    state.terrain().settlement_config(),
+                    &mut painted,
+                    &mut roads,
+                );
             let mut candidates_painted = Painted::empty(state.grid.cell_count());
             let candidates = build_bridges(
                 &state.grid,
@@ -320,14 +324,23 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
                 &state.grid,
                 state.cells.as_slice(),
                 state.slope_class.as_slice(),
-                &settlement_entrances,
+                settlements,
+                state.terrain().settlement_config(),
+                &layout_entrances,
+                &settlement_structures,
                 candidates,
                 &mut painted,
                 &mut roads,
             );
-            let network =
-                network::build_road_graph(&state.grid, &roads, &bridges, &settlement_entrances);
-            Event::BridgesSelected(bridges, painted, roads, network)
+            let network = network::build_road_graph(
+                &state.grid,
+                &roads,
+                &bridges,
+                &settlement_entrances,
+                settlements,
+                state.terrain().settlement_config(),
+            );
+            Event::BridgesSelected(bridges, painted, roads, network, settlement_structures)
         }
         Command::BuildMesh => {
             let (tris, cols) = build_mesh(
@@ -356,6 +369,7 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
             &state.painted,
             state.slope_class.as_slice(),
             state.mesh_tris.as_slice(),
+            &state.settlement_structures,
         )),
         Command::BakeOutputs => bake_outputs(state),
     }
@@ -621,11 +635,12 @@ fn evolve(state: &mut GenState, event: Event) {
             state.regions = r;
             state.face_regions = fr;
         }
-        Event::BridgesSelected(b, p, roads, network) => {
+        Event::BridgesSelected(b, p, roads, network, settlement_structures) => {
             state.bridges = b;
             state.painted = p;
             state.roads = roads;
             state.network = network;
+            state.settlement_structures = settlement_structures;
         }
         Event::MeshBuilt(t, c) => {
             state.mesh_tris = t.into();
@@ -708,8 +723,17 @@ fn react(event: &Event) -> Vec<Command> {
 }
 
 /// Run the full pipeline for a seed. `log` receives one line per event.
-pub(super) fn run_state(seed: u32, mut log: impl FnMut(&str)) -> GenState {
-    let mut state = GenState::new(seed);
+#[cfg(test)]
+pub(super) fn run_state(seed: u32, log: impl FnMut(&str)) -> GenState {
+    run_state_with_settlement_config(seed, SettlementConfig::default(), log)
+}
+
+pub(super) fn run_state_with_settlement_config(
+    seed: u32,
+    settlement_config: SettlementConfig,
+    mut log: impl FnMut(&str),
+) -> GenState {
+    let mut state = GenState::new(seed, settlement_config);
     let mut queue = VecDeque::from([Command::InitTerrain]);
     while let Some(cmd) = queue.pop_front() {
         let event = decide(&state, &cmd);

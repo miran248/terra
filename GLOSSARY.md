@@ -48,15 +48,23 @@ Dry, non-Cliff ground on a Flat or Gentle slope. A road segment also needs a saf
 _Avoid_: Walkable terrain when referring specifically to ground that can carry roads.
 
 **Road**:
-A named travel connection between consecutive endpoints: junctions, settlement entrances, or bridge entrances. Each connection has its own identity and name, including roads inside settlements.
+A named travel connection between two road endpoints. Each connection has its own identity and name, including streets inside settlements; its identity changes where it meets a junction, settlement entrance, or bridge entrance.
 _Avoid_: Route when implying one identity continues through several roads and bridges.
+
+**Road endpoint**:
+A named place where a road begins or ends. One place can carry more than one endpoint role when those concepts physically meet.
+_Avoid_: Road when referring to the place rather than the connection.
 
 **Junction**:
 A place where roads physically join, including a fork or crossroads, and where each meeting road ends. Roads crossing at different heights without a travel connection do not form a junction.
 _Avoid_: Crossing when physical connectivity is unclear.
 
+**Road end**:
+A terminal road endpoint with no onward road or bridge connection.
+_Avoid_: Junction when roads do not physically meet.
+
 **Settlement entrance**:
-A distinct access point connecting roads outside a settlement to roads within it.
+A distinct access point connecting roads outside a settlement to its internal streets. Separate external approaches use separate settlement entrances.
 _Avoid_: Settlement center when referring to an access point.
 
 **Bridge entrance**:

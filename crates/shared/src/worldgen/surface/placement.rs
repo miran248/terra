@@ -160,7 +160,7 @@ pub(in crate::worldgen) fn place_flora(
     for face_index in 0..grid.face_count() {
         let face = FaceId::new(face_index);
         let clear = painted_corners(grid, &painted.roads, face) > 0
-            || painted_corners(grid, &painted.towns, face) > 0
+            || painted_corners(grid, &painted.settlements, face) > 0
             || painted_corners(grid, &painted.bridge_entries, face) > 0
             || painted_corners(grid, &painted.bridges, face) > 0;
         if clear {
@@ -235,16 +235,18 @@ pub(in crate::worldgen) fn place_structures(
     painted: &Painted,
     slope_class: &[SlopeClass],
     mesh_tris: &[[[f32; 3]; 3]],
+    settlement_structures: &[StructureSite],
 ) -> Vec<StructureData> {
     let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ STRUCT_RNG_SALT);
     let face_center = |face_index: usize| {
         let t = &mesh_tris[face_index];
         (Vec3::from_array(t[0]) + Vec3::from_array(t[1]) + Vec3::from_array(t[2])) / 3.0
     };
-    let town = |face_index: usize| face_solid(grid, &painted.towns, FaceId::new(face_index));
+    let settlement =
+        |face_index: usize| face_solid(grid, &painted.settlements, FaceId::new(face_index));
     let road = |face_index: usize| face_solid(grid, &painted.roads, FaceId::new(face_index));
     let feature = |face_index: usize| {
-        town(face_index)
+        settlement(face_index)
             || road(face_index)
             || painted_corners(grid, &painted.bridges, FaceId::new(face_index)) > 0
             || painted_corners(grid, &painted.bridge_entries, FaceId::new(face_index)) > 0
@@ -253,7 +255,7 @@ pub(in crate::worldgen) fn place_structures(
     let town_sources: Vec<_> = grid
         .topology
         .faces()
-        .filter(|face| town(face.index()))
+        .filter(|face| settlement(face.index()))
         .collect();
     let town_field = grid.topology.face_distances(&town_sources, 6);
     let town_dist: Vec<u16> = grid
@@ -278,77 +280,76 @@ pub(in crate::worldgen) fn place_structures(
     };
 
     let mut out = Vec::new();
-    let mut push = |rng: &mut fastrand::Rng, face_index: usize, kind: StructureKind| {
-        out.push(StructureData {
-            pos: face_center(face_index).to_array(),
-            face: face_index as u32,
-            kind,
-            yaw: rng.f32() * std::f32::consts::TAU,
-        });
-    };
+    let mut required_faces = std::collections::BTreeSet::new();
     // A structure needs buildable ground: skip any face with a steep/cliff
-    // corner (watchtowers on a ridge are the exception — handled below).
+    // corner.
     let buildable = |face_index: usize| {
         grid.face_cells(FaceId::new(face_index))
             .map(CellId::index)
             .into_iter()
             .all(|cell| slope_class[cell].is_walkable())
     };
+
+    // The network stage planned these structures before internal streets.
+    // Resolve each saved barycentric site onto the finished displaced mesh.
+    for site in settlement_structures {
+        let corners = mesh_tris[site.face_index].map(Vec3::from_array);
+        let position = (corners[0] * site.barycentric[0]
+            + corners[1] * site.barycentric[1]
+            + corners[2] * site.barycentric[2])
+            .normalize();
+        required_faces.insert(site.face_index);
+        push_structure(&mut rng, &mut out, site.face_index, site.kind, position);
+    }
+
     for face_index in 0..grid.face_count() {
         if tiles[face_index].is_water() || !buildable(face_index) {
             continue;
         }
-        // Town interior: houses, a well, campfire, or tent.
-        if town(face_index) {
-            let r = rng.f32();
-            if r < 0.055 {
-                push(&mut rng, face_index, StructureKind::House);
-            } else if r < 0.065 {
-                push(&mut rng, face_index, StructureKind::Well);
-            } else if r < 0.080 {
-                push(&mut rng, face_index, StructureKind::Campfire);
-            } else if r < 0.090 {
-                push(&mut rng, face_index, StructureKind::Tent);
-            } else if r < 0.095 {
-                push(&mut rng, face_index, StructureKind::Crate);
-            }
+        if required_faces.contains(&face_index) {
             continue;
         }
-        // Town edge (non-town land beside a town): walls, docks, fences.
-        let touches_town = grid
-            .face_neighbors(FaceId::new(face_index))
-            .map(FaceId::index)
-            .into_iter()
-            .any(town);
-        if touches_town {
-            let coastal = grid
-                .face_neighbors(FaceId::new(face_index))
-                .map(FaceId::index)
-                .into_iter()
-                .any(|neighbor| tiles[neighbor].is_water());
-            if coastal && rng.f32() < 0.5 {
-                push(&mut rng, face_index, StructureKind::Dock);
-            } else if rng.f32() < 0.3 {
-                push(&mut rng, face_index, StructureKind::Wall);
-            } else if rng.f32() < 0.43 {
-                push(&mut rng, face_index, StructureKind::Fence);
-            }
+        // Required settlement structures above define the initial layouts;
+        // avoid adding random buildings that change their composition.
+        if settlement(face_index) {
             continue;
         }
         // Road decorations: barricades, lamp posts, signposts, guardrails on road faces.
         if road(face_index) {
-            // Barricade: road face away from town.
-            if town_dist[face_index] > 2 && rng.f32() < 0.008 {
-                push(&mut rng, face_index, StructureKind::Barricade);
-                continue;
-            }
             let r = rng.f32();
             if r < 0.015 {
-                push(&mut rng, face_index, StructureKind::LampPost);
+                let position = face_center(face_index);
+                if clear_of_existing_structures(&out, position, StructureKind::LampPost) {
+                    push_structure(
+                        &mut rng,
+                        &mut out,
+                        face_index,
+                        StructureKind::LampPost,
+                        position,
+                    );
+                }
             } else if r < 0.025 {
-                push(&mut rng, face_index, StructureKind::Signpost);
+                let position = face_center(face_index);
+                if clear_of_existing_structures(&out, position, StructureKind::Signpost) {
+                    push_structure(
+                        &mut rng,
+                        &mut out,
+                        face_index,
+                        StructureKind::Signpost,
+                        position,
+                    );
+                }
             } else if r < 0.040 {
-                push(&mut rng, face_index, StructureKind::Guardrail);
+                let position = face_center(face_index);
+                if clear_of_existing_structures(&out, position, StructureKind::Guardrail) {
+                    push_structure(
+                        &mut rng,
+                        &mut out,
+                        face_index,
+                        StructureKind::Guardrail,
+                        position,
+                    );
+                }
             }
             continue;
         }
@@ -358,16 +359,48 @@ pub(in crate::worldgen) fn place_structures(
         if is_bridge {
             let r = rng.f32();
             if r < 0.15 {
-                push(&mut rng, face_index, StructureKind::Railing);
+                let position = face_center(face_index);
+                if clear_of_existing_structures(&out, position, StructureKind::Railing) {
+                    push_structure(
+                        &mut rng,
+                        &mut out,
+                        face_index,
+                        StructureKind::Railing,
+                        position,
+                    );
+                }
             } else if r < 0.17 {
-                push(&mut rng, face_index, StructureKind::Suspension);
+                let position = face_center(face_index);
+                if clear_of_existing_structures(&out, position, StructureKind::Suspension) {
+                    push_structure(
+                        &mut rng,
+                        &mut out,
+                        face_index,
+                        StructureKind::Suspension,
+                        position,
+                    );
+                }
             }
             continue;
         }
         if feature(face_index) {
             continue;
         }
-        // Farmland: fertile flat ground just outside town.
+        let inside_settlement =
+            terrain
+                .settlement_anchors
+                .iter()
+                .enumerate()
+                .any(|(index, &anchor)| {
+                    anchor.distance(SpherePos::new(face_center(face_index)))
+                        <= terrain
+                            .settlement_config()
+                            .radius_m(terrain.settlement_kind(index))
+                });
+        if inside_settlement {
+            continue;
+        }
+        // Farmland: fertile flat ground just outside settlements.
         if town_dist[face_index] <= 3
             && matches!(
                 tiles[face_index],
@@ -375,7 +408,16 @@ pub(in crate::worldgen) fn place_structures(
             )
             && rng.f32() < 0.10
         {
-            push(&mut rng, face_index, StructureKind::Farm);
+            let position = face_center(face_index);
+            if clear_of_existing_structures(&out, position, StructureKind::Farm) {
+                push_structure(
+                    &mut rng,
+                    &mut out,
+                    face_index,
+                    StructureKind::Farm,
+                    position,
+                );
+            }
             continue;
         }
         // Watchtower: high ground overlooking a road.
@@ -383,7 +425,16 @@ pub(in crate::worldgen) fn place_structures(
             && terrain.elevation_at(grid.centroid(FaceId::new(face_index))) > 0.25
             && rng.f32() < 0.03
         {
-            push(&mut rng, face_index, StructureKind::Watchtower);
+            let position = face_center(face_index);
+            if clear_of_existing_structures(&out, position, StructureKind::Watchtower) {
+                push_structure(
+                    &mut rng,
+                    &mut out,
+                    face_index,
+                    StructureKind::Watchtower,
+                    position,
+                );
+            }
             continue;
         }
         // Ruins: rare, deep in the wilderness (far from any town).
@@ -394,10 +445,70 @@ pub(in crate::worldgen) fn place_structures(
             )
             && rng.f32() < 0.0006
         {
-            push(&mut rng, face_index, StructureKind::Ruin);
+            let position = face_center(face_index);
+            if clear_of_existing_structures(&out, position, StructureKind::Ruin) {
+                push_structure(
+                    &mut rng,
+                    &mut out,
+                    face_index,
+                    StructureKind::Ruin,
+                    position,
+                );
+            }
         }
     }
     out
+}
+
+pub(in crate::worldgen) fn structure_footprint_radius(kind: StructureKind) -> f32 {
+    let (width, depth): (f32, f32) = match kind {
+        StructureKind::Ruin => (6.0, 6.0),
+        StructureKind::Watchtower => (4.5, 4.5),
+        StructureKind::Dock => (3.0, 10.0),
+        StructureKind::Farm => (9.0, 9.0),
+        StructureKind::Wall => (6.0, 1.2),
+        StructureKind::Well => (2.0, 2.0),
+        StructureKind::Campfire => (1.6, 1.6),
+        StructureKind::Tent => (3.0, 3.0),
+        StructureKind::Crate => (1.5, 1.5),
+        StructureKind::Fence => (6.0, 0.6),
+        StructureKind::Barricade => (4.0, 0.5),
+        StructureKind::LampPost => (1.2, 1.2),
+        StructureKind::Signpost => (1.5, 0.3),
+        StructureKind::Guardrail => (3.0, 0.4),
+        StructureKind::Railing => (3.0, 0.2),
+        StructureKind::Suspension => (2.0, 0.6),
+        StructureKind::House => (8.0, 6.0),
+    };
+    (width * width + depth * depth).sqrt() * 0.5
+}
+
+fn push_structure(
+    rng: &mut fastrand::Rng,
+    structures: &mut Vec<StructureData>,
+    face_index: usize,
+    kind: StructureKind,
+    position: Vec3,
+) {
+    structures.push(StructureData {
+        pos: position.to_array(),
+        face: face_index as u32,
+        kind,
+        yaw: rng.f32() * std::f32::consts::TAU,
+    });
+}
+
+fn clear_of_existing_structures(
+    existing: &[StructureData],
+    position: Vec3,
+    kind: StructureKind,
+) -> bool {
+    let position = SpherePos::new(position.normalize());
+    existing.iter().all(|structure| {
+        let other = SpherePos::new(Vec3::from_array(structure.pos).normalize());
+        position.distance(other)
+            >= structure_footprint_radius(kind) + 1.0 + structure_footprint_radius(structure.kind)
+    })
 }
 
 pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Vec<Vec<FaceTag>> {
@@ -408,8 +519,8 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
         if face_solid(grid, &painted.roads, face) {
             face_tags.push(FaceTag::Road);
         }
-        if face_solid(grid, &painted.towns, face) {
-            face_tags.push(FaceTag::Town);
+        if face_solid(grid, &painted.settlements, face) {
+            face_tags.push(FaceTag::Settlement);
         }
         if face_solid(grid, &painted.bridges, face) {
             face_tags.push(FaceTag::Bridge);
@@ -424,6 +535,7 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
 use bevy::prelude::Vec3;
 
 use crate::level::{FaceTag, FloraData, FloraKind, SlopeClass, StructureData, StructureKind};
+use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
 use crate::topology::{CellId, FaceId};
-use crate::worldgen::{Grid, Painted, face_solid, painted_corners};
+use crate::worldgen::{Grid, Painted, StructureSite, face_solid, painted_corners};

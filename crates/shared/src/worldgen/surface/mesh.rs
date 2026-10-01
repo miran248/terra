@@ -91,7 +91,7 @@ pub(in crate::worldgen) fn build_mesh(
             let cell_index = idx[k];
             if painted.bridge_entries.contains(CellId::new(cell_index)) {
                 entry_color
-            } else if painted.towns.contains(CellId::new(cell_index)) {
+            } else if painted.settlements.contains(CellId::new(cell_index)) {
                 town_color
             } else if painted.roads.contains(CellId::new(cell_index)) {
                 road_color
@@ -139,7 +139,7 @@ pub(in crate::worldgen) fn build_mesh(
         let face = FaceId::new(face_index);
         let color: [[f32; 4]; 3] = if face_solid(grid, &painted.bridge_entries, face) {
             [entry_color; 3]
-        } else if face_solid(grid, &painted.towns, face) {
+        } else if face_solid(grid, &painted.settlements, face) {
             [town_color; 3]
         } else if face_solid(grid, &painted.roads, face) {
             [road_mat_color(face_road_material(

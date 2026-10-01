@@ -45,29 +45,36 @@ pub(in crate::worldgen) fn paint_features(
             from_settlement: chain.first().copied().and_then(settlement_at),
             to_settlement: chain.last().copied().and_then(settlement_at),
             cells: chain,
+            purpose: crate::worldgen::RoadPathPurpose::ExternalRoute,
         });
     }
-    // Towns sit on walkable ground within the settlement radius.
+    // Each settlement occupies its configured radius on walkable ground.
     for (cell_index, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
         let pos = grid.cell_position(CellId::new(cell_index));
         if slope.is_walkable()
             && terrain
                 .settlement_anchors
                 .iter()
-                .any(|a| a.distance(pos) <= TOWN_RADIUS)
+                .enumerate()
+                .any(|(index, &anchor)| {
+                    let radius = terrain
+                        .settlement_config()
+                        .radius_m(terrain.settlement_kind(index));
+                    anchor.distance(pos) <= radius
+                })
         {
-            painted.towns.insert(CellId::new(cell_index));
+            painted.settlements.insert(CellId::new(cell_index));
         }
     }
     link_feature_pinches(grid, &mut painted.roads, |cell| {
         features::roadable(cells[cell.index()], slope_class[cell.index()])
     });
-    link_feature_pinches(grid, &mut painted.towns, |_| true);
+    link_feature_pinches(grid, &mut painted.settlements, |_| true);
     (painted, kept)
 }
 use crate::level::SlopeClass;
 use crate::terrain::{Terrain, TerrainGen};
 use crate::topology::CellId;
 use crate::worldgen::{
-    Grid, Painted, RoadPath, TOWN_RADIUS, features, link_feature_pinches, nearest_cell, router,
+    Grid, Painted, RoadPath, features, link_feature_pinches, nearest_cell, router,
 };

@@ -31,7 +31,7 @@ fn flora_stays_off_water_and_features() {
         );
         for bits in [
             &state.painted.roads,
-            &state.painted.towns,
+            &state.painted.settlements,
             &state.painted.bridge_entries,
         ] {
             assert_eq!(

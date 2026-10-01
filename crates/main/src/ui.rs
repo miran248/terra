@@ -679,7 +679,7 @@ fn update_terrain_hud(
                 .iter()
                 .copied()
                 .min_by_key(|&index| match regions.regions[index as usize].kind {
-                    RegionKind::Town => 0,
+                    RegionKind::Settlement => 0,
                     RegionKind::Road => 1,
                     _ => 2,
                 })

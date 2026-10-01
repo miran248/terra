@@ -248,7 +248,11 @@ fn setup_map(
     // The level carries the SOLVED elevation field the mesh was baked from, so
     // height queries and the rendered surface agree exactly (and startup skips
     // all topology planning).
-    let terrain = TerrainGen::from_field(level.seed, level.vert_elev.clone());
+    let terrain = TerrainGen::from_field_with_settlement_config(
+        level.seed,
+        level.vert_elev.clone(),
+        level.settlement_config,
+    );
 
     commands.insert_resource(GameAssets {
         projectile_mesh: meshes.add(Sphere::new(PROJECTILE_SIZE)),

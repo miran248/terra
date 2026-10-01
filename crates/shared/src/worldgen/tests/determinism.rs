@@ -75,11 +75,11 @@ fn built_feature_regions_overlap_the_underlying_landscape() {
             kinds.contains(&wanted)
                 && kinds
                     .iter()
-                    .any(|&kind| !matches!(kind, RegionKind::Town | RegionKind::Road))
+                    .any(|&kind| !matches!(kind, RegionKind::Settlement | RegionKind::Road))
         })
     };
 
-    assert!(overlaps(RegionKind::Town));
+    assert!(overlaps(RegionKind::Settlement));
     assert!(overlaps(RegionKind::Road));
 }
 
@@ -94,7 +94,7 @@ fn locked_serialized_worlds() {
     let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
     assert_eq!(
         serialized_fingerprint(&seed_1337),
-        10059265569591489525,
+        10542869486858640993,
         "fingerprint changed — regenerate level_1337.bin and update this value"
     );
     let expected_bytes = include_bytes!(concat!(
@@ -110,5 +110,5 @@ fn locked_serialized_worlds() {
     }
 
     let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 8238422979298284525);
+    assert_eq!(serialized_fingerprint(&seed_42), 15194564466783709657);
 }

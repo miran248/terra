@@ -12,12 +12,14 @@ use std::collections::BTreeMap;
 
 use crate::level::{
     FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RegionMemberships,
-    RoadMaterial, SettlementData, SlopeClass, StructureData, SurfaceCondition, WaterDepth,
-    WaterPhase,
+    RoadMaterial, SettlementData, SlopeClass, StructureData, StructureKind, SurfaceCondition,
+    WaterDepth, WaterPhase,
 };
+pub use crate::level::{SettlementConfig, SettlementKind};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
 use crate::topology::{CellId, FaceId};
+use bevy::prelude::Vec3;
 
 mod classification;
 mod domain;
@@ -30,16 +32,24 @@ mod projection;
 mod regions;
 mod router;
 
+#[derive(Clone, Copy)]
+pub(super) struct StructureSite {
+    pub face_index: usize,
+    pub barycentric: [f32; 3],
+    pub position: Vec3,
+    pub kind: StructureKind,
+}
+
 use classification::size_range;
 use domain::{CellField, CellSet, FaceField};
 use features::{
     absorb_small_clusters, build_bridges, mark_blends, paint_features, resolve_transitions,
 };
 use grid::Grid;
+#[cfg(test)]
 use pipeline::run_state;
+use pipeline::run_state_with_settlement_config;
 use projection::{face_majority, face_max};
-
-const TOWN_RADIUS: f32 = 55.0;
 
 /// Face render type from its 3 corner cells: two agreeing corners win; a
 /// junction face (3 distinct labels) goes to the transition kind if one is
@@ -250,7 +260,7 @@ fn link_feature_pinches(grid: &Grid, bits: &mut CellSet, passable: impl Fn(CellI
 #[derive(Clone)]
 struct Painted {
     pub roads: CellSet,
-    pub towns: CellSet,
+    pub settlements: CellSet,
     pub bridges: CellSet,
     pub bridge_entries: CellSet,
 }
@@ -259,7 +269,7 @@ impl Painted {
     fn empty(nv: usize) -> Self {
         Self {
             roads: CellSet::new(nv),
-            towns: CellSet::new(nv),
+            settlements: CellSet::new(nv),
             bridges: CellSet::new(nv),
             bridge_entries: CellSet::new(nv),
         }
@@ -272,6 +282,14 @@ struct RoadPath {
     cells: Vec<CellId>,
     from_settlement: Option<u32>,
     to_settlement: Option<u32>,
+    purpose: RoadPathPurpose,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RoadPathPurpose {
+    InternalLayout,
+    ExternalRoute,
+    BridgeApproach,
 }
 
 /// How many of a face's corner cells are in the set.
@@ -293,6 +311,7 @@ fn face_solid(grid: &Grid, bits: &CellSet, face: FaceId) -> bool {
 struct GenState {
     pub grid: Grid,
     pub terrain: Option<TerrainGen>,
+    pub settlement_config: SettlementConfig,
     /// Per-cell tile labels — the single source of truth for terrain identity.
     pub cells: CellField<Terrain>,
     /// Per-face render/physics type, DERIVED from `cells` on every cell change.
@@ -302,6 +321,7 @@ struct GenState {
     /// Routed road centerlines that survived water checks.
     pub roads: Vec<RoadPath>,
     pub network: network::RoadGraph,
+    pub settlement_structures: Vec<StructureSite>,
     /// Inland biome-boundary faces and the kind pair they link.
     pub blends: Vec<FaceBlend>,
     pub regions: Vec<RegionData>,
@@ -365,18 +385,20 @@ pub struct GenerationStats {
 }
 
 impl GenState {
-    fn new(seed: u32) -> Self {
+    fn new(seed: u32, settlement_config: SettlementConfig) -> Self {
         let grid = Grid::new(seed);
         let painted = Painted::empty(grid.cell_count());
         Self {
             grid,
             terrain: None,
+            settlement_config,
             cells: CellField::default(),
             tiles: FaceField::default(),
             painted,
             bridges: Vec::new(),
             roads: Vec::new(),
             network: network::RoadGraph::empty(),
+            settlement_structures: Vec::new(),
             blends: Vec::new(),
             regions: Vec::new(),
             face_regions: RegionMemberships::default(),
@@ -418,10 +440,12 @@ impl GenState {
             .map(|(i, anchor)| SettlementData {
                 name: crate::roads::settlement_name(i),
                 pos: anchor.0.to_array(),
+                kind: terrain.settlement_kind(i),
             })
             .collect();
         LevelData {
             seed: self.grid.seed,
+            settlement_config: terrain.settlement_config(),
             vert_elev: terrain.vert_elevations().to_vec(),
             terrain_tris: self.mesh_tris.to_vec(),
             terrain_colors: self.mesh_colors.to_vec(),
@@ -513,7 +537,19 @@ impl GenState {
 }
 
 pub fn run(seed: u32, log: impl FnMut(&str)) -> CompletedWorld {
-    let state = run_state(seed, log);
+    run_with_settlement_config(seed, SettlementConfig::default(), log)
+}
+
+/// Run the full pipeline with an explicit settlement distribution and layout scale.
+pub fn run_with_settlement_config(
+    seed: u32,
+    settlement_config: SettlementConfig,
+    log: impl FnMut(&str),
+) -> CompletedWorld {
+    settlement_config
+        .validate()
+        .unwrap_or_else(|error| panic!("invalid settlement config: {error}"));
+    let state = run_state_with_settlement_config(seed, settlement_config, log);
     CompletedWorld {
         level: state.to_level_data(),
         stats: state.stats(),

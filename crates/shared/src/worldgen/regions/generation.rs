@@ -77,7 +77,12 @@ pub(in crate::worldgen) fn build_regions(
     let town_class = grid
         .topology
         .cells()
-        .map(|cell| painted.towns.contains(cell).then_some(RegionKind::Town))
+        .map(|cell| {
+            painted
+                .settlements
+                .contains(cell)
+                .then_some(RegionKind::Settlement)
+        })
         .collect::<Vec<_>>();
     append_regions(
         grid,
@@ -134,7 +139,7 @@ fn append_regions(
         };
         let cells = partitioner.claim(start, kind, region_index, max_cells, &mut assigned);
         let min_cells = match kind {
-            RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
+            RegionKind::Settlement | RegionKind::Road | RegionKind::River => 1,
             RegionKind::Forest => size_range(Terrain::Forest).0,
             RegionKind::Beach => size_range(Terrain::Beach).0,
             RegionKind::MountainRange => 1,
@@ -314,7 +319,7 @@ pub(in crate::worldgen) fn region_name(
         RegionKind::Glacier => pick(&GLACIER, &["Glacier", "Ice", "Wastes"]),
         RegionKind::Road => pick(&ROAD, &["Road"]),
         // Towns take the name of the settlement they surround.
-        RegionKind::Town => terrain
+        RegionKind::Settlement => terrain
             .settlement_anchors
             .iter()
             .enumerate()

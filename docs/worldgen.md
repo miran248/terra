@@ -59,7 +59,7 @@ point queries use `face_at` and do not combine neighboring faces.
 
 ## Bridge policy
 
-Every bridge kind uses a 1–500 m span range, gentle edge-trimmed footings, 1000 m spacing, at least 1000 m saved walking, and explicit deck-overlap rejection. Both bridge entrances must connect to roadable land and a road network. Ocean bridges favor narrow passes and near-perpendicular shore approaches. Spring-adjacent river crossings and propagated inland entry paint are forbidden. Bridges between separate cliffed plateaus are deferred; retain the current footing limits until that work is designed.
+Every bridge kind uses a 1–500 m span range, gentle edge-trimmed footings, 1000 m spacing, at least 1000 m saved walking, and explicit deck-overlap rejection. Both bridge banks must reach roadable land and the road network. A bank inside a settlement gets a distinct unused entrance from its connected internal layout; a bank outside a settlement may join an exterior road beyond the footprint. Ocean bridges favor narrow passes and near-perpendicular shore approaches. Spring-adjacent river crossings and propagated inland entry paint are forbidden. Bridges between separate cliffed plateaus are deferred; retain the current footing limits until that work is designed.
 
 ## Road policy
 
@@ -70,17 +70,13 @@ constraint. A world may contain separate road networks where suitable terrain
 and feasible bridges cannot join them. Do not force routes across cliff necks,
 water, or spans beyond the current bridge limit.
 
-Settlement counts remain fixed. After terrain slope classification, generation
-keeps each settlement within its authored Settlement zone and selects the
-nearest zone face whose town footprint contains a safe multi-edge road
-corridor, then searches roadable fine-cell centers in that same zone if needed.
-If no suitable site exists, generation reports the settlement zone and stops
-instead of silently keeping an unusable anchor or dropping a settlement. The
-footprint radius is currently 55 m. Settlement entrances lie
-inside the painted footprint; when an isolated settlement has no external road
-connection, its local network receives a meaningful internal road between
-distinct roadable points. Richer settlement layouts and types are tracked in
-the remaining settlement work below.
+Settlement counts and road access are mandatory. After terrain slope
+classification, generation checks a bounded, deterministic set of candidates
+inside each authored Settlement zone. It accepts only sites whose complete
+internal road layout and required buildings fit; if no candidate works, it
+reports the zone and stops instead of dropping a settlement. Default targets
+are 3 towns, 6 villages, and 3 outposts, with configurable radii of 55 m, 35 m,
+and 20 m respectively.
 
 ## Verification
 
@@ -90,23 +86,30 @@ For level regeneration and comparison, follow the [level pipeline](level-pipelin
 
 ## Remaining agreed direction
 
-The [glossary](../GLOSSARY.md) defines the domain model. These choices remain
-future implementation work; completed road policy is described above.
+The [glossary](../GLOSSARY.md) defines the domain model. These choices describe
+the current implementation unless marked as deferred.
 
 ### Settlements
 
-- Generate all three settlement kinds in every world. Initial configurable targets
-  are 3 towns, 6 villages, and 3 outposts; the configured counts and road access
-  for every settlement are mandatory and already enforced.
-- Towns have larger footprints, multiple internal roads, homes, and shared facilities.
-- Villages have smaller footprints, fewer roads, homes, and agricultural features.
-- Outposts have compact footprints, watchtowers, defensive barriers, and basic shelter.
-- Prefer strategic outpost locations overlooking roads or crossings, especially
-  elevated sites. Buildable footprints, settlement counts, and road access take
-  precedence over that preference; use the best valid sites available.
-- Expand the current compatible internal connections into distinct settlement
-  entrances connected by a richer internal road layout. Internal roads follow
-  the same endpoint and naming rules as external roads.
+- Generate all three kinds with default targets of 3 towns, 6 villages, and 3
+  outposts. Counts and road access remain mandatory.
+- Towns use 55 m footprints, at least four homes and a shared well, and a small
+  connected street grid.
+- Villages use 35 m footprints, at least two homes and a farm, and a connected
+  main street with a branch.
+- Outposts use 20 m footprints, a watchtower, tent, and at least two defensive
+  barriers, with a connected access spine.
+- Rank feasible outpost sites to prefer elevated views over planned road routes
+  and route intersections. The current score uses terrain-planned roads that
+  exist before final network routing; it does not rank bridge crossings. Full
+  buildability, composition, settlement counts, and road access take precedence.
+- Give external approaches distinct settlement entrances. Split pass-through
+  routes at those entrances and connect them to the per-kind internal roads.
+  Internal street ends and intersections keep Junction/RoadEnd roles rather
+  than being labeled external entrances.
+- Place required structures on safe walkable ground inside the settlement
+  radius. Their full footprints must clear roads, bridge entries, and other
+  buildings.
 - Residents, trading, shops, and defensive gameplay are outside this initial scope.
 
 ### Travel network and remaining region presentation

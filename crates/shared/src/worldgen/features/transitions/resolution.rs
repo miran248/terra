@@ -40,7 +40,7 @@ pub(in crate::worldgen) fn resolve_transitions(
     // Every transition band is TWO chains of cells one edge apart (never a
     // single chain — its faces would only touch at vertices): the waterline
     // chain plus the chain right behind it, for beaches, cliffs, lake shores
-    // and river banks alike. Wide types (oceans, lakes, rivers, towns) are
+    // and river banks alike. Wide types (oceans, lakes, rivers, settlements) are
     // free-width; bands are not.
     for cell_index in 0..grid.cell_count() {
         if base[cell_index].is_water() {
