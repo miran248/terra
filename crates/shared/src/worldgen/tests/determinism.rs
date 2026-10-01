@@ -1,4 +1,7 @@
 use super::*;
+use crate::level::{Landform, RegionKind};
+use crate::terrain::Terrain;
+use crate::topology::FaceId;
 
 #[test]
 fn deterministic_pipeline() {
@@ -30,6 +33,56 @@ fn deterministic_pipeline() {
     assert_eq!(a.landform, b.landform);
 }
 
+#[test]
+fn forested_mountain_faces_belong_to_both_regions() {
+    let world = run(1337, |_| {});
+    let level = world.level_data();
+    let face = (0..level.landform.len())
+        .find(|&face| {
+            if level.landform[face] != Landform::Mountains
+                || level.face_types[face] != Terrain::Forest
+            {
+                return false;
+            }
+            let kinds = level
+                .region_ids_at_face(FaceId::new(face))
+                .iter()
+                .map(|&region| level.regions[region as usize].kind)
+                .collect::<Vec<_>>();
+            kinds.contains(&RegionKind::Forest) && kinds.contains(&RegionKind::MountainRange)
+        })
+        .expect("seed 1337 should include a forested mountain face in both regions");
+
+    assert!(
+        level
+            .region_ids_at_face(FaceId::new(face))
+            .iter()
+            .all(|&region| (region as usize) < level.regions.len())
+    );
+}
+
+#[test]
+fn built_feature_regions_overlap_the_underlying_landscape() {
+    let world = run(1337, |_| {});
+    let level = world.level_data();
+    let overlaps = |wanted| {
+        (0..level.face_regions.location_count()).any(|face| {
+            let kinds = level
+                .region_ids_at_face(FaceId::new(face))
+                .iter()
+                .map(|&region| level.regions[region as usize].kind)
+                .collect::<Vec<_>>();
+            kinds.contains(&wanted)
+                && kinds
+                    .iter()
+                    .any(|&kind| !matches!(kind, RegionKind::Town | RegionKind::Road))
+        })
+    };
+
+    assert!(overlaps(RegionKind::Town));
+    assert!(overlaps(RegionKind::Road));
+}
+
 fn serialized_fingerprint(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
         (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
@@ -41,7 +94,7 @@ fn locked_serialized_worlds() {
     let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
     assert_eq!(
         serialized_fingerprint(&seed_1337),
-        3196659778493325704,
+        9900061392226342493,
         "fingerprint changed — regenerate level_1337.bin and update this value"
     );
     let expected_bytes = include_bytes!(concat!(
@@ -57,5 +110,5 @@ fn locked_serialized_worlds() {
     }
 
     let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 10393221671124118519);
+    assert_eq!(serialized_fingerprint(&seed_42), 1623423017140270856);
 }

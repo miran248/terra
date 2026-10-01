@@ -7,6 +7,7 @@ use crate::map::{
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use shared::items::Recipe;
+use shared::level::RegionKind;
 use shared::planet::PlanetMesh;
 use shared::terrain::Terrain;
 use shared::theme;
@@ -673,10 +674,15 @@ fn update_terrain_hud(
         }
         if let Some(regions) = regions
             && let Some(ri) = regions
-                .face_region
-                .get(fi)
+                .face_regions
+                .region_ids_at(fi)
+                .iter()
                 .copied()
-                .flatten()
+                .min_by_key(|&index| match regions.regions[index as usize].kind {
+                    RegionKind::Town => 0,
+                    RegionKind::Road => 1,
+                    _ => 2,
+                })
                 .map(|index| index as usize)
         {
             region_name = format!("\n{}", regions.regions[ri].name);

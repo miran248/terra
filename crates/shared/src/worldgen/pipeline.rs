@@ -2,10 +2,10 @@ use std::collections::VecDeque;
 
 use super::{
     CellField, FaceBlend, FaceId, FaceTag, FloraData, GenState, Landform, Painted, RegionData,
-    RoadMaterial, SlopeClass, SpherePos, StructureData, SurfaceCondition, Terrain, TerrainGen,
-    WaterDepth, WaterPhase, build_bridges, build_face_tags, build_mesh, build_regions,
-    classify_cover, classify_landform, classify_slope, classify_water_depth, derive_tiles,
-    face_majority, face_max, face_road_material, mark_blends, normalize_water_bodies,
+    RegionMemberships, RoadMaterial, SlopeClass, SpherePos, StructureData, SurfaceCondition,
+    Terrain, TerrainGen, WaterDepth, WaterPhase, build_bridges, build_face_tags, build_mesh,
+    build_regions, classify_cover, classify_landform, classify_slope, classify_water_depth,
+    derive_tiles, face_majority, face_max, face_road_material, mark_blends, normalize_water_bodies,
     paint_features, paint_rivers, place_flora, place_structures, resolve_transitions,
     river_surface_radii, solve_elevation, water_surface_radii,
 };
@@ -87,7 +87,7 @@ enum Event {
         residual: f32,
     },
     WaterClustered(Vec<f32>),
-    RegionsBuilt(Vec<RegionData>, Vec<Option<u32>>),
+    RegionsBuilt(Vec<RegionData>, RegionMemberships),
     BridgesSelected(Vec<Vec<SpherePos>>, Painted),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
     TagsBuilt(Vec<Vec<FaceTag>>),
@@ -262,13 +262,14 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
             state.cells.as_slice(),
         )),
         Command::BuildRegions => {
-            let (regions, face_region) = build_regions(
+            let (regions, face_regions) = build_regions(
                 &state.grid,
                 state.terrain(),
-                state.tiles.as_slice(),
+                state.cells.as_slice(),
+                state.landform.as_slice(),
                 &state.painted,
             );
-            Event::RegionsBuilt(regions, face_region)
+            Event::RegionsBuilt(regions, face_regions)
         }
         Command::SelectBridges => {
             let mut painted = state.painted.clone();
@@ -278,7 +279,6 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
                 state.cells.as_slice(),
                 state.slope_class.as_slice(),
                 state.tiles.as_slice(),
-                state.face_region.as_slice(),
                 &mut painted,
             );
             Event::BridgesSelected(bridges, painted)
@@ -573,7 +573,7 @@ fn evolve(state: &mut GenState, event: Event) {
         Event::WaterClustered(r) => state.water_r = r.into(),
         Event::RegionsBuilt(r, fr) => {
             state.regions = r;
-            state.face_region = fr.into();
+            state.face_regions = fr;
         }
         Event::BridgesSelected(b, p) => {
             state.bridges = b;

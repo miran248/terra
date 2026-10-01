@@ -1,6 +1,111 @@
 use serde::{Deserialize, Serialize};
 
 use crate::terrain::Terrain;
+use crate::topology::FaceId;
+
+/// Compact membership lists for a dense set of locations.
+///
+/// Region IDs are indices into `LevelData::regions`. The offsets table stores
+/// one half-open range per location plus a final sentinel offset.
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegionMemberships {
+    offsets: Vec<u32>,
+    region_ids: Vec<u32>,
+}
+
+impl RegionMemberships {
+    /// Packs per-location region IDs into deterministic, duplicate-free rows.
+    pub fn from_memberships(mut memberships: Vec<Vec<u32>>) -> Self {
+        for row in &mut memberships {
+            row.sort_unstable();
+            row.dedup();
+        }
+        let mut offsets = Vec::with_capacity(memberships.len() + 1);
+        let mut region_ids = Vec::new();
+        offsets.push(0);
+        for mut row in memberships {
+            region_ids.append(&mut row);
+            offsets.push(u32::try_from(region_ids.len()).expect("region IDs exceed u32 offsets"));
+        }
+        Self {
+            offsets,
+            region_ids,
+        }
+    }
+
+    pub(crate) fn from_pairs(location_count: usize, mut memberships: Vec<(usize, u32)>) -> Self {
+        memberships.sort_unstable();
+        memberships.dedup();
+        let mut offsets = vec![0u32; location_count + 1];
+        for &(location, _) in &memberships {
+            assert!(
+                location < location_count,
+                "membership location out of bounds"
+            );
+            offsets[location + 1] += 1;
+        }
+        for location in 0..location_count {
+            offsets[location + 1] += offsets[location];
+        }
+        let region_ids = memberships.into_iter().map(|(_, id)| id).collect();
+        Self {
+            offsets,
+            region_ids,
+        }
+    }
+
+    pub fn location_count(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    pub fn region_ids_at(&self, location: usize) -> &[u32] {
+        let Some(&start) = self.offsets.get(location) else {
+            return &[];
+        };
+        let Some(&end) = location
+            .checked_add(1)
+            .and_then(|next| self.offsets.get(next))
+        else {
+            return &[];
+        };
+        self.region_ids
+            .get(start as usize..end as usize)
+            .unwrap_or(&[])
+    }
+
+    fn validate(&self, location_count: usize, region_count: usize) -> Result<(), String> {
+        if self.offsets.len() != location_count + 1 {
+            return Err(format!(
+                "face_regions has {} locations, expected one per face ({location_count})",
+                self.location_count()
+            ));
+        }
+        if self.offsets.first() != Some(&0) {
+            return Err("face_regions offsets must start at zero".into());
+        }
+        if self.offsets.last().copied() != Some(self.region_ids.len() as u32) {
+            return Err("face_regions final offset does not match region IDs".into());
+        }
+        if self.offsets.windows(2).any(|pair| pair[0] > pair[1]) {
+            return Err("face_regions offsets are not monotonic".into());
+        }
+        for face in 0..location_count {
+            let region_ids = self.region_ids_at(face);
+            if region_ids
+                .iter()
+                .any(|&region| region as usize >= region_count)
+            {
+                return Err(format!("invalid region reference on face {face}"));
+            }
+            if region_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+                return Err(format!(
+                    "face {face} region references must be sorted and unique"
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FaceTag {
@@ -68,7 +173,7 @@ pub struct LevelData {
     /// Per-face water-surface radius (0.0 = dry), from the gen-time water
     /// clustering (`worldgen::water_surface_radii`). The runtime draws each face
     /// at this radius — no runtime clustering. Water-body IDENTITY/naming comes
-    /// from the region layer (`face_region`), not a parallel id.
+    /// from the region layer (`face_regions`), not a parallel id.
     pub face_water_r: Vec<f32>,
     /// Per-corner river-surface radii (all zero = dry), clustered and smoothed
     /// at generation time from connected River + RiverSpring + RiverBank face
@@ -85,8 +190,9 @@ pub struct LevelData {
     /// Named contiguous feature clusters: oceans, lakes, rivers, beaches,
     /// forests, mountain ranges, towns, roads, …
     pub regions: Vec<RegionData>,
-    /// Per-face zero-based region index.
-    pub face_region: Vec<Option<u32>>,
+    /// Named region memberships for each derived face, projected from the
+    /// authoritative cell memberships.
+    pub face_regions: RegionMemberships,
     /// Sub-tile decoration scatter: trees, bushes, flowers. Points ON the
     /// displaced mesh (they sit exactly on the rendered ground), placed
     /// deterministically at gen time from the tile map.
@@ -345,6 +451,13 @@ pub struct FloraData {
 }
 
 impl LevelData {
+    /// Returns all region IDs assigned to the derived face at this index.
+    /// Position queries first resolve a single face; adjacent faces are not
+    /// combined at their shared boundary.
+    pub fn region_ids_at_face(&self, face: FaceId) -> &[u32] {
+        self.face_regions.region_ids_at(face.index())
+    }
+
     /// Checks all cross-field invariants required by runtime indexing.
     pub fn validate(&self) -> Result<(), String> {
         let faces = self.unit_tris.len();
@@ -355,7 +468,7 @@ impl LevelData {
             ("face_corner_types", self.face_corner_types.len()),
             ("face_water_r", self.face_water_r.len()),
             ("face_river_r", self.face_river_r.len()),
-            ("face_region", self.face_region.len()),
+            ("face_regions", self.face_regions.location_count()),
             ("slope_class", self.slope_class.len()),
             ("water_depth", self.water_depth.len()),
             ("water_phase", self.water_phase.len()),
@@ -380,11 +493,7 @@ impl LevelData {
                 return Err(format!("blend references missing face {}", blend.face));
             }
         }
-        for &reference in &self.face_region {
-            if reference.is_some_and(|index| index as usize >= self.regions.len()) {
-                return Err(format!("invalid region reference {reference:?}"));
-            }
-        }
+        self.face_regions.validate(faces, self.regions.len())?;
         if self.settlements.is_empty() {
             return Err("level has no settlements".into());
         }
@@ -410,7 +519,7 @@ pub enum RegionKind {
     Cliff,
     Forest,
     Desert,
-    Mountain,
+    MountainRange,
     Plains,
     Tundra,
     Swamp,
@@ -433,7 +542,7 @@ impl RegionKind {
             Self::Cliff => 5,
             Self::Forest => 6,
             Self::Desert => 7,
-            Self::Mountain => 8,
+            Self::MountainRange => 8,
             Self::Plains => 9,
             Self::Tundra => 10,
             Self::Swamp => 11,
@@ -467,15 +576,17 @@ pub enum RoadKind {
 
 #[cfg(test)]
 mod tests {
+    use crate::topology::FaceId;
+
     use super::{
-        FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass, StructureKind,
-        SurfaceCondition, WaterDepth, WaterPhase,
+        FloraKind, Landform, LevelData, RegionMemberships, RoadKind, RoadMaterial, SlopeClass,
+        StructureKind, SurfaceCondition, WaterDepth, WaterPhase,
     };
     use serde::{Serialize, de::DeserializeOwned};
 
     fn tracked_level() -> LevelData {
         postcard::from_bytes(include_bytes!("../../main/assets/level_1337.bin"))
-            .expect("tracked level must deserialize")
+            .expect("generated level asset must deserialize")
     }
 
     #[test]
@@ -500,8 +611,31 @@ mod tests {
     #[test]
     fn validation_rejects_invalid_region_references() {
         let mut level = tracked_level();
-        level.face_region[0] = Some(level.regions.len() as u32);
+        let mut memberships = (0..level.face_regions.location_count())
+            .map(|face| level.region_ids_at_face(FaceId::new(face)).to_vec())
+            .collect::<Vec<_>>();
+        memberships[0] = vec![level.regions.len() as u32];
+        level.face_regions = RegionMemberships::from_memberships(memberships);
         assert!(level.validate().unwrap_err().contains("region reference"));
+    }
+
+    #[test]
+    fn face_region_memberships_keep_all_sorted_region_ids_for_a_face() {
+        let memberships = RegionMemberships::from_memberships(vec![vec![2, 1, 2], vec![], vec![0]]);
+
+        assert_eq!(memberships.location_count(), 3);
+        assert_eq!(memberships.region_ids_at(0), &[1, 2]);
+        assert!(memberships.region_ids_at(1).is_empty());
+        assert_eq!(memberships.region_ids_at(2), &[0]);
+        assert!(memberships.region_ids_at(3).is_empty());
+    }
+
+    #[test]
+    fn level_validation_requires_one_membership_list_per_face() {
+        let mut level = tracked_level();
+        level.face_regions = RegionMemberships::from_memberships(vec![]);
+
+        assert!(level.validate().unwrap_err().contains("face_regions"));
     }
 
     fn round_trip<T>(value: T)

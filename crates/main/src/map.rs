@@ -149,7 +149,7 @@ fn cull_props(
 #[derive(Resource)]
 pub struct LevelRegions {
     pub regions: Vec<shared::level::RegionData>,
-    pub face_region: Vec<Option<u32>>,
+    pub face_regions: shared::level::RegionMemberships,
 }
 
 /// Blend-marked boundary faces: the pair of terrain kinds each links.
@@ -526,7 +526,7 @@ fn setup_map(
     commands.insert_resource(LevelRoadMaterial(level.road_material.clone()));
     commands.insert_resource(LevelRegions {
         regions: level.regions.clone(),
-        face_region: level.face_region.clone(),
+        face_regions: level.face_regions.clone(),
     });
     commands.insert_resource(LevelBlends(
         level

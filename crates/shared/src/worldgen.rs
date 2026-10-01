@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 
 use crate::level::{
-    FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RoadData, RoadKind,
-    RoadMaterial, SettlementData, SlopeClass, StructureData, SurfaceCondition, WaterDepth,
-    WaterPhase,
+    FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RegionMemberships, RoadData,
+    RoadKind, RoadMaterial, SettlementData, SlopeClass, StructureData, SurfaceCondition,
+    WaterDepth, WaterPhase,
 };
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -296,7 +296,7 @@ struct GenState {
     /// Inland biome-boundary faces and the kind pair they link.
     pub blends: Vec<FaceBlend>,
     pub regions: Vec<RegionData>,
-    pub face_region: FaceField<Option<u32>>,
+    pub face_regions: RegionMemberships,
     /// Per-face water-surface radius (0.0 = dry), clustered once (sea + lakes).
     pub water_r: FaceField<f32>,
     /// Generation-baked per-corner river surface. Runtime and serializers do
@@ -369,7 +369,7 @@ impl GenState {
             roads: Vec::new(),
             blends: Vec::new(),
             regions: Vec::new(),
-            face_region: FaceField::default(),
+            face_regions: RegionMemberships::default(),
             water_r: FaceField::default(),
             river_r: FaceField::default(),
             mesh_tris: FaceField::default(),
@@ -448,7 +448,7 @@ impl GenState {
             settlements,
             roads,
             regions: self.regions.clone(),
-            face_region: self.face_region.to_vec(),
+            face_regions: self.face_regions.clone(),
             flora: self.flora.clone(),
             structures: self.structures.clone(),
             slope_class: self.face_slope_class.to_vec(),

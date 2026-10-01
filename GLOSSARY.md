@@ -20,6 +20,9 @@ _Avoid_: Biome when referring to the full set of surface categories.
 A named, contiguous geographic area, such as a particular forest or mountain range. Regions of different kinds may overlap, so a location can belong to a forest, a mountain range, and a road region at once; regions of the same kind remain separate, except that junctions belong to every road meeting there.
 _Avoid_: Biome or terrain type when referring to a particular named area.
 
+**Mountain range**:
+A region formed by connected mountain landform. Its extent includes forested, snowy, or rocky cover on that landform.
+
 **Settlement**:
 A place where people establish a community, including towns, villages, and outposts.
 _Avoid_: Town as a general term for all settlements.

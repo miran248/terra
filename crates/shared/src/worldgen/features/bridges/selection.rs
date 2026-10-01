@@ -245,7 +245,6 @@ pub(in crate::worldgen) fn build_bridges(
     cells: &[Terrain],
     slope_class: &[SlopeClass],
     face_types: &[Terrain],
-    _face_region: &[Option<u32>],
     painted: &mut Painted,
 ) -> Vec<Vec<SpherePos>> {
     let mut output = BridgeOutput {

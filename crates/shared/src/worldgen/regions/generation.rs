@@ -1,23 +1,15 @@
-// ---- named regions: contiguous feature clusters (edge-connected) ----
+use bevy::prelude::Vec3;
 
-/// Which nameable feature a face belongs to. Tags win over terrain so towns and
-/// roads cluster as themselves; LakeShore/RiverBank separate regions and stay
-/// unnamed.
-pub(in crate::worldgen) fn region_class(
-    grid: &Grid,
-    face_types: &[Terrain],
-    painted: Option<&Painted>,
-    face_index: usize,
-) -> Option<RegionKind> {
-    if let Some(p) = painted {
-        if face_solid(grid, &p.towns, FaceId::new(face_index)) {
-            return Some(RegionKind::Town);
-        }
-        if face_solid(grid, &p.roads, FaceId::new(face_index)) {
-            return Some(RegionKind::Road);
-        }
-    }
-    match face_types[face_index] {
+use crate::level::{Landform, RegionData, RegionKind, RegionMemberships};
+use crate::terrain::{Terrain, TerrainGen};
+use crate::worldgen::{Grid, Painted, regions, size_range};
+
+// ---- named regions: cell-owned connected geographic areas ----
+
+/// Which natural region a cell belongs to from its surface cover. Mountain
+/// ranges come from the separate landform layer.
+fn terrain_region_class(terrain: Terrain) -> Option<RegionKind> {
+    match terrain {
         Terrain::Ocean => Some(RegionKind::Ocean),
         Terrain::Lake => Some(RegionKind::Lake),
         Terrain::SaltLake => Some(RegionKind::SaltLake),
@@ -26,7 +18,7 @@ pub(in crate::worldgen) fn region_class(
         Terrain::Cliff => Some(RegionKind::Cliff),
         Terrain::Forest => Some(RegionKind::Forest),
         Terrain::Desert => Some(RegionKind::Desert),
-        Terrain::Mountain | Terrain::Snow => Some(RegionKind::Mountain),
+        Terrain::Mountain | Terrain::Snow => None,
         Terrain::Plains => Some(RegionKind::Plains),
         Terrain::Tundra => Some(RegionKind::Tundra),
         Terrain::Swamp => Some(RegionKind::Swamp),
@@ -38,76 +30,169 @@ pub(in crate::worldgen) fn region_class(
     }
 }
 
-/// Flood-fill same-class faces into clusters via edge adjacency (tiles sharing
-/// only a single vertex are NOT linked), name each cluster, and record the
-/// per-face region id for HUD lookup.
+/// Flood-fill cell-owned region components, then project those memberships to
+/// query faces. Cell identity remains authoritative; each face chooses the
+/// most represented region of each kind, with lower region ID breaking ties.
 pub(in crate::worldgen) fn build_regions(
     grid: &Grid,
     terrain: &TerrainGen,
-    face_types: &[Terrain],
+    cell_types: &[Terrain],
+    landform: &[Landform],
     painted: &Painted,
-) -> (Vec<RegionData>, Vec<Option<u32>>) {
-    let class: Vec<Option<RegionKind>> = (0..grid.face_count())
-        .map(|face_index| region_class(grid, face_types, Some(painted), face_index))
-        .collect();
-    // Terrain-derived class ignoring the road/town overlay: a road slicing
-    // through a desert must not split it into two regions, so terrain clusters
-    // may flow THROUGH overlay faces whose underlying terrain matches (without
-    // claiming them — those faces belong to their Road/Town region).
-    let terrain_class: Vec<Option<RegionKind>> = (0..grid.face_count())
-        .map(|face_index| region_class(grid, face_types, None, face_index))
-        .collect();
-
-    let mut face_region = vec![None; grid.face_count()];
+) -> (Vec<RegionData>, RegionMemberships) {
+    let mut cell_memberships = Vec::new();
     let mut regions: Vec<RegionData> = Vec::new();
-    let mut kind_counts = [0usize; 19];
+    let mut kind_counts = [0usize; 18];
 
-    let partitioner = regions::RegionPartitioner::new(grid, &class, &terrain_class);
-    for start in grid.topology.faces() {
+    let terrain_class = cell_types
+        .iter()
+        .copied()
+        .map(terrain_region_class)
+        .collect::<Vec<_>>();
+    append_regions(
+        grid,
+        terrain,
+        &terrain_class,
+        &mut regions,
+        &mut cell_memberships,
+        &mut kind_counts,
+    );
+
+    let mountain_class = landform
+        .iter()
+        .map(|&kind| (kind == Landform::Mountains).then_some(RegionKind::MountainRange))
+        .collect::<Vec<_>>();
+    append_regions(
+        grid,
+        terrain,
+        &mountain_class,
+        &mut regions,
+        &mut cell_memberships,
+        &mut kind_counts,
+    );
+
+    for (kind, cells) in [
+        (RegionKind::Town, &painted.towns),
+        (RegionKind::Road, &painted.roads),
+    ] {
+        let overlay_class = grid
+            .topology
+            .cells()
+            .map(|cell| cells.contains(cell).then_some(kind))
+            .collect::<Vec<_>>();
+        append_regions(
+            grid,
+            terrain,
+            &overlay_class,
+            &mut regions,
+            &mut cell_memberships,
+            &mut kind_counts,
+        );
+    }
+
+    let cells = RegionMemberships::from_pairs(grid.cell_count(), cell_memberships);
+    let faces = project_cell_memberships(grid, &cells, &regions);
+    (regions, faces)
+}
+
+fn append_regions(
+    grid: &Grid,
+    terrain: &TerrainGen,
+    class: &[Option<RegionKind>],
+    regions: &mut Vec<RegionData>,
+    memberships: &mut Vec<(usize, u32)>,
+    kind_counts: &mut [usize; 18],
+) {
+    let partitioner = regions::RegionPartitioner::new(grid, class);
+    let mut assigned = vec![None; grid.cell_count()];
+    for start in grid.topology.cells() {
         let Some(kind) = class[start.index()] else {
             continue;
         };
-        if face_region[start.index()].is_some() {
+        if assigned[start.index()].is_some() {
             continue;
         }
         let region_index = regions.len() as u32;
-        // Long coastlines split into multiple named regions while naming —
-        // the tiles themselves are never retyped for naming's sake.
-        let max_faces = match kind {
-            RegionKind::Beach => size_range(Terrain::Beach).1 * 2,
-            RegionKind::Cliff => size_range(Terrain::Cliff).1 * 2,
+        let max_cells = match kind {
+            RegionKind::Beach => size_range(Terrain::Beach).1,
+            RegionKind::Cliff => size_range(Terrain::Cliff).1,
             _ => usize::MAX,
         };
-        let faces = partitioner.claim(start, kind, region_index, max_faces, &mut face_region);
-        // Tiny scraps stay unnamed (towns and roads always name).
-        let min_faces = match kind {
+        let cells = partitioner.claim(start, kind, region_index, max_cells, &mut assigned);
+        let min_cells = match kind {
             RegionKind::Town | RegionKind::Road | RegionKind::River => 1,
-            // Cell minimums expressed in faces (one cell ≈ two faces of area).
-            RegionKind::Forest => size_range(Terrain::Forest).0 * 2,
-            RegionKind::Beach => size_range(Terrain::Beach).0 * 2,
-            _ => 8,
+            RegionKind::Forest => size_range(Terrain::Forest).0,
+            RegionKind::Beach => size_range(Terrain::Beach).0,
+            RegionKind::MountainRange => 1,
+            _ => 4,
         };
-        if faces.len() < min_faces {
-            for face in faces {
-                face_region[face.index()] = None;
+        if cells.len() < min_cells {
+            for cell in cells {
+                assigned[cell.index()] = None;
             }
             continue;
         }
-        let cent = faces
+        let center = cells
             .iter()
-            .map(|face| grid.centroid(*face).0)
+            .map(|&cell| grid.cell_position(cell).0)
             .sum::<Vec3>()
             .normalize_or(Vec3::Y);
-        let idx = kind_counts[kind.rank()];
+        let index = kind_counts[kind.rank()];
         kind_counts[kind.rank()] += 1;
-        let name = region_name(kind, idx, cent, terrain);
         regions.push(RegionData {
-            name,
-            pos: cent.to_array(),
+            name: region_name(kind, index, center, terrain),
+            pos: center.to_array(),
             kind,
         });
+        memberships.extend(cells.into_iter().map(|cell| (cell.index(), region_index)));
     }
-    (regions, face_region)
+}
+
+fn project_cell_memberships(
+    grid: &Grid,
+    cells: &RegionMemberships,
+    regions: &[RegionData],
+) -> RegionMemberships {
+    let mut memberships = Vec::new();
+    let mut counts = Vec::<(u32, u8)>::new();
+    let mut winners = [None::<(u32, u8)>; 18];
+    for face in grid.topology.faces() {
+        counts.clear();
+        for cell in grid.face_cells(face) {
+            for &region in cells.region_ids_at(cell.index()) {
+                if let Some((_, count)) = counts
+                    .iter_mut()
+                    .find(|(candidate, _)| *candidate == region)
+                {
+                    *count += 1;
+                } else {
+                    counts.push((region, 1));
+                }
+            }
+        }
+        winners.fill(None);
+        for &(region, count) in &counts {
+            let kind = regions[region as usize].kind;
+            if kind == RegionKind::Road {
+                // A junction can have more than one road identity at its cell.
+                memberships.push((face.index(), region));
+                continue;
+            }
+            let winner = &mut winners[kind.rank()];
+            if winner.is_none_or(|(current, current_count)| {
+                count > current_count || (count == current_count && region < current)
+            }) {
+                *winner = Some((region, count));
+            }
+        }
+        memberships.extend(
+            winners
+                .iter()
+                .flatten()
+                .map(|(region, _)| (face.index(), *region)),
+        );
+    }
+    RegionMemberships::from_pairs(grid.face_count(), memberships)
 }
 
 pub(in crate::worldgen) fn region_name(
@@ -205,7 +290,7 @@ pub(in crate::worldgen) fn region_name(
         RegionKind::Cliff => pick(&CLIFF, &["Cliffs", "Bluffs"]),
         RegionKind::Forest => pick(&FOREST, &["Forest", "Woods"]),
         RegionKind::Desert => pick(&DESERT, &["Desert", "Dunes"]),
-        RegionKind::Mountain => pick(&MOUNTAIN, &["Peaks", "Range"]),
+        RegionKind::MountainRange => pick(&MOUNTAIN, &["Peaks", "Range"]),
         RegionKind::Plains => pick(&PLAINS, &["Plains", "Fields"]),
         RegionKind::Tundra => pick(&TUNDRA, &["Tundra", "Wastes"]),
         RegionKind::Swamp => pick(&SWAMP, &["Swamp", "Marsh", "Fen"]),
@@ -224,9 +309,43 @@ pub(in crate::worldgen) fn region_name(
             .unwrap_or_else(|| format!("Town {idx}")),
     }
 }
-use bevy::prelude::Vec3;
 
-use crate::level::{RegionData, RegionKind};
-use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::FaceId;
-use crate::worldgen::{Grid, Painted, face_solid, regions, size_range};
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn face_projection_keeps_single_cell_winners_and_breaks_same_kind_ties() {
+        let grid = Grid::new(1337);
+        let face = grid.topology.faces().next().unwrap();
+        let [first, second, third] = grid.face_cells(face);
+        let cells = RegionMemberships::from_pairs(
+            grid.cell_count(),
+            vec![
+                (first.index(), 0),
+                (first.index(), 2),
+                (first.index(), 3),
+                (second.index(), 1),
+                (second.index(), 2),
+                (second.index(), 3),
+                (third.index(), 2),
+                (third.index(), 3),
+            ],
+        );
+        let regions = [
+            RegionKind::Forest,
+            RegionKind::Forest,
+            RegionKind::MountainRange,
+            RegionKind::Road,
+        ]
+        .map(|kind| RegionData {
+            name: String::new(),
+            pos: [0.0; 3],
+            kind,
+        });
+
+        let projected = project_cell_memberships(&grid, &cells, &regions);
+
+        assert_eq!(projected.region_ids_at(face.index()), &[0, 2, 3]);
+    }
+}

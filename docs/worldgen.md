@@ -24,7 +24,7 @@
 - `elevation/`: constraints, ordered relaxation, typed solver-vertex graph, policy, ownership, and solve stages. River banks retain freeboard above rendered channels.
 - `features/`: feature ownership/widening, bridge selection/painting, and transition resolution/blend/cluster stages.
 - `projection.rs`: deterministic cell-to-face reductions.
-- `regions/`: typed overlay-aware partitioning, naming, and connector pass-through.
+- `regions/`: cell-owned connected region partitioning, naming, and face projection.
 - `router.rs`: direction-aware road A* over dense `(CellId, incoming-edge)` state.
 - `water/`: classification, river painting, and normalization.
 - `surface/`: water surfaces, mesh construction, flora, and structure placement.
@@ -32,7 +32,22 @@
 
 ## Determinism
 
-Preserve generation policy, FIFO command/event order, collection iteration order, RNG streams, and floating-point operation order for locked seeds. Use typed `CellId` and `FaceId` at algorithm boundaries and `usize` only for dense storage/solver vertices. Intentional schema or output changes regenerate locked fingerprints and the seed-1337 tracked asset.
+Preserve generation policy, FIFO command/event order, collection iteration order, RNG streams, and floating-point operation order for locked seeds. Use typed `CellId` and `FaceId` at algorithm boundaries and `usize` only for dense storage/solver vertices. Intentional schema or output changes regenerate locked fingerprints and the local seed-1337 asset.
+
+## Region identity
+
+Region extents are owned by connected `CellId` components. Terrain regions use
+surface cover; mountain ranges use connected mountain landform regardless of
+forest, snow, or rock cover. Town and road memberships are additive to natural
+geography, and a bridge structure does not replace the geography beneath it.
+Region IDs are deterministic indices for a given seed and generator version;
+they are not persistent identities across generator versions.
+
+`FaceId` region memberships are a derived exact-query projection of the three
+owning cells. A face reports the most represented region of each non-road kind;
+the lower region ID breaks ties, even when a winning region appears on only one
+cell. Road membership preserves every road ID found among those cells. Exact
+point queries use `face_at` and do not combine neighboring faces.
 
 ## Water and surface policy
 
@@ -72,14 +87,11 @@ choices guide later implementation; they do not describe current capabilities.
   roads follow the same endpoint and naming rules as external roads.
 - Residents, trading, shops, and defensive gameplay are outside this initial scope.
 
-### Travel network and regions
+### Travel network and remaining region presentation
 
 - Implement road and bridge identities according to the glossary. Names split at
   every endpoint, including junctions and settlement or bridge entrances; no
   additional named route spanning several connections is planned.
-- Support simultaneous membership in regions of different kinds, including forest
-  cover within a named mountain range. Regions of the same kind remain separate,
-  except for the roads meeting at a junction.
 - Show all region memberships in the location HUD. Label placement on the map
   must not change the underlying memberships.
 

@@ -696,7 +696,7 @@ fn draw_overlay(
                     | RegionKind::Lake
                     | RegionKind::SaltLake
                     | RegionKind::River => theme::INFO,
-                    RegionKind::Mountain | RegionKind::Volcano | RegionKind::Glacier => {
+                    RegionKind::MountainRange | RegionKind::Volcano | RegionKind::Glacier => {
                         theme::ACCENT
                     }
                     RegionKind::Town | RegionKind::Road => theme::WARNING,
