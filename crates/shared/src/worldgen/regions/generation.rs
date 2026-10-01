@@ -4,6 +4,8 @@ use crate::level::{Landform, RegionData, RegionKind, RegionMemberships};
 use crate::terrain::{Terrain, TerrainGen};
 use crate::worldgen::{Grid, Painted, regions, size_range};
 
+use super::super::network::RoadGraph;
+
 // ---- named regions: cell-owned connected geographic areas ----
 
 /// Which natural region a cell belongs to from its surface cover. Mountain
@@ -39,6 +41,7 @@ pub(in crate::worldgen) fn build_regions(
     cell_types: &[Terrain],
     landform: &[Landform],
     painted: &Painted,
+    network: &RoadGraph,
 ) -> (Vec<RegionData>, RegionMemberships) {
     let mut cell_memberships = Vec::new();
     let mut regions: Vec<RegionData> = Vec::new();
@@ -71,23 +74,34 @@ pub(in crate::worldgen) fn build_regions(
         &mut kind_counts,
     );
 
-    for (kind, cells) in [
-        (RegionKind::Town, &painted.towns),
-        (RegionKind::Road, &painted.roads),
-    ] {
-        let overlay_class = grid
-            .topology
-            .cells()
-            .map(|cell| cells.contains(cell).then_some(kind))
-            .collect::<Vec<_>>();
-        append_regions(
-            grid,
-            terrain,
-            &overlay_class,
-            &mut regions,
-            &mut cell_memberships,
-            &mut kind_counts,
-        );
+    let town_class = grid
+        .topology
+        .cells()
+        .map(|cell| painted.towns.contains(cell).then_some(RegionKind::Town))
+        .collect::<Vec<_>>();
+    append_regions(
+        grid,
+        terrain,
+        &town_class,
+        &mut regions,
+        &mut cell_memberships,
+        &mut kind_counts,
+    );
+
+    for (connection_index, cells) in &network.road_cells {
+        let region_index = regions.len() as u32;
+        let connection = &network.connections[*connection_index as usize];
+        let center = cells
+            .iter()
+            .map(|&cell| grid.cell_position(cell).0)
+            .sum::<Vec3>()
+            .normalize_or(Vec3::Y);
+        regions.push(RegionData {
+            name: connection.name.clone(),
+            pos: center.to_array(),
+            kind: RegionKind::Road,
+        });
+        cell_memberships.extend(cells.iter().map(|cell| (cell.index(), region_index)));
     }
 
     let cells = RegionMemberships::from_pairs(grid.cell_count(), cell_memberships);

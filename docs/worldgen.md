@@ -59,7 +59,28 @@ point queries use `face_at` and do not combine neighboring faces.
 
 ## Bridge policy
 
-Every bridge kind uses a 1–500 m span range, gentle edge-trimmed footings, 1000 m spacing, at least 1000 m saved walking, and explicit deck-overlap rejection. Ocean bridges favor narrow passes and near-perpendicular shore approaches. Spring-adjacent river crossings and propagated inland entry paint are forbidden.
+Every bridge kind uses a 1–500 m span range, gentle edge-trimmed footings, 1000 m spacing, at least 1000 m saved walking, and explicit deck-overlap rejection. Both bridge entrances must connect to roadable land and a road network. Ocean bridges favor narrow passes and near-perpendicular shore approaches. Spring-adjacent river crossings and propagated inland entry paint are forbidden. Bridges between separate cliffed plateaus are deferred; retain the current footing limits until that work is designed.
+
+## Road policy
+
+Road centerlines and their rendered bands use only dry, non-Cliff cells with
+Flat or Gentle slopes. Each road edge also needs a neighboring roadable face to
+support its width; routing and connected-network grouping honor that edge
+constraint. A world may contain separate road networks where suitable terrain
+and feasible bridges cannot join them. Do not force routes across cliff necks,
+water, or spans beyond the current bridge limit.
+
+Settlement counts remain fixed. After terrain slope classification, generation
+keeps each settlement within its authored Settlement zone and selects the
+nearest zone face whose town footprint contains a safe multi-edge road
+corridor, then searches roadable fine-cell centers in that same zone if needed.
+If no suitable site exists, generation reports the settlement zone and stops
+instead of silently keeping an unusable anchor or dropping a settlement. The
+footprint radius is currently 55 m. Settlement entrances lie
+inside the painted footprint; when an isolated settlement has no external road
+connection, its local network receives a meaningful internal road between
+distinct roadable points. Richer settlement layouts and types are tracked in
+the remaining settlement work below.
 
 ## Verification
 
@@ -67,24 +88,25 @@ Run the focused shared test, all `cargo test -p shared` tests, locked-seed finge
 
 For level regeneration and comparison, follow the [level pipeline](level-pipeline.md). Regenerate only artifacts affected by the change.
 
-## Agreed direction — not yet implemented
+## Remaining agreed direction
 
-The [glossary](../GLOSSARY.md) defines the intended domain model. The following
-choices guide later implementation; they do not describe current capabilities.
+The [glossary](../GLOSSARY.md) defines the domain model. These choices remain
+future implementation work; completed road policy is described above.
 
 ### Settlements
 
 - Generate all three settlement kinds in every world. Initial configurable targets
   are 3 towns, 6 villages, and 3 outposts; the configured counts and road access
-  for every settlement are mandatory.
+  for every settlement are mandatory and already enforced.
 - Towns have larger footprints, multiple internal roads, homes, and shared facilities.
 - Villages have smaller footprints, fewer roads, homes, and agricultural features.
 - Outposts have compact footprints, watchtowers, defensive barriers, and basic shelter.
 - Prefer strategic outpost locations overlooking roads or crossings, especially
   elevated sites. Buildable footprints, settlement counts, and road access take
   precedence over that preference; use the best valid sites available.
-- Each settlement has distinct entrances connected by internal roads. Internal
-  roads follow the same endpoint and naming rules as external roads.
+- Expand the current compatible internal connections into distinct settlement
+  entrances connected by a richer internal road layout. Internal roads follow
+  the same endpoint and naming rules as external roads.
 - Residents, trading, shops, and defensive gameplay are outside this initial scope.
 
 ### Travel network and remaining region presentation

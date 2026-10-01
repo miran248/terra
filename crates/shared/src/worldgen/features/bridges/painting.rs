@@ -1,22 +1,16 @@
-/// Roads may not cross water: a planned path whose cell chain touches a water
-/// cell is dropped entirely (crossing there needs a bridge, not a road).
+/// Roads may only occupy flat or gentle ground outside cliff terrain.
 pub(in crate::worldgen) fn paint_features(
     grid: &Grid,
     terrain: &TerrainGen,
     cells: &[Terrain],
     slope_class: &[SlopeClass],
-) -> (Painted, Vec<Vec<SpherePos>>) {
+) -> (Painted, Vec<RoadPath>) {
     let mut painted = Painted::empty(grid.cell_count());
-    let mut kept: Vec<Vec<SpherePos>> = Vec::new();
-    // Roads route on WALKABLE ground: they follow valleys and mountain passes
-    // and refuse water and steep slopes (conform, don't carve). A leg that has
-    // no gentle dry route is dropped — that gap wants a bridge.
-    // Roads may not cross water or a cliff, and are steered strongly toward
-    // gentle ground (steep cells cost extra), so they follow valleys and
-    // passes but can still climb a slope when they must.
-    let blocked = |cell: crate::topology::CellId| {
-        cells[cell.index()].is_water() || slope_class[cell.index()] == SlopeClass::Cliff
-    };
+    let mut kept: Vec<RoadPath> = Vec::new();
+    // Roads conform to terrain: steep slopes, cliff terrain, and water are not
+    // roadable, so a route with no suitable land path is left disconnected.
+    let blocked =
+        |cell: CellId| !features::roadable(cells[cell.index()], slope_class[cell.index()]);
     let extra = |cell: crate::topology::CellId| match slope_class[cell.index()] {
         SlopeClass::Flat => 0,
         SlopeClass::Gentle => 400,
@@ -34,15 +28,24 @@ pub(in crate::worldgen) fn paint_features(
             chain.extend(&seg[skip..]);
         }
         let band = features::widen_band(grid, &chain, false);
-        if band.iter().any(|&cell| {
-            cells[cell.index()].is_water() || slope_class[cell.index()] == SlopeClass::Cliff
-        }) {
+        if band.iter().any(|&cell| blocked(cell)) {
             continue;
         }
         for cell in band {
             painted.roads.insert(cell);
         }
-        kept.push(path.clone());
+        let settlement_at = |endpoint: CellId| {
+            terrain
+                .settlement_anchors
+                .iter()
+                .position(|&anchor| nearest_cell(grid, anchor) == Some(endpoint))
+                .map(|index| index as u32)
+        };
+        kept.push(RoadPath {
+            from_settlement: chain.first().copied().and_then(settlement_at),
+            to_settlement: chain.last().copied().and_then(settlement_at),
+            cells: chain,
+        });
     }
     // Towns sit on walkable ground within the settlement radius.
     for (cell_index, &slope) in slope_class.iter().enumerate().take(grid.cell_count()) {
@@ -57,15 +60,14 @@ pub(in crate::worldgen) fn paint_features(
         }
     }
     link_feature_pinches(grid, &mut painted.roads, |cell| {
-        cells[cell.index()].is_land()
+        features::roadable(cells[cell.index()], slope_class[cell.index()])
     });
     link_feature_pinches(grid, &mut painted.towns, |_| true);
     (painted, kept)
 }
 use crate::level::SlopeClass;
-use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
 use crate::topology::CellId;
 use crate::worldgen::{
-    Grid, Painted, TOWN_RADIUS, features, link_feature_pinches, nearest_cell, router,
+    Grid, Painted, RoadPath, TOWN_RADIUS, features, link_feature_pinches, nearest_cell, router,
 };

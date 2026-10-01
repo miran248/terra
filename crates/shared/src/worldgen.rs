@@ -11,9 +11,9 @@
 use std::collections::BTreeMap;
 
 use crate::level::{
-    FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RegionMemberships, RoadData,
-    RoadKind, RoadMaterial, SettlementData, SlopeClass, StructureData, SurfaceCondition,
-    WaterDepth, WaterPhase,
+    FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RegionMemberships,
+    RoadMaterial, SettlementData, SlopeClass, StructureData, SurfaceCondition, WaterDepth,
+    WaterPhase,
 };
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
@@ -24,6 +24,7 @@ mod domain;
 mod elevation;
 mod features;
 mod grid;
+mod network;
 mod pipeline;
 mod projection;
 mod regions;
@@ -265,6 +266,14 @@ impl Painted {
     }
 }
 
+/// An accepted road centerline on the authoritative cell lattice.
+#[derive(Clone)]
+struct RoadPath {
+    cells: Vec<CellId>,
+    from_settlement: Option<u32>,
+    to_settlement: Option<u32>,
+}
+
 /// How many of a face's corner cells are in the set.
 fn painted_corners(grid: &Grid, bits: &CellSet, face: FaceId) -> usize {
     features::painted_corners(grid, bits, face)
@@ -290,9 +299,9 @@ struct GenState {
     pub tiles: FaceField<Terrain>,
     pub painted: Painted,
     pub bridges: Vec<Vec<SpherePos>>,
-    /// Road polylines that survived water checks — the single source of truth
-    /// for serialization (NOT terrain.road_paths, which is the L2 plan).
-    pub roads: Vec<Vec<SpherePos>>,
+    /// Routed road centerlines that survived water checks.
+    pub roads: Vec<RoadPath>,
+    pub network: network::RoadGraph,
     /// Inland biome-boundary faces and the kind pair they link.
     pub blends: Vec<FaceBlend>,
     pub regions: Vec<RegionData>,
@@ -367,6 +376,7 @@ impl GenState {
             painted,
             bridges: Vec::new(),
             roads: Vec::new(),
+            network: network::RoadGraph::empty(),
             blends: Vec::new(),
             regions: Vec::new(),
             face_regions: RegionMemberships::default(),
@@ -410,19 +420,6 @@ impl GenState {
                 pos: anchor.0.to_array(),
             })
             .collect();
-        let mut roads: Vec<RoadData> = self
-            .roads
-            .iter()
-            .map(|path| RoadData {
-                points: path.iter().map(|point| point.0.to_array()).collect(),
-                kind: RoadKind::Road,
-            })
-            .collect();
-        roads.extend(self.bridges.iter().map(|path| RoadData {
-            points: path.iter().map(|point| point.0.to_array()).collect(),
-            kind: RoadKind::Bridge,
-        }));
-
         LevelData {
             seed: self.grid.seed,
             vert_elev: terrain.vert_elevations().to_vec(),
@@ -446,7 +443,8 @@ impl GenState {
             face_tags: self.face_tags.to_vec(),
             face_blend: self.blends.clone(),
             settlements,
-            roads,
+            roads: self.network.connections.clone(),
+            road_endpoints: self.network.endpoints.clone(),
             regions: self.regions.clone(),
             face_regions: self.face_regions.clone(),
             flora: self.flora.clone(),

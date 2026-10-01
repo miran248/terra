@@ -1,4 +1,5 @@
 use super::{CellSet, Grid};
+use crate::level::SlopeClass;
 use crate::terrain::Terrain;
 use crate::topology::{CellId, FaceId};
 
@@ -26,6 +27,12 @@ pub(super) fn bridge_walkable(terrain: Terrain) -> bool {
             | Terrain::Jungle
             | Terrain::Swamp
     )
+}
+
+pub(super) fn roadable(terrain: Terrain, slope: SlopeClass) -> bool {
+    terrain != Terrain::Cliff
+        && !terrain.is_water()
+        && matches!(slope, SlopeClass::Flat | SlopeClass::Gentle)
 }
 
 pub(super) fn face_solid(grid: &Grid, cells: &CellSet, face: FaceId) -> bool {

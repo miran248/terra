@@ -186,7 +186,12 @@ pub struct LevelData {
     /// colors/textures toward the typed target.
     pub face_blend: Vec<FaceBlend>,
     pub settlements: Vec<SettlementData>,
+    /// Named road and bridge connections. `from_endpoint` and `to_endpoint`
+    /// index `road_endpoints`; connection order is deterministic for a seed.
     pub roads: Vec<RoadData>,
+    /// Shared network locations. A location can carry several roles, such as
+    /// a settlement entrance that also meets a bridge.
+    pub road_endpoints: Vec<RoadEndpointData>,
     /// Named contiguous feature clusters: oceans, lakes, rivers, beaches,
     /// forests, mountain ranges, towns, roads, …
     pub regions: Vec<RegionData>,
@@ -497,6 +502,34 @@ impl LevelData {
         if self.settlements.is_empty() {
             return Err("level has no settlements".into());
         }
+        for (road_index, road) in self.roads.iter().enumerate() {
+            if road.from_endpoint as usize >= self.road_endpoints.len()
+                || road.to_endpoint as usize >= self.road_endpoints.len()
+            {
+                return Err(format!(
+                    "road {road_index} references a missing road endpoint"
+                ));
+            }
+            if road.from_endpoint == road.to_endpoint {
+                return Err(format!(
+                    "road {road_index} has the same endpoint at both ends"
+                ));
+            }
+            if road.points.len() < 2 {
+                return Err(format!("road {road_index} has fewer than two points"));
+            }
+        }
+        for (endpoint_index, endpoint) in self.road_endpoints.iter().enumerate() {
+            for role in &endpoint.roles {
+                if let RoadEndpointRole::SettlementEntrance { settlement_index } = role
+                    && *settlement_index as usize >= self.settlements.len()
+                {
+                    return Err(format!(
+                        "road endpoint {endpoint_index} references missing settlement {settlement_index}"
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -562,10 +595,27 @@ pub struct SettlementData {
     pub pos: [f32; 3],
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct RoadData {
+    pub name: String,
     pub points: Vec<[f32; 3]>,
     pub kind: RoadKind,
+    pub from_endpoint: u32,
+    pub to_endpoint: u32,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct RoadEndpointData {
+    /// Unit-sphere position shared by every connection meeting here.
+    pub pos: [f32; 3],
+    pub roles: Vec<RoadEndpointRole>,
+}
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq, Debug)]
+pub enum RoadEndpointRole {
+    SettlementEntrance { settlement_index: u32 },
+    Junction,
+    BridgeEntrance,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -579,8 +629,8 @@ mod tests {
     use crate::topology::FaceId;
 
     use super::{
-        FloraKind, Landform, LevelData, RegionMemberships, RoadKind, RoadMaterial, SlopeClass,
-        StructureKind, SurfaceCondition, WaterDepth, WaterPhase,
+        FloraKind, Landform, LevelData, RegionMemberships, RoadEndpointRole, RoadKind,
+        RoadMaterial, SlopeClass, StructureKind, SurfaceCondition, WaterDepth, WaterPhase,
     };
     use serde::{Serialize, de::DeserializeOwned};
 
@@ -617,6 +667,36 @@ mod tests {
         memberships[0] = vec![level.regions.len() as u32];
         level.face_regions = RegionMemberships::from_memberships(memberships);
         assert!(level.validate().unwrap_err().contains("region reference"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_road_endpoint_references() {
+        let mut level = tracked_level();
+        level.roads[0].from_endpoint = level.road_endpoints.len() as u32;
+        assert!(level.validate().unwrap_err().contains("road endpoint"));
+
+        let mut level = tracked_level();
+        level.roads[0].to_endpoint = level.road_endpoints.len() as u32;
+        assert!(level.validate().unwrap_err().contains("road endpoint"));
+    }
+
+    #[test]
+    fn validation_rejects_invalid_settlement_entrance_references() {
+        let mut level = tracked_level();
+        let endpoint = level
+            .road_endpoints
+            .iter_mut()
+            .find(|endpoint| {
+                endpoint
+                    .roles
+                    .iter()
+                    .any(|role| matches!(role, RoadEndpointRole::SettlementEntrance { .. }))
+            })
+            .expect("generated road network has settlement entrances");
+        endpoint.roles.push(RoadEndpointRole::SettlementEntrance {
+            settlement_index: level.settlements.len() as u32,
+        });
+        assert!(level.validate().unwrap_err().contains("missing settlement"));
     }
 
     #[test]

@@ -94,7 +94,7 @@ fn locked_serialized_worlds() {
     let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
     assert_eq!(
         serialized_fingerprint(&seed_1337),
-        9900061392226342493,
+        10059265569591489525,
         "fingerprint changed — regenerate level_1337.bin and update this value"
     );
     let expected_bytes = include_bytes!(concat!(
@@ -103,12 +103,12 @@ fn locked_serialized_worlds() {
     ));
     if seed_1337.as_slice() != expected_bytes {
         panic!(
-            "level_1337.bin mismatch! expected {} bytes, got {} bytes. Run 'cargo run -p gen_level --release -- 1337' to update.",
+            "level_1337.bin mismatch! expected {} bytes, got {} bytes. Run 'cargo run -p gen_level -- crates/main/assets/level_1337.bin' to update.",
             expected_bytes.len(),
             seed_1337.len()
         );
     }
 
     let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 1623423017140270856);
+    assert_eq!(serialized_fingerprint(&seed_42), 8238422979298284525);
 }

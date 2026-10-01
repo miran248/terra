@@ -40,8 +40,12 @@ A small settlement serving a defensive or watchkeeping purpose.
 _Avoid_: Village when referring to a defensive site.
 
 **Road network**:
-The connected system of roads, bridges, and their endpoints through which settlements can be reached.
+The connected system of roads, bridges, and their endpoints through which settlements can be reached. A world may contain separate road networks where suitable ground or bridge access cannot connect them.
 _Avoid_: Road when referring to the entire network.
+
+**Roadable terrain**:
+Dry, non-Cliff ground on a Flat or Gentle slope. A road segment also needs a safe neighboring face to support its full width.
+_Avoid_: Walkable terrain when referring specifically to ground that can carry roads.
 
 **Road**:
 A named travel connection between consecutive endpoints: junctions, settlement entrances, or bridge entrances. Each connection has its own identity and name, including roads inside settlements.

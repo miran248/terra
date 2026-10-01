@@ -282,13 +282,17 @@ impl TerrainGen {
     // ---- zone lookup ----
 
     pub fn zone_kind_at(&self, pos: SpherePos) -> ZoneKind {
+        self.zones.zones[self.zone_id_at(pos) as usize].kind
+    }
+
+    pub fn zone_id_at(&self, pos: SpherePos) -> u16 {
         match self.coarse_mesh.face_at(pos.0) {
-            Some(fi) => self.zones.kind_of_face(fi),
-            None => self.nearest_zone_kind(pos.0),
+            Some(fi) => self.zones.zone_of[fi],
+            None => self.nearest_zone_id(pos.0),
         }
     }
 
-    fn nearest_zone_kind(&self, dir: Vec3) -> ZoneKind {
+    fn nearest_zone_id(&self, dir: Vec3) -> u16 {
         let mut best = 0;
         let mut best_dot = f32::NEG_INFINITY;
         for (i, c) in self.zones.centroids.iter().enumerate() {
@@ -298,7 +302,7 @@ impl TerrainGen {
                 best = i;
             }
         }
-        self.zones.kind_of_face(best)
+        self.zones.zone_of[best]
     }
 
     // ---- unified elevation (the ONLY source of height) ----

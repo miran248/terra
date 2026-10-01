@@ -1,13 +1,14 @@
 use std::collections::VecDeque;
 
+use super::network;
 use super::{
-    CellField, FaceBlend, FaceId, FaceTag, FloraData, GenState, Landform, Painted, RegionData,
-    RegionMemberships, RoadMaterial, SlopeClass, SpherePos, StructureData, SurfaceCondition,
-    Terrain, TerrainGen, WaterDepth, WaterPhase, build_bridges, build_face_tags, build_mesh,
-    build_regions, classify_cover, classify_landform, classify_slope, classify_water_depth,
-    derive_tiles, face_majority, face_max, face_road_material, mark_blends, normalize_water_bodies,
-    paint_features, paint_rivers, place_flora, place_structures, resolve_transitions,
-    river_surface_radii, solve_elevation, water_surface_radii,
+    CellField, CellSet, FaceBlend, FaceId, FaceTag, FloraData, GenState, Landform, Painted,
+    RegionData, RegionMemberships, RoadMaterial, RoadPath, SlopeClass, SpherePos, StructureData,
+    SurfaceCondition, Terrain, TerrainGen, WaterDepth, WaterPhase, build_bridges, build_face_tags,
+    build_mesh, build_regions, classify_cover, classify_landform, classify_slope,
+    classify_water_depth, derive_tiles, face_majority, face_max, face_road_material, mark_blends,
+    normalize_water_bodies, paint_features, paint_rivers, place_flora, place_structures,
+    resolve_transitions, river_surface_radii, solve_elevation, water_surface_radii,
 };
 
 // ---- commands & events ----
@@ -46,9 +47,9 @@ enum Command {
     SolveElevation,
     /// Cluster water into connected bodies (sea + lakes), one waterline each.
     ClusterWater,
-    /// Named feature clusters.
+    /// Named geographic and built-feature clusters.
     BuildRegions,
-    /// Bridge spans between landmasses (needs regions).
+    /// Bridge spans plus their road access connections.
     SelectBridges,
     /// Displaced trimesh + colors.
     BuildMesh,
@@ -61,6 +62,8 @@ enum Command {
     PlaceStructures,
     /// Per-cell steepness from the solved field (slope class).
     ClassifySlope,
+    /// Choose settlement faces whose town footprints can carry local roads.
+    SelectSettlementSites,
     /// Per-cell macro landform from the proposed field (base layer).
     ClassifyLandform,
     /// Bake every face projection and river geometry field after cell-owned
@@ -78,7 +81,7 @@ enum Event {
     TilesClassified(CellField<Terrain>),
     RiversPainted(CellField<Terrain>),
     WaterNormalized(CellField<Terrain>),
-    FeaturesPainted(Painted, Vec<Vec<SpherePos>>),
+    FeaturesPainted(Painted, Vec<RoadPath>),
     TransitionsResolved(CellField<Terrain>),
     BlendsMarked(Vec<FaceBlend>),
     ElevationSolved {
@@ -88,12 +91,18 @@ enum Event {
     },
     WaterClustered(Vec<f32>),
     RegionsBuilt(Vec<RegionData>, RegionMemberships),
-    BridgesSelected(Vec<Vec<SpherePos>>, Painted),
+    BridgesSelected(
+        Vec<Vec<SpherePos>>,
+        Painted,
+        Vec<RoadPath>,
+        super::network::RoadGraph,
+    ),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
     TagsBuilt(Vec<Vec<FaceTag>>),
     FloraPlaced(Vec<FloraData>),
     StructuresPlaced(Vec<StructureData>),
     SlopeClassified(Vec<SlopeClass>, Vec<Option<WaterDepth>>),
+    SettlementSitesSelected(Vec<SpherePos>),
     LandformClassified(Vec<Landform>),
     OutputsBaked {
         river_r: Vec<[f32; 3]>,
@@ -142,7 +151,7 @@ impl Event {
                 )
             }
             Event::RegionsBuilt(r, _) => format!("regions built: {}", r.len()),
-            Event::BridgesSelected(b, _) => format!("bridges selected: {}", b.len()),
+            Event::BridgesSelected(b, ..) => format!("bridges selected: {}", b.len()),
             Event::MeshBuilt(t, _) => format!("mesh built: {} tris", t.len()),
             Event::TagsBuilt(tags) => format!(
                 "tags built: {} entries",
@@ -154,6 +163,9 @@ impl Event {
                 let cliffs = sc.iter().filter(|&&c| c == SlopeClass::Cliff).count();
                 let abyss = wd.iter().filter(|&&d| d == Some(WaterDepth::Abyss)).count();
                 format!("relief classified: {cliffs} cliff cells, {abyss} abyss cells")
+            }
+            Event::SettlementSitesSelected(anchors) => {
+                format!("settlement sites selected: {}", anchors.len())
             }
             Event::LandformClassified(lf) => {
                 let mtn = lf
@@ -195,6 +207,15 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
             let depth = classify_water_depth(&state.grid, state.cells.as_slice(), state.terrain());
             Event::SlopeClassified(slope, depth)
         }
+        Command::SelectSettlementSites => Event::SettlementSitesSelected(
+            network::select_settlement_sites(
+                &state.grid,
+                state.terrain(),
+                state.cells.as_slice(),
+                state.slope_class.as_slice(),
+            )
+            .unwrap_or_else(|error| panic!("settlement placement failed: {error}")),
+        ),
         Command::ClassifyTiles => {
             let terrain = state.terrain();
             let grid = &state.grid;
@@ -268,20 +289,45 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
                 state.cells.as_slice(),
                 state.landform.as_slice(),
                 &state.painted,
+                &state.network,
             );
             Event::RegionsBuilt(regions, face_regions)
         }
         Command::SelectBridges => {
             let mut painted = state.painted.clone();
-            let bridges = build_bridges(
+            let mut roads = state.roads.clone();
+            let settlements = &state.terrain().settlement_anchors;
+            let settlement_entrances = network::connect_settlements(
+                &state.grid,
+                state.cells.as_slice(),
+                state.slope_class.as_slice(),
+                settlements,
+                &mut painted,
+                &mut roads,
+            );
+            let mut candidates_painted = Painted::empty(state.grid.cell_count());
+            let candidates = build_bridges(
                 &state.grid,
                 state.terrain(),
                 state.cells.as_slice(),
                 state.slope_class.as_slice(),
                 state.tiles.as_slice(),
-                &mut painted,
+                &mut candidates_painted,
             );
-            Event::BridgesSelected(bridges, painted)
+            painted.bridges = CellSet::new(state.grid.cell_count());
+            painted.bridge_entries = CellSet::new(state.grid.cell_count());
+            let bridges = network::connect_bridges(
+                &state.grid,
+                state.cells.as_slice(),
+                state.slope_class.as_slice(),
+                &settlement_entrances,
+                candidates,
+                &mut painted,
+                &mut roads,
+            );
+            let network =
+                network::build_road_graph(&state.grid, &roads, &bridges, &settlement_entrances);
+            Event::BridgesSelected(bridges, painted, roads, network)
         }
         Command::BuildMesh => {
             let (tris, cols) = build_mesh(
@@ -575,9 +621,11 @@ fn evolve(state: &mut GenState, event: Event) {
             state.regions = r;
             state.face_regions = fr;
         }
-        Event::BridgesSelected(b, p) => {
+        Event::BridgesSelected(b, p, roads, network) => {
             state.bridges = b;
             state.painted = p;
+            state.roads = roads;
+            state.network = network;
         }
         Event::MeshBuilt(t, c) => {
             state.mesh_tris = t.into();
@@ -589,6 +637,11 @@ fn evolve(state: &mut GenState, event: Event) {
         Event::SlopeClassified(sc, wd) => {
             state.slope_class = sc.into();
             state.water_depth = wd.into();
+        }
+        Event::SettlementSitesSelected(anchors) => {
+            let terrain = state.terrain_mut();
+            terrain.settlement_anchors = anchors;
+            terrain.road_paths = terrain.plan_road_paths();
         }
         Event::LandformClassified(lf) => state.landform = lf.into(),
         Event::OutputsBaked {
@@ -640,10 +693,11 @@ fn react(event: &Event) -> Vec<Command> {
             ]
         }
         Event::WaterClustered(_) => vec![],
-        Event::SlopeClassified(..) => vec![Command::PaintFeatures],
-        Event::FeaturesPainted(..) => vec![Command::BuildRegions],
-        Event::RegionsBuilt(..) => vec![Command::SelectBridges],
-        Event::BridgesSelected(..) => vec![Command::MarkBlends],
+        Event::SlopeClassified(..) => vec![Command::SelectSettlementSites],
+        Event::SettlementSitesSelected(..) => vec![Command::PaintFeatures],
+        Event::FeaturesPainted(..) => vec![Command::SelectBridges],
+        Event::BridgesSelected(..) => vec![Command::BuildRegions],
+        Event::RegionsBuilt(..) => vec![Command::MarkBlends],
         Event::BlendsMarked(_) => vec![Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
         Event::TagsBuilt(..) => vec![Command::PlaceFlora],

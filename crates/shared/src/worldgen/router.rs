@@ -1,5 +1,5 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BinaryHeap};
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
 
 use bevy::prelude::Vec3;
 
@@ -14,9 +14,46 @@ pub(super) fn lattice_path(
     from: CellId,
     to: CellId,
 ) -> Vec<CellId> {
-    if from == to {
-        return vec![from];
+    lattice_path_with_edge(grid, blocked, extra, |_, _| false, from, to)
+}
+
+/// Direction-aware A* over dense `(cell, incoming-edge)` states, with an
+/// optional directed-edge constraint for features whose footprint depends on
+/// travel direction.
+pub(super) fn lattice_path_with_edge(
+    grid: &Grid,
+    blocked: impl Fn(CellId) -> bool,
+    extra: impl Fn(CellId) -> u64,
+    edge_blocked: impl Fn(CellId, CellId) -> bool,
+    from: CellId,
+    to: CellId,
+) -> Vec<CellId> {
+    lattice_path_to_any_with_edge(grid, blocked, extra, edge_blocked, from, &[to])
+        .map_or_else(Vec::new, |(path, _)| path)
+}
+
+/// Route to the first reachable cell in a target set, using the closest
+/// target as the A* heuristic. This avoids restarting a full route search for
+/// every road cell around a bridge entrance.
+pub(super) fn lattice_path_to_any_with_edge(
+    grid: &Grid,
+    blocked: impl Fn(CellId) -> bool,
+    extra: impl Fn(CellId) -> u64,
+    edge_blocked: impl Fn(CellId, CellId) -> bool,
+    from: CellId,
+    targets: &[CellId],
+) -> Option<(Vec<CellId>, CellId)> {
+    let target_set = targets.iter().copied().collect::<BTreeSet<_>>();
+    if target_set.is_empty() {
+        return None;
     }
+    if target_set.contains(&from) {
+        return Some((vec![from], from));
+    }
+    let target_directions = target_set
+        .iter()
+        .map(|&cell| grid.cell_direction(cell))
+        .collect::<Vec<_>>();
     const STEP: u64 = 1000;
     let turn_cost = |previous: Vec3, direction: Vec3| {
         ((1.0 - previous.dot(direction)).max(0.0) * 2500.0) as u64
@@ -26,11 +63,13 @@ pub(super) fn lattice_path(
         .cell_direction(first_cell)
         .angle_between(grid.cell_direction(grid.cell_neighbors(first_cell)[0]));
     let heuristic = |cell: CellId| {
-        (grid
-            .cell_direction(cell)
-            .angle_between(grid.cell_direction(to))
-            / edge_angle
-            * 990.0) as u64
+        let direction = grid.cell_direction(cell);
+        let nearest_dot = target_directions
+            .iter()
+            .map(|target| direction.dot(*target))
+            .fold(-1.0f32, f32::max)
+            .clamp(-1.0, 1.0);
+        (nearest_dot.acos() / edge_angle * 990.0) as u64
     };
     let direction =
         |a: CellId, b: CellId| (grid.cell_direction(b) - grid.cell_direction(a)).normalize();
@@ -48,7 +87,7 @@ pub(super) fn lattice_path(
             .topology
             .cell(cell_index)
             .expect("router state uses topology cell ids");
-        if cell == to {
+        if target_set.contains(&cell) {
             let mut path = vec![cell];
             let mut current = (cell_index, slot);
             while let Some(&previous) = came.get(&current) {
@@ -60,12 +99,14 @@ pub(super) fn lattice_path(
                 current = previous;
             }
             path.reverse();
-            return path;
+            return Some((path, cell));
         }
         let previous_direction =
             (slot < 6).then(|| direction(grid.cell_neighbors(cell)[slot], cell));
         for &neighbor in grid.cell_neighbors(cell) {
-            if blocked(neighbor) && neighbor != to {
+            if (blocked(neighbor) && !target_set.contains(&neighbor))
+                || edge_blocked(cell, neighbor)
+            {
                 continue;
             }
             let next_direction = direction(cell, neighbor);
@@ -90,7 +131,7 @@ pub(super) fn lattice_path(
             }
         }
     }
-    Vec::new()
+    None
 }
 
 #[cfg(test)]
