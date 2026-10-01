@@ -48,4 +48,43 @@ Every bridge kind uses a 1–500 m span range, gentle edge-trimmed footings, 100
 
 ## Verification
 
-Run the focused shared test, all `cargo test -p shared` tests, locked-seed fingerprints, strict workspace `cargo clippy`, and direct seed-1337 asset comparison. Run `cargo bench -p gen_level --bench worldgen` when performance-sensitive generation changes.
+Run the focused shared test, all `cargo test -p shared` tests, locked-seed fingerprints, workspace `cargo clippy --workspace --all-targets -- -D warnings`, and direct seed-1337 asset comparison. Run `cargo bench -p gen_level --bench worldgen` when performance-sensitive generation changes.
+
+For level regeneration and comparison, follow the [level pipeline](level-pipeline.md). Regenerate only artifacts affected by the change.
+
+## Agreed direction — not yet implemented
+
+The [glossary](../GLOSSARY.md) defines the intended domain model. The following
+choices guide later implementation; they do not describe current capabilities.
+
+### Settlements
+
+- Generate all three settlement kinds in every world. Initial configurable targets
+  are 3 towns, 6 villages, and 3 outposts; the configured counts and road access
+  for every settlement are mandatory.
+- Towns have larger footprints, multiple internal roads, homes, and shared facilities.
+- Villages have smaller footprints, fewer roads, homes, and agricultural features.
+- Outposts have compact footprints, watchtowers, defensive barriers, and basic shelter.
+- Prefer strategic outpost locations overlooking roads or crossings, especially
+  elevated sites. Buildable footprints, settlement counts, and road access take
+  precedence over that preference; use the best valid sites available.
+- Each settlement has distinct entrances connected by internal roads. Internal
+  roads follow the same endpoint and naming rules as external roads.
+- Residents, trading, shops, and defensive gameplay are outside this initial scope.
+
+### Travel network and regions
+
+- Implement road and bridge identities according to the glossary. Names split at
+  every endpoint, including junctions and settlement or bridge entrances; no
+  additional named route spanning several connections is planned.
+- Support simultaneous membership in regions of different kinds, including forest
+  cover within a named mountain range. Regions of the same kind remain separate,
+  except for the roads meeting at a junction.
+- Show all region memberships in the location HUD. Label placement on the map
+  must not change the underlying memberships.
+
+### Deferred architectural work
+
+- TODO: evaluate moving runtime zone and climate reconstruction into baked level
+  data. Retain the current reconstruction for this domain-model migration; see
+  [runtime contracts](runtime.md) for the current boundary.

@@ -5,4 +5,4 @@
 - Use `CellId` and `FaceId` at algorithm boundaries; reserve `usize` for dense storage and solver vertices.
 - Intentional `LevelData` changes regenerate the tracked asset and locked fingerprints.
 
-Load [.agents/skills/terra-worldgen/SKILL.md](../../../../.agents/skills/terra-worldgen/SKILL.md) before editing this subtree. Its reference maps module ownership and the full water, bridge, surface, and verification contracts.
+Read [world-generation contracts](../../../../docs/worldgen.md) before editing this subtree for module ownership, water, bridge, surface, and verification contracts.

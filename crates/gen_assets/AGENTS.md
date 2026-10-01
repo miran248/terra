@@ -5,4 +5,4 @@
 - Output remains texture-free glTF 2.0 binary in meters, Y-up, forward -Z, with ground pivots, flat normals, linear vertex colors, and high-roughness PBR materials.
 - Generation is byte-for-byte deterministic; `--check` validates without writing.
 
-Load [.agents/skills/terra-assets/SKILL.md](../../.agents/skills/terra-assets/SKILL.md) for procedures and verification.
+Read the [GLB pipeline](../../docs/glb-pipeline.md) for generation and verification procedures.

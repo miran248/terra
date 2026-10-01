@@ -13,7 +13,7 @@
 - `sphere.rs` owns the meter-based 2000 m planet model and geodesic operations.
 - `worldgen.rs` exposes only finalized `CompletedWorld` data and statistics; mutable generation state stays private.
 
-Load [.agents/skills/terra-worldgen/SKILL.md](../../.agents/skills/terra-worldgen/SKILL.md) for architecture and determinism contracts. Load [.agents/skills/terra-assets/SKILL.md](../../.agents/skills/terra-assets/SKILL.md) when changing art or serialized assets.
+Read [world-generation contracts](../../docs/worldgen.md) for terrain and topology changes, the [GLB pipeline](../../docs/glb-pipeline.md) for procedural art, and the [level pipeline](../../docs/level-pipeline.md) for serialized level data.
 
 ## Verification
 
