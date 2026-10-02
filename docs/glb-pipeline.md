@@ -1,5 +1,7 @@
 # Procedural GLB catalog
 
+The [script-first refresh decision](adr/0001-scripted-asset-refresh.md) describes the replacement direction; the pipeline below remains the current baseline. Use the throwaway [asset scale preview](asset-preview-prototype.md) to inspect that baseline before adopting new dimensions.
+
 - `crates/gen_assets` owns mesh construction, GLB serialization, catalog validation, and its CLI. It consumes canonical dimensions, collider contracts, paths, variants, and semantic names from `shared::art`.
 - Output is texture-free glTF 2.0 binary: meters, Y-up, forward -Z, ground pivot at Y=0, flat normals, linear vertex colors, and high-roughness PBR materials.
 - Catalog generation is byte-for-byte deterministic. Environmental objects use the `scenery.*` scene namespace, while built objects use `structure.*`; stable scene, node, mesh, material, socket, and animation names are runtime API. Renamed scene identifiers have no compatibility aliases, so regenerate all catalogs after a naming change.
