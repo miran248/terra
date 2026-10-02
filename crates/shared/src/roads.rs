@@ -63,14 +63,30 @@ fn wobbled_slerp(a: SpherePos, b: SpherePos, t: f32, seed: Vec3, amplitude: f32)
 /// `ground` must be the DISPLACED terrain mesh (the one that renders and
 /// collides), not the smooth field — the baked mesh is faceted and lifts cliff
 /// tops, and a deck built from the smooth field can end below it.
+#[derive(Default)]
+pub struct BridgeDeckGeometry {
+    /// Complete solid deck mesh: top, underside, sides, and end caps.
+    pub triangles: Vec<[[f32; 3]; 3]>,
+    /// Top-facing triangles from the same geometry used by the collider and renderer.
+    pub top_surface: Vec<[[f32; 3]; 3]>,
+}
+
 pub fn build_bridge_deck(
     points: &[SpherePos],
     ground: &crate::planet::PlanetMesh,
     half_width: f32,
 ) -> Vec<[[f32; 3]; 3]> {
-    let mut tris = Vec::new();
+    build_bridge_deck_geometry(points, ground, half_width).triangles
+}
+
+pub fn build_bridge_deck_geometry(
+    points: &[SpherePos],
+    ground: &crate::planet::PlanetMesh,
+    half_width: f32,
+) -> BridgeDeckGeometry {
+    let mut deck = BridgeDeckGeometry::default();
     if points.len() < 2 {
-        return tris;
+        return deck;
     }
     // Resample the centreline UNIFORMLY by arc length: perfectly even rings
     // (no per-segment leftover, no tiny planks at joints), so the planks line
@@ -78,7 +94,7 @@ pub fn build_bridge_deck(
     let seglen: Vec<f32> = points.windows(2).map(|w| w[0].distance(w[1])).collect();
     let total: f32 = seglen.iter().sum();
     if total < 1e-3 {
-        return tris;
+        return deck;
     }
     let spacing = 1.5;
     let n = ((total / spacing).round() as usize).max(2) + 1;
@@ -147,13 +163,17 @@ pub fn build_bridge_deck(
     }
 
     let mut quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| {
-        tris.push([a.to_array(), b.to_array(), c.to_array()]);
-        tris.push([b.to_array(), d.to_array(), c.to_array()]);
+        let triangles = [
+            [a.to_array(), b.to_array(), c.to_array()],
+            [b.to_array(), d.to_array(), c.to_array()],
+        ];
+        deck.triangles.extend(triangles);
+        triangles
     };
     for w in rings.windows(2) {
         let (r0, r1) = (w[0], w[1]);
         // top, bottom, and the two side walls — a solid slab.
-        quad(r0[0], r0[1], r1[0], r1[1]); // top
+        deck.top_surface.extend(quad(r0[0], r0[1], r1[0], r1[1])); // top
         quad(r0[3], r0[2], r1[3], r1[2]); // bottom
         quad(r0[1], r0[3], r1[1], r1[3]); // right side
         quad(r0[2], r0[0], r1[2], r1[0]); // left side
@@ -163,7 +183,7 @@ pub fn build_bridge_deck(
     quad(f[1], f[0], f[3], f[2]);
     let l = &rings[n - 1];
     quad(l[0], l[1], l[2], l[3]);
-    tris
+    deck
 }
 
 #[cfg(test)]

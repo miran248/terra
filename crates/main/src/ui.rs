@@ -13,6 +13,8 @@ use shared::terrain::Terrain;
 use shared::theme;
 use shared::upgrades::Upgrade;
 
+const MAX_REGION_ROW_CHARS: usize = 56;
+
 #[derive(Resource, Default)]
 pub struct UpgradeLevels {
     pub levels: [u32; Upgrade::ALL.len()],
@@ -499,6 +501,7 @@ fn spawn_terrain_hud(mut commands: Commands, font: Res<UiFont>) {
                 position_type: PositionType::Absolute,
                 right: Val::Px(8.0),
                 top: Val::Px(8.0),
+                width: Val::Px(340.0),
                 padding: UiRect::all(Val::Px(6.0)),
                 ..default()
             },
@@ -640,7 +643,7 @@ fn update_terrain_hud(
         _ => format!("{terrain:?}"),
     };
     let mut tile_line = tile_name(tile);
-    let mut region_name = String::new();
+    let mut region_text = String::new();
     if let Some(planet) = planet
         && let Some(fi) = planet.face_at(tf.translation.normalize())
     {
@@ -672,21 +675,16 @@ fn update_terrain_hud(
                 }
             }
         }
-        if let Some(regions) = regions
-            && let Some(ri) = regions
-                .face_regions
-                .region_ids_at(fi)
+        if let Some(regions) = regions {
+            region_text = format_region_lines(fi, &regions, tf.translation)
                 .iter()
-                .copied()
-                .min_by_key(|&index| match regions.regions[index as usize].kind {
-                    RegionKind::Settlement => 0,
-                    RegionKind::Road => 1,
-                    _ => 2,
-                })
-                .map(|index| index as usize)
-        {
-            region_name = format!("\n{}", regions.regions[ri].name);
+                .map(|line| truncate_region_row(line, MAX_REGION_ROW_CHARS))
+                .collect::<Vec<_>>()
+                .join("\n");
         }
+    }
+    if !region_text.is_empty() {
+        region_text.insert(0, '\n');
     }
     if hab {
         tile_line.push_str("  Habitable");
@@ -699,9 +697,76 @@ fn update_terrain_hud(
     );
 
     *text = Text::new(format!(
-        "{tile_line}{region_name}\nAlt: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
+        "{tile_line}{region_text}\nAlt: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
     ));
     *color = TextColor(hud_tile_color(tile));
+}
+
+fn format_region_lines(face: usize, regions: &LevelRegions, player_position: Vec3) -> Vec<String> {
+    let mut geography = Vec::new();
+    let mut settlements = Vec::new();
+    let mut roads = Vec::new();
+
+    for &region_id in regions.face_regions.region_ids_at(face) {
+        let Some(region) = regions.regions.get(region_id as usize) else {
+            continue;
+        };
+        match region.kind {
+            RegionKind::Settlement => {
+                let kind = regions
+                    .settlements
+                    .iter()
+                    .find(|(name, _)| name == &region.name)
+                    .map(|(_, kind)| kind.name());
+                settlements.push(match kind {
+                    Some(kind) => format!("{} ({kind})", region.name),
+                    None => region.name.clone(),
+                });
+            }
+            RegionKind::Road => roads.push(region.name.clone()),
+            kind => geography.push((kind.rank(), region.name.clone())),
+        }
+    }
+
+    geography.sort_unstable();
+    settlements.sort_unstable();
+    roads.sort_unstable();
+    let mut lines = Vec::new();
+    if !geography.is_empty() {
+        lines.push(format!(
+            "Geography: {}",
+            geography
+                .into_iter()
+                .map(|(_, name)| name)
+                .collect::<Vec<_>>()
+                .join(" · ")
+        ));
+    }
+    if !settlements.is_empty() {
+        lines.push(format!("Settlement: {}", settlements.join(" · ")));
+    }
+    if !roads.is_empty() {
+        lines.push(format!("Roads: {}", roads.join(" · ")));
+    }
+    let bridges = regions.bridge_names_at_position(player_position);
+    if !bridges.is_empty() {
+        lines.push(format!("Bridge: {}", bridges.join(" · ")));
+    }
+    lines
+}
+
+fn truncate_region_row(row: &str, max_chars: usize) -> String {
+    if row.chars().count() <= max_chars {
+        return row.to_owned();
+    }
+    let mut truncated = row
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
+    truncated.push('…');
+    truncated
 }
 
 /// Local solar clock at the player's position: derived from where the sun is
@@ -761,5 +826,107 @@ fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
         shared::terrain::Terrain::Savanna => Color::srgb(0.8, 0.75, 0.4),
         shared::terrain::Terrain::Volcanic => Color::srgb(0.6, 0.4, 0.35),
         shared::terrain::Terrain::Glacier => Color::srgb(0.85, 0.92, 1.0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::level::{RegionData, RegionMemberships, SettlementKind};
+
+    #[test]
+    fn region_hud_groups_all_memberships_and_names_settlement_kind() {
+        let regions = LevelRegions {
+            regions: vec![
+                RegionData {
+                    name: "Elder Forest".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::Forest,
+                },
+                RegionData {
+                    name: "Grey Range".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::MountainRange,
+                },
+                RegionData {
+                    name: "Ashford".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::Settlement,
+                },
+                RegionData {
+                    name: "King's Road".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::Road,
+                },
+                RegionData {
+                    name: "Salt Road".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::Road,
+                },
+            ],
+            face_regions: RegionMemberships::from_memberships(vec![vec![0, 1, 2, 3, 4]]),
+            settlements: vec![("Ashford".into(), SettlementKind::Town)],
+            bridge_top_surfaces_by_name: std::collections::BTreeMap::from([(
+                "Toll Bridge".into(),
+                vec![[
+                    [-100.0, 2001.0, -100.0],
+                    [100.0, 2001.0, -100.0],
+                    [0.0, 2001.0, 100.0],
+                ]],
+            )]),
+        };
+
+        assert_eq!(
+            format_region_lines(
+                0,
+                &regions,
+                Vec3::Y * (2001.0 + crate::constants::PLAYER_SIZE * 0.5),
+            ),
+            [
+                "Geography: Elder Forest · Grey Range",
+                "Settlement: Ashford (Town)",
+                "Roads: King's Road · Salt Road",
+                "Bridge: Toll Bridge",
+            ]
+        );
+    }
+
+    #[test]
+    fn region_hud_uses_only_the_queried_faces_memberships() {
+        let regions = LevelRegions {
+            regions: vec![
+                RegionData {
+                    name: "Elder Forest".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::Forest,
+                },
+                RegionData {
+                    name: "King's Road".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: RegionKind::Road,
+                },
+            ],
+            face_regions: RegionMemberships::from_memberships(vec![vec![0], vec![1]]),
+            settlements: vec![],
+            bridge_top_surfaces_by_name: std::collections::BTreeMap::new(),
+        };
+
+        assert_eq!(
+            format_region_lines(0, &regions, Vec3::ZERO),
+            ["Geography: Elder Forest"]
+        );
+    }
+
+    #[test]
+    fn long_region_rows_are_truncated_only_for_display() {
+        assert_eq!(
+            truncate_region_row("Roads: King's Road · Coastal Road", 20),
+            "Roads: King's Road…"
+        );
+        assert_eq!(truncate_region_row("Forest: Elder", 20), "Forest: Elder");
+        assert_eq!(
+            truncate_region_row("Forest: Örnskog Woodlands", 16),
+            "Forest: Örnskog…"
+        );
     }
 }

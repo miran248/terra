@@ -112,13 +112,19 @@ the current implementation unless marked as deferred.
   buildings.
 - Residents, trading, shops, and defensive gameplay are outside this initial scope.
 
-### Travel network and remaining region presentation
+### Travel network and location memberships
 
-- Implement road and bridge identities according to the glossary. Names split at
-  every endpoint, including junctions and settlement or bridge entrances; no
-  additional named route spanning several connections is planned.
-- Show all region memberships in the location HUD. Label placement on the map
-  must not change the underlying memberships.
+- Roads and bridges keep their own identities according to the glossary. Names
+  split at every endpoint, including junctions and settlement or bridge
+  entrances; no additional named route spanning several connections is planned.
+- The location HUD presents every membership from the exact queried face, grouped
+  into geography, settlement name and kind, and roads. Bridge names are queried
+  from deck geometry when the player's center is near a named deck's top surface;
+  this is separate from face-region membership. The HUD does not combine
+  neighboring faces or show a bridge name from below its deck. Display
+  truncation never changes the stored names or memberships.
+- Map labels annotate region centroids. Collision offsets and leader lines affect
+  presentation only and do not change the underlying memberships.
 
 ### Deferred architectural work
 

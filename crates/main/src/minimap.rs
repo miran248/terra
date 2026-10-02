@@ -22,6 +22,7 @@ const CAM_HEIGHT: f32 = 1400.0;
 /// Ground radius covered by the flat minimap overlay, meters.
 const VIEW_RADIUS: f32 = 430.0;
 const DOT: f32 = 3.0;
+const MAX_MAP_LABEL_CHARS: usize = 24;
 /// World reference direction treated as "North" (the +Y pole of the planet).
 const WORLD_NORTH: Vec3 = Vec3::Y;
 
@@ -30,6 +31,181 @@ struct Minimap;
 
 #[derive(Component)]
 struct CompassLabel;
+
+#[derive(Clone, Copy)]
+struct MapLabelLayout {
+    anchor: Vec2,
+    size: Vec2,
+}
+
+#[derive(Clone, Copy)]
+struct MapLabelBounds {
+    left: f32,
+    top: f32,
+    width: f32,
+    height: f32,
+}
+
+impl MapLabelBounds {
+    fn overlaps(self, other: Self) -> bool {
+        self.left < other.left + other.width + 3.0
+            && self.left + self.width + 3.0 > other.left
+            && self.top < other.top + other.height + 3.0
+            && self.top + self.height + 3.0 > other.top
+    }
+
+    fn nearest_point(self, point: Vec2) -> Vec2 {
+        Vec2::new(
+            point.x.clamp(self.left, self.left + self.width),
+            point.y.clamp(self.top, self.top + self.height),
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct PlacedMapLabel {
+    bounds: MapLabelBounds,
+    needs_leader: bool,
+}
+
+struct MapLabel {
+    anchor: Vec2,
+    text: String,
+    color: Color,
+    font_size: f32,
+}
+
+impl MapLabel {
+    fn layout(&self) -> MapLabelLayout {
+        let text_width = self.text.chars().count() as f32 * self.font_size * 0.58 + 4.0;
+        MapLabelLayout {
+            anchor: self.anchor,
+            size: Vec2::new(text_width, self.font_size + 4.0),
+        }
+    }
+}
+
+fn place_map_labels(labels: &[MapLabelLayout], size: Vec2) -> Vec<PlacedMapLabel> {
+    const DIRECTIONS: [Vec2; 8] = [
+        Vec2::new(0.0, -1.0),
+        Vec2::new(1.0, -1.0),
+        Vec2::new(1.0, 0.0),
+        Vec2::new(1.0, 1.0),
+        Vec2::new(0.0, 1.0),
+        Vec2::new(-1.0, 1.0),
+        Vec2::new(-1.0, 0.0),
+        Vec2::new(-1.0, -1.0),
+    ];
+    let mut placed: Vec<PlacedMapLabel> = Vec::with_capacity(labels.len());
+    for label in labels {
+        let base = Vec2::new(3.0, -5.0);
+        let max_left = (size.x - label.size.x).max(0.0);
+        let max_top = (size.y - label.size.y).max(0.0);
+        let spacing = label.size.x.max(label.size.y) + 5.0;
+        let candidate_bounds = |offset: Vec2| {
+            let bounds = MapLabelBounds {
+                left: (label.anchor.x + offset.x).clamp(0.0, max_left),
+                top: (label.anchor.y + offset.y).clamp(0.0, max_top),
+                width: label.size.x.min(size.x),
+                height: label.size.y.min(size.y),
+            };
+            placed
+                .iter()
+                .all(|other| !bounds.overlaps(other.bounds))
+                .then_some(bounds)
+        };
+        let mut selected = candidate_bounds(base);
+        for ring in 1..=32 {
+            for direction in DIRECTIONS.iter().copied() {
+                let offset = base + direction * spacing * ring as f32;
+                if let Some(bounds) = candidate_bounds(offset) {
+                    selected = Some(bounds);
+                    break;
+                }
+            }
+            if selected.is_some() {
+                break;
+            }
+        }
+
+        let bounds = selected.unwrap_or_else(|| {
+            let offset = base;
+            MapLabelBounds {
+                left: (label.anchor.x + offset.x).clamp(0.0, max_left),
+                top: (label.anchor.y + offset.y).clamp(0.0, max_top),
+                width: label.size.x.min(size.x),
+                height: label.size.y.min(size.y),
+            }
+        });
+        let default_left = (label.anchor.x + base.x).clamp(0.0, max_left);
+        let default_top = (label.anchor.y + base.y).clamp(0.0, max_top);
+        let needs_leader =
+            (bounds.left - default_left).abs() > 1.0 || (bounds.top - default_top).abs() > 1.0;
+        placed.push(PlacedMapLabel {
+            bounds,
+            needs_leader,
+        });
+    }
+    placed
+}
+
+fn truncate_map_label(text: &str) -> String {
+    if text.chars().count() <= MAX_MAP_LABEL_CHARS {
+        return text.to_owned();
+    }
+    let mut truncated = text
+        .chars()
+        .take(MAX_MAP_LABEL_CHARS.saturating_sub(1))
+        .collect::<String>()
+        .trim_end()
+        .to_owned();
+    truncated.push('…');
+    truncated
+}
+
+fn spawn_label_leader(
+    commands: &mut Commands,
+    map_entity: Entity,
+    anchor: Vec2,
+    bounds: MapLabelBounds,
+) {
+    let target = bounds.nearest_point(anchor);
+    let elbow = Vec2::new(target.x, anchor.y);
+    let horizontal = (elbow.x - anchor.x).abs();
+    if horizontal > 1.0 {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(anchor.x.min(elbow.x)),
+                top: Val::Px(anchor.y),
+                width: Val::Px(horizontal),
+                height: Val::Px(1.0),
+                ..default()
+            },
+            BackgroundColor(theme::TEXT_WEAK),
+            ZIndex(0),
+            MinimapDot,
+            ChildOf(map_entity),
+        ));
+    }
+    let vertical = (target.y - elbow.y).abs();
+    if vertical > 1.0 {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(target.x),
+                top: Val::Px(elbow.y.min(target.y)),
+                width: Val::Px(1.0),
+                height: Val::Px(vertical),
+                ..default()
+            },
+            BackgroundColor(theme::TEXT_WEAK),
+            ZIndex(0),
+            MinimapDot,
+            ChildOf(map_entity),
+        ));
+    }
+}
 
 #[derive(Component)]
 struct MinimapDot;
@@ -608,6 +784,7 @@ fn draw_overlay(
             }
             Some(pt)
         };
+        let mut labels = Vec::new();
         {
             let mut dot = |p: Vec3, color: Color, s: f32| {
                 let Some(pt) = place(p) else { return };
@@ -644,7 +821,7 @@ fn draw_overlay(
             dot(player_pos, theme::ACCENT, DOT * 2.0 * marker_scale);
         }
 
-        for (tf, settlement) in &settlements {
+        for (tf, _) in &settlements {
             let Some(pt) = place(tf.translation) else {
                 continue;
             };
@@ -662,24 +839,6 @@ fn draw_overlay(
                 BackgroundColor(theme::WARNING),
                 BorderColor::all(theme::INK),
                 ZIndex(1),
-                MinimapDot,
-                ChildOf(map_entity),
-            ));
-            commands.spawn((
-                Text::new(settlement.name.clone()),
-                TextFont {
-                    font: font.0.clone().into(),
-                    font_size: FontSize::Px(9.0 * marker_scale),
-                    ..default()
-                },
-                TextColor(theme::INK),
-                ZIndex(1),
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(pt.x + 5.0 * marker_scale),
-                    top: Val::Px(pt.y - 5.0 * marker_scale),
-                    ..default()
-                },
                 MinimapDot,
                 ChildOf(map_entity),
             ));
@@ -703,6 +862,16 @@ fn draw_overlay(
                     RegionKind::Beach | RegionKind::Cliff => theme::PRIMARY,
                     _ => theme::INK,
                 };
+                let display_name = if region.kind == RegionKind::Settlement {
+                    settlements
+                        .iter()
+                        .find(|(_, settlement)| settlement.name == region.name)
+                        .map_or(region.name.as_str(), |(_, settlement)| {
+                            settlement.name.as_str()
+                        })
+                } else {
+                    region.name.as_str()
+                };
                 let s = 3.0 * marker_scale;
                 commands.spawn((
                     Node {
@@ -719,25 +888,41 @@ fn draw_overlay(
                     MinimapDot,
                     ChildOf(map_entity),
                 ));
-                commands.spawn((
-                    Text::new(region.name.clone()),
-                    TextFont {
-                        font: font.0.clone().into(),
-                        font_size: FontSize::Px(8.0 * marker_scale),
-                        ..default()
-                    },
-                    TextColor(color),
-                    ZIndex(1),
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Px(pt.x + 3.0 * marker_scale),
-                        top: Val::Px(pt.y - 5.0 * marker_scale),
-                        ..default()
-                    },
-                    MinimapDot,
-                    ChildOf(map_entity),
-                ));
+                labels.push(MapLabel {
+                    anchor: pt,
+                    text: truncate_map_label(display_name),
+                    color,
+                    font_size: 8.0 * marker_scale,
+                });
             }
+        }
+
+        let label_layouts = labels.iter().map(MapLabel::layout).collect::<Vec<_>>();
+        let label_placements = place_map_labels(&label_layouts, Vec2::splat(size));
+        for (label, placement) in labels.iter().zip(label_placements) {
+            if placement.needs_leader {
+                spawn_label_leader(&mut commands, map_entity, label.anchor, placement.bounds);
+            }
+            commands.spawn((
+                Text::new(label.text.clone()),
+                TextFont {
+                    font: font.0.clone().into(),
+                    font_size: FontSize::Px(label.font_size),
+                    ..default()
+                },
+                TextColor(label.color),
+                ZIndex(2),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(placement.bounds.left),
+                    top: Val::Px(placement.bounds.top),
+                    width: Val::Px(placement.bounds.width),
+                    height: Val::Px(placement.bounds.height),
+                    ..default()
+                },
+                MinimapDot,
+                ChildOf(map_entity),
+            ));
         }
 
         let world_north = (WORLD_NORTH - up * WORLD_NORTH.dot(up)).normalize_or(north);
@@ -771,5 +956,38 @@ fn draw_overlay(
                 ChildOf(map_entity),
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn overlapping_map_labels_get_separate_positions_and_leader_lines() {
+        let labels = [
+            MapLabelLayout {
+                anchor: Vec2::new(60.0, 60.0),
+                size: Vec2::new(70.0, 14.0),
+            },
+            MapLabelLayout {
+                anchor: Vec2::new(61.0, 60.0),
+                size: Vec2::new(60.0, 14.0),
+            },
+        ];
+
+        let placed = place_map_labels(&labels, Vec2::splat(160.0));
+
+        assert_eq!(placed.len(), labels.len());
+        assert!(!placed[0].bounds.overlaps(placed[1].bounds));
+        assert!(placed[1].needs_leader);
+    }
+
+    #[test]
+    fn long_map_labels_truncate_at_unicode_character_boundaries() {
+        let label = truncate_map_label("Étoile des montagnes enneigées");
+
+        assert_eq!(label.chars().count(), MAX_MAP_LABEL_CHARS);
+        assert!(label.ends_with('…'));
     }
 }

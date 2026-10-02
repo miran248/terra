@@ -5,8 +5,8 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
-    BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SlopeClass,
-    WaterDepth, WaterPhase,
+    BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SettlementKind,
+    SlopeClass, WaterDepth, WaterPhase,
 };
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
@@ -145,11 +145,53 @@ fn cull_props(
     }
 }
 
-/// Region names + per-face region ids for the HUD.
+/// Face-based region memberships and named bridge surfaces for the HUD.
 #[derive(Resource)]
 pub struct LevelRegions {
     pub regions: Vec<shared::level::RegionData>,
     pub face_regions: shared::level::RegionMemberships,
+    pub settlements: Vec<(String, SettlementKind)>,
+    /// Top surfaces from the same deck geometry used for rendering and collision.
+    pub bridge_top_surfaces_by_name: std::collections::BTreeMap<String, Vec<[[f32; 3]; 3]>>,
+}
+
+impl LevelRegions {
+    /// Named bridge decks under the player, when the player is standing close
+    /// to the rendered deck top. Bridges are queried from their own geometry,
+    /// separately from terrain-face region memberships.
+    pub fn bridge_names_at_position(&self, player_position: Vec3) -> Vec<String> {
+        const BELOW_DECK_TOLERANCE: f32 = 0.25;
+        const ABOVE_DECK_TOLERANCE: f32 = 1.0;
+
+        let Some(direction) = player_position.try_normalize() else {
+            return Vec::new();
+        };
+        let player_radius = player_position.length();
+        let collider_radius = crate::constants::PLAYER_SIZE * 0.5;
+        let minimum_clearance = collider_radius - BELOW_DECK_TOLERANCE;
+        let maximum_clearance = collider_radius + ABOVE_DECK_TOLERANCE;
+
+        let mut names = self
+            .bridge_top_surfaces_by_name
+            .iter()
+            .filter_map(|(name, surface)| {
+                let deck_radius = surface
+                    .iter()
+                    .filter_map(|triangle| {
+                        let triangle = triangle.map(Vec3::from_array);
+                        shared::planet::ray_triangle_radius(direction, &triangle)
+                    })
+                    .max_by(f32::total_cmp)?;
+                let clearance = player_radius - deck_radius;
+                (minimum_clearance..=maximum_clearance)
+                    .contains(&clearance)
+                    .then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
 }
 
 /// Blend-marked boundary faces: the pair of terrain kinds each links.
@@ -328,19 +370,21 @@ fn setup_map(
     }
 
     let bridge_color = Color::srgb(0.35, 0.25, 0.18).to_linear();
+    let mut bridge_top_surfaces_by_name = std::collections::BTreeMap::new();
     for road in level.roads.iter().filter(|r| r.kind == RoadKind::Bridge) {
         let span: Vec<shared::sphere::SpherePos> = road
             .points
             .iter()
             .map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p)))
             .collect();
-        let deck = shared::roads::build_bridge_deck(&span, &ground, 4.0);
-        if deck.is_empty() {
+        let deck = shared::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
+        if deck.triangles.is_empty() {
             continue;
         }
-        let colors = vec![[bridge_color.to_f32_array(); 3]; deck.len()];
+        bridge_top_surfaces_by_name.insert(road.name.clone(), deck.top_surface);
+        let colors = vec![[bridge_color.to_f32_array(); 3]; deck.triangles.len()];
         commands.spawn((
-            Mesh3d(meshes.add(build_smooth_mesh(&deck, &colors))),
+            Mesh3d(meshes.add(build_smooth_mesh(&deck.triangles, &colors))),
             MeshMaterial3d(materials.add(StandardMaterial {
                 base_color: Color::WHITE,
                 perceptual_roughness: 0.4,
@@ -352,7 +396,7 @@ fn setup_map(
         ));
         commands.spawn((
             RigidBody::Static,
-            build_collider(&deck),
+            build_collider(&deck.triangles),
             Transform::default(),
             Ground,
         ));
@@ -531,6 +575,12 @@ fn setup_map(
     commands.insert_resource(LevelRegions {
         regions: level.regions.clone(),
         face_regions: level.face_regions.clone(),
+        settlements: level
+            .settlements
+            .iter()
+            .map(|settlement| (settlement.name.clone(), settlement.kind))
+            .collect(),
+        bridge_top_surfaces_by_name,
     });
     commands.insert_resource(LevelBlends(
         level
@@ -539,6 +589,130 @@ fn setup_map(
             .map(|blend| (blend.face, (blend.base, blend.target)))
             .collect(),
     ));
+}
+
+#[cfg(test)]
+mod region_identity_tests {
+    use super::*;
+    use shared::level::{RoadData, RoadKind};
+
+    fn bridge(name: &str) -> RoadData {
+        RoadData {
+            name: name.into(),
+            points: vec![
+                Vec3::X.to_array(),
+                Vec3::new(0.97, 0.24, 0.0).normalize().to_array(),
+            ],
+            kind: RoadKind::Bridge,
+            from_endpoint: 0,
+            to_endpoint: 1,
+        }
+    }
+
+    #[test]
+    fn bridge_hud_name_requires_the_player_to_be_on_the_deck_surface() {
+        let ground = shared::planet::PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let road = bridge("Test Bridge");
+        let points = road
+            .points
+            .iter()
+            .map(|point| shared::sphere::SpherePos::new(Vec3::from_array(*point)))
+            .collect::<Vec<_>>();
+        let deck = shared::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
+        let direction = shared::sphere::slerp(points[0], points[1], 0.5).0;
+        let deck_radius = deck
+            .top_surface
+            .iter()
+            .filter_map(|triangle| {
+                let triangle = triangle.map(Vec3::from_array);
+                shared::planet::ray_triangle_radius(direction, &triangle)
+            })
+            .max_by(f32::total_cmp)
+            .expect("deck top should cross its centerline");
+        let regions = LevelRegions {
+            regions: vec![],
+            face_regions: shared::level::RegionMemberships::from_memberships(vec![vec![]]),
+            settlements: vec![],
+            bridge_top_surfaces_by_name: std::collections::BTreeMap::from([(
+                "Test Bridge".into(),
+                deck.top_surface,
+            )]),
+        };
+        let player_collider_radius = crate::constants::PLAYER_SIZE * 0.5;
+        let on_deck = direction * (deck_radius + player_collider_radius);
+        let above_deck = direction * (deck_radius + player_collider_radius + 3.0);
+        let below_deck = direction * (deck_radius - 1.7);
+
+        assert_eq!(regions.bridge_names_at_position(on_deck), ["Test Bridge"]);
+        assert!(regions.bridge_names_at_position(above_deck).is_empty());
+        assert!(regions.bridge_names_at_position(below_deck).is_empty());
+    }
+
+    #[test]
+    fn generated_bridge_deck_surface_reports_its_name_across_width_and_length() {
+        let level: shared::level::LevelData =
+            postcard::from_bytes(include_bytes!("../assets/level_1337.bin"))
+                .expect("load generated level");
+        let ground = shared::planet::PlanetMesh::new(
+            level
+                .terrain_tris
+                .iter()
+                .map(|triangle| triangle.map(Vec3::from_array))
+                .collect(),
+        );
+        let bridge_roads = level
+            .roads
+            .iter()
+            .filter(|road| road.kind == RoadKind::Bridge)
+            .collect::<Vec<_>>();
+        assert!(!bridge_roads.is_empty(), "generated level needs a bridge");
+
+        let mut bridge_top_surfaces_by_name = std::collections::BTreeMap::new();
+        for road in &bridge_roads {
+            let points = road
+                .points
+                .iter()
+                .map(|point| shared::sphere::SpherePos::new(Vec3::from_array(*point)))
+                .collect::<Vec<_>>();
+            let deck = shared::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
+            bridge_top_surfaces_by_name.insert(road.name.clone(), deck.top_surface);
+        }
+        let regions = LevelRegions {
+            regions: vec![],
+            face_regions: shared::level::RegionMemberships::from_memberships(vec![]),
+            settlements: vec![],
+            bridge_top_surfaces_by_name,
+        };
+        let mut sampled_faces = 0;
+        let mut untagged_faces = 0;
+        for road in bridge_roads {
+            let surface = &regions.bridge_top_surfaces_by_name[&road.name];
+            for triangle in surface {
+                let triangle = triangle.map(Vec3::from_array);
+                let direction = (triangle[0] + triangle[1] + triangle[2]).normalize();
+                let deck_radius = shared::planet::ray_triangle_radius(direction, &triangle)
+                    .expect("top triangle crosses its centroid ray");
+                let face = ground
+                    .face_at(direction)
+                    .expect("deck sample projects onto a terrain face");
+                if !level.face_tags[face].contains(&FaceTag::Bridge) {
+                    untagged_faces += 1;
+                }
+                let player_position =
+                    direction * (deck_radius + crate::constants::PLAYER_SIZE * 0.5);
+
+                assert_eq!(
+                    regions.bridge_names_at_position(player_position),
+                    [road.name.clone()],
+                    "bridge deck sample on face {face} should name {}",
+                    road.name,
+                );
+                sampled_faces += 1;
+            }
+        }
+        assert!(sampled_faces > 0);
+        assert!(untagged_faces > 0, "test should cover untagged deck faces");
+    }
 }
 
 fn road_color(material: RoadMaterial) -> [f32; 4] {
