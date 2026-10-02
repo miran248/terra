@@ -19,7 +19,7 @@ The launcher generates the current Rust catalogs, measures their GLB rest-pose b
 - `F` and `S` select orthographic front and side views; `O` selects perspective orbit. Right-drag orbits; middle-drag pans; wheel or zoom buttons change viewing distance.
 - Dimension buttons change width, height, or depth by 1 cm or 10 cm. Uniform multipliers change all three together. `R` resets the selected asset. Each asset retains its own edits for the session.
 - `A` cycles idle, walk, and attack. Space pauses/resumes. Animation controls affect actor scenes; other scenes remain static. The current catalog uses the same small whole-body rotation for all three named clips; the prototype does not invent replacement animations.
-- `C` toggles rest bounds and collision overlays. Cyan is the resting visual envelope. Gold is a proposed simple box, not an approved collider. Red is the current runtime collider snapshot; in comparison mode it belongs to the unchanged baseline. Red overlays show through surfaces, including the ground, to expose offsets.
+- `C` toggles visual bounds and the current collider snapshot. Cyan outlines are measurement-only visual bounds; they do not represent collision. Red shows the current runtime collider snapshot, and assets with no collider have no red outline. In comparison mode, red shows the unchanged baseline collider. Red overlays show through surfaces, including the ground, to expose offsets.
 
 ## Interpretation and limits
 
@@ -27,14 +27,14 @@ The reference mannequin is exactly 1 m tall and is a measuring aid, not a propos
 
 Dimensions come from transformed GLB position-accessor bounds in the resting pose, multiplied by the current runtime visual scale. They are axis-aligned envelopes, not measurements of a posed or deformed animated surface. Models are centered and grounded for inspection. Scenery uses nominal scale 1, excluding the runtime's 0.7–1.3 instance variation. Terrain curvature, foliage shaders, procedural bridges, physics simulation, gameplay camera, and world lighting are outside this first catalog preview.
 
-Runtime scales and collider offsets are deliberately copied into the prototype from `chunks.rs`, `map.rs`, `zombie.rs`, and `loot.rs`; they are snapshots that can become stale. Scenery collider declarations are read from `shared::art`. The preview does not repair existing collision mismatches. In particular, the player currently uses a sphere, and some box call sites pass values named half-extents to Avian constructors that expect full lengths.
+Runtime scales and collider offsets are deliberately copied into the prototype from `chunks.rs`, `map.rs`, `zombie.rs`, and `loot.rs`; they are snapshots that can become stale. Scenery collider declarations are read from `shared::art`. The preview does not repair existing collision mismatches or invent whole-asset candidate colliders. In particular, the player currently uses a sphere, and some box call sites pass values named half-extents to Avian constructors that expect full lengths.
 
 Next review: judge the three layouts and select sensible dimensions relative to the character. Then author representative replacement assets (character, tree, rock, house, weapon) through Blender scripts and compare them through this same importer. Export compatibility and deterministic generation remain to be proven before replacing the Rust pipeline. A box around a tree canopy or an entire doorway is not automatically a suitable gameplay collider.
 
 ## Visual smoke walkthrough
 
 ```sh
-TERRA_PREVIEW_CAPTURE=1 python3 crates/main/examples/asset_preview_prototype.py
+TERRA_PREVIEW_CAPTURE=1 just asset-preview
 ```
 
-This opt-in walkthrough loads every scene, captures inspection, a resized house comparison, and an animated 1 m actor measurement to `/tmp/terra-preview-*.png`, then exits. It exercises actual rendering and dimension controls; it is not a substitute for reviewing every asset, mouse interaction, or animation envelope.
+This opt-in walkthrough loads every scene, captures inspection, a resized house comparison, the tree bounds/collider distinction, and an animated 1 m actor measurement to `/tmp/terra-preview-*.png`, then exits. It exercises actual rendering and dimension controls; it is not a substitute for reviewing every asset, mouse interaction, or animation envelope.

@@ -1,6 +1,6 @@
 //! THROWAWAY: does a 1 m reference make catalog proportions easy to judge?
 //! Three native layouts: inspection, baseline comparison, orthographic measurement.
-//! Run with `python3 crates/main/examples/asset_preview_prototype.py`.
+//! Run with `just asset-preview`.
 //! No game state or asset files are changed. Runtime scales below are a deliberate
 //! snapshot of chunks.rs, map.rs, zombie.rs and loot.rs, not a new shared contract.
 use bevy::{
@@ -20,7 +20,22 @@ const PAGE: usize = 12;
 const INK: Color = Color::srgb(0.86, 0.90, 0.94);
 const PANEL: Color = Color::srgb(0.09, 0.12, 0.17);
 const CYAN: Color = Color::srgb(0.35, 0.90, 0.88);
-const GOLD: Color = Color::srgb(1.0, 0.75, 0.30);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ColliderSnapshot {
+    None,
+    Box { size: Vec3 },
+    Sphere { radius: f32, center_y: f32 },
+}
+impl ColliderSnapshot {
+    fn label(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Box { .. } => "box",
+            Self::Sphere { .. } => "sphere",
+        }
+    }
+}
 
 struct Entry {
     name: String,
@@ -573,9 +588,15 @@ fn rebuild(
     button(
         &mut commands,
         controls,
-        "Bounds / collision proposal [C]",
+        "Visual bounds / current collider [C]",
         Action::Overlay,
     );
+    let collision_status = text(
+        &mut commands,
+        overlay_status(&entry.name, entry.runtime, work.layout == 1),
+        12.,
+    );
+    commands.entity(controls).add_child(collision_status);
     button(
         &mut commands,
         controls,
@@ -618,7 +639,7 @@ fn rebuild(
     button(&mut commands, r, "Zoom -", Action::Zoom(1.25));
     let hint = text(
         &mut commands,
-        "Right drag: orbit | Middle drag: pan | Wheel: zoom\nFixed camera scale. Cyan: rest bounds | Gold: proposed box\nRed: current collider snapshot (baseline in Compare)\nNo physics. Reference humanoid: 1 m. Grid: 1 m.",
+        "Right drag: orbit | Middle drag: pan | Wheel: zoom\nCyan: visual bounds (measurement only) | Red: current collider\nCompare shows the baseline collider; no red outline means none\nNo physics. Reference humanoid: 1 m. Grid: 1 m.",
         13.,
     );
     commands.entity(bottom).add_child(hint);
@@ -797,13 +818,6 @@ fn guides(work: Res<Workbench>, mut gizmos: Gizmos, mut collisions: Gizmos<Colli
     }
     if work.overlay {
         wire_box(&mut gizmos, Vec3::new(offset, size.y * 0.5, 0.), size, CYAN);
-        // A simple candidate envelope, deliberately not advertised as runtime collision.
-        wire_box(
-            &mut gizmos,
-            Vec3::new(offset, size.y * 0.5, 0.),
-            size + Vec3::splat(0.015),
-            GOLD,
-        );
         if work.layout == 1 {
             let baseline = work.entries[work.selected].dimensions();
             wire_box(
@@ -825,9 +839,6 @@ fn size_for_side(size: Vec3) -> f32 {
 }
 
 fn current_collision(gizmos: &mut Gizmos<CollisionGizmos>, entry: &Entry, x: f32) {
-    // Exact constructor arguments and visual offsets at the time of this spike.
-    // Avian cuboid arguments are full side lengths, even where call sites use
-    // variables named half_extents. Do not silently fix those mismatches here.
     let red = Color::srgb(1., 0.35, 0.45);
     let origin = Vec3::new(x, 0., 0.)
         - Vec3::new(
@@ -835,22 +846,48 @@ fn current_collision(gizmos: &mut Gizmos<CollisionGizmos>, entry: &Entry, x: f32
             entry.min.y,
             (entry.min.z + entry.max.z) * 0.5,
         ) * entry.runtime;
-    let name = entry.name.as_str();
+    match collider_snapshot(&entry.name, entry.runtime) {
+        ColliderSnapshot::None => {}
+        ColliderSnapshot::Box { size } => wire_box(gizmos, origin, size, red),
+        ColliderSnapshot::Sphere { radius, center_y } => {
+            gizmos.sphere(
+                Isometry3d::from_translation(origin + Vec3::Y * center_y),
+                radius,
+                red,
+            );
+        }
+    }
+}
+
+fn collider_snapshot(name: &str, runtime: Vec3) -> ColliderSnapshot {
     if name.starts_with("structure.") {
-        if !matches!(
+        if matches!(
             name,
             "structure.farm" | "structure.campfire" | "structure.tent"
         ) {
-            wire_box(gizmos, origin, entry.runtime * 0.5, red);
-        }
-    } else if name.starts_with("scenery.") {
-        for kind in SCENERY_KINDS {
-            if (0..scenery_variant_count(kind)).any(|v| scenery_variant_name(kind, v) == name)
-                && let ColliderSpec::Box { half_extents } = scenery_collider(kind)
-            {
-                wire_box(gizmos, origin, Vec3::from_array(half_extents), red);
+            ColliderSnapshot::None
+        } else {
+            ColliderSnapshot::Box {
+                size: runtime * 0.5,
             }
         }
+    } else if name.starts_with("scenery.") {
+        SCENERY_KINDS
+            .into_iter()
+            .find(|kind| {
+                (0..scenery_variant_count(*kind)).any(|v| scenery_variant_name(*kind, v) == name)
+            })
+            .map(scenery_collider)
+            .and_then(|collider| match collider {
+                ColliderSpec::Box { half_extents } => Some(ColliderSnapshot::Box {
+                    // Preserve the constructor arguments used by the runtime,
+                    // including values named `half_extents` that are passed as
+                    // full side lengths to Avian's cuboid constructor.
+                    size: Vec3::from_array(half_extents),
+                }),
+                ColliderSpec::None | ColliderSpec::Capsule { .. } => None,
+            })
+            .unwrap_or(ColliderSnapshot::None)
     } else {
         let (radius, center_y) = if name == "actor.player" {
             (0.275, -0.28)
@@ -861,12 +898,22 @@ fn current_collision(gizmos: &mut Gizmos<CollisionGizmos>, entry: &Entry, x: f32
         } else {
             (0.3, 0.3)
         };
-        gizmos.sphere(
-            Isometry3d::from_translation(origin + Vec3::Y * center_y),
-            radius,
-            red,
-        );
+        ColliderSnapshot::Sphere { radius, center_y }
     }
+}
+
+fn overlay_status(name: &str, runtime: Vec3, comparison: bool) -> String {
+    let collider = collider_snapshot(name, runtime);
+    let location = if comparison && collider != ColliderSnapshot::None {
+        " (shown on baseline)"
+    } else {
+        ""
+    };
+    format!(
+        "Visual bounds: measurement only\nCurrent collider: {}{}",
+        collider.label(),
+        location
+    )
 }
 
 // Opt-in visual smoke walkthrough, not part of the normal interactive workflow.
@@ -915,6 +962,24 @@ fn capture(
         let selected = work
             .entries
             .iter()
+            .position(|e| e.name == "scenery.tree.0")
+            .unwrap();
+        apply(Action::Select(selected), &mut work);
+        apply(Action::Layout(0), &mut work);
+        work.distance = 16.;
+        work.target = Vec3::Y * 3.;
+        *phase = 4;
+    }
+    if seconds > 12. && *phase == 4 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk("/tmp/terra-preview-tree-collider.png"));
+        *phase = 5;
+    }
+    if seconds > 14. && *phase == 5 {
+        let selected = work
+            .entries
+            .iter()
             .position(|e| e.name == "actor.player")
             .unwrap();
         apply(Action::Select(selected), &mut work);
@@ -925,17 +990,17 @@ fn capture(
         work.target = Vec3::Y * 0.8;
         apply(Action::Pause, &mut work);
         apply(Action::Animation, &mut work);
-        *phase = 4;
+        *phase = 6;
     }
-    if seconds > 12. && *phase == 4 {
+    if seconds > 16. && *phase == 6 {
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk("/tmp/terra-preview-measure.png"));
-        *phase = 5;
+        *phase = 7;
     }
-    if seconds > 14. && *phase == 5 {
+    if seconds > 18. && *phase == 7 {
         exit.write(AppExit::Success);
-        *phase = 6;
+        *phase = 8;
     }
 }
 fn labels(
@@ -953,5 +1018,26 @@ fn labels(
         } else {
             *visibility = Visibility::Hidden;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tree_bounds_are_measurement_only_and_report_no_current_collider() {
+        assert_eq!(
+            overlay_status("scenery.tree.0", Vec3::ONE, false),
+            "Visual bounds: measurement only\nCurrent collider: none"
+        );
+    }
+
+    #[test]
+    fn comparison_identifies_the_baseline_collider_and_rocks_keep_their_box() {
+        assert_eq!(
+            overlay_status("scenery.rock.0", Vec3::ONE, true),
+            "Visual bounds: measurement only\nCurrent collider: box (shown on baseline)"
+        );
     }
 }
