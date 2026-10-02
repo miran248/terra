@@ -7,7 +7,7 @@ This is throwaway code on the local `prototype/asset-scale-preview` branch. It i
 Run from the repository root:
 
 ```sh
-python3 crates/main/examples/asset_preview_prototype.py
+just asset-preview
 ```
 
 The launcher generates the current Rust catalogs, measures their GLB rest-pose bounds, and starts a separate native Bevy example. No level generation is needed. Generated models remain ignored by Git. The manifest lives in a temporary directory; edits exist only in memory and disappear when the app closes. Running the launcher regenerates the four baseline catalogs, so do not put hand-edited replacement GLBs in those output paths.
