@@ -4,67 +4,40 @@
 Run from anywhere: python3 crates/main/examples/asset_preview_prototype.py
 The temporary manifest contains rest-pose bounds, never user edits.
 """
-import itertools
+import argparse
 import json
 import os
 from pathlib import Path
-import struct
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[3]
-IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
-
-
-def multiply(a, b):
-    return [sum(a[k * 4 + row] * b[col * 4 + k] for k in range(4))
-            for col in range(4) for row in range(4)]
-
-
-def matrix(node):
-    if "matrix" in node:
-        return node["matrix"]
-    x, y, z, w = node.get("rotation", [0, 0, 0, 1])
-    sx, sy, sz = node.get("scale", [1, 1, 1])
-    tx, ty, tz = node.get("translation", [0, 0, 0])
-    return [(1-2*y*y-2*z*z)*sx, (2*x*y+2*z*w)*sx, (2*x*z-2*y*w)*sx, 0,
-            (2*x*y-2*z*w)*sy, (1-2*x*x-2*z*z)*sy, (2*y*z+2*x*w)*sy, 0,
-            (2*x*z+2*y*w)*sz, (2*y*z-2*x*w)*sz, (1-2*x*x-2*y*y)*sz, 0,
-            tx, ty, tz, 1]
-
-
-def bounds(doc, scene):
-    points = []
-
-    def visit(index, parent):
-        node = doc["nodes"][index]
-        transform = multiply(parent, matrix(node))
-        if "mesh" in node:
-            for primitive in doc["meshes"][node["mesh"]]["primitives"]:
-                accessor = doc["accessors"][primitive["attributes"]["POSITION"]]
-                for point in itertools.product(*zip(accessor["min"], accessor["max"])):
-                    points.append([sum(transform[k*4+r] * point[k] for k in range(3))
-                                   + transform[12+r] for r in range(3)])
-        for child in node.get("children", []):
-            visit(child, transform)
-
-    for node in scene["nodes"]:
-        visit(node, IDENTITY)
-    return [min(p[i] for p in points) for i in range(3)] + [max(p[i] for p in points) for i in range(3)]
+sys.path.insert(0, str(ROOT / "crates/shared/tools"))
+from glb import bounds, read
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--baseline-only', action='store_true')
+    args = parser.parse_args()
+    candidate_dir = ROOT / 'crates/main/assets/models/candidates'
+    candidate_manifest = candidate_dir / 'manifest.json'
+    candidates = {} if args.baseline_only or not candidate_manifest.exists() else json.loads(candidate_manifest.read_text())['assets']
     subprocess.run(["cargo", "run", "-p", "gen_assets", "--", "--out-dir",
                     "crates/main/assets/models"], cwd=ROOT, check=True)
     rows = []
     for name in ("environment", "structures", "items", "actors"):
         path = ROOT / f"crates/main/assets/models/{name}.glb"
-        data = path.read_bytes()
-        length, = struct.unpack_from("<I", data, 12)
-        doc = json.loads(data[20:20+length])
+        doc = read(path)
         for index, scene in enumerate(doc["scenes"]):
-            rows.append("\t".join([f"models/{name}.glb#Scene{index}", scene["name"],
-                                    *map(str, bounds(doc, scene))]))
+            row = [f"models/{name}.glb#Scene{index}", scene["name"], *map(str, bounds(doc, scene))]
+            if scene['name'] in candidates:
+                filename = candidates[scene['name']]['file']
+                candidate = read(candidate_dir / filename)
+                candidate_index = next(i for i, s in enumerate(candidate['scenes']) if s['name'] == scene['name'])
+                row += [f"models/candidates/{filename}#Scene{candidate_index}", *map(str, bounds(candidate, candidate['scenes'][candidate_index]))]
+            rows.append("\t".join(row))
     with tempfile.TemporaryDirectory(prefix="terra-asset-preview-") as temporary:
         manifest = Path(temporary) / "catalog.tsv"
         manifest.write_text("\n".join(sorted(rows, key=lambda row: row.split("\t")[1])))

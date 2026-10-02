@@ -2,7 +2,7 @@
 
 Question: can a fixed 1 m humanoid reference, dimension guides, and direct baseline comparison expose inconsistent proportions before replacing the asset catalog?
 
-This is throwaway code on the local `prototype/asset-scale-preview` branch. It is awaiting visual review; no layout or replacement dimensions have been approved. The [authoring decision](adr/0001-scripted-asset-refresh.md) records the agreed direction.
+This is throwaway code on the local `prototype/asset-scale-preview` branch. The user accepted the corrected preview as sufficient to proceed; replacement designs and dimensions still require review. The [authoring decision](adr/0001-scripted-asset-refresh.md) records the agreed direction.
 
 Run from the repository root:
 
@@ -11,6 +11,8 @@ just asset-preview
 ```
 
 The launcher generates the current Rust catalogs, measures their GLB rest-pose bounds, and starts a separate native Bevy example. No level generation is needed. Generated models remain ignored by Git. The manifest lives in a temporary directory; edits exist only in memory and disappear when the app closes. Running the launcher regenerates the four baseline catalogs, so do not put hand-edited replacement GLBs in those output paths.
+
+Run `just asset-candidates` with Blender MCP connected to generate the [humanoid/house pilot](blender-pilot.md) in a separate candidate directory. The preview then loads those candidates automatically without modifying their files. **Candidate / baseline** switches the selected source; **Compare** shows original and candidate at the same camera scale. Candidates use their authored meter dimensions directly, and dimension edits are kept separately for each source. Candidates are static and have no authored collision yet.
 
 ## Controls
 
@@ -29,7 +31,7 @@ Dimensions come from transformed GLB position-accessor bounds in the resting pos
 
 Runtime scales and collider offsets are deliberately copied into the prototype from `chunks.rs`, `map.rs`, `zombie.rs`, and `loot.rs`; they are snapshots that can become stale. Scenery collider declarations are read from `shared::art`. The preview does not repair existing collision mismatches or invent whole-asset candidate colliders. In particular, the player currently uses a sphere, and some box call sites pass values named half-extents to Avian constructors that expect full lengths.
 
-Next review: judge the three layouts and select sensible dimensions relative to the character. Then author representative replacement assets (character, tree, rock, house, weapon) through Blender scripts and compare them through this same importer. Export compatibility and deterministic generation remain to be proven before replacing the Rust pipeline. A box around a tree canopy or an entire doorway is not automatically a suitable gameplay collider.
+Next review: judge the generated humanoid and house design language and proportions. The pilot demonstrates compatible, repeatable exports; the full catalog, collision, animation, and planet validation remain later work. A box around a tree canopy or an entire doorway is not automatically a suitable gameplay collider.
 
 ## Visual smoke walkthrough
 
@@ -37,4 +39,4 @@ Next review: judge the three layouts and select sensible dimensions relative to 
 TERRA_PREVIEW_CAPTURE=1 just asset-preview
 ```
 
-This opt-in walkthrough loads every scene, captures inspection, a resized house comparison, the tree bounds/collider distinction, and an animated 1 m actor measurement to `/tmp/terra-preview-*.png`, then exits. It exercises actual rendering and dimension controls; it is not a substitute for reviewing every asset, mouse interaction, or animation envelope.
+This opt-in walkthrough loads every scene and available candidate, captures inspection, a house comparison, the tree bounds/collider distinction, a 1 m actor measurement, and a close house view to `/tmp/terra-preview-*.png`, then exits. With candidates, it compares authored dimensions unchanged; without them, it demonstrates a temporary house resize. The candidate actor remains static even when baseline playback is selected. It exercises actual rendering and dimension controls; it is not a substitute for reviewing every asset, mouse interaction, or animation envelope.

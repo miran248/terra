@@ -37,16 +37,29 @@ impl ColliderSnapshot {
     }
 }
 
-struct Entry {
-    name: String,
+struct VisualAsset {
     scene: Handle<WorldAsset>,
     min: Vec3,
     max: Vec3,
     runtime: Vec3,
 }
-impl Entry {
+impl VisualAsset {
     fn dimensions(&self) -> Vec3 {
         (self.max - self.min) * self.runtime
+    }
+}
+struct Entry {
+    name: String,
+    baseline: VisualAsset,
+    candidate: Option<VisualAsset>,
+}
+impl Entry {
+    fn visual(&self, use_candidates: bool) -> &VisualAsset {
+        if use_candidates {
+            self.candidate.as_ref().unwrap_or(&self.baseline)
+        } else {
+            &self.baseline
+        }
     }
 }
 #[derive(Resource)]
@@ -54,7 +67,7 @@ struct Workbench {
     entries: Vec<Entry>,
     selected: usize,
     page: usize,
-    edits: HashMap<usize, Vec3>,
+    edits: HashMap<(usize, bool), Vec3>,
     layout: usize,
     view: usize,
     distance: f32,
@@ -65,20 +78,42 @@ struct Workbench {
     animation: usize,
     paused: bool,
     rebuild: bool,
+    use_candidates: bool,
     actors: Handle<Gltf>,
     graph: Option<Handle<AnimationGraph>>,
     nodes: Vec<AnimationNodeIndex>,
 }
 impl Workbench {
+    fn reference_position(&self) -> Vec3 {
+        // Keep the reference in front of the selected envelope, not inside houses.
+        Vec3::new(
+            self.offset() - 0.9,
+            0.,
+            -(self.dimensions().z * 0.5 + 0.5).max(1.0),
+        )
+    }
+    fn edit_key(&self) -> (usize, bool) {
+        (
+            self.selected,
+            self.use_candidates && self.entries[self.selected].candidate.is_some(),
+        )
+    }
     fn scale(&self) -> Vec3 {
-        self.edits.get(&self.selected).copied().unwrap_or(Vec3::ONE)
+        self.edits
+            .get(&self.edit_key())
+            .copied()
+            .unwrap_or(Vec3::ONE)
     }
     fn dimensions(&self) -> Vec3 {
-        self.entries[self.selected].dimensions() * self.scale()
+        self.entries[self.selected]
+            .visual(self.use_candidates)
+            .dimensions()
+            * self.scale()
     }
     fn offset(&self) -> f32 {
         if self.layout == 1 {
             self.entries[self.selected]
+                .baseline
                 .dimensions()
                 .x
                 .max(self.dimensions().x)
@@ -95,6 +130,8 @@ struct Stage;
 struct Hud;
 #[derive(Component)]
 struct PreviewCamera;
+#[derive(Component)]
+struct ReferenceRoot;
 #[derive(Default, Reflect, GizmoConfigGroup)]
 struct CollisionGizmos;
 #[derive(Component)]
@@ -114,6 +151,7 @@ enum Action {
     Animation,
     Pause,
     Zoom(f32),
+    Source,
 }
 
 fn runtime_scale(name: &str) -> Vec3 {
@@ -169,7 +207,10 @@ fn main() {
             ..default()
         })
         .add_systems(Startup, setup)
-        .add_systems(Update, (input, rebuild, animate, camera, guides).chain())
+        .add_systems(
+            Update,
+            (input, rebuild, animate, camera, place_reference, guides).chain(),
+        )
         .add_systems(
             PostUpdate,
             labels.after(bevy::transform::TransformSystems::Propagate),
@@ -196,13 +237,26 @@ fn setup(
         .lines()
         .map(|line| {
             let parts: Vec<_> = line.split('\t').collect();
-            let numbers: Vec<f32> = parts[2..].iter().map(|s| s.parse().unwrap()).collect();
+            let numbers: Vec<f32> = parts[2..8].iter().map(|s| s.parse().unwrap()).collect();
             Entry {
                 name: parts[1].into(),
-                scene: server.load(parts[0].to_owned()),
-                min: Vec3::from_slice(&numbers[..3]),
-                max: Vec3::from_slice(&numbers[3..]),
-                runtime: runtime_scale(parts[1]),
+                baseline: VisualAsset {
+                    scene: server.load(parts[0].to_owned()),
+                    min: Vec3::from_slice(&numbers[..3]),
+                    max: Vec3::from_slice(&numbers[3..]),
+                    runtime: runtime_scale(parts[1]),
+                },
+                candidate: if parts.len() == 15 {
+                    let extent: Vec<f32> = parts[9..].iter().map(|s| s.parse().unwrap()).collect();
+                    Some(VisualAsset {
+                        scene: server.load(parts[8].to_owned()),
+                        min: Vec3::from_slice(&extent[..3]),
+                        max: Vec3::from_slice(&extent[3..]),
+                        runtime: Vec3::ONE,
+                    })
+                } else {
+                    None
+                },
             }
         })
         .collect();
@@ -225,6 +279,7 @@ fn setup(
         animation: 0,
         paused: true,
         rebuild: true,
+        use_candidates: true,
         actors: server.load(ACTORS_CATALOG),
         graph: None,
         nodes: vec![],
@@ -249,6 +304,13 @@ fn setup(
     ));
     // Exactly 1 m tall human-shaped scale mannequin, independent of current actors.
     let mannequin = materials.add(Color::srgb(0.91, 0.73, 0.59));
+    let reference = commands
+        .spawn((
+            ReferenceRoot,
+            Transform::from_xyz(-0.9, 0., -1.),
+            Visibility::default(),
+        ))
+        .id();
     for (size, position) in [
         ([0.16, 0.20, 0.16], [0., 0.90, 0.]),
         ([0.25, 0.32, 0.14], [0., 0.62, 0.]),
@@ -257,16 +319,22 @@ fn setup(
         ([0.075, 0.35, 0.10], [-0.18, 0.61, 0.]),
         ([0.075, 0.35, 0.10], [0.18, 0.61, 0.]),
     ] {
-        commands.spawn((
-            Mesh3d(meshes.add(Cuboid::from_size(Vec3::from_array(size)))),
-            MeshMaterial3d(mannequin.clone()),
-            Transform::from_translation(Vec3::from_array(position) + Vec3::new(-0.9, 0., -1.0)),
-        ));
+        let part = commands
+            .spawn((
+                Mesh3d(meshes.add(Cuboid::from_size(Vec3::from_array(size)))),
+                MeshMaterial3d(mannequin.clone()),
+                Transform::from_translation(Vec3::from_array(position)),
+            ))
+            .id();
+        commands.entity(reference).add_child(part);
     }
 }
 
 fn apply(action: Action, work: &mut Workbench) {
     match action {
+        Action::Source => {
+            work.use_candidates = !work.use_candidates;
+        }
         Action::Select(index) => {
             work.selected = index;
             work.page = index / PAGE;
@@ -284,21 +352,23 @@ fn apply(action: Action, work: &mut Workbench) {
         }
         Action::View(view) => work.view = view,
         Action::Dimension(axis, delta) => {
-            let base = work.entries[work.selected].dimensions();
+            let base = work.entries[work.selected]
+                .visual(work.use_candidates)
+                .dimensions();
             let mut scale = work.scale();
             scale[axis] =
                 ((base[axis] * scale[axis] + delta).max(0.01) / base[axis]).clamp(0.001, 100.);
-            work.edits.insert(work.selected, scale);
+            work.edits.insert(work.edit_key(), scale);
         }
         Action::Uniform(factor) => {
             let scale = work.scale() * factor;
             work.edits.insert(
-                work.selected,
+                work.edit_key(),
                 scale.clamp(Vec3::splat(0.001), Vec3::splat(100.)),
             );
         }
         Action::Reset => {
-            work.edits.remove(&work.selected);
+            work.edits.remove(&work.edit_key());
         }
         Action::Overlay => work.overlay = !work.overlay,
         Action::Animation => work.animation = (work.animation + 1) % ACTOR_ANIMATIONS.len(),
@@ -420,7 +490,7 @@ fn rebuild(
     mut work: ResMut<Workbench>,
     old: Query<Entity, With<Hud>>,
     stage: Query<Entity, With<Stage>>,
-    mut previous: Local<Option<(usize, Vec3, bool)>>,
+    mut previous: Local<Option<(usize, Vec3, bool, bool)>>,
 ) {
     if !work.rebuild {
         return;
@@ -432,17 +502,19 @@ fn rebuild(
     let entry = &work.entries[work.selected];
     let dimensions = work.dimensions();
     let offset = work.offset();
-    let scale = entry.runtime * work.scale();
+    let visual = entry.visual(work.use_candidates);
+    let candidate = work.use_candidates && entry.candidate.is_some();
+    let scale = visual.runtime * work.scale();
     // Ground and center each item for measurement.
-    let placement = |x: f32, scale: Vec3| {
+    let placement = |x: f32, scale: Vec3, asset: &VisualAsset| {
         Vec3::new(x, 0., 0.)
             - Vec3::new(
-                (entry.min.x + entry.max.x) * 0.5,
-                entry.min.y,
-                (entry.min.z + entry.max.z) * 0.5,
+                (asset.min.x + asset.max.x) * 0.5,
+                asset.min.y,
+                (asset.min.z + asset.max.z) * 0.5,
             ) * scale
     };
-    let signature = (work.selected, scale, work.layout == 1);
+    let signature = (work.selected, scale, work.layout == 1, candidate);
     if *previous != Some(signature) {
         for entity in &stage {
             commands.entity(entity).despawn();
@@ -450,15 +522,19 @@ fn rebuild(
         *previous = Some(signature);
         commands.spawn((
             Stage,
-            WorldAssetRoot(entry.scene.clone()),
-            Transform::from_translation(placement(offset, scale)).with_scale(scale),
+            WorldAssetRoot(visual.scene.clone()),
+            Transform::from_translation(placement(offset, scale, visual)).with_scale(scale),
         ));
         if work.layout == 1 {
             commands.spawn((
                 Stage,
-                WorldAssetRoot(entry.scene.clone()),
-                Transform::from_translation(placement(-offset, entry.runtime))
-                    .with_scale(entry.runtime),
+                WorldAssetRoot(entry.baseline.scene.clone()),
+                Transform::from_translation(placement(
+                    -offset,
+                    entry.baseline.runtime,
+                    &entry.baseline,
+                ))
+                .with_scale(entry.baseline.runtime),
             ));
         }
     }
@@ -477,9 +553,14 @@ fn rebuild(
     let label = text(
         &mut commands,
         format!(
-            "THROWAWAY  /  {}  /  {}",
+            "THROWAWAY  /  {}  /  {} / {}",
             ["INSPECT", "BASELINE vs EDIT", "MEASURE"][work.layout],
-            entry.name
+            entry.name,
+            if candidate {
+                "BLENDER CANDIDATE (static)"
+            } else {
+                "CURRENT BASELINE"
+            }
         ),
         20.,
     );
@@ -491,9 +572,9 @@ fn rebuild(
             dimensions.x,
             dimensions.y,
             dimensions.z,
-            entry.dimensions().x,
-            entry.dimensions().y,
-            entry.dimensions().z,
+            entry.baseline.dimensions().x,
+            entry.baseline.dimensions().y,
+            entry.baseline.dimensions().z,
             work.scale().x,
             work.scale().y,
             work.scale().z,
@@ -529,6 +610,19 @@ fn rebuild(
         ),
         Action::Page(1),
     );
+    for (i, asset) in work
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, asset)| asset.candidate.is_some())
+    {
+        button(
+            &mut commands,
+            list,
+            format!("PILOT: {}", asset.name),
+            Action::Select(i),
+        );
+    }
     for (i, asset) in work
         .entries
         .iter()
@@ -591,9 +685,26 @@ fn rebuild(
         "Visual bounds / current collider [C]",
         Action::Overlay,
     );
+    button(
+        &mut commands,
+        controls,
+        "Candidate / baseline",
+        Action::Source,
+    );
     let collision_status = text(
         &mut commands,
-        overlay_status(&entry.name, entry.runtime, work.layout == 1),
+        if candidate {
+            format!(
+                "Visual bounds: measurement only\nCandidate collider: not authored{}",
+                if work.layout == 1 {
+                    "\nRed: current baseline collider"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            overlay_status(&entry.name, entry.baseline.runtime, work.layout == 1)
+        },
         12.,
     );
     commands.entity(controls).add_child(collision_status);
@@ -669,9 +780,17 @@ fn rebuild(
         ));
     }
     for (value, position) in [
-        ("1 m reference".to_string(), Vec3::new(-0.9, 1.15, -1.)),
         (
-            format!("EDIT | W {:.2} m / D {:.2} m", dimensions.x, dimensions.z),
+            "1 m reference".to_string(),
+            work.reference_position() + Vec3::Y * 1.15,
+        ),
+        (
+            format!(
+                "{} | W {:.2} m / D {:.2} m",
+                if candidate { "CANDIDATE" } else { "EDIT" },
+                dimensions.x,
+                dimensions.z
+            ),
             Vec3::new(offset, -0.15, 0.),
         ),
     ] {
@@ -761,6 +880,12 @@ fn camera(
         };
     }
 }
+fn place_reference(
+    work: Res<Workbench>,
+    mut reference: Single<&mut Transform, With<ReferenceRoot>>,
+) {
+    reference.translation = work.reference_position();
+}
 fn wire_box<T: GizmoConfigGroup>(gizmos: &mut Gizmos<T>, center: Vec3, size: Vec3, color: Color) {
     for axis in 0..3 {
         for a in [-0.5, 0.5] {
@@ -819,7 +944,7 @@ fn guides(work: Res<Workbench>, mut gizmos: Gizmos, mut collisions: Gizmos<Colli
     if work.overlay {
         wire_box(&mut gizmos, Vec3::new(offset, size.y * 0.5, 0.), size, CYAN);
         if work.layout == 1 {
-            let baseline = work.entries[work.selected].dimensions();
+            let baseline = work.entries[work.selected].baseline.dimensions();
             wire_box(
                 &mut gizmos,
                 Vec3::new(-offset, baseline.y * 0.5, 0.),
@@ -827,11 +952,16 @@ fn guides(work: Res<Workbench>, mut gizmos: Gizmos, mut collisions: Gizmos<Colli
                 CYAN,
             );
         }
-        current_collision(
-            &mut collisions,
-            &work.entries[work.selected],
-            if work.layout == 1 { -offset } else { offset },
-        );
+        if work.layout == 1
+            || !work.use_candidates
+            || work.entries[work.selected].candidate.is_none()
+        {
+            current_collision(
+                &mut collisions,
+                &work.entries[work.selected],
+                if work.layout == 1 { -offset } else { offset },
+            );
+        }
     }
 }
 fn size_for_side(size: Vec3) -> f32 {
@@ -842,11 +972,11 @@ fn current_collision(gizmos: &mut Gizmos<CollisionGizmos>, entry: &Entry, x: f32
     let red = Color::srgb(1., 0.35, 0.45);
     let origin = Vec3::new(x, 0., 0.)
         - Vec3::new(
-            (entry.min.x + entry.max.x) * 0.5,
-            entry.min.y,
-            (entry.min.z + entry.max.z) * 0.5,
-        ) * entry.runtime;
-    match collider_snapshot(&entry.name, entry.runtime) {
+            (entry.baseline.min.x + entry.baseline.max.x) * 0.5,
+            entry.baseline.min.y,
+            (entry.baseline.min.z + entry.baseline.max.z) * 0.5,
+        ) * entry.baseline.runtime;
+    match collider_snapshot(&entry.name, entry.baseline.runtime) {
         ColliderSnapshot::None => {}
         ColliderSnapshot::Box { size } => wire_box(gizmos, origin, size, red),
         ColliderSnapshot::Sphere { radius, center_y } => {
@@ -930,7 +1060,12 @@ fn capture(
         let loaded = work
             .entries
             .iter()
-            .filter(|e| server.is_loaded_with_dependencies(&e.scene))
+            .filter(|e| {
+                server.is_loaded_with_dependencies(&e.baseline.scene)
+                    && e.candidate
+                        .as_ref()
+                        .is_none_or(|c| server.is_loaded_with_dependencies(&c.scene))
+            })
             .count();
         println!("PREVIEW: {loaded}/{} scenes loaded", work.entries.len());
         assert_eq!(loaded, work.entries.len(), "catalog load incomplete");
@@ -947,7 +1082,9 @@ fn capture(
             .unwrap();
         apply(Action::Select(selected), &mut work);
         apply(Action::Layout(1), &mut work);
-        apply(Action::Uniform(0.65), &mut work);
+        if work.entries[selected].candidate.is_none() {
+            apply(Action::Uniform(0.65), &mut work);
+        }
         work.distance = 35.;
         work.target = Vec3::Y * 2.;
         *phase = 2;
@@ -999,8 +1136,28 @@ fn capture(
         *phase = 7;
     }
     if seconds > 18. && *phase == 7 {
-        exit.write(AppExit::Success);
+        let selected = work
+            .entries
+            .iter()
+            .position(|e| e.name == "structure.house")
+            .unwrap();
+        apply(Action::Select(selected), &mut work);
+        apply(Action::Layout(0), &mut work);
+        apply(Action::Reset, &mut work);
+        apply(Action::View(0), &mut work);
+        work.distance = 8.;
+        work.target = Vec3::Y * 1.15;
         *phase = 8;
+    }
+    if seconds > 20. && *phase == 8 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk("/tmp/terra-preview-house-candidate.png"));
+        *phase = 9;
+    }
+    if seconds > 22. && *phase == 9 {
+        exit.write(AppExit::Success);
+        *phase = 10;
     }
 }
 fn labels(

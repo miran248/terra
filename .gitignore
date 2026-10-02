@@ -1,3 +1,5 @@
 /target
 **/assets/*.bin
 **/assets/**/*.glb
+**/__pycache__/
+/crates/main/assets/models/candidates/manifest.json
