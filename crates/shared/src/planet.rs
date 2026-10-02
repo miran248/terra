@@ -111,24 +111,41 @@ impl PlanetMesh {
     }
 }
 
+/// If a ray from `origin` along the unit `direction` passes through triangle
+/// `t`, return the distance from `origin` to the hit.
+pub fn ray_triangle_intersection_distance(
+    origin: Vec3,
+    direction: Vec3,
+    t: &[Vec3; 3],
+) -> Option<f32> {
+    ray_triangle_distance_from_offset(direction, origin - t[0], t)
+}
+
 /// If the ray from the origin along `dir` passes through triangle `t`, return the radius
 /// (distance from origin to the hit). Möller–Trumbore, origin at planet center.
 pub fn ray_triangle_radius(dir: Vec3, t: &[Vec3; 3]) -> Option<f32> {
-    let e1 = t[1] - t[0];
-    let e2 = t[2] - t[0];
-    let p = dir.cross(e2);
+    ray_triangle_distance_from_offset(dir, -t[0], t)
+}
+
+fn ray_triangle_distance_from_offset(
+    direction: Vec3,
+    origin_to_triangle: Vec3,
+    triangle: &[Vec3; 3],
+) -> Option<f32> {
+    let e1 = triangle[1] - triangle[0];
+    let e2 = triangle[2] - triangle[0];
+    let p = direction.cross(e2);
     let det = e1.dot(p);
     if det.abs() < 1e-6 {
         return None;
     }
     let inv = 1.0 / det;
-    let tv = -t[0]; // origin (0,0,0) - t[0]
-    let u = tv.dot(p) * inv;
+    let u = origin_to_triangle.dot(p) * inv;
     if !(0.0..=1.0).contains(&u) {
         return None;
     }
-    let q = tv.cross(e1);
-    let v = dir.dot(q) * inv;
+    let q = origin_to_triangle.cross(e1);
+    let v = direction.dot(q) * inv;
     if v < 0.0 || u + v > 1.0 {
         return None;
     }
@@ -266,5 +283,24 @@ mod tests {
                 .unwrap_or(-1.0);
             assert!((grid - brute).abs() < 1e-2, "grid {grid} != brute {brute}");
         }
+    }
+
+    #[test]
+    fn ray_triangle_intersection_distance_handles_oblique_rays_and_misses() {
+        let triangle = [
+            Vec3::new(-10.0, -10.0, 10.0),
+            Vec3::new(10.0, -10.0, 10.0),
+            Vec3::new(0.0, 10.0, 10.0),
+        ];
+        let origin = Vec3::new(0.0, 0.0, 0.0);
+        let direction = Vec3::new(1.0, 0.0, 10.0).normalize();
+
+        let distance = ray_triangle_intersection_distance(origin, direction, &triangle)
+            .expect("oblique ray crosses the triangle");
+        assert!((distance - 101.0_f32.sqrt()).abs() < 1e-5);
+        assert_eq!(
+            ray_triangle_intersection_distance(Vec3::new(0.0, 20.0, 0.0), Vec3::Z, &triangle),
+            None
+        );
     }
 }

@@ -363,9 +363,107 @@ fn pan_world_map(
 }
 
 /// Click on the open map to teleport to that surface location.
+#[derive(Clone, Copy)]
+struct MapSurfaceHit {
+    distance: f32,
+    position: Vec3,
+    normal: Vec3,
+}
+
+fn map_click_surface_hit(
+    origin: Vec3,
+    direction: Vec3,
+    terrain: &TerrainGen,
+    bridge_surfaces: Option<&std::collections::BTreeMap<String, Vec<[[f32; 3]; 3]>>>,
+) -> Option<MapSurfaceHit> {
+    let terrain_hit = terrain_surface_hit(origin, direction, terrain);
+    let bridge_hit = bridge_surfaces
+        .into_iter()
+        .flat_map(|surfaces| surfaces.values())
+        .flat_map(|triangles| triangles.iter())
+        .filter_map(|triangle| {
+            let triangle = triangle.map(Vec3::from_array);
+            let distance =
+                shared::planet::ray_triangle_intersection_distance(origin, direction, &triangle)?;
+            let position = origin + direction.normalize_or_zero() * distance;
+            let mut normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
+            if normal.length_squared() < 1e-8 {
+                return None;
+            }
+            normal = normal.normalize();
+            if normal.dot(position) < 0.0 {
+                normal = -normal;
+            }
+            Some(MapSurfaceHit {
+                distance,
+                position,
+                normal,
+            })
+        })
+        .min_by(|left, right| left.distance.total_cmp(&right.distance));
+
+    match (terrain_hit, bridge_hit) {
+        (Some(terrain), Some(bridge)) if bridge.distance < terrain.distance => Some(bridge),
+        (Some(terrain), _) => Some(terrain),
+        (None, bridge) => bridge,
+    }
+}
+
+fn terrain_surface_hit(
+    origin: Vec3,
+    direction: Vec3,
+    terrain: &TerrainGen,
+) -> Option<MapSurfaceHit> {
+    let direction = direction.normalize_or_zero();
+    if direction == Vec3::ZERO {
+        return None;
+    }
+    let altitude = |distance: f32| {
+        let point = origin + direction * distance;
+        point.length()
+            - terrain
+                .surface_radius(SpherePos::new(point.normalize()))
+                .max(PLANET_RADIUS)
+    };
+    let far = MAP_HEIGHT + 2.0 * PLANET_RADIUS;
+    let mut previous_distance = 0.0;
+    let mut previous_altitude = altitude(previous_distance);
+    let mut bracket = None;
+    for step in 1..=256 {
+        let distance = far * step as f32 / 256.0;
+        let current_altitude = altitude(distance);
+        if previous_altitude > 0.0 && current_altitude <= 0.0 {
+            bracket = Some((previous_distance, distance));
+            break;
+        }
+        previous_distance = distance;
+        previous_altitude = current_altitude;
+    }
+    let (mut outside, mut inside) = bracket?;
+    for _ in 0..16 {
+        let middle = (outside + inside) * 0.5;
+        if altitude(middle) > 0.0 {
+            outside = middle;
+        } else {
+            inside = middle;
+        }
+    }
+    let point = origin + direction * inside;
+    let up = point.normalize();
+    let radius = terrain
+        .surface_radius(SpherePos::new(up))
+        .max(PLANET_RADIUS);
+    Some(MapSurfaceHit {
+        distance: inside,
+        position: up * radius,
+        normal: up,
+    })
+}
+
 #[allow(
     clippy::type_complexity,
-    reason = "Bevy ECS query filters encode access rules"
+    clippy::too_many_arguments,
+    reason = "Bevy ECS system data separates map inputs from the physics body"
 )]
 fn world_map_click(
     mut open: ResMut<WorldMapOpen>,
@@ -373,6 +471,7 @@ fn world_map_click(
     windows: Query<&Window>,
     cam_q: Query<(&Camera, &GlobalTransform), (With<WorldMapCamera>, Without<Player>)>,
     terrain: Option<Res<TerrainGen>>,
+    regions: Option<Res<LevelRegions>>,
     view: Res<WorldMapView>,
     mut player_q: Query<
         (&mut Position, &mut LinearVelocity),
@@ -418,47 +517,17 @@ fn world_map_click(
     let Some(terrain) = terrain else { return };
     let origin = ray.origin;
     let direction = *ray.direction;
-    let altitude = |t: f32| {
-        let point = origin + direction * t;
-        point.length()
-            - terrain
-                .surface_radius(SpherePos::new(point.normalize()))
-                .max(PLANET_RADIUS)
-    };
-    let far = MAP_HEIGHT + 2.0 * PLANET_RADIUS;
-    let mut previous_t = 0.0;
-    let mut previous_altitude = altitude(previous_t);
-    let mut hit = None;
-    for step in 1..=256 {
-        let t = far * step as f32 / 256.0;
-        let current_altitude = altitude(t);
-        if previous_altitude > 0.0 && current_altitude <= 0.0 {
-            hit = Some((previous_t, t));
-            break;
-        }
-        previous_t = t;
-        previous_altitude = current_altitude;
-    }
-    let Some((mut outside, mut inside)) = hit else {
+    let bridge_surfaces = regions
+        .as_ref()
+        .map(|regions| &regions.bridge_top_surfaces_by_name);
+    let Some(hit) = map_click_surface_hit(origin, direction, &terrain, bridge_surfaces) else {
         return;
     };
-    for _ in 0..16 {
-        let middle = (outside + inside) * 0.5;
-        if altitude(middle) > 0.0 {
-            outside = middle;
-        } else {
-            inside = middle;
-        }
-    }
-    let dir = (origin + direction * inside).normalize();
     open.0 = false;
 
     // Place the player just above the surface at the target, velocity zeroed.
-    let r = terrain
-        .surface_radius(SpherePos::new(dir))
-        .max(PLANET_RADIUS);
     if let Ok((mut position, mut vel)) = player_q.single_mut() {
-        position.0 = dir * (r + 2.0);
+        position.0 = hit.position + hit.normal * 2.0;
         vel.0 = Vec3::ZERO;
     }
 }
@@ -868,6 +937,7 @@ fn draw_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::level::{LevelData, RoadKind};
 
     #[test]
     fn map_labels_stay_right_of_and_vertically_centered_on_their_markers() {
@@ -912,5 +982,134 @@ mod tests {
 
         assert_eq!(label.chars().count(), MAX_MAP_LABEL_CHARS);
         assert!(label.ends_with('…'));
+    }
+
+    struct MapSurfaceFixture {
+        level: LevelData,
+        terrain: TerrainGen,
+        bridge_surfaces: std::collections::BTreeMap<String, Vec<[[f32; 3]; 3]>>,
+    }
+
+    fn seed_1337_map_surface_fixture() -> MapSurfaceFixture {
+        let level = LevelData::from_artifact_bytes(include_bytes!("../assets/level_1337.bin"))
+            .expect("load generated level");
+        let terrain = TerrainGen::from_field_with_settlement_config(
+            level.seed,
+            level.vert_elev.clone(),
+            level.settlement_config,
+        );
+        let ground = shared::planet::PlanetMesh::new(
+            level
+                .terrain_tris
+                .iter()
+                .map(|triangle| triangle.map(Vec3::from_array))
+                .collect(),
+        );
+        let bridge_surfaces = level
+            .roads
+            .iter()
+            .filter(|road| road.kind == RoadKind::Bridge)
+            .map(|road| {
+                let span = road
+                    .points
+                    .iter()
+                    .map(|point| SpherePos::new(Vec3::from_array(*point)))
+                    .collect::<Vec<_>>();
+                let geometry = shared::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
+                (road.name.clone(), geometry.top_surface)
+            })
+            .collect();
+
+        MapSurfaceFixture {
+            level,
+            terrain,
+            bridge_surfaces,
+        }
+    }
+
+    #[test]
+    fn map_click_targets_visible_bridge_4_and_preserves_land_water_and_occlusion() {
+        let MapSurfaceFixture {
+            level,
+            terrain,
+            bridge_surfaces,
+        } = seed_1337_map_surface_fixture();
+        let bridge = level
+            .roads
+            .iter()
+            .find(|road| road.name == "Bridge 4" && road.kind == RoadKind::Bridge)
+            .expect("seed 1337 contains Bridge 4");
+        let deck = &bridge_surfaces["Bridge 4"];
+        let triangle = deck[deck.len() / 2].map(Vec3::from_array);
+        let deck_point = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+        let deck_up = (triangle[1] - triangle[0])
+            .cross(triangle[2] - triangle[0])
+            .normalize();
+        let deck_up = if deck_up.dot(deck_point) < 0.0 {
+            -deck_up
+        } else {
+            deck_up
+        };
+        let tangent = deck_up.cross(Vec3::Y).normalize_or(Vec3::X);
+        let camera = deck_point + deck_up * MAP_HEIGHT + tangent * 500.0;
+        let ray_direction = (deck_point - camera).normalize();
+
+        let selected =
+            map_click_surface_hit(camera, ray_direction, &terrain, Some(&bridge_surfaces))
+                .expect("visible bridge ray has a surface hit");
+        assert!(
+            ray_direction.cross(deck_point.normalize()).length() > 0.05,
+            "fixture ray must be oblique to the radial fallback"
+        );
+        assert!(
+            selected.position.distance(deck_point) < 0.02,
+            "visible Bridge 4 hit should use its generated deck triangle, got {:?} for {:?}",
+            selected.position,
+            deck_point
+        );
+        assert!(selected.normal.dot(deck_point.normalize()) > 0.7);
+
+        let midpoint = SpherePos::new(Vec3::from_array(bridge.points[bridge.points.len() / 2]));
+        let first = Vec3::from_array(bridge.points[0]);
+        let last = Vec3::from_array(*bridge.points.last().unwrap());
+        let forward = (last - first).reject_from(midpoint.0).normalize();
+        let side = midpoint.0.cross(forward).normalize();
+        let adjacent_water = (midpoint.0 + side * (12.0 / PLANET_RADIUS)).normalize();
+        assert!(terrain.surface_radius(SpherePos::new(adjacent_water)) < PLANET_RADIUS);
+        let water_hit = map_click_surface_hit(
+            adjacent_water * (PLANET_RADIUS + MAP_HEIGHT),
+            -adjacent_water,
+            &terrain,
+            Some(&bridge_surfaces),
+        )
+        .expect("adjacent ocean click has a surface hit");
+        assert!(water_hit.position.distance(adjacent_water * PLANET_RADIUS) < 0.02);
+
+        let land = SpherePos::new(Vec3::from_array(level.settlements[0].pos));
+        let land_radius = terrain.surface_radius(land);
+        assert!(land_radius > PLANET_RADIUS);
+        let land_hit = map_click_surface_hit(
+            land.0 * (land_radius + MAP_HEIGHT),
+            -land.0,
+            &terrain,
+            Some(&bridge_surfaces),
+        )
+        .expect("ordinary terrain click has a surface hit");
+        assert!(land_hit.position.distance(land.0 * land_radius) < 0.02);
+
+        let radial = deck_point.normalize();
+        let hidden_camera = -radial * (PLANET_RADIUS + MAP_HEIGHT);
+        let hidden_ray = radial;
+        let hidden_deck_distance = shared::planet::ray_triangle_intersection_distance(
+            hidden_camera,
+            hidden_ray,
+            &triangle,
+        )
+        .expect("occlusion ray intersects the generated bridge deck");
+        let hidden_hit =
+            map_click_surface_hit(hidden_camera, hidden_ray, &terrain, Some(&bridge_surfaces))
+                .expect("occlusion ray first hits the generated terrain");
+        assert!(hidden_hit.distance < hidden_deck_distance);
+        assert!(hidden_hit.position.dot(radial) < 0.0);
     }
 }
