@@ -203,6 +203,44 @@ def house():
     return m
 
 
+def tree():
+    m = Model('scenery.tree.0')
+    m.rings('trunk', [(0,0,0,.17,.15),(.025,0,.15,.12,.11),
+        (-.025,.015,1.15,.075,.075),(.045,0,1.9,.035,.04)], 'wood', 7).data.name = 'scenery.tree.0.mesh'
+    for i,(x,y,z) in enumerate([(-.46,.04,1.92),(.43,.10,2.10),(.05,-.35,2.2)]):
+        m.beam(f'branch.{i}', (0,0,1.25+i*.12), (x,y,z), .065,.055,'wood')
+        m.rings(f'canopy.{i}', [(x,y,z-.45,.23,.24),(x-.04,y,z-.16,.51,.43),
+            (x+.04,y,z+.18,.43,.38),(x,y,z+.43,.13,.16)],
+            'sage_light' if i%2 else 'sage', 7)
+    for i in range(5):
+        angle = i*2*math.pi/5
+        m.beam(f'root.{i}', (0,0,.13), (.25*math.cos(angle),.25*math.sin(angle),.025), .055,.04,'wood')
+    return m
+
+
+def rock():
+    m = Model('scenery.rock.0')
+    m.rings('mass', [(0,0,0,.36,.29),(-.035,.025,.16,.43,.32),
+        (.025,.035,.38,.29,.25),(-.025,.01,.49,.14,.12)], 'stone', 7).data.name = 'scenery.rock.0.mesh'
+    m.rings('lichen', [(-.12,.04,.405,.10,.09),(-.13,.04,.453,.075,.065)], 'sage_light', 5)
+    return m
+
+
+def knife():
+    m = Model('weapon.knife')
+    m.rings('pommel', [(0,0,0,.019,.015),(0,0,.015,.019,.015)], 'dark_wood', 6)
+    m.rings('grip', [(0,0,.015,.015,.012),(0,0,.088,.016,.013)], 'wood', 6)
+    for i in range(4):
+        z = .024+i*.016
+        m.rings(f'wrap.{i}', [(0,0,z,.017,.014),(0,0,z+.005,.017,.014)], 'linen', 6)
+    m.box('guard', (0,0,.096), (.065,.026,.012), 'stone')
+    m.mesh('blade', [(-.025,0,.102),(0,-.008,.102),(.025,0,.102),(0,.008,.102),
+        (-.019,0,.228),(0,-.005,.228),(.018,0,.228),(0,.005,.228),(0,0,.285)],
+        [(0,1,5,4),(1,2,6,5),(2,3,7,6),(3,0,4,7),(4,5,8),(5,6,8),(6,7,8),(7,4,8),(3,2,1,0)], 'linen').data.name = 'weapon.knife.mesh'
+    m.empty('socket.grip', (0,0,.052)).parent = m.root
+    return m
+
+
 def clear_owned():
     for scene in list(bpy.data.scenes):
         if scene.get(OWNER):
@@ -231,7 +269,7 @@ def generate(out_dir):
     output.mkdir(parents=True, exist_ok=True)
     manifest = {'blender': '.'.join(map(str, VERSION)), 'seed': 0, 'assets': {}}
     try:
-        for build in [humanoid, house]:
+        for build in [humanoid, house, tree, rock, knife]:
             model = build()
             bpy.context.view_layer.update()
             filename = model.name + '.glb'

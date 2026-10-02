@@ -47,7 +47,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="terra-blender-check-") as temporary:
             generate(temporary)
             generated = Path(temporary)
-            for name in ("actor.player.glb", "structure.house.glb", "manifest.json"):
+            for name in sorted(p.name for p in generated.iterdir()):
                 if not (output / name).exists() or (output / name).read_bytes() != (generated / name).read_bytes():
                     raise SystemExit(f"Candidate differs: {output / name}")
         print("Candidate GLBs and manifest are byte-identical")

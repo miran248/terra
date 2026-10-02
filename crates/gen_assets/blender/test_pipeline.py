@@ -45,6 +45,28 @@ class PipelineTests(unittest.TestCase):
                         self.assertIn("NORMAL", primitive["attributes"])
                 self.assertTrue(all(m["pbrMetallicRoughness"]["roughnessFactor"] >= .9 for m in doc["materials"]))
 
+    def test_representative_set_has_clear_canopy_and_hand_sized_weapon(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            output = Path(temporary)
+            manifest = json.loads((output / 'manifest.json').read_text())
+            self.assertEqual(set(manifest['assets']), {'actor.player', 'structure.house',
+                'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'})
+            for name in ['scenery.tree.0', 'scenery.rock.0', 'weapon.knife']:
+                doc = document(output / (name + '.glb'))
+                self.assertEqual(doc['scenes'][0]['name'], name)
+                self.assertIn(name + '.mesh', [m.get('name') for m in doc['meshes']])
+                self.assertIn(name + '.material', [m.get('name') for m in doc['materials']])
+                self.assertAlmostEqual(bounds(doc, doc['scenes'][0])[1], 0, places=5)
+            tree = document(output / 'scenery.tree.0.glb')
+            canopy = [i for i,n in enumerate(tree['nodes']) if '.canopy.' in n.get('name', '')]
+            self.assertGreaterEqual(len(canopy), 3)
+            self.assertGreater(bounds(tree, {'nodes': canopy})[1], 1.2)
+            knife = manifest['assets']['weapon.knife']
+            self.assertGreater(knife['dimensions'][1], .2)
+            self.assertLess(knife['dimensions'][1], .35)
+            self.assertIn('socket.grip', [n.get('name') for n in document(output / 'weapon.knife.glb')['nodes']])
+
     def test_actor_faces_negative_z_and_keeps_ground_pivot(self):
         with tempfile.TemporaryDirectory() as temporary:
             subprocess.run([sys.executable, str(SCRIPT), "--out-dir", temporary], check=True, capture_output=True)

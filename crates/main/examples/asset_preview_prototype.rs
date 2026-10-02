@@ -1155,9 +1155,40 @@ fn capture(
             .observe(save_to_disk("/tmp/terra-preview-house-candidate.png"));
         *phase = 9;
     }
-    if seconds > 22. && *phase == 9 {
+    for (start, step, name, path, distance) in [
+        (
+            22.,
+            9,
+            "scenery.rock.0",
+            "/tmp/terra-preview-rock-candidate.png",
+            4.,
+        ),
+        (
+            26.,
+            11,
+            "weapon.knife",
+            "/tmp/terra-preview-knife-candidate.png",
+            2.,
+        ),
+    ] {
+        if seconds > start && *phase == step {
+            let selected = work.entries.iter().position(|e| e.name == name).unwrap();
+            apply(Action::Select(selected), &mut work);
+            apply(Action::Reset, &mut work);
+            work.distance = distance;
+            work.target = Vec3::Y * 0.25;
+            *phase += 1;
+        }
+        if seconds > start + 2. && *phase == step + 1 {
+            commands
+                .spawn(Screenshot::primary_window())
+                .observe(save_to_disk(path));
+            *phase += 1;
+        }
+    }
+    if seconds > 30. && *phase == 13 {
         exit.write(AppExit::Success);
-        *phase = 10;
+        *phase = 14;
     }
 }
 fn labels(
