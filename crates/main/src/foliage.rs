@@ -89,7 +89,7 @@ fn apply_foliage_materials(
     name_q: Query<&Name>,
     parent_q: Query<&ChildOf>,
 ) {
-    for (entity, mat_handle, parent) in &mesh_q {
+    for (entity, mat_handle, _parent) in &mesh_q {
         // If already cached, apply immediately and skip any traversal!
         if let Some(cached_handle) = cache.map.get(&mat_handle.0) {
             commands.entity(entity).queue_silenced(SwapFoliageMaterial {
@@ -99,20 +99,23 @@ fn apply_foliage_materials(
         }
 
         // Fast parent lookup (only runs for new/unique catalog materials!)
-        let mut current = parent.parent();
         let mut scenery_name = None;
-        for _ in 0..3 {
+        for current in parent_q.iter_ancestors(entity) {
             if let Ok(name) = name_q.get(current) {
                 let s = name.as_str();
-                if s.starts_with("scenery.") {
+                // Multipart Blender nodes also start with scenery.; only a canonical
+                // scene name (optionally followed by a numeric variant) identifies a kind.
+                let base = s
+                    .rsplit_once('.')
+                    .filter(|(_, suffix)| suffix.chars().all(|c| c.is_ascii_digit()))
+                    .map_or(s, |(base, _)| base);
+                if shared::art::SCENERY_KINDS.iter().any(|kind| {
+                    use shared::art::AssetName;
+                    kind.asset_name() == base
+                }) {
                     scenery_name = Some(s);
                     break;
                 }
-            }
-            if let Ok(next_parent) = parent_q.get(current) {
-                current = next_parent.parent();
-            } else {
-                break;
             }
         }
 
@@ -164,5 +167,46 @@ fn apply_foliage_materials(
                 material: foliage_mat_handle,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multipart_tree_resolves_its_scene_ancestor_for_wind_material() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<ShaderBuffer>()
+            .init_asset::<StandardMaterial>()
+            .init_asset::<FoliageMaterial>()
+            .init_resource::<ShaderMotionBuffer>()
+            .init_resource::<FoliageCache>()
+            .add_systems(Update, apply_foliage_materials);
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let root = app.world_mut().spawn(Name::new("scenery.tree.0")).id();
+        let part = app
+            .world_mut()
+            .spawn((Name::new("scenery.tree.0.trunk"), ChildOf(root)))
+            .id();
+        let mesh = app
+            .world_mut()
+            .spawn((MeshMaterial3d(material), ChildOf(part)))
+            .id();
+        app.update();
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<FoliageMaterial>>(mesh)
+                .is_some()
+        );
+        assert!(
+            app.world()
+                .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+                .is_none()
+        );
     }
 }

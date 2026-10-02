@@ -55,8 +55,26 @@ The visual walkthrough loads all catalog scenes plus all candidate dependencies 
 
 ## Animation on the planet
 
-`just asset-showcase` places three candidate humanoids playing idle, walk, and attack near the existing player on the generated planet. Each carries the knife. This is an opt-in review scene: production assets, player control, firing cadence, and damage are unchanged. The game uses the same per-asset playback module as the preview.
+`just asset-showcase` places the house, tree, rock, and three candidate humanoids playing idle, walk, and attack near the existing player on the generated planet. Each carries the knife. Press C to show the actual candidate colliders. This is an opt-in review scene: production assets, player control, firing cadence, and damage are unchanged. The game uses the same per-asset playback module as the preview.
 
-`TERRA_ASSET_SHOWCASE=1 TERRA_ASSET_CAPTURE=1 cargo run -p main` temporarily positions the review camera, captures `/tmp/terra-planet-animation.png`, and exits. Without capture mode the normal game camera and movement remain available.
+`TERRA_ASSET_SHOWCASE=1 TERRA_ASSET_CAPTURE=1 cargo run -p main` temporarily positions the review camera, captures normal gameplay, a fixed overview, and collider overlays under `/tmp/terra-planet-*.png`, and exits. `TERRA_ASSET_BASELINE=1` selects the original assets at their original runtime scales for comparison. Without capture mode the normal game camera and movement remain available. The throwaway scene lives in `crates/main/src/asset_showcase_prototype.rs`; placement queries the displaced terrain triangles rather than the unit-sphere face-lookup resource.
 
 The script uses tapered segments with explicit bone weights and keyed poses; it samples boot clearance and compensates vertically at the root bone. All clips are in-place and retain the existing one-second duration. Feet remain planted in idle/attack; walk alternates bent knees and arm swing. The locomotion collider intentionally follows the body core rather than swinging limbs or the visual weapon. Clip changes do not trigger damage or create a new combat mechanic.
+
+## Representative review status
+
+[Approve the representative assets on the planet](https://github.com/miran248/terra/issues/17) is awaiting the user's verdict on proportions, detail, animations, and shadow readability. No full-catalog replacement is authorized by this review until that verdict arrives.
+
+The current game lighting renders shaded faces much darker than the workbench; no lighting change has been silently applied. An earlier review capture accidentally sampled the unit-sphere lookup mesh and is superseded by the displaced-terrain captures. Multipart scene naming also exposed a foliage-binding bug; the binder now finds canonical scene ancestors so the existing wind and matching prepass shaders apply.
+
+A short M4 Pro/Metal debug-build comparison, with the existing world resident and display-limited rendering, measured approximately 119 FPS for baseline and 122 FPS for candidates. This is a smoke check, not evidence of a performance improvement or full-rollout capacity.
+
+| Candidate | Triangles | Mesh primitives |
+| --- | ---: | ---: |
+| Humanoid (15 joints) | 788 | 26 |
+| House | 890 | 76 |
+| Tree | 304 | 12 |
+| Rock | 68 | 2 |
+| Knife | 146 | 8 |
+
+The geometry is modest, but authoring parts currently create too many primitives for dense rollout. Consolidate compatible parts during production export and remeasure populated scenes before activation; do not extrapolate a five-asset smoke check to the full world. Dedicated LOD work is not yet justified by these measurements.
