@@ -493,32 +493,9 @@ fn setup_map(
         ..Default::default()
     });
     let capsule_radius = PLAYER_SIZE * 0.4;
-    let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
-    let spawn_pos = up * (spawn_surface_r + capsule_half + 0.5);
+    let spawn_pos = player_spawn_position(up, spawn_surface_r);
     commands
-        .spawn((
-            RigidBody::Dynamic,
-            ColliderConstructor::Sphere {
-                radius: PLAYER_SIZE * 0.5,
-            },
-            // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
-            // tunneled through during fast falls.
-            SweptCcd::default(),
-            // Populated by Avian's narrow phase for fall-through diagnostics.
-            CollidingEntities::default(),
-            RadialGravity,
-            Mass(80.0),
-            ColliderDensity(1000.0),
-            LockedAxes::ROTATION_LOCKED,
-            Transform::from_translation(spawn_pos),
-            Visibility::default(),
-            Player {
-                fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
-                damage: ATTACK_DAMAGE,
-                range: ATTACK_RANGE,
-                heading: start.tangent_basis().1,
-            },
-        ))
+        .spawn(player_physics_bundle(spawn_pos, start.tangent_basis().1))
         // The visual capsule is taller than the sphere collider, so on the entity
         // origin its base sank ~capsule_radius into the terrain — a z-fighting
         // ring around the feet that flickered as the body micro-jittered. Lift the
@@ -597,6 +574,36 @@ fn setup_map(
             .map(|blend| (blend.face, (blend.base, blend.target)))
             .collect(),
     ));
+}
+
+fn player_spawn_position(up: Vec3, surface_radius: f32) -> Vec3 {
+    let capsule_radius = PLAYER_SIZE * 0.4;
+    let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
+    up * (surface_radius + capsule_half + 0.5)
+}
+
+fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bundle {
+    (
+        RigidBody::Dynamic,
+        Collider::sphere(PLAYER_SIZE * 0.5),
+        // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
+        // tunneled through during fast falls.
+        SweptCcd::default(),
+        // Populated by Avian's narrow phase for fall-through diagnostics.
+        CollidingEntities::default(),
+        RadialGravity,
+        Mass(80.0),
+        ColliderDensity(1000.0),
+        LockedAxes::ROTATION_LOCKED,
+        Transform::from_translation(spawn_pos),
+        Visibility::default(),
+        Player {
+            fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
+            damage: ATTACK_DAMAGE,
+            range: ATTACK_RANGE,
+            heading,
+        },
+    )
 }
 
 #[cfg(test)]
@@ -721,6 +728,108 @@ mod region_identity_tests {
         }
         assert!(sampled_faces > 0);
         assert!(untagged_faces > 0, "test should cover untagged deck faces");
+    }
+}
+
+#[cfg(test)]
+mod startup_physics_tests {
+    use super::*;
+    use bevy::mesh::MeshPlugin;
+    use bevy::state::app::StatesPlugin;
+    use bevy::time::TimeUpdateStrategy;
+    use std::time::Duration;
+
+    #[derive(Resource)]
+    struct StartupPhysicsData {
+        terrain_tris: Vec<[[f32; 3]; 3]>,
+        spawn_pos: Vec3,
+        heading: Vec3,
+    }
+
+    fn spawn_seed_1337_world(mut commands: Commands, data: Res<StartupPhysicsData>) {
+        commands.spawn((
+            RigidBody::Static,
+            build_collider(&data.terrain_tris),
+            CollisionMargin(TERRAIN_MARGIN),
+            Transform::default(),
+            Ground,
+        ));
+        commands.spawn(player_physics_bundle(data.spawn_pos, data.heading));
+    }
+
+    #[test]
+    fn seed_1337_player_remains_grounded_through_a_long_state_entry_frame() {
+        let level = LevelData::from_artifact_bytes(include_bytes!("../assets/level_1337.bin"))
+            .expect("load generated level");
+        let terrain = TerrainGen::from_field_with_settlement_config(
+            level.seed,
+            level.vert_elev.clone(),
+            level.settlement_config,
+        );
+        let settlement = level
+            .settlements
+            .first()
+            .expect("generated spawn settlement");
+        let start = shared::sphere::SpherePos::new(Vec3::from_array(settlement.pos));
+        let spawn_surface_r = terrain.surface_radius(start);
+        let spawn_pos = player_spawn_position(start.0, spawn_surface_r);
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            StatesPlugin,
+            PhysicsPlugins::default(),
+            AssetPlugin::default(),
+            MeshPlugin,
+        ))
+        .add_plugins(crate::physics::PhysicsPlugin)
+        .init_state::<AppState>()
+        .insert_resource(StartupPhysicsData {
+            terrain_tris: level.terrain_tris.clone(),
+            spawn_pos,
+            heading: start.tangent_basis().1,
+        })
+        .insert_resource(SubstepCount(12))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
+            155,
+        )))
+        .add_systems(OnEnter(AppState::Playing), spawn_seed_1337_world);
+
+        app.finish();
+        app.update();
+        app.world_mut()
+            .resource_mut::<NextState<AppState>>()
+            .set(AppState::Playing);
+        app.update();
+
+        let mut query = app
+            .world_mut()
+            .query_filtered::<(&Position, &CollidingEntities), With<Player>>();
+        let (position, contacts) = query.single(app.world()).unwrap();
+        let altitude = position.0.length() - spawn_surface_r;
+        assert!(
+            altitude >= -0.05,
+            "player crossed beneath the seed 1337 spawn terrain after its first physics frame: altitude={altitude:.3}m"
+        );
+        assert!(
+            !contacts.is_empty(),
+            "player should have contacted terrain during the first seed 1337 physics frame"
+        );
+
+        for _ in 0..4 {
+            app.update();
+        }
+        let (position, contacts) = query.single(app.world()).unwrap();
+        let altitude = position.length() - spawn_surface_r;
+        assert!(
+            altitude >= -0.05,
+            "player crossed beneath the seed 1337 spawn terrain after sustained physics: altitude={altitude:.3}m"
+        );
+        assert!(
+            !contacts.is_empty(),
+            "player should remain in terrain contact after several physics frames"
+        );
     }
 }
 
@@ -903,7 +1012,7 @@ fn build_smooth_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
     mesh
 }
 
-fn build_collider(tris: &[[[f32; 3]; 3]]) -> ColliderConstructor {
+fn build_collider(tris: &[[[f32; 3]; 3]]) -> Collider {
     // Shared corners get one vertex — the subdivided mesh would otherwise
     // triple the collider's vertex count.
     let mut map: std::collections::HashMap<[u32; 3], u32> = std::collections::HashMap::new();
@@ -920,7 +1029,7 @@ fn build_collider(tris: &[[[f32; 3]; 3]]) -> ColliderConstructor {
         }
         indices.push(idx);
     }
-    ColliderConstructor::Trimesh { vertices, indices }
+    Collider::trimesh(vertices, indices)
 }
 
 // ---- player movement ----
