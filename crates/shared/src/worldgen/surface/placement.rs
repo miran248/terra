@@ -301,10 +301,9 @@ pub(in crate::worldgen) fn place_structures(
     // Resolve each saved barycentric site onto the finished displaced mesh.
     for site in settlement_structures {
         let corners = mesh_tris[site.face_index].map(Vec3::from_array);
-        let position = (corners[0] * site.barycentric[0]
+        let position = corners[0] * site.barycentric[0]
             + corners[1] * site.barycentric[1]
-            + corners[2] * site.barycentric[2])
-            .normalize();
+            + corners[2] * site.barycentric[2];
         required_faces.insert(site.face_index);
         push_structure(&mut rng, &mut out, site.face_index, site.kind, position);
     }

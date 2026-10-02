@@ -94,7 +94,7 @@ fn locked_serialized_worlds() {
     let seed_1337 = run(1337, |_| {}).level_data().to_artifact_bytes().unwrap();
     assert_eq!(
         serialized_fingerprint(&seed_1337),
-        531535395141373249,
+        12088493585452139082,
         "fingerprint changed — regenerate level_1337.bin and update this value"
     );
     let expected_bytes = include_bytes!(concat!(
@@ -110,7 +110,7 @@ fn locked_serialized_worlds() {
     }
 
     let seed_42 = run(42, |_| {}).level_data().to_artifact_bytes().unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 16461501877984572361);
+    assert_eq!(serialized_fingerprint(&seed_42), 99101208779465957);
     let repeated_seed_42 = run(42, |_| {}).level_data().to_artifact_bytes().unwrap();
     assert_eq!(seed_42, repeated_seed_42, "seed-42 artifact bytes changed");
 }

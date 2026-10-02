@@ -152,6 +152,18 @@ fn each_settlement_has_its_kind_specific_structures_inside_its_footprint() {
             }
 
             for structure in structures {
+                let position = Vec3::from_array(structure.pos);
+                let triangle = level.terrain_tris[structure.face as usize].map(Vec3::from_array);
+                let normal = (triangle[1] - triangle[0])
+                    .cross(triangle[2] - triangle[0])
+                    .normalize();
+                let distance_from_ground = (position - triangle[0]).dot(normal).abs();
+                assert!(
+                    distance_from_ground < 0.01,
+                    "{} {:?} is {distance_from_ground:.2} m from its terrain face",
+                    settlement.name,
+                    structure.kind
+                );
                 assert!(
                     (structure.face as usize) < level.face_types.len(),
                     "{} structure references a missing face",
