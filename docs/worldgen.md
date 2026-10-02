@@ -124,8 +124,14 @@ the current implementation unless marked as deferred.
   neighboring faces or show a bridge name from below its deck. Display
   truncation never changes the stored names or memberships.
 - Map labels annotate region centroids, vertically centered to the right of their
-  markers without collision offsets or leader lines. Single-line labels truncate
-  at the circular map boundary without changing underlying names or memberships.
+  markers without collision offsets or leader lines. Settlement names stay
+  visible; other region names appear when hovering within 12 logical pixels of a
+  visible marker, with the nearest non-settlement region selected in a cluster.
+  All region markers remain visible. Bridge markers use area-weighted centers of
+  generated deck top surfaces; the globe retains their deck height, and bridge
+  names use the same nearest-marker hover. Single-line labels truncate at the
+  circular map content boundary without changing underlying names or
+  memberships; see [runtime map visibility](runtime.md#maps-visuals-and-gameplay-state).
 
 ### Deferred architectural work
 

@@ -24,6 +24,7 @@ const CAM_HEIGHT: f32 = 1400.0;
 const VIEW_RADIUS: f32 = 430.0;
 const DOT: f32 = 3.0;
 const MAX_MAP_LABEL_CHARS: usize = 24;
+const MAP_LABEL_HOVER_RADIUS: f32 = 12.0;
 /// World reference direction treated as "North" (the +Y pole of the planet).
 const WORLD_NORTH: Vec3 = Vec3::Y;
 
@@ -47,11 +48,20 @@ struct MapLabelBounds {
     height: f32,
 }
 
+#[derive(Clone)]
 struct MapLabel {
     anchor: Vec2,
     text: String,
     color: Color,
     font_size: f32,
+    z_index: i32,
+}
+
+#[derive(Clone, Copy)]
+struct MapContentGeometry {
+    size: Vec2,
+    origin_from_center: Vec2,
+    inverse_scale_factor: f32,
 }
 
 impl MapLabel {
@@ -109,6 +119,88 @@ fn truncate_map_label(text: &str, max_chars: usize) -> String {
     truncated
 }
 
+fn map_content_geometry(
+    outer_size_physical: Vec2,
+    border: BorderRect,
+    inverse_scale_factor: f32,
+) -> MapContentGeometry {
+    MapContentGeometry {
+        size: (outer_size_physical - border.min_inset - border.max_inset).max(Vec2::ZERO)
+            * inverse_scale_factor,
+        origin_from_center: (outer_size_physical / 2.0 - border.min_inset) * inverse_scale_factor,
+        inverse_scale_factor,
+    }
+}
+
+fn cursor_in_map(
+    cursor_physical: Vec2,
+    transform: UiGlobalTransform,
+    content: MapContentGeometry,
+) -> Option<Vec2> {
+    let local_physical = transform.try_inverse()?.transform_point2(cursor_physical);
+    let cursor = local_physical * content.inverse_scale_factor + content.origin_from_center;
+    let center = content.size / 2.0;
+    let radius = content.size.min_element() / 2.0;
+    (content.size.min_element() > 0.0 && cursor.distance_squared(center) <= radius * radius)
+        .then_some(cursor)
+}
+
+fn map_label_default_visible(kind: RegionKind) -> bool {
+    kind == RegionKind::Settlement
+}
+
+fn nearest_hovered_label(cursor: Option<Vec2>, labels: &[MapLabel]) -> Option<usize> {
+    let cursor = cursor?;
+    let radius_squared = MAP_LABEL_HOVER_RADIUS * MAP_LABEL_HOVER_RADIUS;
+    labels
+        .iter()
+        .enumerate()
+        .filter_map(|(index, label)| {
+            let distance_squared = cursor.distance_squared(label.anchor);
+            (distance_squared <= radius_squared).then_some((distance_squared, index))
+        })
+        .min_by(
+            |(left_distance, left_index), (right_distance, right_index)| {
+                left_distance
+                    .total_cmp(right_distance)
+                    .then_with(|| left_index.cmp(right_index))
+            },
+        )
+        .map(|(_, index)| index)
+}
+
+fn bridge_surface_centroid(triangles: &[[[f32; 3]; 3]]) -> Option<Vec3> {
+    let mut weighted_center = Vec3::ZERO;
+    let mut total_area = 0.0;
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(Vec3::from_array);
+        let area = (b - a).cross(c - a).length() * 0.5;
+        if !area.is_finite() || area <= 1e-8 {
+            continue;
+        }
+        weighted_center += ((a + b + c) / 3.0) * area;
+        total_area += area;
+    }
+    (total_area > 0.0).then(|| weighted_center / total_area)
+}
+
+fn map_marker_position(
+    world_position: Vec3,
+    terrain: Option<&TerrainGen>,
+    snap_to_terrain: bool,
+) -> Vec3 {
+    if !snap_to_terrain {
+        return world_position;
+    }
+    let direction = world_position.normalize();
+    terrain.map_or(world_position, |terrain| {
+        direction
+            * terrain
+                .surface_radius(SpherePos::new(direction))
+                .max(PLANET_RADIUS)
+    })
+}
+
 #[derive(Component)]
 struct MinimapDot;
 
@@ -164,19 +256,18 @@ impl Plugin for MinimapPlugin {
             .add_systems(Startup, (setup_minimap, setup_world_map))
             .add_systems(
                 Update,
-                (track_minimap_camera, draw_overlay).run_if(in_state(AppState::Playing)),
-            )
-            .add_systems(
-                Update,
                 (
                     toggle_world_map,
                     sync_world_map,
                     pan_world_map,
                     track_world_map_camera,
-                    world_map_click,
+                    track_minimap_camera,
+                    draw_overlay,
                 )
+                    .chain()
                     .run_if(in_state(AppState::Playing)),
-            );
+            )
+            .add_systems(Update, world_map_click.run_if(in_state(AppState::Playing)));
     }
 }
 
@@ -638,12 +729,13 @@ fn track_minimap_camera(
 )]
 fn draw_overlay(
     mut commands: Commands,
-    minimap_q: Query<(Entity, &ComputedNode), With<Minimap>>,
-    world_map_q: Query<(Entity, &ComputedNode), With<WorldMap>>,
+    minimap_q: Query<(Entity, &ComputedNode, &UiGlobalTransform), With<Minimap>>,
+    world_map_q: Query<(Entity, &ComputedNode, &UiGlobalTransform), With<WorldMap>>,
+    windows: Query<&Window>,
     map_cameras: Query<
         (
             &Camera,
-            &GlobalTransform,
+            &Transform,
             Option<&MinimapCamera>,
             Option<&WorldMapCamera>,
         ),
@@ -662,10 +754,11 @@ fn draw_overlay(
     world_map_open: Res<WorldMapOpen>,
     world_map_view: Res<WorldMapView>,
 ) {
-    if !timer.0.tick(time.delta()).just_finished() {
+    let timer_finished = timer.0.tick(time.delta()).just_finished();
+    if !world_map_open.0 && !timer_finished {
         return;
     }
-    let Ok((minimap_entity, minimap_node)) = minimap_q.single() else {
+    let Ok((minimap_entity, minimap_node, minimap_transform)) = minimap_q.single() else {
         return;
     };
     let Ok((player_tf, player)) = player_q.single() else {
@@ -693,40 +786,66 @@ fn draw_overlay(
     let Some((minimap_camera, minimap_camera_tf)) = minimap_camera else {
         return;
     };
+    let cursor_physical = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    let minimap_content = map_content_geometry(
+        minimap_node.size(),
+        minimap_node.border(),
+        minimap_node.inverse_scale_factor(),
+    );
+    let minimap_size = minimap_content.size.x;
+    let minimap_cursor = cursor_physical
+        .and_then(|cursor| cursor_in_map(cursor, *minimap_transform, minimap_content));
     let mut maps = vec![(
         minimap_entity,
-        minimap_node.size().x * minimap_node.inverse_scale_factor(),
+        minimap_size,
         player_up,
         heading,
         minimap_camera,
         minimap_camera_tf,
         false,
+        if world_map_open.0 {
+            None
+        } else {
+            minimap_cursor
+        },
     )];
     if world_map_open.0
-        && let Ok((map_entity, map_node)) = world_map_q.single()
+        && let Ok((map_entity, map_node, map_transform)) = world_map_q.single()
         && let Some((map_camera, map_camera_tf)) = world_map_camera
     {
         let map_up = world_map_view.center.unwrap_or(player_up);
         let map_north = (WORLD_NORTH - map_up * WORLD_NORTH.dot(map_up)).normalize_or(heading);
+        let map_content = map_content_geometry(
+            map_node.size(),
+            map_node.border(),
+            map_node.inverse_scale_factor(),
+        );
+        let map_size = map_content.size.x;
+        let map_cursor =
+            cursor_physical.and_then(|cursor| cursor_in_map(cursor, *map_transform, map_content));
         maps.push((
             map_entity,
-            map_node.size().x * map_node.inverse_scale_factor(),
+            map_size,
             map_up,
             map_north,
             map_camera,
             map_camera_tf,
             true,
+            map_cursor,
         ));
     }
 
-    for (map_entity, size, up, north, camera, camera_tf, is_globe) in maps {
-        let radius = (size - 6.0) / 2.0;
+    for (map_entity, size, up, north, camera, camera_tf, is_globe, map_cursor) in maps {
+        let radius = size / 2.0;
         let marker_scale = (size / MINIMAP_SIZE).clamp(1.0, 2.0);
         let east = north.cross(up).normalize();
         // Keep the minimap's original flat heading-up projection. The fullscreen
         // globe instead uses its exact movable perspective camera and grounds
         // markers to the terrain to avoid altitude parallax.
-        let place = |world_pos: Vec3| -> Option<Vec2> {
+        let place = |world_pos: Vec3, snap_to_terrain: bool| -> Option<Vec2> {
             if !is_globe {
                 if player_pos.distance(world_pos) > VIEW_RADIUS {
                     return None;
@@ -737,17 +856,16 @@ fn draw_overlay(
                 return Some(Vec2::new(radius + x * radius, radius - y * radius));
             }
             let direction = world_pos.normalize();
-            let ground_pos = terrain.as_deref().map_or(world_pos, |terrain| {
-                direction
-                    * terrain
-                        .surface_radius(SpherePos::new(direction))
-                        .max(PLANET_RADIUS)
-            });
-            let camera_pos = camera_tf.translation();
-            if direction.dot(camera_pos - ground_pos) <= 0.0 {
+            let surface_position =
+                map_marker_position(world_pos, terrain.as_deref(), snap_to_terrain);
+            let camera_pos = camera_tf.translation;
+            if direction.dot(camera_pos - surface_position) <= 0.0 {
                 return None;
             }
-            let ndc = camera.world_to_ndc(camera_tf, ground_pos)?;
+            // Both map cameras are root entities, so their Transform is their world transform.
+            // GlobalTransform has not propagated yet in Update after a same-frame pan.
+            let camera_world = GlobalTransform::from(*camera_tf);
+            let ndc = camera.world_to_ndc(&camera_world, surface_position)?;
             let pt = Vec2::new((ndc.x + 1.0) * radius, (1.0 - ndc.y) * radius);
             let centered = pt - Vec2::splat(radius);
             if centered.length_squared() > radius * radius {
@@ -756,9 +874,10 @@ fn draw_overlay(
             Some(pt)
         };
         let mut labels = Vec::new();
+        let mut hover_labels = Vec::new();
         {
             let mut dot = |p: Vec3, color: Color, s: f32| {
-                let Some(pt) = place(p) else { return };
+                let Some(pt) = place(p, true) else { return };
                 commands.spawn((
                     Node {
                         position_type: PositionType::Absolute,
@@ -793,7 +912,7 @@ fn draw_overlay(
         }
 
         for (tf, _) in &settlements {
-            let Some(pt) = place(tf.translation) else {
+            let Some(pt) = place(tf.translation, true) else {
                 continue;
             };
             let s = 6.0 * marker_scale;
@@ -817,8 +936,15 @@ fn draw_overlay(
 
         if let Some(regions) = regions.as_deref() {
             for region in &regions.regions {
+                if region.kind == RegionKind::Road
+                    && regions
+                        .bridge_top_surfaces_by_name
+                        .contains_key(&region.name)
+                {
+                    continue;
+                }
                 let world_pos = Vec3::from_array(region.pos) * PLANET_RADIUS;
-                let Some(pt) = place(world_pos) else {
+                let Some(pt) = place(world_pos, true) else {
                     continue;
                 };
                 let color = match region.kind {
@@ -859,13 +985,61 @@ fn draw_overlay(
                     MinimapDot,
                     ChildOf(map_entity),
                 ));
-                labels.push(MapLabel {
+                let label = MapLabel {
                     anchor: pt,
                     text: display_name.to_owned(),
                     color,
                     font_size: 8.0 * marker_scale,
+                    z_index: if map_label_default_visible(region.kind) {
+                        2
+                    } else {
+                        3
+                    },
+                };
+                if map_label_default_visible(region.kind) {
+                    labels.push(label);
+                } else {
+                    hover_labels.push(label);
+                }
+            }
+
+            for (name, triangles) in &regions.bridge_top_surfaces_by_name {
+                let Some(world_pos) = bridge_surface_centroid(triangles) else {
+                    continue;
+                };
+                let Some(pt) = place(world_pos, false) else {
+                    continue;
+                };
+                let s = 5.0 * marker_scale;
+                commands.spawn((
+                    Node {
+                        position_type: PositionType::Absolute,
+                        left: Val::Px(pt.x - s / 2.0),
+                        top: Val::Px(pt.y - s / 2.0),
+                        width: Val::Px(s),
+                        height: Val::Px(s),
+                        border: UiRect::all(Val::Px(1.0)),
+                        border_radius: BorderRadius::all(Val::Percent(50.0)),
+                        ..default()
+                    },
+                    BackgroundColor(theme::WARNING),
+                    BorderColor::all(theme::INK),
+                    ZIndex(1),
+                    MinimapDot,
+                    ChildOf(map_entity),
+                ));
+                hover_labels.push(MapLabel {
+                    anchor: pt,
+                    text: name.clone(),
+                    color: theme::WARNING,
+                    font_size: 8.0 * marker_scale,
+                    z_index: 3,
                 });
             }
+        }
+
+        if let Some(index) = nearest_hovered_label(map_cursor, &hover_labels) {
+            labels.push(hover_labels[index].clone());
         }
 
         let label_layouts = labels.iter().map(MapLabel::layout).collect::<Vec<_>>();
@@ -886,7 +1060,7 @@ fn draw_overlay(
                     ..default()
                 },
                 TextColor(label.color),
-                ZIndex(2),
+                ZIndex(label.z_index),
                 Node {
                     position_type: PositionType::Absolute,
                     left: Val::Px(placement.left),
@@ -937,7 +1111,7 @@ fn draw_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::level::{LevelData, RoadKind};
+    use shared::level::{LevelData, RegionKind, RoadKind};
 
     #[test]
     fn map_labels_stay_right_of_and_vertically_centered_on_their_markers() {
@@ -982,6 +1156,100 @@ mod tests {
 
         assert_eq!(label.chars().count(), MAX_MAP_LABEL_CHARS);
         assert!(label.ends_with('…'));
+    }
+
+    fn region_label(kind: RegionKind, anchor: Vec2) -> MapLabel {
+        MapLabel {
+            anchor,
+            text: format!("{kind:?}"),
+            color: Color::WHITE,
+            font_size: 8.0,
+            z_index: if kind == RegionKind::Settlement { 2 } else { 3 },
+        }
+    }
+
+    #[test]
+    fn settlement_names_are_default_visible_and_other_region_names_are_hovered() {
+        assert!(map_label_default_visible(RegionKind::Settlement));
+        assert!(!map_label_default_visible(RegionKind::Road));
+        assert!(!map_label_default_visible(RegionKind::Forest));
+        assert!(!map_label_default_visible(RegionKind::Ocean));
+    }
+
+    #[test]
+    fn map_hover_selects_the_nearest_region_marker_within_twelve_logical_pixels() {
+        let labels = [
+            region_label(RegionKind::Forest, Vec2::new(50.0, 50.0)),
+            region_label(RegionKind::Road, Vec2::new(58.0, 50.0)),
+        ];
+
+        assert_eq!(
+            nearest_hovered_label(Some(Vec2::new(53.0, 50.0)), &labels),
+            Some(0)
+        );
+        assert_eq!(
+            nearest_hovered_label(Some(Vec2::new(56.0, 50.0)), &labels),
+            Some(1)
+        );
+        assert_eq!(
+            nearest_hovered_label(Some(Vec2::new(80.0, 80.0)), &labels),
+            None
+        );
+        assert_eq!(nearest_hovered_label(None, &labels), None);
+    }
+
+    #[test]
+    fn map_cursor_uses_the_content_box_and_rejects_outside_the_circle() {
+        let border = BorderRect {
+            min_inset: Vec2::splat(6.0),
+            max_inset: Vec2::splat(6.0),
+        };
+        let content = map_content_geometry(Vec2::splat(320.0), border, 0.5);
+        let transform = UiGlobalTransform::from_translation(Vec2::new(200.0, 120.0));
+
+        assert_eq!(content.size, Vec2::splat(154.0));
+        assert_eq!(content.origin_from_center, Vec2::splat(77.0));
+        assert_eq!(
+            cursor_in_map(Vec2::new(200.0, 120.0), transform, content),
+            Some(Vec2::splat(77.0))
+        );
+        assert_eq!(
+            cursor_in_map(Vec2::new(200.0, -34.0), transform, content),
+            Some(Vec2::new(77.0, 0.0))
+        );
+        assert_eq!(
+            cursor_in_map(Vec2::new(46.0, -34.0), transform, content),
+            None,
+            "a cursor in the square corner outside the circular image is not a map hover"
+        );
+    }
+
+    #[test]
+    fn bridge_surface_centroid_weights_triangle_area_and_keeps_deck_height() {
+        let triangles = [
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[10.0, 0.0, 12.0], [16.0, 0.0, 12.0], [10.0, 1.0, 12.0]],
+        ];
+
+        let center = bridge_surface_centroid(&triangles).expect("non-empty bridge surface");
+
+        assert!(center.distance(Vec3::new(9.166_667, 1.0 / 3.0, 9.0)) < 1e-5);
+    }
+
+    #[test]
+    fn bridge_marker_position_preserves_the_generated_deck_height() {
+        let fixture = seed_1337_map_surface_fixture();
+        let deck = fixture
+            .bridge_surfaces
+            .get("Bridge 4")
+            .expect("seed 1337 contains Bridge 4");
+        let center = bridge_surface_centroid(deck).expect("Bridge 4 has a deck surface");
+
+        let bridge_position = map_marker_position(center, Some(&fixture.terrain), false);
+        let terrain_position = map_marker_position(center, Some(&fixture.terrain), true);
+
+        assert_eq!(bridge_position, center);
+        assert!(bridge_position.distance(terrain_position) > 0.1);
     }
 
     struct MapSurfaceFixture {
@@ -1111,5 +1379,152 @@ mod tests {
                 .expect("occlusion ray first hits the generated terrain");
         assert!(hidden_hit.distance < hidden_deck_distance);
         assert!(hidden_hit.position.dot(radial) < 0.0);
+    }
+
+    #[test]
+    fn open_world_map_markers_follow_pan_on_the_next_sub_50ms_frame() {
+        use std::time::Duration;
+
+        let initial_center = Vec3::Z;
+        let player_transform = Transform::from_translation(initial_center * PLANET_RADIUS);
+        let camera_transform =
+            Transform::from_translation(initial_center * (PLANET_RADIUS + MAP_HEIGHT))
+                .looking_at(initial_center * PLANET_RADIUS, Vec3::Y);
+        let mut camera = Camera::default();
+        camera.computed.clip_from_view = Mat4::perspective_infinite_reverse_rh(
+            2.0 * (MAP_HALF_EXTENT / MAP_HEIGHT).atan(),
+            1.0,
+            1.0,
+        );
+
+        let mut app = App::new();
+        app.add_plugins(TransformPlugin)
+            .insert_resource(Time::<()>::default())
+            .insert_resource(MinimapTimer::default())
+            .insert_resource(WorldMapOpen(true))
+            .insert_resource(WorldMapView {
+                center: Some(initial_center),
+                ..default()
+            })
+            .insert_resource(ButtonInput::<MouseButton>::default())
+            .insert_resource(UiFont(Handle::default()))
+            .add_systems(
+                Update,
+                (pan_world_map, track_world_map_camera, draw_overlay).chain(),
+            );
+
+        app.world_mut()
+            .resource_mut::<MinimapTimer>()
+            .0
+            .tick(Duration::from_millis(49));
+        app.world_mut().spawn((
+            Minimap,
+            ComputedNode {
+                size: Vec2::splat(200.0),
+                ..default()
+            },
+            UiGlobalTransform::default(),
+        ));
+        let world_map = app
+            .world_mut()
+            .spawn((
+                WorldMap,
+                ComputedNode {
+                    size: Vec2::splat(200.0),
+                    ..default()
+                },
+                UiGlobalTransform::default(),
+            ))
+            .id();
+        app.world_mut().spawn((
+            MinimapCamera,
+            Camera::default(),
+            Transform::default(),
+            GlobalTransform::default(),
+        ));
+        app.world_mut().spawn((
+            WorldMapCamera,
+            camera,
+            camera_transform,
+            GlobalTransform::from(camera_transform),
+        ));
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(100.0, 100.0)));
+        app.world_mut().spawn(window);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.world_mut().spawn((
+            Player {
+                fire_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+                damage: 0.0,
+                range: 0.0,
+                heading: Vec3::Y,
+            },
+            player_transform,
+        ));
+        let settlement_direction = (initial_center + Vec3::X * 0.1).normalize();
+        app.world_mut().spawn((
+            Settlement {
+                name: "Test settlement".to_owned(),
+            },
+            Transform::from_translation(settlement_direction * PLANET_RADIUS),
+        ));
+
+        app.world_mut()
+            .resource_mut::<Time<()>>()
+            .advance_by(Duration::from_millis(2));
+        app.update();
+        app.world_mut().flush();
+        let marker_position = |app: &mut App| {
+            let world = app.world_mut();
+            let mut markers =
+                world.query_filtered::<(&Node, &BackgroundColor, &ChildOf), With<MinimapDot>>();
+            markers
+                .iter(world)
+                .find(|(_, color, parent)| {
+                    parent.parent() == world_map && color.0 == theme::WARNING
+                })
+                .map(|(node, _, _)| {
+                    let Val::Px(left) = node.left else {
+                        panic!("marker left position is expressed in pixels")
+                    };
+                    let Val::Px(top) = node.top else {
+                        panic!("marker top position is expressed in pixels")
+                    };
+                    (left, top)
+                })
+                .unwrap_or_else(|| {
+                    panic!(
+                        "world map settlement marker is drawn (dots {})",
+                        markers.iter(world).count()
+                    )
+                })
+        };
+        let before = marker_position(&mut app);
+
+        // Drag the actual map input. The camera-follow system must consume that same-frame
+        // center before draw_overlay projects the marker.
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(MouseButton::Left);
+        {
+            let world = app.world_mut();
+            let mut windows = world.query::<&mut Window>();
+            windows
+                .single_mut(world)
+                .unwrap()
+                .set_cursor_position(Some(Vec2::new(140.0, 100.0)));
+        }
+        app.world_mut()
+            .resource_mut::<Time<()>>()
+            .advance_by(Duration::from_millis(1));
+        app.update();
+
+        let after = marker_position(&mut app);
+        assert!(
+            (before.0 - after.0).abs() > 5.0 || (before.1 - after.1).abs() > 5.0,
+            "settlement marker should follow a same-frame map pan within 50 ms: before {before:?}, after {after:?}"
+        );
     }
 }
