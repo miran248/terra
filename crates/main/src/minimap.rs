@@ -8,6 +8,7 @@ use bevy::camera::RenderTarget;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
+use bevy::text::LineHeight;
 use shared::level::RegionKind;
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
@@ -46,28 +47,6 @@ struct MapLabelBounds {
     height: f32,
 }
 
-impl MapLabelBounds {
-    fn overlaps(self, other: Self) -> bool {
-        self.left < other.left + other.width + 3.0
-            && self.left + self.width + 3.0 > other.left
-            && self.top < other.top + other.height + 3.0
-            && self.top + self.height + 3.0 > other.top
-    }
-
-    fn nearest_point(self, point: Vec2) -> Vec2 {
-        Vec2::new(
-            point.x.clamp(self.left, self.left + self.width),
-            point.y.clamp(self.top, self.top + self.height),
-        )
-    }
-}
-
-#[derive(Clone, Copy)]
-struct PlacedMapLabel {
-    bounds: MapLabelBounds,
-    needs_leader: bool,
-}
-
 struct MapLabel {
     anchor: Vec2,
     text: String,
@@ -77,134 +56,57 @@ struct MapLabel {
 
 impl MapLabel {
     fn layout(&self) -> MapLabelLayout {
-        let text_width = self.text.chars().count() as f32 * self.font_size * 0.58 + 4.0;
+        let text_width = self.text.chars().count() as f32 * self.font_size * 0.65;
         MapLabelLayout {
             anchor: self.anchor,
-            size: Vec2::new(text_width, self.font_size + 4.0),
+            size: Vec2::new(text_width, self.font_size * 1.2),
         }
     }
 }
 
-fn place_map_labels(labels: &[MapLabelLayout], size: Vec2) -> Vec<PlacedMapLabel> {
-    const DIRECTIONS: [Vec2; 8] = [
-        Vec2::new(0.0, -1.0),
-        Vec2::new(1.0, -1.0),
-        Vec2::new(1.0, 0.0),
-        Vec2::new(1.0, 1.0),
-        Vec2::new(0.0, 1.0),
-        Vec2::new(-1.0, 1.0),
-        Vec2::new(-1.0, 0.0),
-        Vec2::new(-1.0, -1.0),
-    ];
-    let mut placed: Vec<PlacedMapLabel> = Vec::with_capacity(labels.len());
-    for label in labels {
-        let base = Vec2::new(3.0, -5.0);
-        let max_left = (size.x - label.size.x).max(0.0);
-        let max_top = (size.y - label.size.y).max(0.0);
-        let spacing = label.size.x.max(label.size.y) + 5.0;
-        let candidate_bounds = |offset: Vec2| {
-            let bounds = MapLabelBounds {
-                left: (label.anchor.x + offset.x).clamp(0.0, max_left),
-                top: (label.anchor.y + offset.y).clamp(0.0, max_top),
-                width: label.size.x.min(size.x),
-                height: label.size.y.min(size.y),
-            };
-            placed
-                .iter()
-                .all(|other| !bounds.overlaps(other.bounds))
-                .then_some(bounds)
-        };
-        let mut selected = candidate_bounds(base);
-        for ring in 1..=32 {
-            for direction in DIRECTIONS.iter().copied() {
-                let offset = base + direction * spacing * ring as f32;
-                if let Some(bounds) = candidate_bounds(offset) {
-                    selected = Some(bounds);
-                    break;
-                }
-            }
-            if selected.is_some() {
-                break;
-            }
-        }
-
-        let bounds = selected.unwrap_or_else(|| {
-            let offset = base;
+/// Keep each label beside its marker; truncate at the circular map boundary
+/// instead of moving it away from the entity it identifies.
+fn place_map_labels(labels: &[MapLabelLayout], size: Vec2) -> Vec<MapLabelBounds> {
+    let center = size / 2.0;
+    let radius = size.min_element() / 2.0 - 4.0;
+    labels
+        .iter()
+        .map(|label| {
+            let left = label.anchor.x + 6.0;
+            let top = label.anchor.y - label.size.y / 2.0;
+            let far_y = (label.anchor.y - center.y).abs() + label.size.y / 2.0;
+            let half_width = (radius * radius - far_y * far_y).max(0.0).sqrt();
+            let right = center.x + half_width;
             MapLabelBounds {
-                left: (label.anchor.x + offset.x).clamp(0.0, max_left),
-                top: (label.anchor.y + offset.y).clamp(0.0, max_top),
-                width: label.size.x.min(size.x),
-                height: label.size.y.min(size.y),
+                left,
+                top,
+                width: if far_y < radius && left >= center.x - half_width {
+                    label.size.x.min((right - left).max(0.0))
+                } else {
+                    0.0
+                },
+                height: label.size.y,
             }
-        });
-        let default_left = (label.anchor.x + base.x).clamp(0.0, max_left);
-        let default_top = (label.anchor.y + base.y).clamp(0.0, max_top);
-        let needs_leader =
-            (bounds.left - default_left).abs() > 1.0 || (bounds.top - default_top).abs() > 1.0;
-        placed.push(PlacedMapLabel {
-            bounds,
-            needs_leader,
-        });
-    }
-    placed
+        })
+        .collect()
 }
 
-fn truncate_map_label(text: &str) -> String {
-    if text.chars().count() <= MAX_MAP_LABEL_CHARS {
+fn truncate_map_label(text: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.min(MAX_MAP_LABEL_CHARS);
+    if max_chars == 0 {
+        return String::new();
+    }
+    if text.chars().count() <= max_chars {
         return text.to_owned();
     }
     let mut truncated = text
         .chars()
-        .take(MAX_MAP_LABEL_CHARS.saturating_sub(1))
+        .take(max_chars.saturating_sub(1))
         .collect::<String>()
         .trim_end()
         .to_owned();
     truncated.push('…');
     truncated
-}
-
-fn spawn_label_leader(
-    commands: &mut Commands,
-    map_entity: Entity,
-    anchor: Vec2,
-    bounds: MapLabelBounds,
-) {
-    let target = bounds.nearest_point(anchor);
-    let elbow = Vec2::new(target.x, anchor.y);
-    let horizontal = (elbow.x - anchor.x).abs();
-    if horizontal > 1.0 {
-        commands.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(anchor.x.min(elbow.x)),
-                top: Val::Px(anchor.y),
-                width: Val::Px(horizontal),
-                height: Val::Px(1.0),
-                ..default()
-            },
-            BackgroundColor(theme::TEXT_WEAK),
-            ZIndex(0),
-            MinimapDot,
-            ChildOf(map_entity),
-        ));
-    }
-    let vertical = (target.y - elbow.y).abs();
-    if vertical > 1.0 {
-        commands.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(target.x),
-                top: Val::Px(elbow.y.min(target.y)),
-                width: Val::Px(1.0),
-                height: Val::Px(vertical),
-                ..default()
-            },
-            BackgroundColor(theme::TEXT_WEAK),
-            ZIndex(0),
-            MinimapDot,
-            ChildOf(map_entity),
-        ));
-    }
 }
 
 #[derive(Component)]
@@ -890,7 +792,7 @@ fn draw_overlay(
                 ));
                 labels.push(MapLabel {
                     anchor: pt,
-                    text: truncate_map_label(display_name),
+                    text: display_name.to_owned(),
                     color,
                     font_size: 8.0 * marker_scale,
                 });
@@ -900,11 +802,15 @@ fn draw_overlay(
         let label_layouts = labels.iter().map(MapLabel::layout).collect::<Vec<_>>();
         let label_placements = place_map_labels(&label_layouts, Vec2::splat(size));
         for (label, placement) in labels.iter().zip(label_placements) {
-            if placement.needs_leader {
-                spawn_label_leader(&mut commands, map_entity, label.anchor, placement.bounds);
+            let max_chars = (placement.width / (label.font_size * 0.65) + 0.001).floor() as usize;
+            let text = truncate_map_label(&label.text, max_chars);
+            if text.is_empty() {
+                continue;
             }
             commands.spawn((
-                Text::new(label.text.clone()),
+                Text::new(text),
+                TextLayout::no_wrap(),
+                LineHeight::Px(placement.height),
                 TextFont {
                     font: font.0.clone().into(),
                     font_size: FontSize::Px(label.font_size),
@@ -914,10 +820,10 @@ fn draw_overlay(
                 ZIndex(2),
                 Node {
                     position_type: PositionType::Absolute,
-                    left: Val::Px(placement.bounds.left),
-                    top: Val::Px(placement.bounds.top),
-                    width: Val::Px(placement.bounds.width),
-                    height: Val::Px(placement.bounds.height),
+                    left: Val::Px(placement.left),
+                    top: Val::Px(placement.top),
+                    width: Val::Px(placement.width),
+                    height: Val::Px(placement.height),
                     ..default()
                 },
                 MinimapDot,
@@ -964,7 +870,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overlapping_map_labels_get_separate_positions_and_leader_lines() {
+    fn map_labels_stay_right_of_and_vertically_centered_on_their_markers() {
         let labels = [
             MapLabelLayout {
                 anchor: Vec2::new(60.0, 60.0),
@@ -979,13 +885,30 @@ mod tests {
         let placed = place_map_labels(&labels, Vec2::splat(160.0));
 
         assert_eq!(placed.len(), labels.len());
-        assert!(!placed[0].bounds.overlaps(placed[1].bounds));
-        assert!(placed[1].needs_leader);
+        for (label, placement) in labels.iter().zip(placed) {
+            assert_eq!(placement.left, label.anchor.x + 6.0);
+            assert_eq!(placement.top + placement.height / 2.0, label.anchor.y);
+        }
+    }
+
+    #[test]
+    fn map_labels_shorten_at_the_circular_edge_without_shifting_the_anchor() {
+        let label = MapLabelLayout {
+            anchor: Vec2::new(110.0, 40.0),
+            size: Vec2::new(100.0, 12.0),
+        };
+        let placed = place_map_labels(&[label], Vec2::splat(160.0))[0];
+        assert_eq!(placed.left, 116.0);
+        assert_eq!(placed.top, 34.0);
+        assert!(placed.width > 0.0 && placed.width < 30.0);
+        assert!(Vec2::new(placed.left + placed.width - 80.0, placed.top - 80.0).length() <= 76.001);
+        assert_eq!(truncate_map_label("Road 123", 5), "Road…");
+        assert_eq!(truncate_map_label("Road 123", 0), "");
     }
 
     #[test]
     fn long_map_labels_truncate_at_unicode_character_boundaries() {
-        let label = truncate_map_label("Étoile des montagnes enneigées");
+        let label = truncate_map_label("Étoile des montagnes enneigées", MAX_MAP_LABEL_CHARS);
 
         assert_eq!(label.chars().count(), MAX_MAP_LABEL_CHARS);
         assert!(label.ends_with('…'));

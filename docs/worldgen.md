@@ -123,8 +123,9 @@ the current implementation unless marked as deferred.
   this is separate from face-region membership. The HUD does not combine
   neighboring faces or show a bridge name from below its deck. Display
   truncation never changes the stored names or memberships.
-- Map labels annotate region centroids. Collision offsets and leader lines affect
-  presentation only and do not change the underlying memberships.
+- Map labels annotate region centroids, vertically centered to the right of their
+  markers without collision offsets or leader lines. Single-line labels truncate
+  at the circular map boundary without changing underlying names or memberships.
 
 ### Deferred architectural work
 
