@@ -22,7 +22,10 @@ fn main() {
 
 fn serialize(world: CompletedWorld, out: &PathBuf) {
     let face_count = world.stats().face_count;
-    let bytes = postcard::to_allocvec(world.level_data()).expect("serialize");
+    let bytes = world
+        .level_data()
+        .to_artifact_bytes()
+        .expect("serialize level artifact");
     let _ = fs::create_dir_all(out.parent().unwrap());
     fs::write(out, &bytes).expect("write");
     println!("Wrote {face_count} faces → {}", out.display());
@@ -43,8 +46,8 @@ fn print_stats(world: &CompletedWorld) {
         stats.terrain_faces,
     );
     println!(
-        "flora: {}  structures: {}",
-        stats.flora_count, stats.structure_count
+        "scenery: {}  structures: {}",
+        stats.scenery_count, stats.structure_count
     );
     println!(
         "regions: {}  bridges: {}",

@@ -1,10 +1,11 @@
-/// Sub-tile decoration scatter. Flora are points over the finished mesh.
+/// Sub-tile scenery scatter. Every placed object is a point over the finished mesh.
 /// Placement is deterministic in face order.
-pub(in crate::worldgen) const FLORA_RNG_SALT: u64 = 0x466c_6f72;
+/// Keep the seed salt unchanged across the naming migration to preserve layouts.
+pub(in crate::worldgen) const SCENERY_RNG_SALT: u64 = 0x466c_6f72;
 
-/// How a flora kind's density responds to ground moisture.
+/// How a scenery kind's density responds to ground moisture.
 #[derive(Clone, Copy)]
-pub(in crate::worldgen) enum FloraScale {
+pub(in crate::worldgen) enum SceneryScale {
     /// Denser on wet ground (greenery).
     Wet,
     /// Wet, squared — meadows bloom sharply with moisture (flowers).
@@ -15,147 +16,153 @@ pub(in crate::worldgen) enum FloraScale {
     Flat,
 }
 
-/// Base per-face density (expected instances) for each flora kind on a tile,
+/// Base per-face density (expected instances) for each scenery kind on a tile,
 /// with its moisture response — the scatter analogue of `elev_range`. Faces
-/// are ~9m across at sub=7, so values are small. Empty ⇒ nothing grows here.
-pub(in crate::worldgen) fn flora_density(t: Terrain) -> Vec<(f32, FloraScale, FloraKind)> {
-    use FloraScale::*;
-    // (base, scale, kind). Kept sparse: only the kinds that grow on this tile.
-    let v: &[(f32, FloraScale, FloraKind)] = match t {
+/// are ~9m across at sub=7, so values are small. Empty ⇒ no scenery is placed.
+pub(in crate::worldgen) fn scenery_density(t: Terrain) -> Vec<(f32, SceneryScale, SceneryKind)> {
+    use SceneryScale::*;
+    // (base, scale, kind). Kept sparse: only the kinds that appear on this tile.
+    let v: &[(f32, SceneryScale, SceneryKind)] = match t {
         Terrain::Forest => &[
-            (0.40, Wet, FloraKind::Tree),
-            (0.10, Wet, FloraKind::Bush),
-            (0.012, WetSq, FloraKind::Flower),
-            (0.008, Dry, FloraKind::Rock),
-            (0.075, Wet, FloraKind::Grass),
-            (0.03, Flat, FloraKind::Log),
-            (0.06, Wet, FloraKind::Mushroom),
-            (0.04, Wet, FloraKind::Berry),
-            (0.01, Flat, FloraKind::DeadTree),
-            (0.02, Flat, FloraKind::Stump),
-            (0.04, Wet, FloraKind::Fern),
+            (0.40, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.10, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.012, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.008, Dry, SceneryKind::Rock),
+            (0.075, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.03, Flat, SceneryKind::Log),
+            (0.06, Wet, SceneryKind::Mushroom),
+            (0.04, Wet, SceneryKind::Flora(FloraKind::Berry)),
+            (0.01, Flat, SceneryKind::DeadTree),
+            (0.02, Flat, SceneryKind::Stump),
+            (0.04, Wet, SceneryKind::Flora(FloraKind::Fern)),
         ],
         Terrain::Jungle => &[
-            (0.55, Wet, FloraKind::Tree),
-            (0.18, Wet, FloraKind::Bush),
-            (0.02, WetSq, FloraKind::Flower),
-            (0.004, Dry, FloraKind::Rock),
-            (0.10, Wet, FloraKind::Grass),
-            (0.05, Flat, FloraKind::Log),
-            (0.09, Wet, FloraKind::Mushroom),
-            (0.05, Wet, FloraKind::Berry),
-            (0.02, Wet, FloraKind::Reed),
-            (0.04, WetSq, FloraKind::Vine),
+            (0.55, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.18, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.02, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.004, Dry, SceneryKind::Rock),
+            (0.10, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.05, Flat, SceneryKind::Log),
+            (0.09, Wet, SceneryKind::Mushroom),
+            (0.05, Wet, SceneryKind::Flora(FloraKind::Berry)),
+            (0.02, Wet, SceneryKind::Flora(FloraKind::Reed)),
+            (0.04, WetSq, SceneryKind::Flora(FloraKind::Vine)),
         ],
         Terrain::Swamp => &[
-            (0.05, Wet, FloraKind::Tree),
-            (0.12, Wet, FloraKind::Bush),
-            (0.03, WetSq, FloraKind::Flower),
-            (0.004, Dry, FloraKind::Rock),
-            (0.10, Wet, FloraKind::Grass),
-            (0.05, Flat, FloraKind::Log),
-            (0.05, Wet, FloraKind::Mushroom),
-            (0.06, Flat, FloraKind::DeadTree),
-            (0.18, Wet, FloraKind::Reed),
-            (0.06, Wet, FloraKind::Cattail),
-            (0.03, WetSq, FloraKind::Vine),
+            (0.05, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.12, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.03, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.004, Dry, SceneryKind::Rock),
+            (0.10, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.05, Flat, SceneryKind::Log),
+            (0.05, Wet, SceneryKind::Mushroom),
+            (0.06, Flat, SceneryKind::DeadTree),
+            (0.18, Wet, SceneryKind::Flora(FloraKind::Reed)),
+            (0.06, Wet, SceneryKind::Flora(FloraKind::Cattail)),
+            (0.03, WetSq, SceneryKind::Flora(FloraKind::Vine)),
         ],
         Terrain::Plains => &[
-            (0.01, Wet, FloraKind::Tree),
-            (0.025, Wet, FloraKind::Bush),
-            (0.075, WetSq, FloraKind::Flower),
-            (0.005, Dry, FloraKind::Rock),
-            (0.088, Wet, FloraKind::Grass),
-            (0.004, Flat, FloraKind::Log),
-            (0.02, Wet, FloraKind::Berry),
-            (0.015, Flat, FloraKind::Fern),
+            (0.01, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.025, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.075, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.005, Dry, SceneryKind::Rock),
+            (0.088, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.004, Flat, SceneryKind::Log),
+            (0.02, Wet, SceneryKind::Flora(FloraKind::Berry)),
+            (0.015, Flat, SceneryKind::Flora(FloraKind::Fern)),
         ],
         Terrain::Savanna => &[
-            (0.02, Wet, FloraKind::Tree),
-            (0.04, Wet, FloraKind::Bush),
-            (0.04, WetSq, FloraKind::Flower),
-            (0.008, Dry, FloraKind::Rock),
-            (0.11, Wet, FloraKind::Grass),
-            (0.008, Flat, FloraKind::Log),
-            (0.015, Dry, FloraKind::Cactus),
-            (0.01, Wet, FloraKind::Berry),
-            (0.02, Flat, FloraKind::DeadTree),
-            (0.012, Flat, FloraKind::Tumbleweed),
+            (0.02, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.04, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.04, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.008, Dry, SceneryKind::Rock),
+            (0.11, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.008, Flat, SceneryKind::Log),
+            (0.015, Dry, SceneryKind::Flora(FloraKind::Cactus)),
+            (0.01, Wet, SceneryKind::Flora(FloraKind::Berry)),
+            (0.02, Flat, SceneryKind::DeadTree),
+            (0.012, Flat, SceneryKind::Flora(FloraKind::Tumbleweed)),
         ],
         Terrain::Tundra => &[
-            (0.003, Wet, FloraKind::Tree),
-            (0.015, Wet, FloraKind::Bush),
-            (0.005, WetSq, FloraKind::Flower),
-            (0.03, Dry, FloraKind::Rock),
-            (0.012, Wet, FloraKind::Grass),
-            (0.01, Flat, FloraKind::Log),
-            (0.008, Wet, FloraKind::Berry),
-            (0.03, Flat, FloraKind::DeadTree),
-            (0.02, Flat, FloraKind::Snowdrift),
-            (0.015, Dry, FloraKind::Icicle),
-            (0.002, Flat, FloraKind::Snowman),
+            (0.003, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.015, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.005, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.03, Dry, SceneryKind::Rock),
+            (0.012, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.01, Flat, SceneryKind::Log),
+            (0.008, Wet, SceneryKind::Flora(FloraKind::Berry)),
+            (0.03, Flat, SceneryKind::DeadTree),
+            (0.02, Flat, SceneryKind::Snowdrift),
+            (0.015, Dry, SceneryKind::Icicle),
+            (0.002, Flat, SceneryKind::Snowman),
         ],
         Terrain::Desert => &[
-            (0.012, Wet, FloraKind::Bush),
-            (0.025, Dry, FloraKind::Rock),
-            (0.06, Dry, FloraKind::Cactus),
-            (0.02, Flat, FloraKind::DeadTree),
-            (0.008, Flat, FloraKind::Skull),
-            (0.04, Flat, FloraKind::Tumbleweed),
+            (0.012, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.025, Dry, SceneryKind::Rock),
+            (0.06, Dry, SceneryKind::Flora(FloraKind::Cactus)),
+            (0.02, Flat, SceneryKind::DeadTree),
+            (0.008, Flat, SceneryKind::Skull),
+            (0.04, Flat, SceneryKind::Flora(FloraKind::Tumbleweed)),
         ],
         Terrain::Lake | Terrain::River => &[
-            (0.15, Wet, FloraKind::Lilypad),
-            (0.08, Wet, FloraKind::Seaweed),
-            (0.04, Wet, FloraKind::Kelp),
+            (0.15, Wet, SceneryKind::Flora(FloraKind::Lilypad)),
+            (0.08, Wet, SceneryKind::Flora(FloraKind::Seaweed)),
+            (0.04, Wet, SceneryKind::Flora(FloraKind::Kelp)),
         ],
         Terrain::Ocean => &[
-            (0.05, Flat, FloraKind::Coral),
-            (0.12, Wet, FloraKind::Seaweed),
-            (0.06, Wet, FloraKind::Kelp),
-            (0.04, Flat, FloraKind::Anemone),
-            (0.03, Flat, FloraKind::Starfish),
-            (0.015, Flat, FloraKind::Shell),
+            (0.05, Flat, SceneryKind::Coral),
+            (0.12, Wet, SceneryKind::Flora(FloraKind::Seaweed)),
+            (0.06, Wet, SceneryKind::Flora(FloraKind::Kelp)),
+            (0.04, Flat, SceneryKind::Anemone),
+            (0.03, Flat, SceneryKind::Starfish),
+            (0.015, Flat, SceneryKind::Shell),
         ],
         Terrain::RiverBank | Terrain::LakeShore => &[
-            (0.02, Wet, FloraKind::Tree),
-            (0.05, Wet, FloraKind::Bush),
-            (0.062, WetSq, FloraKind::Flower),
-            (0.008, Dry, FloraKind::Rock),
-            (0.075, Wet, FloraKind::Grass),
-            (0.01, Flat, FloraKind::Log),
-            (0.12, Wet, FloraKind::Reed),
-            (0.04, Wet, FloraKind::Cattail),
+            (0.02, Wet, SceneryKind::Flora(FloraKind::Tree)),
+            (0.05, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.062, WetSq, SceneryKind::Flora(FloraKind::Flower)),
+            (0.008, Dry, SceneryKind::Rock),
+            (0.075, Wet, SceneryKind::Flora(FloraKind::Grass)),
+            (0.01, Flat, SceneryKind::Log),
+            (0.12, Wet, SceneryKind::Flora(FloraKind::Reed)),
+            (0.04, Wet, SceneryKind::Flora(FloraKind::Cattail)),
         ],
-        Terrain::Mountain => &[(0.005, Wet, FloraKind::Bush), (0.05, Dry, FloraKind::Rock)],
-        Terrain::Cliff => &[(0.038, Dry, FloraKind::Rock)],
+        Terrain::Mountain => &[
+            (0.005, Wet, SceneryKind::Flora(FloraKind::Bush)),
+            (0.05, Dry, SceneryKind::Rock),
+        ],
+        Terrain::Cliff => &[(0.038, Dry, SceneryKind::Rock)],
         Terrain::Snow => &[
-            (0.004, Dry, FloraKind::DeadTree),
-            (0.04, Dry, FloraKind::Rock),
-            (0.06, Flat, FloraKind::Snowdrift),
-            (0.012, Flat, FloraKind::Stump),
-            (0.03, Dry, FloraKind::Icicle),
-            (0.003, Flat, FloraKind::Snowman),
+            (0.004, Dry, SceneryKind::DeadTree),
+            (0.04, Dry, SceneryKind::Rock),
+            (0.06, Flat, SceneryKind::Snowdrift),
+            (0.012, Flat, SceneryKind::Stump),
+            (0.03, Dry, SceneryKind::Icicle),
+            (0.003, Flat, SceneryKind::Snowman),
         ],
-        Terrain::Beach => &[(0.01, Dry, FloraKind::Rock), (0.02, Flat, FloraKind::Shell)],
-        Terrain::Volcanic => &[(0.06, Dry, FloraKind::Rock)],
+        Terrain::Beach => &[
+            (0.01, Dry, SceneryKind::Rock),
+            (0.02, Flat, SceneryKind::Shell),
+        ],
+        Terrain::Volcanic => &[(0.06, Dry, SceneryKind::Rock)],
         Terrain::Glacier => &[
-            (0.01, Dry, FloraKind::Rock),
-            (0.04, Flat, FloraKind::Snowdrift),
-            (0.02, Dry, FloraKind::Icicle),
+            (0.01, Dry, SceneryKind::Rock),
+            (0.04, Flat, SceneryKind::Snowdrift),
+            (0.02, Dry, SceneryKind::Icicle),
         ],
         _ => &[],
     };
     v.to_vec()
 }
 
-pub(in crate::worldgen) fn place_flora(
+pub(in crate::worldgen) fn place_scenery(
     grid: &Grid,
     terrain: &TerrainGen,
     tiles: &[Terrain],
     painted: &Painted,
     mesh_tris: &[[[f32; 3]; 3]],
-) -> Vec<FloraData> {
-    let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ FLORA_RNG_SALT);
+) -> Vec<SceneryData> {
+    let mut rng = fastrand::Rng::with_seed(grid.seed as u64 ^ SCENERY_RNG_SALT);
     let mut out = Vec::new();
     for face_index in 0..grid.face_count() {
         let face = FaceId::new(face_index);
@@ -166,7 +173,7 @@ pub(in crate::worldgen) fn place_flora(
         if clear {
             continue;
         }
-        let mix = flora_density(tiles[face_index]);
+        let mix = scenery_density(tiles[face_index]);
         if mix.is_empty() {
             continue;
         }
@@ -176,19 +183,19 @@ pub(in crate::worldgen) fn place_flora(
         let wet = (1.0 + m).clamp(0.3, 1.8);
         let dry = (1.0 - m).clamp(0.5, 1.6);
         for &(base, scale, kind) in &mix {
-            let multiplier = if matches!(kind, FloraKind::Grass) {
+            let multiplier = if matches!(kind, SceneryKind::Flora(FloraKind::Grass)) {
                 300.0
-            } else if matches!(kind, FloraKind::Rock) {
+            } else if matches!(kind, SceneryKind::Rock) {
                 1.0
             } else {
                 3.0
             };
             let density =
                 base * match scale {
-                    FloraScale::Wet => wet,
-                    FloraScale::WetSq => wet * wet,
-                    FloraScale::Dry => dry,
-                    FloraScale::Flat => 1.0,
+                    SceneryScale::Wet => wet,
+                    SceneryScale::WetSq => wet * wet,
+                    SceneryScale::Dry => dry,
+                    SceneryScale::Flat => 1.0,
                 } * multiplier;
             let mut n = density.trunc() as u32;
             if rng.f32() < density.fract() {
@@ -209,11 +216,11 @@ pub(in crate::worldgen) fn place_flora(
                 let pos = a + (b - a) * u + (c - a) * v;
                 let hash = (pos.x.to_bits() as u64).wrapping_mul(0x9e37_79b9)
                     ^ (pos.z.to_bits() as u64).rotate_left(17);
-                out.push(FloraData {
+                out.push(SceneryData {
                     pos: pos.to_array(),
                     face: face_index as u32,
                     kind,
-                    variant: crate::art::flora_variant_for(kind, tiles[face_index], hash),
+                    variant: crate::art::scenery_variant_for(kind, tiles[face_index], hash),
                 });
             }
         }
@@ -534,7 +541,9 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
 }
 use bevy::prelude::Vec3;
 
-use crate::level::{FaceTag, FloraData, FloraKind, SlopeClass, StructureData, StructureKind};
+use crate::level::{
+    FaceTag, FloraKind, SceneryData, SceneryKind, SlopeClass, StructureData, StructureKind,
+};
 use crate::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
 use crate::topology::{CellId, FaceId};

@@ -4,7 +4,7 @@
 
 - Units are meters; canonical world scale lives in `shared::sphere`.
 - The player spawns at the first settlement in the baked `LevelData`.
-- The world is a 3D planet (`Camera3d`, PBR meshes, `DirectionalLight`). `gen_level` precomputes planet mesh, collision, roads, settlements, and typed face data into local generated `assets/level_{seed}.bin` files, embedded at compile time with `include_bytes!` and deserialized with Postcard. These generated binaries are ignored by Git; regenerate seed 1337 before building from a clean checkout.
+- The world is a 3D planet (`Camera3d`, PBR meshes, `DirectionalLight`). `gen_level` precomputes planet mesh, collision, roads, settlements, and typed face data into local generated `assets/level_{seed}.bin` files, embedded at compile time with `include_bytes!`. Each artifact carries the `TERA` magic and schema version 1 before its Postcard payload. Missing or unsupported headers are rejected; regenerate seed 1337 before building from a clean checkout. These generated binaries are ignored by Git.
 - Runtime consumes typed, face-oriented `LevelData`. Mesh generation, region clustering, and route planning remain offline. Startup reconstructs the terrain query grid, coarse zones, and climate from the seed and baked elevation field through `TerrainGen::from_field`; this reconstruction remains intentional for now. `PlanetMesh::face_at` bridges arbitrary positions; the HUD uses the nearest authoritative face-corner terrain identity.
 - `AssetCatalogPlugin` holds `AppState::Loading` until all four GLB catalogs and dependencies resolve. Systems requiring `setup_map` resources run only in `AppState::Playing`.
 
@@ -18,10 +18,10 @@
 ## Chunking, geometry, and collision
 
 - Subdivision-7 terrain (327,680 faces) splits into 320 subdivision-2 chunks using contiguous deterministic four-child slices.
-- LOD 1 is always resident for terrain/water/river/ice and map cameras. LOD 2 at edge distance ≤960 m adds structures and large flora; LOD 3 at ≤300 m adds small flora and subdivided water swell.
-- Distance is camera to chunk edge (centroid distance minus radius). Transitions are incremental: static meshes build once, water rebuilds only on subdivision change, and structures/flora apply deltas. Downgrades use 15% hysteresis; transitions are budgeted and flora streams nearest-first under `FLORA_PER_FRAME`.
+- LOD 1 is always resident for terrain/water/river/ice and map cameras. LOD 2 at edge distance ≤960 m adds structures and large scenery; LOD 3 at ≤300 m adds small scenery and subdivided water swell.
+- Distance is camera to chunk edge (centroid distance minus radius). Transitions are incremental: static meshes build once, water rebuilds only on subdivision change, and structures/scenery apply deltas. Downgrades use 15% hysteresis; transitions are budgeted and scenery streams nearest-first under `SCENERY_PER_FRAME`.
 - Chunk entities carry `Ground` for prestige cleanup. `DEBUG_CHUNK_BORDERS` is diagnostic-only and must be off for shipping.
-- Physics never streams. Whole-planet terrain, ice, and bridge trimeshes spawn in `setup_map`; flora/structure colliders live in chunks well beyond the 120 m zombie ring.
+- Physics never streams. Whole-planet terrain, ice, and bridge trimeshes spawn in `setup_map`; scenery/structure colliders live in chunks well beyond the 120 m zombie ring.
 - Terrain collision uses full-resolution displaced triangles. Bridge decks are built from baked spans and have separate static colliders matching their visual geometry.
 - Non-bridge roads are visual-only 4 m ribbons subdivided at roughly 4 m intervals, sampled against displaced terrain at both edges, and vertex-colored from baked `RoadMaterial`; they never replace or add collision.
 
@@ -38,7 +38,7 @@
 - Minimap is fixed heading-up 2D with a rotating edge compass. Minimap markers use flat projection. Fullscreen map is a north-up perspective `Camera3d` globe with the same circular border and shared actor, loot, settlement, named-region, and edge-cardinal overlays; it supports pan/drag and release-without-drag terrain ray casting. Region labels are passive centroid annotations; collisions move only the rendered label and add a leader line, while blank map clicks still teleport.
 - Baked `LevelRegions` coverage includes named oceans, lakes, rivers, land biomes, ranges, coasts, settlements, and roads. Both map views show every visible kind without filtering; the minimap omits centers outside its viewport. Mesh-backed markers require `ViewVisibility`; hidden-side globe markers are excluded. Convert `ComputedNode` physical sizes to logical pixels for overlay projection.
 - The location HUD reads every region ID from the exact queried face and groups those memberships into geography, settlement name/kind, and roads. It never unions adjacent faces. Named bridges are queried separately against the actual deck top surfaces used for rendering and collision; standing below a bridge does not show its name. Long rows use display-only ellipsis; the region and membership data stay complete.
-- `map::GameAssets` owns the procedural projectile. `loot::LootAssets` owns material/weapon GLB scenes. Player, zombie, loot, flora, and structure scenes are visual children of runtime-owned placement/physics roots; imported scenes never own gameplay collision.
+- `map::GameAssets` owns the procedural projectile. `loot::LootAssets` owns material/weapon GLB scenes. Player, zombie, loot, scenery, and structure scenes are visual children of runtime-owned placement/physics roots; imported scenes never own gameplay collision.
 - Actor scenes bind to the shared animation graph after instantiation. The player scene owns `socket.hand`; `sync_equipped_weapon` mirrors `LootState::equipped` with a visual-only child.
 - `LootState` is the single resource for materials, collected weapons, and equipped weapon; reset it on prestige. Weapons override fire stats, lose durability per shot, and auto-swap on break. Dead zombies drop loot; wave-start loot supports magnet collection and equipping. Crafting UI and handlers are currently dormant; restoring crafting is deferred.
 - Bevy 0.19 events use `Message`, `add_message()`, `MessageWriter`, and `MessageReader`.

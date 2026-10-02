@@ -1,7 +1,7 @@
 use gltf::Glb;
 use serde_json::{Value, json};
 use shared::{
-    art::{ACTOR_ANIMATIONS, AssetName, FLORA_KINDS, STRUCTURE_KINDS},
+    art::{ACTOR_ANIMATIONS, AssetName, SCENERY_KINDS, STRUCTURE_KINDS},
     items::{Material, WeaponKind},
 };
 use std::{borrow::Cow, env, fs, path::PathBuf};
@@ -51,10 +51,10 @@ fn main() {
 
 fn catalogs() -> Vec<(&'static str, Vec<u8>)> {
     let mut environment = Vec::new();
-    for kind in FLORA_KINDS {
-        let n = shared::art::flora_variant_count(kind);
+    for kind in SCENERY_KINDS {
+        let n = shared::art::scenery_variant_count(kind);
         for v in 0..n {
-            environment.push(shared::art::flora_variant_name(kind, v));
+            environment.push(shared::art::scenery_variant_name(kind, v));
         }
     }
     let environment_refs: Vec<&str> = environment.iter().map(String::as_str).collect();
@@ -302,7 +302,7 @@ fn generate_mesh(name: &str) -> MeshData {
         }
     };
     match base_name {
-        "flora.tree" => match variant.unwrap_or(0) {
+        "scenery.tree" => match variant.unwrap_or(0) {
             0 => {
                 // Complex deciduous: branching trunk with ball canopy clusters
                 let trunk_color = [0.45, 0.28, 0.13, 1.0];
@@ -537,7 +537,7 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_pyramid(&mut mesh, [-1.0, -1.0], [1.0, 1.0], 2.8, 4.5, gold);
             }
         },
-        "flora.rock" => match variant.unwrap_or(0) {
+        "scenery.rock" => match variant.unwrap_or(0) {
             0 => {
                 let color = [0.45, 0.45, 0.45, 1.0];
                 add_box(&mut mesh, [-0.7, 0.0, -0.7], [0.7, 1.0, 0.7], color);
@@ -548,7 +548,7 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_box(&mut mesh, [-0.7, 0.0, -0.7], [0.7, 1.0, 0.7], color);
             }
         },
-        "flora.flower" => {
+        "scenery.flower" => {
             let stem_color = [0.2, 0.6, 0.2, 1.0];
             let petal_color = [0.9, 0.2, 0.5, 1.0];
             add_box(
@@ -559,7 +559,7 @@ fn generate_mesh(name: &str) -> MeshData {
             );
             add_pyramid(&mut mesh, [-0.1, -0.1], [0.1, 0.1], 0.4, 0.55, petal_color);
         }
-        "flora.grass" => {
+        "scenery.grass" => {
             let color = [0.22, 0.60, 0.22, 1.0];
             let dark_color = [0.15, 0.48, 0.15, 1.0];
 
@@ -571,12 +571,12 @@ fn generate_mesh(name: &str) -> MeshData {
             add_grass_blade(&mut mesh, [0.0, 0.0, 0.12], 4.8, 0.30, 0.035, dark_color);
             add_grass_blade(&mut mesh, [-0.12, 0.0, -0.02], 5.8, 0.40, 0.04, color);
         }
-        "flora.log" => {
+        "scenery.log" => {
             let color = [0.4, 0.25, 0.1, 1.0];
             // Scaled to match log cylinder collider (length 3.0m, radius 0.35m)
             add_box(&mut mesh, [-1.5, 0.0, -0.35], [1.5, 0.7, 0.35], color);
         }
-        "flora.mushroom" => {
+        "scenery.mushroom" => {
             let stem_color = [0.9, 0.9, 0.85, 1.0];
             let cap_color = [0.8, 0.15, 0.15, 1.0];
             add_box(
@@ -587,7 +587,7 @@ fn generate_mesh(name: &str) -> MeshData {
             );
             add_box(&mut mesh, [-0.2, 0.22, -0.2], [0.2, 0.35, 0.2], cap_color);
         }
-        "flora.cactus" => match variant.unwrap_or(0) {
+        "scenery.cactus" => match variant.unwrap_or(0) {
             0 => {
                 let color = [0.1, 0.45, 0.15, 1.0];
                 add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 2.0, 0.25], color);
@@ -604,7 +604,7 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_box(&mut mesh, [-0.35, 0.0, -0.35], [0.35, 1.0, 0.35], color);
             }
         },
-        "flora.berry" => {
+        "scenery.berry" => {
             let bush_color = [0.15, 0.45, 0.2, 1.0];
             let berry_color = [0.85, 0.1, 0.15, 1.0];
             add_box(
@@ -634,7 +634,7 @@ fn generate_mesh(name: &str) -> MeshData {
             );
             add_box(&mut mesh, [0.35, 0.25, 0.1], [0.37, 0.33, 0.2], berry_color);
         }
-        "flora.dead_tree" => match variant.unwrap_or(0) {
+        "scenery.dead_tree" => match variant.unwrap_or(0) {
             0 => {
                 let color = [0.35, 0.22, 0.12, 1.0];
                 add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 2.4, 0.25], color);
@@ -657,13 +657,13 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_box(&mut mesh, [-0.22, 2.3, -0.22], [0.22, 2.5, 0.22], snow);
             }
         },
-        "flora.seaweed" => {
+        "scenery.seaweed" => {
             let color = [0.1, 0.4, 0.2, 1.0];
             add_box(&mut mesh, [-0.05, 0.0, -0.05], [0.05, 1.0, 0.05], color);
             add_box(&mut mesh, [-0.1, 0.2, -0.1], [0.1, 0.3, 0.1], color);
             add_box(&mut mesh, [-0.1, 0.6, -0.1], [0.1, 0.7, 0.1], color);
         }
-        "flora.lilypad" => {
+        "scenery.lilypad" => {
             let color = [0.15, 0.5, 0.2, 1.0];
             add_box(&mut mesh, [-0.3, 0.0, -0.3], [0.3, 0.05, 0.3], color);
             let flower_color = [0.9, 0.6, 0.8, 1.0];
@@ -676,20 +676,20 @@ fn generate_mesh(name: &str) -> MeshData {
                 flower_color,
             );
         }
-        "flora.coral" => {
+        "scenery.coral" => {
             let color = [0.8, 0.3, 0.4, 1.0];
             add_box(&mut mesh, [-0.1, 0.0, -0.1], [0.1, 0.5, 0.1], color);
             add_box(&mut mesh, [-0.2, 0.2, -0.05], [0.2, 0.3, 0.05], color);
             add_box(&mut mesh, [-0.05, 0.3, -0.2], [0.05, 0.4, 0.2], color);
         }
-        "flora.reed" => {
+        "scenery.reed" => {
             let color = [0.55, 0.55, 0.2, 1.0];
             add_box(&mut mesh, [-0.18, 0.0, -0.04], [-0.12, 0.95, 0.02], color);
             add_box(&mut mesh, [0.02, 0.0, -0.15], [0.08, 1.1, -0.09], color);
             add_box(&mut mesh, [-0.04, 0.0, 0.1], [0.02, 0.85, 0.16], color);
         }
-        // --- Phase 2: new flora kinds ---
-        "flora.anemone" => {
+        // --- Phase 2: new scenery kinds ---
+        "scenery.anemone" => {
             let stem = [0.7, 0.3, 0.7, 1.0];
             let tentacle = [0.9, 0.5, 0.8, 1.0];
             add_box(&mut mesh, [-0.06, 0.0, -0.06], [0.06, 0.2, 0.06], stem);
@@ -699,7 +699,7 @@ fn generate_mesh(name: &str) -> MeshData {
             }
             // ponytail: same blade helper for anemone tentacles, works fine
         }
-        "flora.starfish" => {
+        "scenery.starfish" => {
             let color = [0.9, 0.4, 0.2, 1.0];
             for i in 0..5 {
                 let a = i as f32 * std::f32::consts::TAU / 5.0;
@@ -708,54 +708,54 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_box(&mut mesh, [0.0, 0.0, 0.0], [tip_x, 0.05, tip_z], color);
             }
         }
-        "flora.shell" => {
+        "scenery.shell" => {
             let color = [0.85, 0.8, 0.7, 1.0];
             add_pyramid(&mut mesh, [-0.1, -0.1], [0.1, 0.1], 0.0, 0.12, color);
             // ponytail: flat pyramid = shell shape, good enough
         }
-        "flora.kelp" => {
+        "scenery.kelp" => {
             let color = [0.08, 0.5, 0.15, 1.0];
             add_box(&mut mesh, [-0.04, 0.0, -0.04], [0.04, 1.5, 0.04], color);
             add_box(&mut mesh, [-0.08, 0.3, -0.04], [0.08, 0.4, 0.04], color);
             add_box(&mut mesh, [-0.06, 0.8, -0.06], [0.06, 0.9, 0.06], color);
             add_box(&mut mesh, [-0.08, 1.2, -0.04], [0.08, 1.3, 0.04], color);
         }
-        "flora.cattail" => {
+        "scenery.cattail" => {
             let stem = [0.3, 0.55, 0.15, 1.0];
             let head = [0.45, 0.2, 0.05, 1.0];
             add_box(&mut mesh, [-0.02, 0.0, -0.02], [0.02, 0.8, 0.02], stem);
             add_box(&mut mesh, [-0.04, 0.6, -0.04], [0.04, 1.1, 0.04], head);
         }
-        "flora.vine" => {
+        "scenery.vine" => {
             let color = [0.15, 0.45, 0.15, 1.0];
             add_box(&mut mesh, [-0.08, 0.0, -0.02], [0.08, 0.15, 0.02], color);
             add_box(&mut mesh, [-0.06, 0.12, -0.02], [0.06, 0.30, 0.02], color);
             add_box(&mut mesh, [-0.04, 0.28, -0.02], [0.04, 0.45, 0.02], color);
         }
-        "flora.tumbleweed" => {
+        "scenery.tumbleweed" => {
             let color = [0.55, 0.4, 0.2, 1.0];
             add_box(&mut mesh, [-0.25, 0.0, -0.25], [0.25, 0.3, 0.25], color);
             add_box(&mut mesh, [-0.3, 0.1, -0.1], [0.3, 0.2, 0.1], color);
             add_box(&mut mesh, [-0.1, 0.1, -0.3], [0.1, 0.2, 0.3], color);
         }
-        "flora.skull" => {
+        "scenery.skull" => {
             let color = [0.75, 0.7, 0.6, 1.0];
             add_box(&mut mesh, [-0.08, 0.0, -0.08], [0.08, 0.08, 0.08], color);
             let dark = [0.5, 0.45, 0.4, 1.0];
             add_box(&mut mesh, [-0.03, 0.05, 0.09], [0.03, 0.1, 0.1], dark);
         }
-        "flora.snowdrift" => {
+        "scenery.snowdrift" => {
             let color = [0.92, 0.94, 0.97, 1.0];
             add_box(&mut mesh, [-0.5, 0.0, -0.5], [0.5, 0.25, 0.5], color);
             add_pyramid(&mut mesh, [-0.5, -0.5], [0.5, 0.5], 0.25, 0.5, color);
         }
-        "flora.stump" => {
+        "scenery.stump" => {
             let bark = [0.35, 0.22, 0.12, 1.0];
             let top = [0.55, 0.4, 0.2, 1.0];
             add_box(&mut mesh, [-0.2, 0.0, -0.2], [0.2, 0.5, 0.2], bark);
             add_box(&mut mesh, [-0.22, 0.48, -0.22], [0.22, 0.55, 0.22], top);
         }
-        "flora.fern" => {
+        "scenery.fern" => {
             let color = [0.15, 0.45, 0.15, 1.0];
             // Central stem
             add_box(&mut mesh, [-0.02, 0.0, -0.02], [0.02, 0.3, 0.02], color);
@@ -769,13 +769,13 @@ fn generate_mesh(name: &str) -> MeshData {
                 add_grass_blade(&mut mesh, [0.0, 0.08, 0.0], a, 0.40, 0.04, color);
             }
         }
-        "flora.icicle" => {
+        "scenery.icicle" => {
             let color = [0.8, 0.88, 0.95, 1.0];
             add_box(&mut mesh, [-0.04, 0.0, -0.04], [0.04, 0.6, 0.04], color);
             add_box(&mut mesh, [-0.06, 0.1, -0.04], [0.06, 0.2, 0.04], color);
             add_box(&mut mesh, [-0.06, 0.4, -0.06], [0.06, 0.5, 0.06], color);
         }
-        "flora.snowman" => {
+        "scenery.snowman" => {
             let snow = [0.94, 0.95, 0.97, 1.0];
             let coal = [0.08, 0.08, 0.1, 1.0];
             let nose = [0.9, 0.5, 0.1, 1.0];
@@ -1295,6 +1295,12 @@ mod tests {
         for (name, bytes) in catalogs() {
             let gltf = gltf::Gltf::from_slice(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(gltf.scenes().all(|s| s.name().is_some()));
+            if name == "environment.glb" {
+                assert!(gltf.scenes().all(|scene| {
+                    let name = scene.name().expect("environment scene must be named");
+                    name.starts_with("scenery.") && !name.starts_with("flora.")
+                }));
+            }
             assert!(gltf.materials().all(
                 |m| m.name().is_some() && m.pbr_metallic_roughness().roughness_factor() >= 0.9
             ));
@@ -1316,9 +1322,9 @@ mod tests {
     #[test]
     fn required_catalog_names_are_complete() {
         let generated = catalogs();
-        let env_count: u32 = FLORA_KINDS
+        let env_count: u32 = SCENERY_KINDS
             .iter()
-            .map(|&k| shared::art::flora_variant_count(k))
+            .map(|&k| shared::art::scenery_variant_count(k))
             .sum();
         let expected = [
             env_count as usize,

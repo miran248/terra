@@ -94,12 +94,12 @@ fn apply_foliage_materials(
 
         // Fast parent lookup (only runs for new/unique catalog materials!)
         let mut current = parent.parent();
-        let mut flora_name = None;
+        let mut scenery_name = None;
         for _ in 0..3 {
             if let Ok(name) = name_q.get(current) {
                 let s = name.as_str();
-                if s.starts_with("flora.") {
-                    flora_name = Some(s);
+                if s.starts_with("scenery.") {
+                    scenery_name = Some(s);
                     break;
                 }
             }
@@ -110,9 +110,9 @@ fn apply_foliage_materials(
             }
         }
 
-        let Some(name) = flora_name else { continue };
+        let Some(name) = scenery_name else { continue };
 
-        // Strip variant suffix (e.g. "flora.tree.2" → "flora.tree") for matching
+        // Strip variant suffix (e.g. "scenery.tree.2" → "scenery.tree") for matching
         let stripped = if let Some((prefix, suffix)) = name.rsplit_once('.') {
             if suffix.chars().all(|c| c.is_ascii_digit()) {
                 prefix
@@ -125,10 +125,10 @@ fn apply_foliage_materials(
 
         // Determine wind parameters based on foliage type
         let (speed, amplitude, trample_radius, trample_strength) = match stripped {
-            "flora.grass" | "flora.reed" | "flora.seaweed" | "flora.lilypad" | "flora.flower"
-            | "flora.mushroom" => (1.8, 0.12, 1.2, 0.8),
-            "flora.tree" | "flora.dead_tree" => (0.8, 0.04, 2.0, 0.2), // trees bend slightly when stepped on
-            "flora.bush" | "flora.berry" => (1.2, 0.07, 1.5, 0.5),
+            "scenery.grass" | "scenery.reed" | "scenery.seaweed" | "scenery.lilypad"
+            | "scenery.flower" | "scenery.mushroom" => (1.8, 0.12, 1.2, 0.8),
+            "scenery.tree" | "scenery.dead_tree" => (0.8, 0.04, 2.0, 0.2), // trees bend slightly when stepped on
+            "scenery.bush" | "scenery.berry" => (1.2, 0.07, 1.5, 0.5),
             _ => (0.0, 0.0, 0.0, 0.0),
         };
 

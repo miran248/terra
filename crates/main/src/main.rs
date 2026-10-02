@@ -166,8 +166,8 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
         },
         // Distance fog coloured to the horizon sky, kept moderate so the far
         // ocean fades into the sky at the waterline (softening the hard sky/ocean
-        // divide) and props dissolve into haze at the flora cull band (grass ~90
-        // … trees ~550, see map::flora_cull) instead of popping.
+        // divide) and props dissolve into haze at the scenery cull band (grass ~90
+        // … trees ~550, see map::scenery_cull) instead of popping.
         DistanceFog {
             color: Color::srgb(0.7, 0.8, 0.92),
             falloff: FogFalloff::from_visibility_colors(

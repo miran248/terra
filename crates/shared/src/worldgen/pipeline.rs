@@ -2,13 +2,14 @@ use std::collections::VecDeque;
 
 use super::network;
 use super::{
-    CellField, CellSet, FaceBlend, FaceId, FaceTag, FloraData, GenState, Landform, Painted,
-    RegionData, RegionMemberships, RoadMaterial, RoadPath, SettlementConfig, SlopeClass, SpherePos,
-    StructureData, SurfaceCondition, Terrain, TerrainGen, WaterDepth, WaterPhase, build_bridges,
-    build_face_tags, build_mesh, build_regions, classify_cover, classify_landform, classify_slope,
-    classify_water_depth, derive_tiles, face_majority, face_max, face_road_material, mark_blends,
-    normalize_water_bodies, paint_features, paint_rivers, place_flora, place_structures,
-    resolve_transitions, river_surface_radii, solve_elevation, water_surface_radii,
+    CellField, CellSet, FaceBlend, FaceId, FaceTag, GenState, Landform, Painted, RegionData,
+    RegionMemberships, RoadMaterial, RoadPath, SceneryData, SettlementConfig, SlopeClass,
+    SpherePos, StructureData, SurfaceCondition, Terrain, TerrainGen, WaterDepth, WaterPhase,
+    build_bridges, build_face_tags, build_mesh, build_regions, classify_cover, classify_landform,
+    classify_slope, classify_water_depth, derive_tiles, face_majority, face_max,
+    face_road_material, mark_blends, normalize_water_bodies, paint_features, paint_rivers,
+    place_scenery, place_structures, resolve_transitions, river_surface_radii, solve_elevation,
+    water_surface_radii,
 };
 
 // ---- commands & events ----
@@ -57,7 +58,7 @@ enum Command {
     BuildTags,
     /// Sub-tile decoration scatter: trees, bushes, flowers on the finished
     /// mesh, densities from the tile map.
-    PlaceFlora,
+    PlaceScenery,
     /// Contextual built structures (ruins, docks, walls, wells, …).
     PlaceStructures,
     /// Per-cell steepness from the solved field (slope class).
@@ -100,7 +101,7 @@ enum Event {
     ),
     MeshBuilt(Vec<[[f32; 3]; 3]>, Vec<[[f32; 4]; 3]>),
     TagsBuilt(Vec<Vec<FaceTag>>),
-    FloraPlaced(Vec<FloraData>),
+    SceneryPlaced(Vec<SceneryData>),
     StructuresPlaced(Vec<StructureData>),
     SlopeClassified(Vec<SlopeClass>, Vec<Option<WaterDepth>>),
     SettlementSitesSelected(Vec<SpherePos>),
@@ -158,7 +159,7 @@ impl Event {
                 "tags built: {} entries",
                 tags.iter().map(Vec::len).sum::<usize>()
             ),
-            Event::FloraPlaced(f) => format!("flora placed: {}", f.len()),
+            Event::SceneryPlaced(s) => format!("scenery placed: {}", s.len()),
             Event::StructuresPlaced(v) => format!("structures placed: {}", v.len()),
             Event::SlopeClassified(sc, wd) => {
                 let cliffs = sc.iter().filter(|&&c| c == SlopeClass::Cliff).count();
@@ -355,7 +356,7 @@ fn decide(state: &GenState, cmd: &Command) -> Event {
             Event::MeshBuilt(tris, cols)
         }
         Command::BuildTags => Event::TagsBuilt(build_face_tags(&state.grid, &state.painted)),
-        Command::PlaceFlora => Event::FloraPlaced(place_flora(
+        Command::PlaceScenery => Event::SceneryPlaced(place_scenery(
             &state.grid,
             state.terrain(),
             state.tiles.as_slice(),
@@ -647,7 +648,7 @@ fn evolve(state: &mut GenState, event: Event) {
             state.mesh_colors = c.into();
         }
         Event::TagsBuilt(tags) => state.face_tags = tags.into(),
-        Event::FloraPlaced(f) => state.flora = f,
+        Event::SceneryPlaced(s) => state.scenery = s,
         Event::StructuresPlaced(v) => state.structures = v,
         Event::SlopeClassified(sc, wd) => {
             state.slope_class = sc.into();
@@ -715,8 +716,8 @@ fn react(event: &Event) -> Vec<Command> {
         Event::RegionsBuilt(..) => vec![Command::MarkBlends],
         Event::BlendsMarked(_) => vec![Command::BuildMesh],
         Event::MeshBuilt(..) => vec![Command::BuildTags],
-        Event::TagsBuilt(..) => vec![Command::PlaceFlora],
-        Event::FloraPlaced(_) => vec![Command::PlaceStructures],
+        Event::TagsBuilt(..) => vec![Command::PlaceScenery],
+        Event::SceneryPlaced(_) => vec![Command::PlaceStructures],
         Event::StructuresPlaced(_) => vec![Command::BakeOutputs],
         Event::OutputsBaked { .. } => vec![],
     }

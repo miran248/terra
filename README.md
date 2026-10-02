@@ -11,8 +11,8 @@
 |-------|---------|
 | `shared` | Library: terrain gen, topology, water, roads, level schema, items, upgrades, theme |
 | `gen_assets` | CLI: deterministic procedural GLB catalog generator |
-| `gen_level` | CLI: precomputes planet-level data to a postcard binary |
-| `main` | Bevy binary: loads precomputed world, chunks terrain/water/flora/structures, weather, minimap |
+| `gen_level` | CLI: precomputes planet-level data to a versioned Postcard binary |
+| `main` | Bevy binary: loads precomputed world, chunks terrain/water/scenery/structures, weather, minimap |
 
 ## Prerequisites
 
@@ -61,12 +61,12 @@ Per-face properties: liquid or frozen water phase, normal or frozen surface cond
 
 - 5 continents + 3 offshore islands per world, targeting ~even land/water split
 - 5 mountain ranges, 3 lakes, 6 river routes per world
-- 12 settlements connected by a road network (gravel/dirt/sand/rock) with bridge spans (200 m spacing) for water crossings
-- Named regions: oceans, lakes, rivers, beaches, cliffs, forests, deserts, mountains, plains, tundra, swamps, jungles, savannas, volcanoes, glaciers, towns, roads
+- 12 settlements connected by one or more road networks (gravel/dirt/sand/rock) with bridge spans (200 m spacing) for water crossings
+- Named regions: oceans, lakes, rivers, beaches, cliffs, forests, deserts, mountains, plains, tundra, swamps, jungles, savannas, volcanoes, glaciers, settlements, roads
 
-## Flora & Structures
+## Scenery & Structures
 
-27 decorative flora kinds (trees, bushes, flowers, rocks, grass, logs, mushrooms, cacti, berries, dead trees, reeds, seaweed, lilypads, coral, anemones, starfish, shells, kelp, cattails, vines, tumbleweeds, skulls, snowdrifts, stumps, ferns, icicles, snowmen)
+27 decorative scenery kinds include plant life (trees, bushes, flowers, grass, cacti, berries, reeds, seaweed, lilypads, kelp, cattails, vines, tumbleweeds, ferns) and nonplants (rocks, logs, mushrooms, dead trees, coral, anemones, starfish, shells, skulls, snowdrifts, stumps, icicles, snowmen).
 
 17 structure kinds (ruins, watchtowers, docks, farms, walls, wells, campfires, tents, crates, fences, barricades, lamp posts, signposts, guardrails, railings, suspension cables, houses)
 
@@ -84,7 +84,7 @@ Custom WGSL shaders: water with geometric swell, normal-perturbation chop, and a
 
 Day/night cycle with a world sun orbiting the planet's Y axis so the lit hemisphere is day and the far side night. Toggleable sun-lock (`1`) keeps noon overhead permanently.
 
-Dynamic weather: randomized fronts ease a global wind vector and precipitation intensity (rain or snow, resolved per-location by local temperature). 1500-particle camera-anchored pool renders streaks (rain) or flakes (snow), wrapping around the camera. Wind drives water swell, flora sway, and precipitation drift.
+Dynamic weather: randomized fronts ease a global wind vector and precipitation intensity (rain or snow, resolved per-location by local temperature). 1500-particle camera-anchored pool renders streaks (rain) or flakes (snow), wrapping around the camera. Wind drives water swell, plant sway, and precipitation drift.
 
 ## Controls
 

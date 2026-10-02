@@ -1,10 +1,14 @@
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, BTreeSet, BinaryHeap};
+use std::collections::{BTreeSet, BinaryHeap};
 
 use bevy::prelude::Vec3;
 
 use super::Grid;
 use crate::topology::CellId;
+
+const ROUTE_STATE_SLOTS: usize = 7;
+const START_SLOT: usize = 6;
+const NO_PREDECESSOR: u32 = u32::MAX;
 
 /// Direction-aware A* over dense `(cell, incoming-edge)` states.
 pub(super) fn lattice_path(
@@ -74,11 +78,17 @@ pub(super) fn lattice_path_to_any_with_edge(
     let direction =
         |a: CellId, b: CellId| (grid.cell_direction(b) - grid.cell_direction(a)).normalize();
 
-    let mut best = vec![[u64::MAX; 7]; grid.cell_count()];
-    let mut came: BTreeMap<(usize, usize), (usize, usize)> = BTreeMap::new();
+    let state_count = grid
+        .cell_count()
+        .checked_mul(ROUTE_STATE_SLOTS)
+        .expect("route state count overflow");
+    let state_count_u32 = u32::try_from(state_count)
+        .expect("grid has too many route states for predecessor encoding");
+    let mut best = vec![[u64::MAX; ROUTE_STATE_SLOTS]; grid.cell_count()];
+    let mut came = vec![NO_PREDECESSOR; state_count];
     let mut heap: BinaryHeap<Reverse<(u64, u64, usize, usize)>> = BinaryHeap::new();
-    best[from.index()][6] = 0;
-    heap.push(Reverse((heuristic(from), 0, from.index(), 6)));
+    best[from.index()][START_SLOT] = 0;
+    heap.push(Reverse((heuristic(from), 0, from.index(), START_SLOT)));
     while let Some(Reverse((_, cost, cell_index, slot))) = heap.pop() {
         if best[cell_index][slot] < cost {
             continue;
@@ -89,11 +99,12 @@ pub(super) fn lattice_path_to_any_with_edge(
             .expect("router state uses topology cell ids");
         if target_set.contains(&cell) {
             let mut path = vec![cell];
-            let mut current = (cell_index, slot);
-            while let Some(&previous) = came.get(&current) {
+            let mut current = cell_index * ROUTE_STATE_SLOTS + slot;
+            while came[current] != NO_PREDECESSOR {
+                let previous = came[current] as usize;
                 path.push(
                     grid.topology
-                        .cell(previous.0)
+                        .cell(previous / ROUTE_STATE_SLOTS)
                         .expect("router predecessor uses topology cell ids"),
                 );
                 current = previous;
@@ -121,7 +132,12 @@ pub(super) fn lattice_path_to_any_with_edge(
                 .expect("adjacent cells have reciprocal edges");
             if next_cost < best[neighbor.index()][next_slot] {
                 best[neighbor.index()][next_slot] = next_cost;
-                came.insert((neighbor.index(), next_slot), (cell_index, slot));
+                let state = neighbor.index() * ROUTE_STATE_SLOTS + next_slot;
+                let predecessor = cell_index * ROUTE_STATE_SLOTS + slot;
+                debug_assert!(state < state_count);
+                debug_assert!(predecessor < state_count);
+                debug_assert!(state <= state_count_u32 as usize);
+                came[state] = predecessor as u32;
                 heap.push(Reverse((
                     next_cost + heuristic(neighbor),
                     next_cost,

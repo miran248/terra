@@ -1,7 +1,49 @@
 use serde::{Deserialize, Serialize};
+use std::{error::Error, fmt};
 
 use crate::terrain::Terrain;
 use crate::topology::FaceId;
+
+/// Magic prefix for generated level artifacts.
+pub const LEVEL_ARTIFACT_MAGIC: [u8; 4] = *b"TERA";
+/// Wire format version accepted and written by this build.
+pub const LEVEL_SCHEMA_VERSION: u16 = 1;
+const LEVEL_ARTIFACT_HEADER_LEN: usize = LEVEL_ARTIFACT_MAGIC.len() + 2;
+
+/// Failure to decode a generated level artifact or its version header.
+#[derive(Debug)]
+pub enum LevelArtifactError {
+    MissingHeader,
+    TruncatedHeader,
+    UnsupportedSchemaVersion(u16),
+    Deserialize(postcard::Error),
+}
+
+impl fmt::Display for LevelArtifactError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingHeader => write!(
+                f,
+                "level artifact has no TERA header; regenerate it with the current generator"
+            ),
+            Self::TruncatedHeader => write!(f, "level artifact has a truncated TERA header"),
+            Self::UnsupportedSchemaVersion(version) => write!(
+                f,
+                "level artifact schema version {version} is unsupported; regenerate it with the current generator"
+            ),
+            Self::Deserialize(error) => write!(f, "invalid level artifact payload: {error}"),
+        }
+    }
+}
+
+impl Error for LevelArtifactError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Deserialize(error) => Some(error),
+            Self::MissingHeader | Self::TruncatedHeader | Self::UnsupportedSchemaVersion(_) => None,
+        }
+    }
+}
 
 /// Compact membership lists for a dense set of locations.
 ///
@@ -201,10 +243,9 @@ pub struct LevelData {
     /// Named region memberships for each derived face, projected from the
     /// authoritative cell memberships.
     pub face_regions: RegionMemberships,
-    /// Sub-tile decoration scatter: trees, bushes, flowers. Points ON the
-    /// displaced mesh (they sit exactly on the rendered ground), placed
-    /// deterministically at gen time from the tile map.
-    pub flora: Vec<FloraData>,
+    /// Sub-tile environmental scenery, including plant life and nonliving
+    /// objects. Points sit on the displaced mesh and are placed deterministically.
+    pub scenery: Vec<SceneryData>,
     /// Contextual built structures (ruins, docks, walls, …), placed at gen
     /// time and spawned as runtime entities like bridges.
     pub structures: Vec<StructureData>,
@@ -372,33 +413,40 @@ pub enum SurfaceCondition {
     Frozen,
 }
 
+/// Plant-life category within `SceneryKind`.
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FloraKind {
     Tree,
     Bush,
     Flower,
-    Rock,
     Grass,
-    Log,
-    Mushroom,
     Cactus,
     Berry,
-    DeadTree,
     Reed,
     Seaweed,
     Lilypad,
-    Coral,
-    Anemone,
-    Starfish,
-    Shell,
     Kelp,
     Cattail,
     Vine,
     Tumbleweed,
+    Fern,
+}
+
+/// Environmental objects distinct from built structures; flora is one variant.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SceneryKind {
+    Flora(FloraKind),
+    Rock,
+    Log,
+    Mushroom,
+    DeadTree,
+    Coral,
+    Anemone,
+    Starfish,
+    Shell,
     Skull,
     Snowdrift,
     Stump,
-    Fern,
     Icicle,
     Snowman,
 }
@@ -449,16 +497,45 @@ impl StructureKind {
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
-pub struct FloraData {
+pub struct SceneryData {
     /// World position on the displaced terrain mesh.
     pub pos: [f32; 3],
     /// The face it sits on (for gameplay queries).
     pub face: u32,
-    pub kind: FloraKind,
+    pub kind: SceneryKind,
     pub variant: u8,
 }
 
 impl LevelData {
+    /// Encodes this level as a TERA versioned header followed by a Postcard payload.
+    pub fn to_artifact_bytes(&self) -> Result<Vec<u8>, postcard::Error> {
+        let payload = postcard::to_allocvec(self)?;
+        let mut bytes = Vec::with_capacity(LEVEL_ARTIFACT_HEADER_LEN + payload.len());
+        bytes.extend_from_slice(&LEVEL_ARTIFACT_MAGIC);
+        bytes.extend_from_slice(&LEVEL_SCHEMA_VERSION.to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        Ok(bytes)
+    }
+
+    /// Decodes a current-version artifact, rejecting headerless or unsupported data.
+    pub fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, LevelArtifactError> {
+        if bytes.get(..LEVEL_ARTIFACT_MAGIC.len()) != Some(LEVEL_ARTIFACT_MAGIC.as_slice()) {
+            return Err(LevelArtifactError::MissingHeader);
+        }
+        if bytes.len() < LEVEL_ARTIFACT_HEADER_LEN {
+            return Err(LevelArtifactError::TruncatedHeader);
+        }
+        let version = u16::from_le_bytes([
+            bytes[LEVEL_ARTIFACT_MAGIC.len()],
+            bytes[LEVEL_ARTIFACT_MAGIC.len() + 1],
+        ]);
+        if version != LEVEL_SCHEMA_VERSION {
+            return Err(LevelArtifactError::UnsupportedSchemaVersion(version));
+        }
+        postcard::from_bytes(&bytes[LEVEL_ARTIFACT_HEADER_LEN..])
+            .map_err(LevelArtifactError::Deserialize)
+    }
+
     /// Returns all region IDs assigned to the derived face at this index.
     /// Position queries first resolve a single face; adjacent faces are not
     /// combined at their shared boundary.
@@ -753,14 +830,71 @@ mod tests {
     use crate::topology::FaceId;
 
     use super::{
-        FloraKind, Landform, LevelData, RegionMemberships, RoadEndpointRole, RoadKind,
-        RoadMaterial, SlopeClass, StructureKind, SurfaceCondition, WaterDepth, WaterPhase,
+        FloraKind, Landform, LevelArtifactError, LevelData, RegionMemberships, RoadEndpointRole,
+        RoadKind, RoadMaterial, SlopeClass, StructureKind, SurfaceCondition, WaterDepth,
+        WaterPhase,
     };
     use serde::{Serialize, de::DeserializeOwned};
 
     fn tracked_level() -> LevelData {
-        postcard::from_bytes(include_bytes!("../../main/assets/level_1337.bin"))
+        LevelData::from_artifact_bytes(include_bytes!("../../main/assets/level_1337.bin"))
             .expect("generated level asset must deserialize")
+    }
+
+    #[test]
+    fn level_artifact_rejects_unversioned_postcard_payload() {
+        let old_payload = postcard::to_allocvec(&1337_u32).unwrap();
+
+        assert!(matches!(
+            LevelData::from_artifact_bytes(&old_payload),
+            Err(LevelArtifactError::MissingHeader)
+        ));
+    }
+
+    #[test]
+    fn level_artifact_rejects_wrong_magic() {
+        assert!(matches!(
+            LevelData::from_artifact_bytes(b"NOPE\x01\x00"),
+            Err(LevelArtifactError::MissingHeader)
+        ));
+    }
+
+    #[test]
+    fn level_artifact_rejects_unsupported_schema_version() {
+        let mut bytes = b"TERA".to_vec();
+        bytes.extend_from_slice(&u16::MAX.to_le_bytes());
+
+        assert!(matches!(
+            LevelData::from_artifact_bytes(&bytes),
+            Err(LevelArtifactError::UnsupportedSchemaVersion(u16::MAX))
+        ));
+    }
+
+    #[test]
+    fn level_artifact_rejects_truncated_header() {
+        assert!(matches!(
+            LevelData::from_artifact_bytes(b"TERA\x01"),
+            Err(LevelArtifactError::TruncatedHeader)
+        ));
+    }
+
+    #[test]
+    fn level_artifact_rejects_invalid_payload() {
+        assert!(matches!(
+            LevelData::from_artifact_bytes(b"TERA\x01\x00\xff"),
+            Err(LevelArtifactError::Deserialize(_))
+        ));
+    }
+
+    #[test]
+    fn level_artifact_round_trip_preserves_bytes() {
+        let level = tracked_level();
+        let encoded = level.to_artifact_bytes().unwrap();
+        let decoded = LevelData::from_artifact_bytes(&encoded).unwrap();
+
+        assert_eq!(&encoded[..4], b"TERA");
+        assert_eq!(u16::from_le_bytes([encoded[4], encoded[5]]), 1);
+        assert_eq!(decoded.to_artifact_bytes().unwrap(), encoded);
     }
 
     #[test]

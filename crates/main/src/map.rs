@@ -5,7 +5,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
 use shared::level::{
-    BlendTarget, FaceTag, FloraKind, Landform, LevelData, RoadKind, RoadMaterial, SettlementKind,
+    BlendTarget, FaceTag, Landform, LevelData, RoadKind, RoadMaterial, SceneryKind, SettlementKind,
     SlopeClass, WaterDepth, WaterPhase,
 };
 use shared::planet::PlanetMesh;
@@ -87,33 +87,40 @@ pub struct LevelRoadMaterial(pub Vec<Option<RoadMaterial>>);
 #[derive(Component, Copy, Clone)]
 pub struct CullRange(pub f32);
 
-/// Per-flora-kind cull distance (metres) — the smaller the prop, the sooner it
+/// Per-scenery-kind cull distance (metres) — the smaller the prop, the sooner it
 /// stops being drawn in the distance.
-pub fn flora_cull(kind: FloraKind) -> f32 {
+pub fn scenery_cull(kind: SceneryKind) -> f32 {
     use shared::level::*;
     // ~1.6x the original ranges so props stay visible further out; the camera
     // fog visibility (main.rs) is set beyond the largest of these so props fade
     // into haze before this hard cull edge rather than popping.
     match kind {
-        FloraKind::Flower
-        | FloraKind::Grass
-        | FloraKind::Mushroom
-        | FloraKind::Reed
-        | FloraKind::Lilypad
-        | FloraKind::Seaweed
-        | FloraKind::Coral => 150.0,
-        FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Rock => 300.0,
-        FloraKind::Log => 420.0,
-        FloraKind::Tree | FloraKind::DeadTree => 880.0,
-        FloraKind::Anemone
-        | FloraKind::Starfish
-        | FloraKind::Shell
-        | FloraKind::Fern
-        | FloraKind::Cattail
-        | FloraKind::Vine => 150.0,
-        FloraKind::Kelp | FloraKind::Tumbleweed | FloraKind::Skull => 300.0,
-        FloraKind::Snowdrift | FloraKind::Stump | FloraKind::Snowman => 420.0,
-        FloraKind::Icicle => 150.0,
+        SceneryKind::Flora(
+            FloraKind::Flower
+            | FloraKind::Grass
+            | FloraKind::Reed
+            | FloraKind::Lilypad
+            | FloraKind::Seaweed
+            | FloraKind::Fern
+            | FloraKind::Cattail
+            | FloraKind::Vine,
+        )
+        | SceneryKind::Mushroom
+        | SceneryKind::Coral
+        | SceneryKind::Anemone
+        | SceneryKind::Starfish
+        | SceneryKind::Shell
+        | SceneryKind::Icicle => 150.0,
+        SceneryKind::Flora(
+            FloraKind::Bush | FloraKind::Berry | FloraKind::Cactus | FloraKind::Kelp,
+        )
+        | SceneryKind::Rock
+        | SceneryKind::Skull
+        | SceneryKind::Flora(FloraKind::Tumbleweed) => 300.0,
+        SceneryKind::Log | SceneryKind::Snowdrift | SceneryKind::Stump | SceneryKind::Snowman => {
+            420.0
+        }
+        SceneryKind::Flora(FloraKind::Tree) | SceneryKind::DeadTree => 880.0,
     }
 }
 
@@ -266,7 +273,7 @@ impl Plugin for MapPlugin {
                     toggle_sun_lock,
                     cull_props,
                     crate::chunks::update_chunk_lods,
-                    crate::chunks::stream_flora,
+                    crate::chunks::stream_scenery,
                 )
                     .run_if(in_state(AppState::Playing)),
             );
@@ -283,7 +290,8 @@ fn setup_map(
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
 ) {
     let level_bytes = include_bytes!("../assets/level_1337.bin");
-    let level: LevelData = postcard::from_bytes(level_bytes).expect("deserialize level");
+    let level = LevelData::from_artifact_bytes(level_bytes)
+        .expect("deserialize level artifact; regenerate it with `cargo run -p gen_level`");
     level.validate().expect("validate level binary");
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
@@ -335,7 +343,7 @@ fn setup_map(
         Ground,
     ));
 
-    // Structures and flora spawn per-chunk with LOD (see crate::chunks).
+    // Structures and scenery spawn per-chunk with LOD (see crate::chunks).
 
     // Bridges: entities built at runtime from the recorded spans, like any building.
     // Deck heights come from the displaced terrain mesh (the surface that renders
@@ -449,7 +457,7 @@ fn setup_map(
         level.face_water_r.clone(),
         level.face_river_r.clone(),
         level.water_phase.clone(),
-        level.flora.clone(),
+        level.scenery.clone(),
         level.structures.clone(),
         terrain_mat,
         water_mat,
@@ -650,9 +658,10 @@ mod region_identity_tests {
 
     #[test]
     fn generated_bridge_deck_surface_reports_its_name_across_width_and_length() {
-        let level: shared::level::LevelData =
-            postcard::from_bytes(include_bytes!("../assets/level_1337.bin"))
-                .expect("load generated level");
+        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+            "../assets/level_1337.bin"
+        ))
+        .expect("load generated level");
         let ground = shared::planet::PlanetMesh::new(
             level
                 .terrain_tris
@@ -1160,7 +1169,7 @@ mod tests {
 
     #[test]
     fn road_ribbons_are_finite_complete_and_four_metres_wide() {
-        let level: LevelData = postcard::from_bytes(include_bytes!("../assets/level_1337.bin"))
+        let level = LevelData::from_artifact_bytes(include_bytes!("../assets/level_1337.bin"))
             .expect("tracked level should deserialize");
         let displaced = level
             .terrain_tris

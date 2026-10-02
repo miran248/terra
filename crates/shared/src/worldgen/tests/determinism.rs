@@ -14,11 +14,11 @@ fn deterministic_pipeline() {
     assert_eq!(a.cells, b.cells);
     assert_eq!(a.tiles, b.tiles);
     assert_eq!(a.regions.len(), b.regions.len());
-    assert_eq!(a.flora.len(), b.flora.len());
+    assert_eq!(a.scenery.len(), b.scenery.len());
     assert!(
-        a.flora
+        a.scenery
             .iter()
-            .zip(&b.flora)
+            .zip(&b.scenery)
             .all(|(x, y)| x.pos == y.pos && x.kind == y.kind)
     );
     assert_eq!(a.structures.len(), b.structures.len());
@@ -91,10 +91,10 @@ fn serialized_fingerprint(bytes: &[u8]) -> u64 {
 
 #[test]
 fn locked_serialized_worlds() {
-    let seed_1337 = postcard::to_allocvec(run(1337, |_| {}).level_data()).unwrap();
+    let seed_1337 = run(1337, |_| {}).level_data().to_artifact_bytes().unwrap();
     assert_eq!(
         serialized_fingerprint(&seed_1337),
-        10542869486858640993,
+        531535395141373249,
         "fingerprint changed — regenerate level_1337.bin and update this value"
     );
     let expected_bytes = include_bytes!(concat!(
@@ -109,6 +109,8 @@ fn locked_serialized_worlds() {
         );
     }
 
-    let seed_42 = postcard::to_allocvec(run(42, |_| {}).level_data()).unwrap();
-    assert_eq!(serialized_fingerprint(&seed_42), 15194564466783709657);
+    let seed_42 = run(42, |_| {}).level_data().to_artifact_bytes().unwrap();
+    assert_eq!(serialized_fingerprint(&seed_42), 16461501877984572361);
+    let repeated_seed_42 = run(42, |_| {}).level_data().to_artifact_bytes().unwrap();
+    assert_eq!(seed_42, repeated_seed_42, "seed-42 artifact bytes changed");
 }

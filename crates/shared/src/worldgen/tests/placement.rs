@@ -1,32 +1,32 @@
 use super::*;
 
 #[test]
-fn flora_stays_off_water_and_features() {
+fn scenery_stays_off_water_and_features() {
     let state = run_state(1337, |_| {});
     assert!(
-        state.flora.len() > 1000,
-        "flora nearly absent: {}",
-        state.flora.len()
+        state.scenery.len() > 1000,
+        "scenery nearly absent: {}",
+        state.scenery.len()
     );
-    for f in &state.flora {
+    for f in &state.scenery {
         let face_index = f.face as usize;
         let is_land = state.tiles.as_slice()[face_index].is_land();
         let is_aquatic = matches!(
             f.kind,
-            crate::level::FloraKind::Seaweed
-                | crate::level::FloraKind::Lilypad
-                | crate::level::FloraKind::Coral
-                | crate::level::FloraKind::Anemone
-                | crate::level::FloraKind::Starfish
-                | crate::level::FloraKind::Kelp
+            crate::level::SceneryKind::Flora(crate::level::FloraKind::Seaweed)
+                | crate::level::SceneryKind::Flora(crate::level::FloraKind::Lilypad)
+                | crate::level::SceneryKind::Coral
+                | crate::level::SceneryKind::Anemone
+                | crate::level::SceneryKind::Starfish
+                | crate::level::SceneryKind::Flora(crate::level::FloraKind::Kelp)
         );
         // Shell appears on both beach and ocean — skip ambiguous domain check
-        if matches!(f.kind, crate::level::FloraKind::Shell) {
+        if matches!(f.kind, crate::level::SceneryKind::Shell) {
             continue;
         }
         assert_eq!(
             is_land, !is_aquatic,
-            "flora kind {:?} placed on land={} face {face_index}",
+            "scenery kind {:?} placed on land={} face {face_index}",
             f.kind, is_land
         );
         for bits in [
@@ -37,7 +37,7 @@ fn flora_stays_off_water_and_features() {
             assert_eq!(
                 painted_corners(&state.grid, bits, FaceId::new(face_index)),
                 0,
-                "flora on a feature face {face_index}"
+                "scenery on a feature face {face_index}"
             );
         }
     }

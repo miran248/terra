@@ -2,7 +2,7 @@
 
 use crate::{
     items::{Material, WeaponKind},
-    level::{FloraKind, StructureKind},
+    level::{FloraKind, SceneryKind, StructureKind},
     terrain::Terrain,
 };
 
@@ -12,34 +12,52 @@ pub const ITEMS_CATALOG: &str = "models/items.glb";
 pub const ACTORS_CATALOG: &str = "models/actors.glb";
 pub const ACTOR_ANIMATIONS: [&str; 3] = ["idle", "walk", "attack"];
 
-pub const FLORA_KINDS: [FloraKind; 27] = [
+/// The plant-life subset of environmental scenery.
+pub const FLORA_KINDS: [FloraKind; 14] = [
     FloraKind::Tree,
     FloraKind::Bush,
     FloraKind::Flower,
-    FloraKind::Rock,
     FloraKind::Grass,
-    FloraKind::Log,
-    FloraKind::Mushroom,
     FloraKind::Cactus,
     FloraKind::Berry,
-    FloraKind::DeadTree,
     FloraKind::Reed,
     FloraKind::Seaweed,
     FloraKind::Lilypad,
-    FloraKind::Coral,
-    FloraKind::Anemone,
-    FloraKind::Starfish,
-    FloraKind::Shell,
     FloraKind::Kelp,
     FloraKind::Cattail,
     FloraKind::Vine,
     FloraKind::Tumbleweed,
-    FloraKind::Skull,
-    FloraKind::Snowdrift,
-    FloraKind::Stump,
     FloraKind::Fern,
-    FloraKind::Icicle,
-    FloraKind::Snowman,
+];
+/// Every environmental object generated into the environment catalog.
+pub const SCENERY_KINDS: [SceneryKind; 27] = [
+    SceneryKind::Flora(FloraKind::Tree),
+    SceneryKind::Flora(FloraKind::Bush),
+    SceneryKind::Flora(FloraKind::Flower),
+    SceneryKind::Rock,
+    SceneryKind::Flora(FloraKind::Grass),
+    SceneryKind::Log,
+    SceneryKind::Mushroom,
+    SceneryKind::Flora(FloraKind::Cactus),
+    SceneryKind::Flora(FloraKind::Berry),
+    SceneryKind::DeadTree,
+    SceneryKind::Flora(FloraKind::Reed),
+    SceneryKind::Flora(FloraKind::Seaweed),
+    SceneryKind::Flora(FloraKind::Lilypad),
+    SceneryKind::Coral,
+    SceneryKind::Anemone,
+    SceneryKind::Starfish,
+    SceneryKind::Shell,
+    SceneryKind::Flora(FloraKind::Kelp),
+    SceneryKind::Flora(FloraKind::Cattail),
+    SceneryKind::Flora(FloraKind::Vine),
+    SceneryKind::Flora(FloraKind::Tumbleweed),
+    SceneryKind::Skull,
+    SceneryKind::Snowdrift,
+    SceneryKind::Stump,
+    SceneryKind::Flora(FloraKind::Fern),
+    SceneryKind::Icicle,
+    SceneryKind::Snowman,
 ];
 pub const STRUCTURE_KINDS: [StructureKind; 17] = [
     StructureKind::Ruin,
@@ -72,36 +90,36 @@ pub trait AssetName {
     fn asset_name(self) -> &'static str;
 }
 
-impl AssetName for FloraKind {
+impl AssetName for SceneryKind {
     fn asset_name(self) -> &'static str {
         match self {
-            Self::Tree => "flora.tree",
-            Self::Bush => "flora.bush",
-            Self::Flower => "flora.flower",
-            Self::Rock => "flora.rock",
-            Self::Grass => "flora.grass",
-            Self::Log => "flora.log",
-            Self::Mushroom => "flora.mushroom",
-            Self::Cactus => "flora.cactus",
-            Self::Berry => "flora.berry",
-            Self::DeadTree => "flora.dead_tree",
-            Self::Reed => "flora.reed",
-            Self::Seaweed => "flora.seaweed",
-            Self::Lilypad => "flora.lilypad",
-            Self::Coral => "flora.coral",
-            Self::Anemone => "flora.anemone",
-            Self::Starfish => "flora.starfish",
-            Self::Shell => "flora.shell",
-            Self::Kelp => "flora.kelp",
-            Self::Cattail => "flora.cattail",
-            Self::Vine => "flora.vine",
-            Self::Tumbleweed => "flora.tumbleweed",
-            Self::Skull => "flora.skull",
-            Self::Snowdrift => "flora.snowdrift",
-            Self::Stump => "flora.stump",
-            Self::Fern => "flora.fern",
-            Self::Icicle => "flora.icicle",
-            Self::Snowman => "flora.snowman",
+            Self::Flora(FloraKind::Tree) => "scenery.tree",
+            Self::Flora(FloraKind::Bush) => "scenery.bush",
+            Self::Flora(FloraKind::Flower) => "scenery.flower",
+            Self::Rock => "scenery.rock",
+            Self::Flora(FloraKind::Grass) => "scenery.grass",
+            Self::Log => "scenery.log",
+            Self::Mushroom => "scenery.mushroom",
+            Self::Flora(FloraKind::Cactus) => "scenery.cactus",
+            Self::Flora(FloraKind::Berry) => "scenery.berry",
+            Self::DeadTree => "scenery.dead_tree",
+            Self::Flora(FloraKind::Reed) => "scenery.reed",
+            Self::Flora(FloraKind::Seaweed) => "scenery.seaweed",
+            Self::Flora(FloraKind::Lilypad) => "scenery.lilypad",
+            Self::Coral => "scenery.coral",
+            Self::Anemone => "scenery.anemone",
+            Self::Starfish => "scenery.starfish",
+            Self::Shell => "scenery.shell",
+            Self::Flora(FloraKind::Kelp) => "scenery.kelp",
+            Self::Flora(FloraKind::Cattail) => "scenery.cattail",
+            Self::Flora(FloraKind::Vine) => "scenery.vine",
+            Self::Flora(FloraKind::Tumbleweed) => "scenery.tumbleweed",
+            Self::Skull => "scenery.skull",
+            Self::Snowdrift => "scenery.snowdrift",
+            Self::Stump => "scenery.stump",
+            Self::Flora(FloraKind::Fern) => "scenery.fern",
+            Self::Icicle => "scenery.icicle",
+            Self::Snowman => "scenery.snowman",
         }
     }
 }
@@ -153,50 +171,50 @@ impl AssetName for WeaponKind {
     }
 }
 
-pub fn flora_collider(kind: FloraKind) -> ColliderSpec {
+pub fn scenery_collider(kind: SceneryKind) -> ColliderSpec {
     match kind {
-        FloraKind::Rock => ColliderSpec::Box {
+        SceneryKind::Rock => ColliderSpec::Box {
             half_extents: [0.7, 0.5, 0.7],
         },
-        FloraKind::Snowdrift => ColliderSpec::Box {
+        SceneryKind::Snowdrift => ColliderSpec::Box {
             half_extents: [0.5, 0.3, 0.5],
         },
         _ => ColliderSpec::None,
     }
 }
 
-/// How many mesh variants a flora kind has (indexed 0..count).
-pub fn flora_variant_count(kind: FloraKind) -> u32 {
+/// How many mesh variants a scenery kind has (indexed 0..count).
+pub fn scenery_variant_count(kind: SceneryKind) -> u32 {
     match kind {
-        FloraKind::Tree => 7,
-        FloraKind::Bush => 2,
-        FloraKind::Rock => 2,
-        FloraKind::Cactus => 2,
-        FloraKind::DeadTree => 2,
+        SceneryKind::Flora(FloraKind::Tree) => 7,
+        SceneryKind::Flora(FloraKind::Bush)
+        | SceneryKind::Rock
+        | SceneryKind::Flora(FloraKind::Cactus)
+        | SceneryKind::DeadTree => 2,
         _ => 1,
     }
 }
 
-/// Stable scene name for a specific flora kind + variant index.
-pub fn flora_variant_name(kind: FloraKind, variant: u32) -> String {
-    if flora_variant_count(kind) <= 1 {
+/// Stable scene name for a specific scenery kind + variant index.
+pub fn scenery_variant_name(kind: SceneryKind, variant: u32) -> String {
+    if scenery_variant_count(kind) <= 1 {
         kind.asset_name().to_owned()
     } else {
         format!("{}.{variant}", kind.asset_name())
     }
 }
 
-/// Pick the flora variant index for a given terrain context, deterministically
+/// Pick the scenery variant index for a given terrain context, deterministically
 /// from position hash so nearby instances of the same kind on the same terrain
 /// vary.
-pub fn flora_variant_for(kind: FloraKind, terrain: Terrain, hash: u64) -> u8 {
-    let total = flora_variant_count(kind);
+pub fn scenery_variant_for(kind: SceneryKind, terrain: Terrain, hash: u64) -> u8 {
+    let total = scenery_variant_count(kind);
     if total <= 1 {
         return 0;
     }
     // Trees use terrain to pick a plausible subset, then hash for variation.
     // Other kinds use the simpler biome-key approach.
-    if kind == FloraKind::Tree {
+    if kind == SceneryKind::Flora(FloraKind::Tree) {
         let range: (u64, u64) = match terrain {
             // Palm, sometimes oak on savanna
             Terrain::Desert => (3, 4),
@@ -240,11 +258,14 @@ mod tests {
     use super::*;
     #[test]
     fn names_are_unique_and_complete() {
-        let mut names: Vec<_> = FLORA_KINDS.into_iter().map(AssetName::asset_name).collect();
+        let mut names: Vec<_> = SCENERY_KINDS
+            .into_iter()
+            .map(AssetName::asset_name)
+            .collect();
         names.extend(STRUCTURE_KINDS.into_iter().map(AssetName::asset_name));
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), FLORA_KINDS.len() + STRUCTURE_KINDS.len());
+        assert_eq!(names.len(), SCENERY_KINDS.len() + STRUCTURE_KINDS.len());
     }
     #[test]
     fn variants_are_deterministic_and_bounded() {
@@ -255,12 +276,12 @@ mod tests {
         assert!(deterministic_variant(42, 7, 3) < 3);
     }
     #[test]
-    fn flora_variants_valid() {
-        for kind in FLORA_KINDS {
-            let n = flora_variant_count(kind);
+    fn scenery_variants_valid() {
+        for kind in SCENERY_KINDS {
+            let n = scenery_variant_count(kind);
             assert!(n >= 1);
             for v in 0..n {
-                let name = flora_variant_name(kind, v);
+                let name = scenery_variant_name(kind, v);
                 if n <= 1 {
                     assert_eq!(name, kind.asset_name());
                 } else {
@@ -268,5 +289,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn scenery_catalog_has_unique_scenery_names_for_every_kind_and_variant() {
+        let mut names = Vec::new();
+        for kind in SCENERY_KINDS {
+            let count = scenery_variant_count(kind);
+            for variant in 0..count {
+                let name = scenery_variant_name(kind, variant);
+                assert!(name.starts_with("scenery."));
+                names.push(name);
+            }
+        }
+
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            SCENERY_KINDS
+                .iter()
+                .map(|kind| scenery_variant_count(*kind) as usize)
+                .sum::<usize>()
+        );
+    }
+
+    #[test]
+    fn flora_is_the_plant_subset_of_scenery() {
+        let scenery_flora = SCENERY_KINDS
+            .into_iter()
+            .filter_map(|kind| match kind {
+                SceneryKind::Flora(flora) => Some(flora),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(scenery_flora.as_slice(), &FLORA_KINDS);
+        assert!(SCENERY_KINDS.contains(&SceneryKind::Rock));
+        assert!(SCENERY_KINDS.contains(&SceneryKind::Mushroom));
     }
 }

@@ -12,26 +12,28 @@
 //! see holes. Closer chunks add detail:
 //!
 //! - LOD 1: terrain slice, flat water, river, ice visual
-//! - LOD 2 (≤ 960 m to chunk edge): + structures (GLB + colliders), large flora
-//! - LOD 3 (≤ 300 m to chunk edge): + small flora, water swell subdivision
+//! - LOD 2 (≤ 960 m to chunk edge): + structures (GLB + colliders), large scenery
+//! - LOD 3 (≤ 300 m to chunk edge): + small scenery, water swell subdivision
 //!
 //! Transitions are INCREMENTAL: static meshes (terrain/river/ice/border) are
 //! built once and never respawned; the water mesh is rebuilt only when its
-//! subdivision changes (LOD 3 boundary); structures and flora are added or
+//! subdivision changes (LOD 3 boundary); structures and scenery are added or
 //! removed by delta. Nothing already on screen is torn down and re-added, so
 //! a LOD bounce never blinks the world (or the minimap).
 //!
-//! Downgrades use 15% hysteresis; flora spawning is budgeted per frame.
+//! Downgrades use 15% hysteresis; scenery spawning is budgeted per frame.
 //! Colliders for terrain/ice/bridges stay whole-planet in `setup_map`
 //! (physics never streams — no fall-through at chunk borders, teleports just
-//! work); only flora/structure colliders live in chunks.
+//! work); only scenery/structure colliders live in chunks.
 
 use crate::asset_catalog::AssetCatalog;
-use crate::map::{CullRange, Ground, MainCamera, flora_cull};
+use crate::map::{CullRange, Ground, MainCamera, scenery_cull};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
-use shared::level::{FloraData, FloraKind, StructureData, StructureKind, WaterPhase};
+use shared::level::{
+    FloraKind, SceneryData, SceneryKind, StructureData, StructureKind, WaterPhase,
+};
 use shared::sphere::PLANET_RADIUS;
 
 /// Chunk count: the subdivision-2 icosphere faces (20 × 4²).
@@ -49,10 +51,10 @@ const LOD2_DIST: f32 = 960.0;
 const HYSTERESIS: f32 = 1.15;
 /// LOD transitions applied per frame (water rebuilds + structure batches).
 const TRANSITIONS_PER_FRAME: usize = 8;
-/// Flora entities spawned per frame across all chunks. A dense forest chunk
+/// Scenery entities spawned per frame across all chunks. A dense forest chunk
 /// (~6.7k props) fills in a few frames — imperceptible next to the distance
 /// fog — instead of one hitchy burst.
-const FLORA_PER_FRAME: usize = 1500;
+const SCENERY_PER_FRAME: usize = 1500;
 
 /// Water mesh subdivision per LOD (see `water::build_water_surface`).
 /// Render faces are ~19 m; LOD 3 subdivides once (~9 m spacing) so the 40 m
@@ -65,11 +67,14 @@ fn water_subdiv(lod: u8) -> u32 {
     }
 }
 
-/// Large flora visible from afar — resident from LOD 2; the rest joins at LOD 3.
-fn is_large_flora(kind: FloraKind) -> bool {
+/// Large scenery visible from afar — resident from LOD 2; the rest joins at LOD 3.
+fn is_large_scenery(kind: SceneryKind) -> bool {
     matches!(
         kind,
-        FloraKind::Tree | FloraKind::DeadTree | FloraKind::Rock | FloraKind::Log
+        SceneryKind::Flora(FloraKind::Tree)
+            | SceneryKind::DeadTree
+            | SceneryKind::Rock
+            | SceneryKind::Log
     )
 }
 
@@ -80,10 +85,10 @@ pub struct ChunkData {
     pub water_r: Vec<f32>,
     pub river_r: Vec<[f32; 3]>,
     pub water_phase: Vec<Option<WaterPhase>>,
-    /// Flora resident from LOD 2 (trees, rocks, logs) per chunk.
-    pub flora_large: Vec<Vec<FloraData>>,
-    /// Flora resident only at LOD 3 (ground cover) per chunk.
-    pub flora_small: Vec<Vec<FloraData>>,
+    /// Large scenery resident from LOD 2 (trees, rocks, logs) per chunk.
+    pub scenery_large: Vec<Vec<SceneryData>>,
+    /// Small scenery resident only at LOD 3 (ground cover) per chunk.
+    pub scenery_small: Vec<Vec<SceneryData>>,
     pub structures: Vec<Vec<StructureData>>,
 }
 
@@ -98,9 +103,9 @@ pub struct ChunkState {
     pub water: Option<Entity>,
     pub border: Option<Entity>,
     pub structures: Vec<Entity>,
-    pub flora_large: Vec<Entity>,
-    pub flora_small: Vec<Entity>,
-    /// Streaming cursors into ChunkData::flora_*; entities below are spawned.
+    pub scenery_large: Vec<Entity>,
+    pub scenery_small: Vec<Entity>,
+    /// Streaming cursors into ChunkData::scenery_*; entities below are spawned.
     pub large_cursor: usize,
     pub small_cursor: usize,
 }
@@ -123,7 +128,7 @@ pub struct ChunkManager {
 }
 
 impl ChunkManager {
-    /// Bin baked level data into the 320 chunks. Flora/structures land in
+    /// Bin baked level data into the 320 chunks. Scenery/structures land in
     /// their chunk via the baked render-face index (`face / faces_per_chunk`).
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -132,7 +137,7 @@ impl ChunkManager {
         water_r: Vec<f32>,
         river_r: Vec<[f32; 3]>,
         water_phase: Vec<Option<WaterPhase>>,
-        flora: Vec<FloraData>,
+        scenery: Vec<SceneryData>,
         structures: Vec<StructureData>,
         terrain_mat: Handle<StandardMaterial>,
         water_mat: Handle<crate::water::WaterMaterial>,
@@ -160,7 +165,7 @@ impl ChunkManager {
         // Angular radius (m along the surface) of each chunk: centroid → the
         // farthest of its vertices. LOD distance measures to the chunk's EDGE
         // (centroid distance minus this), not its centroid — otherwise standing
-        // on a chunk corner reads ~350 m to all its neighbours and ground flora
+        // on a chunk corner reads ~350 m to all its neighbours and ground scenery
         // vanishes underfoot.
         let radii: Vec<f32> = (0..CHUNK_COUNT)
             .map(|c| {
@@ -174,14 +179,14 @@ impl ChunkManager {
                 min_cos.clamp(-1.0, 1.0).acos() * PLANET_RADIUS
             })
             .collect();
-        let mut flora_large = vec![Vec::new(); CHUNK_COUNT];
-        let mut flora_small = vec![Vec::new(); CHUNK_COUNT];
-        for f in flora {
+        let mut scenery_large = vec![Vec::new(); CHUNK_COUNT];
+        let mut scenery_small = vec![Vec::new(); CHUNK_COUNT];
+        for f in scenery {
             let c = f.face as usize / faces_per_chunk;
-            if is_large_flora(f.kind) {
-                flora_large[c].push(f);
+            if is_large_scenery(f.kind) {
+                scenery_large[c].push(f);
             } else {
-                flora_small[c].push(f);
+                scenery_small[c].push(f);
             }
         }
         let mut chunk_structures = vec![Vec::new(); CHUNK_COUNT];
@@ -195,8 +200,8 @@ impl ChunkManager {
                 water_r,
                 river_r,
                 water_phase,
-                flora_large,
-                flora_small,
+                scenery_large,
+                scenery_small,
                 structures: chunk_structures,
             },
             faces_per_chunk,
@@ -279,7 +284,7 @@ pub fn update_chunk_lods(
 }
 
 /// Apply a LOD transition incrementally: only what differs between `cur` and
-/// `lod` is spawned/despawned. Flora spawning is deferred to `stream_flora`.
+/// `lod` is spawned/despawned. Scenery spawning is deferred to `stream_scenery`.
 fn set_chunk_lod(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
@@ -399,15 +404,15 @@ fn set_chunk_lod(
         }
     }
 
-    // Flora: only despawn here; spawning streams via `stream_flora`.
+    // Scenery: only despawn here; spawning streams via `stream_scenery`.
     if lod < 2 && cur >= 2 {
-        for e in mgr.chunks[chunk].flora_large.drain(..) {
+        for e in mgr.chunks[chunk].scenery_large.drain(..) {
             commands.entity(e).try_despawn();
         }
         mgr.chunks[chunk].large_cursor = 0;
     }
     if lod < 3 && cur >= 3 {
-        for e in mgr.chunks[chunk].flora_small.drain(..) {
+        for e in mgr.chunks[chunk].scenery_small.drain(..) {
             commands.entity(e).try_despawn();
         }
         mgr.chunks[chunk].small_cursor = 0;
@@ -416,10 +421,10 @@ fn set_chunk_lod(
     mgr.chunks[chunk].lod = lod;
 }
 
-/// Spawn pending flora for loaded chunks, a bounded number per frame. Nearest
+/// Spawn pending scenery for loaded chunks, a bounded number per frame. Nearest
 /// chunks first so the ground cover around the player fills before tree lines
 /// on the horizon.
-pub fn stream_flora(
+pub fn stream_scenery(
     mut commands: Commands,
     catalog: Res<AssetCatalog>,
     camera: Query<&Transform, With<MainCamera>>,
@@ -431,8 +436,8 @@ pub fn stream_flora(
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
     let pending = |mgr: &ChunkManager, c: usize| {
         let st = &mgr.chunks[c];
-        (st.lod >= 2 && st.large_cursor < mgr.data.flora_large[c].len())
-            || (st.lod >= 3 && st.small_cursor < mgr.data.flora_small[c].len())
+        (st.lod >= 2 && st.large_cursor < mgr.data.scenery_large[c].len())
+            || (st.lod >= 3 && st.small_cursor < mgr.data.scenery_small[c].len())
     };
     let mut order: Vec<usize> = (0..CHUNK_COUNT).filter(|&c| pending(&mgr, c)).collect();
     if order.is_empty() {
@@ -444,27 +449,27 @@ pub fn stream_flora(
             .total_cmp(&mgr.centers[a].dot(eye_dir))
     });
 
-    let mut budget = FLORA_PER_FRAME;
+    let mut budget = SCENERY_PER_FRAME;
     for chunk in order {
         let lod = mgr.chunks[chunk].lod;
-        // Large flora (LOD 2+), then small (LOD 3).
+        // Large scenery (LOD 2+), then small (LOD 3).
         while budget > 0 && lod >= 2 {
             let i = mgr.chunks[chunk].large_cursor;
-            let Some(f) = mgr.data.flora_large[chunk].get(i).copied() else {
+            let Some(f) = mgr.data.scenery_large[chunk].get(i).copied() else {
                 break;
             };
-            let e = spawn_flora(&mut commands, &catalog, &f);
-            mgr.chunks[chunk].flora_large.push(e);
+            let e = spawn_scenery(&mut commands, &catalog, &f);
+            mgr.chunks[chunk].scenery_large.push(e);
             mgr.chunks[chunk].large_cursor = i + 1;
             budget -= 1;
         }
         while budget > 0 && lod >= 3 {
             let i = mgr.chunks[chunk].small_cursor;
-            let Some(f) = mgr.data.flora_small[chunk].get(i).copied() else {
+            let Some(f) = mgr.data.scenery_small[chunk].get(i).copied() else {
                 break;
             };
-            let e = spawn_flora(&mut commands, &catalog, &f);
-            mgr.chunks[chunk].flora_small.push(e);
+            let e = spawn_scenery(&mut commands, &catalog, &f);
+            mgr.chunks[chunk].scenery_small.push(e);
             mgr.chunks[chunk].small_cursor = i + 1;
             budget -= 1;
         }
@@ -556,7 +561,7 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
     root.id()
 }
 
-fn spawn_flora(commands: &mut Commands, catalog: &AssetCatalog, f: &FloraData) -> Entity {
+fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryData) -> Entity {
     let pos = Vec3::from_array(f.pos);
     let up = pos.normalize();
     let hash = f.pos[0].to_bits()
@@ -567,14 +572,14 @@ fn spawn_flora(commands: &mut Commands, catalog: &AssetCatalog, f: &FloraData) -
     let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
 
     let mut root = commands.spawn((
-        CullRange(flora_cull(f.kind)),
+        CullRange(scenery_cull(f.kind)),
         Transform::from_translation(pos).with_rotation(rotation),
         Visibility::default(),
         bevy::light::NotShadowCaster,
         Ground,
     ));
 
-    match shared::art::flora_collider(f.kind) {
+    match shared::art::scenery_collider(f.kind) {
         shared::art::ColliderSpec::None => {}
         shared::art::ColliderSpec::Box { half_extents } => {
             root.insert((
@@ -600,7 +605,7 @@ fn spawn_flora(commands: &mut Commands, catalog: &AssetCatalog, f: &FloraData) -
     }
 
     root.with_child((
-        WorldAssetRoot(catalog.scene(&shared::art::flora_variant_name(f.kind, f.variant as u32))),
+        WorldAssetRoot(catalog.scene(&shared::art::scenery_variant_name(f.kind, f.variant as u32))),
         Transform::from_scale(Vec3::splat(scale)),
     ));
     root.id()

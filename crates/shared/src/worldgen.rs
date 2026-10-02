@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 
 use crate::level::{
-    FaceBlend, FaceTag, FloraData, Landform, LevelData, RegionData, RegionMemberships,
-    RoadMaterial, SettlementData, SlopeClass, StructureData, StructureKind, SurfaceCondition,
+    FaceBlend, FaceTag, Landform, LevelData, RegionData, RegionMemberships, RoadMaterial,
+    SceneryData, SettlementData, SlopeClass, StructureData, StructureKind, SurfaceCondition,
     WaterDepth, WaterPhase,
 };
 pub use crate::level::{SettlementConfig, SettlementKind};
@@ -334,7 +334,7 @@ struct GenState {
     pub mesh_tris: FaceField<[[f32; 3]; 3]>,
     pub mesh_colors: FaceField<[[f32; 4]; 3]>,
     pub face_tags: FaceField<Vec<FaceTag>>,
-    pub flora: Vec<FloraData>,
+    pub scenery: Vec<SceneryData>,
     pub structures: Vec<StructureData>,
     /// Per-cell terrain steepness (0 Flat, 1 Gentle, 2 Steep, 3 Cliff) from the
     /// SOLVED field. Walkability and feature placement gate on this, so a
@@ -378,7 +378,7 @@ pub struct GenerationStats {
     pub water_faces: usize,
     pub frozen_water_faces: usize,
     pub face_count: usize,
-    pub flora_count: usize,
+    pub scenery_count: usize,
     pub structure_count: usize,
     pub region_count: usize,
     pub bridge_count: usize,
@@ -407,7 +407,7 @@ impl GenState {
             mesh_tris: FaceField::default(),
             mesh_colors: FaceField::default(),
             face_tags: FaceField::default(),
-            flora: Vec::new(),
+            scenery: Vec::new(),
             structures: Vec::new(),
             slope_class: CellField::default(),
             water_depth: CellField::default(),
@@ -471,7 +471,7 @@ impl GenState {
             road_endpoints: self.network.endpoints.clone(),
             regions: self.regions.clone(),
             face_regions: self.face_regions.clone(),
-            flora: self.flora.clone(),
+            scenery: self.scenery.clone(),
             structures: self.structures.clone(),
             slope_class: self.face_slope_class.to_vec(),
             water_depth: self.face_water_depth.to_vec(),
@@ -528,7 +528,7 @@ impl GenState {
                 .count(),
             face_count: self.grid.face_count(),
             terrain_faces,
-            flora_count: self.flora.len(),
+            scenery_count: self.scenery.len(),
             structure_count: self.structures.len(),
             region_count: self.regions.len(),
             bridge_count: self.bridges.len(),
@@ -566,7 +566,7 @@ mod surface;
 #[cfg(test)]
 use surface::{RIVER_TERRAIN_CLIP, cluster_cell_types, cluster_face_types};
 use surface::{
-    build_face_tags, build_mesh, face_road_material, place_flora, place_structures,
+    build_face_tags, build_mesh, face_road_material, place_scenery, place_structures,
     river_surface_radii, water_surface_radii,
 };
 

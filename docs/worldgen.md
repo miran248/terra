@@ -12,7 +12,7 @@
 - `topology.rs`: sole owner of canonical cells/faces, adjacency, incidence, component traversal, bounded distance, predicate paths, and unweighted shortest paths. `CellId` is authoritative terrain identity; `FaceId` is derived query/presentation identity.
 - `roads.rs`: deterministic 12-settlement network, shore-routed bridges, `PathKind::Bridge`, wobbled slerp, and straight fallback.
 - `planet.rs`: icosphere triangles plus grid-indexed ray intersection and `face_at` queries.
-- `level.rs`: typed Postcard `LevelData` schema. It stores triangles, face/corner terrain identities, blends, orthogonal water depth/phase and surface condition, tags/regions, settlements, and roads; runtime validates it at startup.
+- `level.rs`: typed `LevelData` schema encoded as versioned Postcard artifacts. It stores triangles, face/corner terrain identities, blends, orthogonal water depth/phase and surface condition, tags/regions, settlements, roads, scenery, and structures; runtime validates it at startup.
 - `worldgen.rs`: deterministic cell-first facade. Mutable generation state stays private; public `CompletedWorld` exposes finalized `LevelData` and statistics.
 
 ## Private module map
@@ -27,7 +27,7 @@
 - `regions/`: cell-owned connected region partitioning, naming, and face projection.
 - `router.rs`: direction-aware road A* over dense `(CellId, incoming-edge)` state.
 - `water/`: classification, river painting, and normalization.
-- `surface/`: water surfaces, mesh construction, flora, and structure placement.
+- `surface/`: water surfaces, mesh construction, scenery placement (including the Flora plant-life subset), and structure placement.
 - `tests/`: facade-level elevation, topology, water, mesh, placement, and determinism tests.
 
 ## Determinism
