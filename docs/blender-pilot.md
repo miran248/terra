@@ -31,9 +31,13 @@ The tree uses tapered branching and three asymmetrical canopy masses starting ab
 
 All five share one palette defined in the script. Colors are authored in sRGB and converted to linear vertex colors, with a white PBR base factor and roughness 0.95. Flat normals retain the low-poly look. Export is texture-free, uncompressed GLB, Y-up, forward -Z, with a ground pivot and meter-sized coordinates. The recipes' Y coordinates are reflected with corrected winding before Blender's axis conversion.
 
-Candidate runtime scale is **1**. Current baseline scaling is only applied to baseline models; applying the existing 0.55 player or 8 × 5 × 6 house factors to candidates would double-scale them. Moving dimensions into a shared production contract and matching simplified colliders belongs to the later collision task.
+Candidate runtime scale is **1**. Current baseline scaling is only applied to baseline models; applying the existing 0.55 player or 8 × 5 × 6 house factors to candidates would double-scale them. The authoritative dimensions and physical surfaces are in `crates/shared/asset_dimensions.json`. Blender fits the authored geometry to those meter dimensions before export; `shared::asset_contract` reads the same contract for runtime construction. Box sizes are full lengths; capsule length excludes its end caps. Instance scale is applied once to both visuals and physics.
 
-These are static candidate scenes. They retain the existing scene/root/primary-mesh/material names and player hand socket; they do not replace the existing actor catalog or claim new animation support. The preview shows no candidate collider and labels candidates static. Baseline clips remain available on baseline actors. Rigging, idle/walk/attack, and production collision changes remain separate tasks.
+These are static candidate scenes. They retain the existing scene/root/primary-mesh/material names and player hand socket; they do not replace the existing actor catalog or claim new animation support. The preview instantiates real Avian candidate colliders and draws them in gold, separately from cyan visual bounds and red baseline snapshots. Baseline clips remain available on baseline actors. Rigging, idle/walk/attack, and production activation remain separate tasks.
+
+The humanoid capsule is grounded and 1 m tall. The tree collider is a 0.2 m diameter trunk, 1.8 m tall; canopy and branches do not block movement. The rock uses two small boxes. The house uses a compound of foundation, walls, lintel, closed door, and two roof slopes rather than a solid envelope. Its interior is empty, but the visible closed door blocks entry; opening doors/traversable house gameplay remains out of scope. The knife has a small pickup box, not a new damage shape.
+
+`asset_collision.rs` is the thin Avian adapter used by the preview. Its tests exercise real scaled shapes, empty canopy/interior space, trunk contact, and a headless fixed-step body settling onto ground. The isolated single-contact query gives an unstable penetration depth for a capsule on a large box, including without a compound; ground alignment is therefore verified through the actual physics solver.
 
 ## Reproducibility and validation
 
@@ -47,4 +51,4 @@ The first command tests the public MCP generation command and exported files: na
 
 No random sampling is currently used (`seed: 0` in the manifest). Identical exports have been observed across repeated generation in the pinned Blender version without binary normalization. Different Blender/exporter versions require an explicit pin update and rerun of the checks.
 
-The visual walkthrough loads all catalog scenes plus all candidate dependencies through Bevy. It captures `/tmp/terra-preview-inspect.png`, `/tmp/terra-preview-compare.png`, and `/tmp/terra-preview-house-candidate.png` along with the existing measurement/tree views. Full animation bounds, actual physics, planet placement, and final visual approval are not established by this pilot.
+The visual walkthrough loads all catalog scenes plus all candidate dependencies through Bevy. It captures `/tmp/terra-preview-inspect.png`, `/tmp/terra-preview-compare.png`, and `/tmp/terra-preview-house-candidate.png` along with the existing measurement/tree views. Full animation bounds, planet placement, and final visual approval remain later gates.

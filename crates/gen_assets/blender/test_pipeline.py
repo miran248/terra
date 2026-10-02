@@ -67,6 +67,16 @@ class PipelineTests(unittest.TestCase):
             self.assertLess(knife['dimensions'][1], .35)
             self.assertIn('socket.grip', [n.get('name') for n in document(output / 'weapon.knife.glb')['nodes']])
 
+    def test_visual_exports_consume_shared_dimensions_and_collision_contract(self):
+        contracts = json.loads((SCRIPT.parents[3] / 'crates/shared/asset_dimensions.json').read_text())
+        with tempfile.TemporaryDirectory() as temporary:
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            assets = json.loads((Path(temporary) / 'manifest.json').read_text())['assets']
+            for name, contract in contracts.items():
+                self.assertEqual(assets[name]['collider'], contract['colliders'])
+                for actual, expected in zip(assets[name]['dimensions'], contract['dimensions']):
+                    self.assertAlmostEqual(actual, expected, places=5)
+
     def test_actor_faces_negative_z_and_keeps_ground_pivot(self):
         with tempfile.TemporaryDirectory() as temporary:
             subprocess.run([sys.executable, str(SCRIPT), "--out-dir", temporary], check=True, capture_output=True)

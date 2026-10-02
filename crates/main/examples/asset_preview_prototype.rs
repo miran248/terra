@@ -3,6 +3,10 @@
 //! Run with `just asset-preview`.
 //! No game state or asset files are changed. Runtime scales below are a deliberate
 //! snapshot of chunks.rs, map.rs, zombie.rs and loot.rs, not a new shared contract.
+#[path = "../src/asset_collision.rs"]
+mod asset_collision;
+
+use avian3d::prelude::{Gravity, PhysicsDebugPlugin, PhysicsGizmos, PhysicsPlugins, RigidBody};
 use bevy::{
     gltf::Gltf,
     input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll},
@@ -199,6 +203,18 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_plugins((PhysicsPlugins::default(), PhysicsDebugPlugin))
+        .insert_resource(Gravity(Vec3::ZERO))
+        .insert_gizmo_config(
+            PhysicsGizmos {
+                axis_lengths: None,
+                collider_color: Some(Color::srgb(0.95, 0.72, 0.22)),
+                sleeping_color_multiplier: None,
+                ..default()
+            },
+            bevy::gizmos::config::GizmoConfig::default(),
+        )
+        .add_systems(Update, candidate_overlay_visibility)
         .insert_resource(ClearColor(Color::srgb(0.19, 0.23, 0.29)))
         .init_gizmo_group::<CollisionGizmos>()
         .insert_resource(GlobalAmbientLight {
@@ -520,11 +536,17 @@ fn rebuild(
             commands.entity(entity).despawn();
         }
         *previous = Some(signature);
-        commands.spawn((
+        let mut root = commands.spawn((
             Stage,
-            WorldAssetRoot(visual.scene.clone()),
             Transform::from_translation(placement(offset, scale, visual)).with_scale(scale),
+            Visibility::default(),
         ));
+        if candidate
+            && let Some(collider) = asset_collision::candidate_collider(&entry.name, Vec3::ONE)
+        {
+            root.insert((RigidBody::Static, collider));
+        }
+        root.with_child((WorldAssetRoot(visual.scene.clone()), Transform::default()));
         if work.layout == 1 {
             commands.spawn((
                 Stage,
@@ -695,7 +717,7 @@ fn rebuild(
         &mut commands,
         if candidate {
             format!(
-                "Visual bounds: measurement only\nCandidate collider: not authored{}",
+                "Visual bounds: measurement only\nGold: actual candidate collider{}",
                 if work.layout == 1 {
                     "\nRed: current baseline collider"
                 } else {
@@ -750,7 +772,7 @@ fn rebuild(
     button(&mut commands, r, "Zoom -", Action::Zoom(1.25));
     let hint = text(
         &mut commands,
-        "Right drag: orbit | Middle drag: pan | Wheel: zoom\nCyan: visual bounds (measurement only) | Red: current collider\nCompare shows the baseline collider; no red outline means none\nNo physics. Reference humanoid: 1 m. Grid: 1 m.",
+        "Right drag: orbit | Middle drag: pan | Wheel: zoom\nCyan: visual bounds (measurement only) | Red: current collider\nCompare shows the baseline collider; no red outline means none\nCandidate physics shapes. Reference humanoid: 1 m. Grid: 1 m.",
         13.,
     );
     commands.entity(bottom).add_child(hint);
@@ -1228,4 +1250,8 @@ mod tests {
             "Visual bounds: measurement only\nCurrent collider: box (shown on baseline)"
         );
     }
+}
+
+fn candidate_overlay_visibility(work: Res<Workbench>, mut config: ResMut<GizmoConfigStore>) {
+    config.config_mut::<PhysicsGizmos>().0.enabled = work.overlay;
 }

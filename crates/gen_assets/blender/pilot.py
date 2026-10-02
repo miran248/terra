@@ -267,10 +267,18 @@ def generate(out_dir):
         bpy.context.window.scene = original
     clear_owned()
     output.mkdir(parents=True, exist_ok=True)
+    contracts = json.loads((ROOT / 'crates/shared/asset_dimensions.json').read_text())
     manifest = {'blender': '.'.join(map(str, VERSION)), 'seed': 0, 'assets': {}}
     try:
         for build in [humanoid, house, tree, rock, knife]:
             model = build()
+            bpy.context.view_layer.update()
+            contract = contracts[model.name]
+            points = [obj.matrix_world @ v.co for obj in model.scene.objects
+                      if obj.type == 'MESH' for v in obj.data.vertices]
+            raw = [max(p[i] for p in points)-min(p[i] for p in points) for i in range(3)]
+            target = contract['dimensions']
+            model.root.scale = (target[0]/raw[0], target[2]/raw[1], target[1]/raw[2])
             bpy.context.view_layer.update()
             filename = model.name + '.glb'
             bpy.ops.export_scene.gltf(filepath=str(output / filename), export_format='GLB',
@@ -283,7 +291,7 @@ def generate(out_dir):
             extent = bounds(doc, doc['scenes'][0])
             manifest['assets'][model.name] = {'file': filename, 'scene': model.name,
                 'bounds': extent, 'dimensions': [extent[i+3]-extent[i] for i in range(3)],
-                'runtime_scale': [1,1,1], 'collider': None}
+                'runtime_scale': [1,1,1], 'collider': contract['colliders']}
             if model.name == 'structure.house':
                 manifest['assets'][model.name]['door_clear_height'] = 1.2
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')

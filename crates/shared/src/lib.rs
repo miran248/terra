@@ -1,6 +1,7 @@
 mod coarse_river;
 
 pub mod art;
+pub mod asset_contract;
 pub mod items;
 pub mod level;
 pub mod planet;
