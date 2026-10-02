@@ -9,6 +9,7 @@ mod physics;
 // mod prestige;
 // mod turret;
 mod foliage;
+mod shader_motion;
 mod ui;
 mod water;
 // mod wave;
@@ -76,6 +77,7 @@ fn main() {
             // prestige::PrestigePlugin,
             physics::PhysicsPlugin,
             weather::WeatherPlugin,
+            shader_motion::ShaderMotionPlugin,
             water::WaterPlugin,
             foliage::FoliagePlugin,
         ))

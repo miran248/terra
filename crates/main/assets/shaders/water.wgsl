@@ -1,3 +1,5 @@
+#import "shaders/shader_motion.wgsl"::motion
+
 // Water surface extension over StandardMaterial. Geometric swell (vertex
 // displacement along the sphere normal) + depth-based colour/opacity from the
 // depth prepass (limited underwater visibility) + animated normals for chop.
@@ -19,7 +21,6 @@
 struct WaterParams {
     shallow: vec4<f32>,
     deep: vec4<f32>,
-    wind: vec3<f32>,
     max_visibility: f32,
     wave_amp: f32,
     wave_scale: f32,
@@ -31,16 +32,16 @@ struct WaterParams {
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> water: WaterParams;
 
+
 // Long-wavelength geometric swell height (world metres, ± around waterline).
 // Marches downwind: the sample point drifts against the wind so crests travel
 // with it. Amplitude swells with the wind: calm ≈ 40%, storm ≈ 130%.
 fn swell_amp_now() -> f32 {
-    let wind_speed = length(water.wind);
-    return water.swell_amp * (0.4 + min(wind_speed * 0.075, 0.9));
+    return water.swell_amp * motion.wind_swell;
 }
 
 fn swell_drift(world_pos: vec3<f32>) -> vec3<f32> {
-    return (world_pos - water.wind * globals.time * 0.15) * water.swell_scale;
+    return (world_pos - motion.wind * globals.time * 0.15) * water.swell_scale;
 }
 
 fn swell_height(world_pos: vec3<f32>) -> f32 {
@@ -109,7 +110,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Rivers (flow > 0) drift downstream along the per-vertex flow direction
     // (encoded in vertex colour); still water drifts downwind instead.
     let t = globals.time * water.wave_speed;
-    let wind_speed = length(water.wind);
     var sample_pos = in.world_position.xyz;
     var drifted = false;
 #ifdef VERTEX_COLORS
@@ -122,7 +122,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (!drifted) {
         // Ripples travel downwind at a fraction of wind speed (deep-water
         // waves lag the wind); calm air leaves them drifting on time alone.
-        sample_pos = sample_pos - water.wind * globals.time * 0.2;
+        sample_pos = sample_pos - motion.wind * globals.time * 0.2;
     }
     // Sample in all three world axes: on a spherical planet the surface plane
     // isn't world-XZ, so XZ-only ripples stretch into streaks near the poles.
@@ -147,7 +147,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     );
     // Wind roughens the surface: calm = glassy swell, storm (wind ~12) = chop
     // up to ~1.8x. Chop responds twice as strongly as the swell.
-    let wind_boost = 1.0 + min(wind_speed * 0.07, 0.8);
+    let wind_boost = motion.wind_boost;
     var bump = (swell + chop * 0.35 * wind_boost) * water.wave_amp * (0.6 + 0.4 * wind_boost);
     // Shade the geometric swell with its analytic gradient so light rolls over
     // the SAME crests the mesh displaces (paint and geometry agree).

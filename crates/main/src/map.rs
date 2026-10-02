@@ -283,6 +283,7 @@ impl Plugin for MapPlugin {
 use shared::state::AppState;
 
 fn setup_map(
+    motion: Res<crate::shader_motion::ShaderMotionBuffer>,
     mut commands: Commands,
     catalog: Res<crate::asset_catalog::AssetCatalog>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -414,8 +415,8 @@ fn setup_map(
     // gen-time per-face waterline (`face_water_r`) clusters water into
     // connected bodies, so the sea can't flood an inland lake basin. Only the
     // ice COLLIDER is global here — walkable surfaces never stream.
-    let water_mat = water_mats.add(crate::water::water_material());
-    let river_mat = water_mats.add(crate::water::river_material());
+    let water_mat = water_mats.add(crate::water::water_material(motion.handle.clone()));
+    let river_mat = water_mats.add(crate::water::river_material(motion.handle.clone()));
     let ice_mat = materials.add(StandardMaterial {
         base_color: Color::srgb(0.68, 0.86, 0.94),
         perceptual_roughness: 0.28,

@@ -1,18 +1,17 @@
-use crate::weather::Weather;
+use crate::shader_motion::ShaderMotionBuffer;
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 
 pub type FoliageMaterial = ExtendedMaterial<StandardMaterial, FoliageExt>;
 
 #[derive(Clone, Copy, ShaderType, Reflect, Debug)]
 pub struct FoliageParams {
-    pub wind: Vec3,
     pub sway_speed: f32,
     pub sway_amplitude: f32,
     // Interactive Player Trampling
-    pub player_pos: Vec3,
     pub trample_radius: f32,
     pub trample_strength: f32,
 }
@@ -21,6 +20,8 @@ pub struct FoliageParams {
 pub struct FoliageExt {
     #[uniform(100)]
     pub params: FoliageParams,
+    #[storage(101, read_only)]
+    pub motion: Handle<ShaderBuffer>,
 }
 
 impl MaterialExtension for FoliageExt {
@@ -47,7 +48,7 @@ impl Plugin for FoliagePlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<FoliageMaterial>::default())
             .init_resource::<FoliageCache>()
-            .add_systems(Update, (apply_foliage_materials, update_foliage_wind));
+            .add_systems(Update, apply_foliage_materials);
     }
 }
 
@@ -70,8 +71,13 @@ impl bevy::ecs::system::EntityCommand for SwapFoliageMaterial {
 
 /// Automatically binds loaded catalog meshes to wind-swaying custom shaders.
 /// Extremely high-performance: caches material creations and uses direct parent lookups.
-#[allow(clippy::type_complexity)]
+#[expect(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    reason = "Bevy ECS queries and resources are separate system parameters"
+)]
 fn apply_foliage_materials(
+    motion: Res<ShaderMotionBuffer>,
     mut commands: Commands,
     mut cache: ResMut<FoliageCache>,
     mut foliage_mats: ResMut<Assets<FoliageMaterial>>,
@@ -139,13 +145,12 @@ fn apply_foliage_materials(
                 base: original_std.clone(),
                 extension: FoliageExt {
                     params: FoliageParams {
-                        wind: Vec3::ZERO,
                         sway_speed: speed,
                         sway_amplitude: amplitude,
-                        player_pos: Vec3::ZERO,
                         trample_radius,
                         trample_strength,
                     },
+                    motion: motion.handle.clone(),
                 },
             });
 
@@ -159,24 +164,5 @@ fn apply_foliage_materials(
                 material: foliage_mat_handle,
             });
         }
-    }
-}
-
-/// Push dynamic weather wind vectors and player positions into the foliage uniforms.
-fn update_foliage_wind(
-    weather: Res<Weather>,
-    player_q: Query<&Transform, With<crate::map::Player>>,
-    mut materials: ResMut<Assets<FoliageMaterial>>,
-) {
-    let wind = weather.wind;
-    let player_pos = player_q
-        .iter()
-        .next()
-        .map(|tf| tf.translation)
-        .unwrap_or(Vec3::ZERO);
-
-    for (_, m) in materials.iter_mut() {
-        m.extension.params.wind = wind;
-        m.extension.params.player_pos = player_pos;
     }
 }

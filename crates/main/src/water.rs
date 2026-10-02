@@ -9,6 +9,7 @@ use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
+use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
 use shared::level::WaterPhase;
 
@@ -19,9 +20,6 @@ pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 pub struct WaterParams {
     pub shallow: LinearRgba,
     pub deep: LinearRgba,
-    /// Weather wind (world units/s); drives ripple drift and chop. Pushed
-    /// per-frame from the `Weather` resource by `update_water_wind`.
-    pub wind: Vec3,
     /// View distance (world units) at which water becomes fully deep/opaque.
     pub max_visibility: f32,
     pub wave_amp: f32,
@@ -42,6 +40,8 @@ pub struct WaterParams {
 pub struct WaterExt {
     #[uniform(100)]
     pub params: WaterParams,
+    #[storage(101, read_only)]
+    pub motion: Handle<ShaderBuffer>,
 }
 
 impl MaterialExtension for WaterExt {
@@ -56,7 +56,7 @@ impl MaterialExtension for WaterExt {
 
 /// Build the configured ocean material. Kept as a helper so the spawn site
 /// (map::setup_map, which owns the `Ground` marker for level cleanup) stays simple.
-pub fn water_material() -> WaterMaterial {
+pub fn water_material(motion: Handle<ShaderBuffer>) -> WaterMaterial {
     ExtendedMaterial {
         base: StandardMaterial {
             // Alpha is driven by the shader (depth fade); this base colour mostly
@@ -72,7 +72,6 @@ pub fn water_material() -> WaterMaterial {
             params: WaterParams {
                 shallow: LinearRgba::rgb(0.10, 0.42, 0.48),
                 deep: LinearRgba::rgb(0.01, 0.06, 0.18),
-                wind: Vec3::ZERO,
                 max_visibility: 14.0,
                 wave_amp: 0.06,
                 // ~11 m ripple wavelength; at 0.35 waves were ~18 m and read as
@@ -87,13 +86,14 @@ pub fn water_material() -> WaterMaterial {
                 swell_amp: 1.5,
                 swell_scale: std::f32::consts::TAU / 40.0,
             },
+            motion,
         },
     }
 }
 
 /// River water: clearer/shallower depth fade and downstream-scrolling ripples.
-pub fn river_material() -> WaterMaterial {
-    let mut m = water_material();
+pub fn river_material(motion: Handle<ShaderBuffer>) -> WaterMaterial {
+    let mut m = water_material(motion);
     m.extension.params.shallow = LinearRgba::rgb(0.12, 0.4, 0.5);
     m.extension.params.deep = LinearRgba::rgb(0.05, 0.2, 0.32);
     m.extension.params.max_visibility = 5.0;
@@ -292,20 +292,7 @@ pub struct WaterPlugin;
 
 impl Plugin for WaterPlugin {
     fn build(&self, app: &mut App) {
-        app.add_plugins(MaterialPlugin::<WaterMaterial>::default())
-            .add_systems(Update, update_water_wind);
-    }
-}
-
-/// Push the weather wind into all water uniforms (same pattern as
-/// `foliage::update_foliage_wind`); the shader scales chop and drifts ripples
-/// downwind from it.
-fn update_water_wind(
-    weather: Res<crate::weather::Weather>,
-    mut materials: ResMut<Assets<WaterMaterial>>,
-) {
-    for (_, m) in materials.iter_mut() {
-        m.extension.params.wind = weather.wind;
+        app.add_plugins(MaterialPlugin::<WaterMaterial>::default());
     }
 }
 
