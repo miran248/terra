@@ -14,9 +14,10 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
     text::FontSize,
 };
+use shared::actor_animation::{ActorAnimationPlugin, ActorPlayback};
 use shared::art::{
-    ACTOR_ANIMATIONS, ACTORS_CATALOG, ColliderSpec, SCENERY_KINDS, scenery_collider,
-    scenery_variant_count, scenery_variant_name,
+    ACTOR_ANIMATIONS, ColliderSpec, SCENERY_KINDS, scenery_collider, scenery_variant_count,
+    scenery_variant_name,
 };
 use std::collections::HashMap;
 
@@ -42,6 +43,7 @@ impl ColliderSnapshot {
 }
 
 struct VisualAsset {
+    source: Handle<Gltf>,
     scene: Handle<WorldAsset>,
     min: Vec3,
     max: Vec3,
@@ -83,9 +85,6 @@ struct Workbench {
     paused: bool,
     rebuild: bool,
     use_candidates: bool,
-    actors: Handle<Gltf>,
-    graph: Option<Handle<AnimationGraph>>,
-    nodes: Vec<AnimationNodeIndex>,
 }
 impl Workbench {
     fn reference_position(&self) -> Vec3 {
@@ -138,8 +137,6 @@ struct PreviewCamera;
 struct ReferenceRoot;
 #[derive(Default, Reflect, GizmoConfigGroup)]
 struct CollisionGizmos;
-#[derive(Component)]
-struct Animated(usize);
 #[derive(Component)]
 struct RulerLabel(Vec3);
 #[derive(Component, Clone, Copy)]
@@ -203,7 +200,11 @@ fn main() {
                     ..default()
                 }),
         )
-        .add_plugins((PhysicsPlugins::default(), PhysicsDebugPlugin))
+        .add_plugins((
+            PhysicsPlugins::default(),
+            PhysicsDebugPlugin,
+            ActorAnimationPlugin,
+        ))
         .insert_resource(Gravity(Vec3::ZERO))
         .insert_gizmo_config(
             PhysicsGizmos {
@@ -214,7 +215,7 @@ fn main() {
             },
             bevy::gizmos::config::GizmoConfig::default(),
         )
-        .add_systems(Update, candidate_overlay_visibility)
+        .add_systems(Update, (candidate_overlay_visibility, attach_pilot_weapon))
         .insert_resource(ClearColor(Color::srgb(0.19, 0.23, 0.29)))
         .init_gizmo_group::<CollisionGizmos>()
         .insert_resource(GlobalAmbientLight {
@@ -257,6 +258,7 @@ fn setup(
             Entry {
                 name: parts[1].into(),
                 baseline: VisualAsset {
+                    source: server.load(parts[0].split('#').next().unwrap().to_owned()),
                     scene: server.load(parts[0].to_owned()),
                     min: Vec3::from_slice(&numbers[..3]),
                     max: Vec3::from_slice(&numbers[3..]),
@@ -265,6 +267,7 @@ fn setup(
                 candidate: if parts.len() == 15 {
                     let extent: Vec<f32> = parts[9..].iter().map(|s| s.parse().unwrap()).collect();
                     Some(VisualAsset {
+                        source: server.load(parts[8].split('#').next().unwrap().to_owned()),
                         scene: server.load(parts[8].to_owned()),
                         min: Vec3::from_slice(&extent[..3]),
                         max: Vec3::from_slice(&extent[3..]),
@@ -296,9 +299,6 @@ fn setup(
         paused: true,
         rebuild: true,
         use_candidates: true,
-        actors: server.load(ACTORS_CATALOG),
-        graph: None,
-        nodes: vec![],
     });
     commands.spawn((PreviewCamera, Camera3d::default(), Transform::default()));
     commands.spawn((
@@ -546,11 +546,24 @@ fn rebuild(
         {
             root.insert((RigidBody::Static, collider));
         }
-        root.with_child((WorldAssetRoot(visual.scene.clone()), Transform::default()));
+        root.with_child((
+            WorldAssetRoot(visual.scene.clone()),
+            Transform::default(),
+            ActorPlayback {
+                source: visual.source.clone(),
+                action: work.animation,
+                paused: work.paused,
+            },
+        ));
         if work.layout == 1 {
             commands.spawn((
                 Stage,
                 WorldAssetRoot(entry.baseline.scene.clone()),
+                ActorPlayback {
+                    source: entry.baseline.source.clone(),
+                    action: work.animation,
+                    paused: work.paused,
+                },
                 Transform::from_translation(placement(
                     -offset,
                     entry.baseline.runtime,
@@ -579,7 +592,7 @@ fn rebuild(
             ["INSPECT", "BASELINE vs EDIT", "MEASURE"][work.layout],
             entry.name,
             if candidate {
-                "BLENDER CANDIDATE (static)"
+                "BLENDER CANDIDATE"
             } else {
                 "CURRENT BASELINE"
             }
@@ -839,37 +852,10 @@ fn rebuild(
     }
 }
 
-fn animate(
-    mut commands: Commands,
-    mut work: ResMut<Workbench>,
-    gltfs: Res<Assets<Gltf>>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
-    mut players: Query<(Entity, &mut AnimationPlayer, Option<&Animated>)>,
-) {
-    if work.graph.is_none() {
-        let Some(gltf) = gltfs.get(&work.actors) else {
-            return;
-        };
-        let (graph, nodes) = AnimationGraph::from_clips(
-            ACTOR_ANIMATIONS.map(|name| gltf.named_animations[name].clone()),
-        );
-        work.graph = Some(graphs.add(graph));
-        work.nodes = nodes;
-    }
-    for (entity, mut player, bound) in &mut players {
-        if bound.is_none_or(|a| a.0 != work.animation) {
-            player.stop_all();
-            player.play(work.nodes[work.animation]).repeat();
-            commands.entity(entity).insert((
-                AnimationGraphHandle(work.graph.clone().unwrap()),
-                Animated(work.animation),
-            ));
-        }
-        if work.paused {
-            player.pause_all();
-        } else {
-            player.resume_all();
-        }
+fn animate(work: Res<Workbench>, mut roots: Query<&mut ActorPlayback>) {
+    for mut playback in &mut roots {
+        playback.action = work.animation;
+        playback.paused = work.paused;
     }
 }
 
@@ -1209,8 +1195,36 @@ fn capture(
         }
     }
     if seconds > 30. && *phase == 13 {
-        exit.write(AppExit::Success);
+        let selected = work
+            .entries
+            .iter()
+            .position(|e| e.name == "actor.player")
+            .unwrap();
+        apply(Action::Select(selected), &mut work);
+        apply(Action::View(2), &mut work);
+        work.distance = 3.;
+        work.target = Vec3::Y * 0.5;
+        work.animation = 1;
+        work.paused = false;
         *phase = 14;
+    }
+    if seconds > 31.35 && *phase == 14 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk("/tmp/terra-preview-walk.png"));
+        work.animation = 2;
+        work.rebuild = true;
+        *phase = 15;
+    }
+    if seconds > 31.95 && *phase == 15 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk("/tmp/terra-preview-attack.png"));
+        *phase = 16;
+    }
+    if seconds > 33. && *phase == 16 {
+        exit.write(AppExit::Success);
+        *phase = 17;
     }
 }
 fn labels(
@@ -1254,4 +1268,49 @@ mod tests {
 
 fn candidate_overlay_visibility(work: Res<Workbench>, mut config: ResMut<GizmoConfigStore>) {
     config.config_mut::<PhysicsGizmos>().0.enabled = work.overlay;
+}
+
+#[derive(Component)]
+struct PilotWeaponAttached;
+fn attach_pilot_weapon(
+    mut commands: Commands,
+    work: Res<Workbench>,
+    names: Query<(Entity, &Name), Without<PilotWeaponAttached>>,
+    parents: Query<&ChildOf>,
+    playback: Query<&ActorPlayback>,
+) {
+    let Some(actor) = work
+        .entries
+        .iter()
+        .find(|e| e.name == "actor.player")
+        .and_then(|e| e.candidate.as_ref())
+    else {
+        return;
+    };
+    let Some(weapon) = work
+        .entries
+        .iter()
+        .find(|e| e.name == "weapon.knife")
+        .and_then(|e| e.candidate.as_ref())
+    else {
+        return;
+    };
+    for (entity, name) in &names {
+        if name.as_str() != "socket.hand" {
+            continue;
+        }
+        if parents
+            .iter_ancestors(entity)
+            .filter_map(|p| playback.get(p).ok())
+            .any(|p| p.source == actor.source)
+        {
+            commands
+                .entity(entity)
+                .insert(PilotWeaponAttached)
+                .with_child((
+                    WorldAssetRoot(weapon.scene.clone()),
+                    shared::asset_contract::grip_transform("weapon.knife").unwrap(),
+                ));
+        }
+    }
 }

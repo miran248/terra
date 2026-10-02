@@ -6,6 +6,7 @@ Only scenes/datablocks tagged by this generator are replaced on regeneration.
 """
 import json
 import math
+import runpy
 from pathlib import Path
 import sys
 
@@ -245,7 +246,7 @@ def clear_owned():
     for scene in list(bpy.data.scenes):
         if scene.get(OWNER):
             bpy.data.scenes.remove(scene)
-    for container in [bpy.data.objects, bpy.data.meshes, bpy.data.materials]:
+    for container in [bpy.data.objects, bpy.data.meshes, bpy.data.materials, bpy.data.armatures, bpy.data.actions]:
         for item in list(container):
             if item.get(OWNER):
                 container.remove(item, do_unlink=True)
@@ -280,18 +281,24 @@ def generate(out_dir):
             target = contract['dimensions']
             model.root.scale = (target[0]/raw[0], target[2]/raw[1], target[1]/raw[2])
             bpy.context.view_layer.update()
+            animation_bounds = None
+            if model.name == 'actor.player':
+                animation_bounds = runpy.run_path(str(Path(__file__).with_name('rig.py')))['rig_humanoid'](model, OWNER)
             filename = model.name + '.glb'
             bpy.ops.export_scene.gltf(filepath=str(output / filename), export_format='GLB',
-                use_active_scene=True, export_yup=True, export_apply=True,
+                use_active_scene=True, export_yup=True,
                 export_normals=True, export_texcoords=False, export_materials='EXPORT',
                 export_vertex_color='ACTIVE', export_all_vertex_colors=False,
-                export_animations=False, export_extras=False, export_cameras=False,
+                export_animations=True, export_animation_mode='NLA_TRACKS', export_frame_range=False,
+                export_skins=True, export_apply=False, export_extras=False, export_cameras=False,
                 export_lights=False)
             doc = read(output / filename)
             extent = bounds(doc, doc['scenes'][0])
             manifest['assets'][model.name] = {'file': filename, 'scene': model.name,
                 'bounds': extent, 'dimensions': [extent[i+3]-extent[i] for i in range(3)],
                 'runtime_scale': [1,1,1], 'collider': contract['colliders']}
+            if animation_bounds is not None:
+                manifest['assets'][model.name]['animation_bounds'] = animation_bounds
             if model.name == 'structure.house':
                 manifest['assets'][model.name]['door_clear_height'] = 1.2
         (output / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')

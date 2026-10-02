@@ -13,3 +13,7 @@ asset-candidates-check:
 # Run the exported-asset integration contracts (requires Blender MCP).
 asset-candidates-test:
     python3 -m unittest discover -s crates/gen_assets/blender -p test_pipeline.py
+
+# Review candidate animation on the actual planet without changing the catalog.
+asset-showcase:
+    TERRA_ASSET_SHOWCASE=1 cargo run -p main

@@ -20,6 +20,18 @@ def document(path):
     return json.loads(data[20:20 + json_length])
 
 
+def float_accessor(path, doc, index):
+    data = path.read_bytes()
+    json_length = struct.unpack_from('<I', data, 12)[0]
+    binary = 20 + json_length + 8
+    accessor = doc['accessors'][index]
+    view = doc['bufferViews'][accessor['bufferView']]
+    width = {'SCALAR':1, 'VEC3':3, 'VEC4':4}[accessor['type']]
+    stride = view.get('byteStride', width*4)
+    offset = binary + view.get('byteOffset',0) + accessor.get('byteOffset',0)
+    return [struct.unpack_from('<'+'f'*width, data, offset+i*stride) for i in range(accessor['count'])]
+
+
 class PipelineTests(unittest.TestCase):
     def test_exports_isolated_named_pair_at_meter_scale(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -76,6 +88,48 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(assets[name]['collider'], contract['colliders'])
                 for actual, expected in zip(assets[name]['dimensions'], contract['dimensions']):
                     self.assertAlmostEqual(actual, expected, places=5)
+
+    def test_humanoid_exports_a_skin_distinct_actions_and_bone_attached_socket(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            actor = document(Path(temporary) / 'actor.player.glb')
+            self.assertTrue(actor.get('skins'), 'The actor must export a skeleton and skin')
+            clips = {a['name']: a for a in actor.get('animations', [])}
+            self.assertEqual(set(clips), {'idle', 'walk', 'attack'})
+            self.assertEqual(len({json.dumps(a['samplers'], sort_keys=True) for a in clips.values()}), 3)
+            for clip in clips.values():
+                duration = max(actor['accessors'][s['input']]['max'][0] for s in clip['samplers'])
+                self.assertAlmostEqual(duration, 1.0)
+            socket = next(i for i,n in enumerate(actor['nodes']) if n.get('name') == 'socket.hand')
+            parent = next(n for n in actor['nodes'] if socket in n.get('children', []))
+            self.assertEqual(parent['name'], 'hand.right')
+            payloads = []
+            for clip in clips.values():
+                values = [float_accessor(Path(temporary) / 'actor.player.glb', actor, sampler['output'])
+                          for sampler in clip['samplers']]
+                payloads.append(values)
+                for channel in values:
+                    for first, last in zip(channel[0], channel[-1]):
+                        self.assertAlmostEqual(first, last, places=5, msg='Clip must loop without a jump')
+            self.assertNotEqual(payloads[0], payloads[1])
+            self.assertNotEqual(payloads[1], payloads[2])
+            manifest = json.loads((Path(temporary) / 'manifest.json').read_text())
+            for extent in manifest['assets']['actor.player']['animation_bounds'].values():
+                self.assertGreaterEqual(extent[1], -0.00001, 'Feet must not penetrate the ground')
+                self.assertLess(extent[4], 1.05, 'Body remains close to its one-meter collider')
+
+    def test_existing_user_actions_do_not_rename_or_leak_into_exports(self):
+        import generate
+        created = generate.execute("import bpy\nresult = {'names': []}\nfor name in ['idle', 'walk', 'attack', 'unrelated.user.action']:\n    if name not in bpy.data.actions:\n        bpy.data.actions.new(name)\n        result['names'].append(name)\nresult")['names']
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+                actor = document(Path(temporary) / 'actor.player.glb')
+                self.assertEqual({a['name'] for a in actor['animations']}, {'idle', 'walk', 'attack'})
+            present = generate.execute("import bpy\nresult = {'names': [a.name for a in bpy.data.actions if not a.get('terra_blender_pilot')]}\nresult")["names"]
+            self.assertTrue(set(created) <= set(present))
+        finally:
+            generate.execute(f"import bpy\nfor name in {created!r}:\n    bpy.data.actions.remove(bpy.data.actions[name])\nresult = {{'ok': True}}\nresult")
 
     def test_actor_faces_negative_z_and_keeps_ground_pivot(self):
         with tempfile.TemporaryDirectory() as temporary:

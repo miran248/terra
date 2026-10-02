@@ -1,4 +1,6 @@
 mod asset_catalog;
+mod asset_collision;
+mod asset_showcase;
 mod chunks;
 // mod combat;
 mod constants;
@@ -66,6 +68,7 @@ fn main() {
         .init_state::<AppState>()
         .add_plugins((
             asset_catalog::AssetCatalogPlugin,
+            asset_showcase::AssetShowcasePlugin,
             map::MapPlugin,
             // wave::WavePlugin,
             // zombie::ZombiePlugin,

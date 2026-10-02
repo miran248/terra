@@ -1,5 +1,6 @@
 mod coarse_river;
 
+pub mod actor_animation;
 pub mod art;
 pub mod asset_contract;
 pub mod items;

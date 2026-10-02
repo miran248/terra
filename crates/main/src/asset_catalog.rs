@@ -91,6 +91,8 @@ fn bind_actor_animations(
     mut commands: Commands,
     catalog: Res<AssetCatalog>,
     mut players: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
+    parents: Query<&ChildOf>,
+    individual: Query<&shared::actor_animation::ActorPlayback>,
 ) {
     let (Some(graph), Some(&idle)) = (
         catalog.animation_graph.as_ref(),
@@ -99,6 +101,12 @@ fn bind_actor_animations(
         return;
     };
     for (entity, mut player) in &mut players {
+        if parents
+            .iter_ancestors(entity)
+            .any(|e| individual.contains(e))
+        {
+            continue;
+        }
         player.play(idle).repeat();
         commands
             .entity(entity)
