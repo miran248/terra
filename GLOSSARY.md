@@ -4,6 +4,16 @@ Terra is a spherical world with natural geography and built features. This gloss
 
 ## Language
 
+**Vehicle**:
+A means of transport that the explorer can enter, operate, and exit to travel through the world.
+_Avoid_: Exploration mode when referring to a vehicle present in the world.
+
+**Car**:
+A ground vehicle for exploring roads and off-road terrain.
+
+**Plane**:
+A flying vehicle for exploring the world from the air, with ground runs for takeoff and landing.
+
 **Vehicle summoning**:
 Bringing a reusable vehicle to suitable nearby ground while the explorer remains on foot.
 _Avoid_: Recovery when referring only to relocating a vehicle.
