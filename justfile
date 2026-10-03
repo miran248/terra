@@ -29,3 +29,12 @@ asset-structure-sheets: asset-candidates
 # Inspect candidate structures and repeated modules on the actual terrain.
 asset-structure-showcase:
     TERRA_ASSET_SHOWCASE=1 TERRA_STRUCTURE_SHOWCASE=1 cargo run -p main
+
+# Render items and actor variants at their actual meter dimensions.
+asset-item-sheets: asset-candidates
+    python3 crates/gen_assets/blender/contact_sheet.py --family items --out-dir /tmp/terra-items-review
+    python3 crates/gen_assets/blender/contact_sheet.py --family actors --out-dir /tmp/terra-items-review
+
+# Inspect all actors/actions, held weapons and dropped items on the terrain.
+asset-item-showcase:
+    TERRA_ASSET_SHOWCASE=1 TERRA_ITEM_SHOWCASE=1 cargo run -p main

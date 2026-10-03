@@ -16,8 +16,8 @@ use bevy::{
 };
 use shared::actor_animation::{ActorAnimationPlugin, ActorPlayback};
 use shared::art::{
-    ACTOR_ANIMATIONS, ColliderSpec, SCENERY_KINDS, scenery_collider, scenery_variant_count,
-    scenery_variant_name,
+    ACTOR_ANIMATIONS, AssetName, ColliderSpec, SCENERY_KINDS, scenery_collider,
+    scenery_variant_count, scenery_variant_name,
 };
 use std::collections::HashMap;
 
@@ -82,6 +82,7 @@ struct Workbench {
     target: Vec3,
     overlay: bool,
     animation: usize,
+    weapon: usize,
     paused: bool,
     rebuild: bool,
     use_candidates: bool,
@@ -129,6 +130,14 @@ impl Workbench {
 }
 #[derive(Component)]
 struct Stage;
+#[derive(Clone, Copy, PartialEq)]
+struct StageSignature {
+    selected: usize,
+    scale: Vec3,
+    compare: bool,
+    candidate: bool,
+    weapon: usize,
+}
 #[derive(Component)]
 struct Hud;
 #[derive(Component)]
@@ -150,6 +159,7 @@ enum Action {
     Reset,
     Overlay,
     Animation,
+    Weapon,
     Pause,
     Zoom(f32),
     Source,
@@ -241,6 +251,7 @@ fn main() {
             capture_family.run_if(|| {
                 std::env::var_os("TERRA_SCENERY_CAPTURE").is_some()
                     || std::env::var_os("TERRA_STRUCTURE_CAPTURE").is_some()
+                    || std::env::var_os("TERRA_ITEM_CAPTURE").is_some()
             }),
         )
         .run();
@@ -303,6 +314,7 @@ fn setup(
         target: Vec3::Y * 0.8,
         overlay: true,
         animation: 0,
+        weapon: 0,
         paused: true,
         rebuild: true,
         use_candidates: true,
@@ -395,6 +407,7 @@ fn apply(action: Action, work: &mut Workbench) {
         }
         Action::Overlay => work.overlay = !work.overlay,
         Action::Animation => work.animation = (work.animation + 1) % ACTOR_ANIMATIONS.len(),
+        Action::Weapon => work.weapon = (work.weapon + 1) % shared::items::WeaponKind::ALL.len(),
         Action::Pause => work.paused = !work.paused,
         Action::Zoom(factor) => work.distance = (work.distance * factor).clamp(0.5, 150.),
     }
@@ -424,6 +437,7 @@ fn input(
         (KeyCode::KeyC, Action::Overlay),
         (KeyCode::Space, Action::Pause),
         (KeyCode::KeyA, Action::Animation),
+        (KeyCode::KeyW, Action::Weapon),
         (KeyCode::KeyR, Action::Reset),
     ] {
         if keys.just_pressed(key) {
@@ -513,7 +527,7 @@ fn rebuild(
     mut work: ResMut<Workbench>,
     old: Query<Entity, With<Hud>>,
     stage: Query<Entity, With<Stage>>,
-    mut previous: Local<Option<(usize, Vec3, bool, bool)>>,
+    mut previous: Local<Option<StageSignature>>,
 ) {
     if !work.rebuild {
         return;
@@ -537,7 +551,13 @@ fn rebuild(
                 (asset.min.z + asset.max.z) * 0.5,
             ) * scale
     };
-    let signature = (work.selected, scale, work.layout == 1, candidate);
+    let signature = StageSignature {
+        selected: work.selected,
+        scale,
+        compare: work.layout == 1,
+        candidate,
+        weapon: work.weapon,
+    };
     if *previous != Some(signature) {
         for entity in &stage {
             commands.entity(entity).despawn();
@@ -766,6 +786,16 @@ fn rebuild(
         controls,
         "Play / pause [Space]",
         Action::Pause,
+    );
+
+    button(
+        &mut commands,
+        controls,
+        format!(
+            "Held: {} [W]",
+            shared::items::WeaponKind::ALL[work.weapon].name()
+        ),
+        Action::Weapon,
     );
     let bottom = panel(
         &mut commands,
@@ -1080,10 +1110,20 @@ fn capture_family(
     if now < 4. || now < *next_at {
         return;
     }
-    let compare = std::env::var_os("TERRA_STRUCTURE_COMPARE").is_some();
+    let compare = std::env::var_os("TERRA_STRUCTURE_COMPARE").is_some()
+        || std::env::var_os("TERRA_ITEM_COMPARE").is_some();
+    let items = std::env::var_os("TERRA_ITEM_CAPTURE").is_some();
     let structures = std::env::var_os("TERRA_STRUCTURE_CAPTURE").is_some();
-    let prefix = if structures { "structure." } else { "scenery." };
-    let directory = if structures {
+    let prefixes: &[&str] = if items {
+        &["material.", "weapon.", "actor."]
+    } else if structures {
+        &["structure."]
+    } else {
+        &["scenery."]
+    };
+    let directory = if items {
+        "/tmp/terra-items-review"
+    } else if structures {
         "/tmp/terra-structures-review"
     } else {
         "/tmp/terra-scenery-review"
@@ -1093,19 +1133,41 @@ fn capture_family(
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.name.starts_with(prefix) && e.candidate.is_some())
+        .filter(|(_, e)| {
+            prefixes.iter().any(|prefix| e.name.starts_with(prefix)) && e.candidate.is_some()
+        })
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(family.len(), if structures { 17 } else { 37 });
-    if *phase >= family.len() * 2 {
+    assert_eq!(
+        family.len(),
+        if items {
+            12
+        } else if structures {
+            17
+        } else {
+            37
+        }
+    );
+    let cases: Vec<(usize, usize)> = family
+        .iter()
+        .flat_map(|&index| {
+            let count = if items && work.entries[index].name.starts_with("actor.") {
+                3
+            } else {
+                1
+            };
+            (0..count).map(move |action| (index, action))
+        })
+        .collect();
+    if *phase >= cases.len() * 2 {
         println!(
-            "FAMILY PREVIEW: all {} {prefix} candidates imported, instantiated and captured",
+            "FAMILY PREVIEW: all {} family candidates imported, instantiated and captured",
             family.len()
         );
         exit.write(AppExit::Success);
         return;
     }
-    let selected = family[*phase / 2];
+    let (selected, action) = cases[*phase / 2];
     let asset = work.entries[selected].candidate.as_ref().unwrap();
     if !server.is_loaded_with_dependencies(&asset.scene) {
         return;
@@ -1117,6 +1179,11 @@ fn capture_family(
         work.layout = usize::from(compare);
         work.view = 0;
         work.overlay = true;
+        if items && work.entries[selected].name.starts_with("actor.") {
+            work.animation = action;
+            work.weapon = (selected + action) % shared::items::WeaponKind::ALL.len();
+            work.paused = false;
+        }
         let size = work.dimensions();
         work.distance = (size.max_element() * 2.7).max(2.2);
         work.target = Vec3::Y * size.y * 0.5;
@@ -1135,8 +1202,13 @@ fn capture_family(
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(format!(
-                "{directory}/{}{}.png",
+                "{directory}/{}{}{}.png",
                 work.entries[selected].name,
+                if items && work.entries[selected].name.starts_with("actor.") {
+                    format!("-{}", ACTOR_ANIMATIONS[action])
+                } else {
+                    String::new()
+                },
                 if compare { "-compare" } else { "" }
             )));
         *next_at = now + 0.15;
@@ -1369,18 +1441,11 @@ fn attach_pilot_weapon(
     parents: Query<&ChildOf>,
     playback: Query<&ActorPlayback>,
 ) {
-    let Some(actor) = work
-        .entries
-        .iter()
-        .find(|e| e.name == "actor.player")
-        .and_then(|e| e.candidate.as_ref())
-    else {
-        return;
-    };
+    let weapon_name = shared::items::WeaponKind::ALL[work.weapon].asset_name();
     let Some(weapon) = work
         .entries
         .iter()
-        .find(|e| e.name == "weapon.knife")
+        .find(|e| e.name == weapon_name)
         .and_then(|e| e.candidate.as_ref())
     else {
         return;
@@ -1392,14 +1457,19 @@ fn attach_pilot_weapon(
         if parents
             .iter_ancestors(entity)
             .filter_map(|p| playback.get(p).ok())
-            .any(|p| p.source == actor.source)
+            .any(|p| {
+                work.entries
+                    .iter()
+                    .filter_map(|e| e.candidate.as_ref())
+                    .any(|a| a.source == p.source)
+            })
         {
             commands
                 .entity(entity)
                 .insert(PilotWeaponAttached)
                 .with_child((
                     WorldAssetRoot(weapon.scene.clone()),
-                    shared::asset_contract::grip_transform("weapon.knife").unwrap(),
+                    shared::asset_contract::grip_transform(weapon_name).unwrap(),
                 ));
         }
     }

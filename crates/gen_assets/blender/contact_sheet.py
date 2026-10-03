@@ -51,7 +51,8 @@ def render(output, family='scenery'):
         camera_data.type='ORTHO';scene.camera=camera
         up=camera.rotation_euler.to_quaternion() @ Vector((0,1,0))
         right=Vector((1,0,0))
-        sources=sorted((s for s in bpy.data.scenes if s.name.startswith('structure.' if family=='structures' else 'scenery.') and s.get(owner)), key=lambda s:s.name)
+        prefixes = {'scenery': ('scenery.',), 'structures': ('structure.',), 'items': ('material.', 'weapon.'), 'actors': ('actor.',)}[family]
+        sources=sorted((s for s in bpy.data.scenes if s.name.startswith(prefixes) and s.get(owner)), key=lambda s:s.name)
         tall=[s for s in sources if s.name.startswith(('scenery.tree.','scenery.dead_tree.'))]
         ground=[s for s in sources if s not in tall]
         groups=[(tall,'trees',3,4.2),(ground,'ground',5,1.7)]
@@ -59,6 +60,11 @@ def render(output, family='scenery'):
             buildings=[s for s in sources if s.name.split('.')[-1] in ['house','watchtower','well','tent','ruin','suspension']]
             props=[s for s in sources if s not in buildings]
             groups=[(buildings,'buildings',3,4.8),(props,'props',3,3.6)]
+        if family=='items':
+            groups=[([s for s in sources if s.name.startswith('material.')],'materials',4,.7),
+                    ([s for s in sources if s.name.startswith('weapon.')],'weapons',5,1.55)]
+        elif family=='actors':
+            groups=[(sources,'actors',3,1.55)]
         output=Path(output);output.mkdir(parents=True,exist_ok=True)
         def label(body,position,size):
             curve=bpy.data.curves.new('review.label','FONT');curve.body=body;curve.size=size
@@ -73,7 +79,8 @@ def render(output, family='scenery'):
             scene.render.resolution_y=round(2400*height/width)
             camera_data.ortho_scale=max(width,height)*1.06
             before=set(scene.objects)
-            label('TERRA / '+title.upper()+' / meters / dark bars = 1 m',right*(-width/2+.13)+up*(height/2-.3),cell*.055)
+            reference = .25 if title=='materials' else 1
+            label('TERRA / '+title.upper()+f' / meters / dark bars = {reference:g} m',right*(-width/2+.13)+up*(height/2-.3),cell*.055)
             for index,source in enumerate(group):
                 col=index%columns;row=index//columns
                 origin=right*((col-(columns-1)/2)*cell)+up*((rows/2-row-.85)*cell)
@@ -85,7 +92,9 @@ def render(output, family='scenery'):
                     clone=obj.copy();clone.data=obj.data
                     scene.collection.objects.link(clone)
                     clone.parent=None
-                    clone.matrix_world=Matrix.Rotation(math.pi,4,'Z') @ obj.matrix_world
+                    clone.modifiers.clear()
+                    angle = math.pi + (1.15 if source.name in ('weapon.pistol','weapon.rifle') else 0)
+                    clone.matrix_world=Matrix.Rotation(angle,4,'Z') @ obj.matrix_world
                     clone.location+=origin
                     points += [obj.matrix_world @ v.co for v in obj.data.vertices]
                 bpy.context.window.scene=scene
@@ -93,8 +102,8 @@ def render(output, family='scenery'):
                 dims=[max(p[i] for p in points)-min(p[i] for p in points) for i in range(3)]
                 label(source.name.split('.',1)[1],origin+right*(-cell*.45)-up*(cell*(.22 if family=='structures' else .14)),cell*.061)
                 label(f'{dims[0]:.2f} x {dims[2]:.2f} x {dims[1]:.2f} m',origin+right*(-cell*.45)-up*(cell*(.29 if family=='structures' else .22)),cell*.043)
-                bpy.ops.mesh.primitive_cube_add(size=1,location=origin+right*(-cell*.44)+Vector((0,0,.5)))
-                bar=bpy.context.object;bar.scale=(.012,.012,1);bar.data.materials.append(ink)
+                bpy.ops.mesh.primitive_cube_add(size=1,location=origin+right*(-cell*.44)+Vector((0,0,reference/2)))
+                bar=bpy.context.object;bar.scale=(.012,.012,reference);bar.data.materials.append(ink)
             scene.render.filepath=str(output/f'terra-{family}-{title}.png')
             bpy.ops.render.render(write_still=True)
             for obj in set(scene.objects)-before:
@@ -113,7 +122,7 @@ if __name__=='__main__':
     import generate
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out-dir',type=Path,default=Path('/tmp/terra-scenery-review'))
-    parser.add_argument('--family', choices=['scenery','structures'], default='scenery')
+    parser.add_argument('--family', choices=['scenery','structures','items','actors'], default='scenery')
     args=parser.parse_args()
     script=Path(__file__).resolve()
     print(generate.execute(f"import runpy\nmodule = runpy.run_path({str(script)!r})\nresult = module['render']({str(args.out_dir.resolve())!r}, {args.family!r})\nresult"))

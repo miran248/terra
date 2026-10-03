@@ -114,28 +114,28 @@ class Model:
         return obj
 
 
-def humanoid():
-    m = Model('actor.player')
+def humanoid(name='actor.player', skin='skin', coat='sage', trousers='lavender', scarf='clay_light'):
+    m = Model(name)
     for sign, side in [(-1, 'left'), (1, 'right')]:
         x = sign*.068
         m.rings(side+'.boot', [(x,-.020,0,.041,.077),(x,-.023,.043,.041,.077),(x,0,.095,.037,.041)], 'dark_wood')
-        m.rings(side+'.leg', [(x,0,.065,.031,.036),(x,0,.26,.038,.042),(sign*.058,0,.48,.051,.051)], 'lavender')
-        m.rings(side+'.sleeve', [(sign*.142,0,.755,.050,.050),(sign*.173,0,.64,.043,.043),(sign*.179,-.006,.58,.038,.038)], 'sage')
-        m.rings(side+'.forearm', [(sign*.179,-.006,.59,.027,.028),(sign*.183,-.013,.49,.023,.025)], 'skin')
-        m.rings(side+'.hand', [(sign*.183,-.013,.51,.027,.023),(sign*.184,-.015,.445,.025,.020)], 'skin')
-    m.rings('torso', [(0,0,.44,.116,.065),(0,0,.54,.090,.054),(0,0,.70,.132,.066),(0,0,.77,.115,.057)], 'sage', 8).data.name = 'actor.player.mesh'
+        m.rings(side+'.leg', [(x,0,.065,.031,.036),(x,0,.26,.038,.042),(sign*.058,0,.48,.051,.051)], trousers)
+        m.rings(side+'.sleeve', [(sign*.142,0,.755,.050,.050),(sign*.173,0,.64,.043,.043),(sign*.179,-.006,.58,.038,.038)], coat)
+        m.rings(side+'.forearm', [(sign*.179,-.006,.59,.027,.028),(sign*.183,-.013,.49,.023,.025)], skin)
+        m.rings(side+'.hand', [(sign*.183,-.013,.51,.027,.023),(sign*.184,-.015,.445,.025,.020)], skin)
+    m.rings('torso', [(0,0,.44,.116,.065),(0,0,.54,.090,.054),(0,0,.70,.132,.066),(0,0,.77,.115,.057)], coat, 8).data.name = name + '.mesh'
     m.rings('belt', [(0,0,.51,.095,.06),(0,0,.535,.095,.06)], 'wood')
     m.box('buckle', (0,-.064,.523), (.036,.012,.030), 'linen')
-    m.rings('neck', [(0,0,.75,.035,.033),(0,0,.83,.035,.033)], 'skin')
-    m.rings('scarf', [(0,-.004,.76,.070,.047),(0,-.004,.80,.051,.04)], 'clay_light')
+    m.rings('neck', [(0,0,.75,.035,.033),(0,0,.83,.035,.033)], skin)
+    m.rings('scarf', [(0,-.004,.76,.070,.047),(0,-.004,.80,.051,.04)], scarf)
     m.box('scarf.tail', (.043,-.064,.716), (.045,.012,.100), 'clay')
-    m.rings('head', [(0,-.005,.811,.038,.044),(0,-.005,.85,.063,.059),(0,0,.934,.070,.067),(0,0,.967,.055,.055)], 'skin', 10)
+    m.rings('head', [(0,-.005,.811,.038,.044),(0,-.005,.85,.063,.059),(0,0,.934,.070,.067),(0,0,.967,.055,.055)], skin, 10)
     m.rings('hair', [(0,.009,.935,.072,.067),(0,.008,.976,.060,.056),(0,.005,1.0,.037,.035)], 'hair', 10)
     for sign, side in [(-1,'left'),(1,'right')]:
         m.box(side+'.eye', (sign*.026,-.063,.905), (.012,.006,.008), 'dark')
         m.box(side+'.brow', (sign*.026,-.064,.924), (.023,.005,.006), 'hair')
-        m.rings(side+'.ear', [(sign*.064,.002,.872,.010,.014),(sign*.068,.002,.908,.010,.014)], 'skin', 6)
-    m.box('nose', (0,-.069,.887), (.016,.021,.023), 'skin')
+        m.rings(side+'.ear', [(sign*.064,.002,.872,.010,.014),(sign*.068,.002,.908,.010,.014)], skin, 6)
+    m.box('nose', (0,-.069,.887), (.016,.021,.023), skin)
     m.box('mouth', (0,-.061,.864), (.021,.004,.004), 'wood')
     socket = m.empty('socket.hand', (.184,-.015,.474))
     socket.parent = m.root
@@ -273,11 +273,18 @@ def generate(out_dir):
     try:
         scenery = runpy.run_path(str(Path(__file__).with_name('scenery.py')))
         structures = runpy.run_path(str(Path(__file__).with_name('structures.py')))
-        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model) + structures['recipes'](Model):
+        actors = runpy.run_path(str(Path(__file__).with_name('actors.py')))
+        items = runpy.run_path(str(Path(__file__).with_name('items.py')))
+        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model) + structures['recipes'](Model) + items['recipes'](Model) + actors['recipes'](humanoid):
+            # Blender names are global, but sockets are a per-export scene API.
+            for socket_name in ('socket.hand', 'socket.grip'):
+                previous = bpy.data.objects.get(socket_name)
+                if previous is not None and previous.get(OWNER):
+                    previous.name = previous.parent.name + '.' + socket_name
             model = build()
             # All recipes use a ground pivot even when a thin leaf or root extends below zero.
             meshes = [o for o in model.scene.objects if o.type == 'MESH']
-            if model.name not in ('actor.player', 'structure.house', 'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'):
+            if not model.name.startswith('actor.') and model.name not in ('structure.house', 'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'):
                 bottom = min(v.co.z for obj in meshes for v in obj.data.vertices)
                 for obj in meshes:
                     for vertex in obj.data.vertices:
@@ -304,8 +311,12 @@ def generate(out_dir):
                 local = (step[0]/model.root.scale.x, step[2]/model.root.scale.y, step[1]/model.root.scale.z)
                 for sign, end in [(-1, 'start'), (1, 'end')]:
                     model.empty(model.name+'.socket.repeat.'+end, tuple(sign*v/2 for v in local)).parent = model.root
+            if model.name.startswith('weapon.') and model.name != 'weapon.knife':
+                grip = contract['grip']
+                local = (grip[0]/model.root.scale.x, grip[2]/model.root.scale.y, grip[1]/model.root.scale.z)
+                model.empty('socket.grip', local).parent = model.root
             animation_bounds = None
-            if model.name == 'actor.player':
+            if model.name.startswith('actor.'):
                 animation_bounds = runpy.run_path(str(Path(__file__).with_name('rig.py')))['rig_humanoid'](model, OWNER)
             filename = model.name + '.glb'
             bpy.ops.export_scene.gltf(filepath=str(output / filename), export_format='GLB',

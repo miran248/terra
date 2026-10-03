@@ -86,3 +86,7 @@ All 37 scenery scenes are now authored through the same MCP pipeline; see the [s
 ## Structure candidates
 
 All 17 structures now have candidates; see the [structure inventory and review](structure-review.md) for dimensions, compound colliders, repeat sockets, baseline comparisons, and actual-terrain evidence. The 16 additions each export one mesh primitive. Production bridge decks and catalog activation remain separate.
+
+## Items and actor variants
+
+The candidate catalog now covers all 66 scene identities. See the [items and actors review](items-actors-review.md) for nine item scenes, three actors, grip conventions, animation checks, and review commands. The workbench cycles held weapons with W. Production activation remains #21.

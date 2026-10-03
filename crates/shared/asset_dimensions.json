@@ -18,6 +18,156 @@
       0.172721
     ]
   },
+  "actor.zombie.0": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.49,
+          0
+        ],
+        "length": 0.73,
+        "radius": 0.125,
+        "shape": "capsule"
+      }
+    ],
+    "dimensions": [
+      0.45,
+      0.98,
+      0.183
+    ]
+  },
+  "actor.zombie.1": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.52,
+          0
+        ],
+        "length": 0.76,
+        "radius": 0.14,
+        "shape": "capsule"
+      }
+    ],
+    "dimensions": [
+      0.47,
+      1.04,
+      0.195
+    ]
+  },
+  "material.cloth": {
+    "colliders": [
+      {
+        "center": [
+          0.0041,
+          0.05,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.226,
+          0.1,
+          0.163
+        ]
+      }
+    ],
+    "dimensions": [
+      0.226,
+      0.1,
+      0.163
+    ]
+  },
+  "material.metal": {
+    "colliders": [
+      {
+        "center": [
+          0.0048,
+          0.0685,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.24,
+          0.137,
+          0.16
+        ]
+      }
+    ],
+    "dimensions": [
+      0.24,
+      0.137,
+      0.16
+    ]
+  },
+  "material.rope": {
+    "colliders": [
+      {
+        "center": [
+          0.0299,
+          0.051,
+          -0.0049
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.263,
+          0.102,
+          0.215
+        ]
+      }
+    ],
+    "dimensions": [
+      0.263,
+      0.102,
+      0.215
+    ]
+  },
+  "material.wood": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.0715,
+          0.0072
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.232,
+          0.143,
+          0.32
+        ]
+      }
+    ],
+    "dimensions": [
+      0.232,
+      0.143,
+      0.32
+    ]
+  },
   "scenery.anemone": {
     "colliders": [],
     "dimensions": [
@@ -2332,6 +2482,192 @@
     "grip": [
       0,
       0.052,
+      0
+    ]
+  },
+  "weapon.pistol": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.13,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.053,
+          0.24,
+          0.065
+        ]
+      },
+      {
+        "center": [
+          0,
+          0.095,
+          -0.061
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.04,
+          0.065,
+          0.075
+        ]
+      }
+    ],
+    "dimensions": [
+      0.053,
+      0.25,
+      0.15
+    ],
+    "grip": [
+      0,
+      0.09,
+      -0.055
+    ]
+  },
+  "weapon.rifle": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.044,
+          -0.043
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.052,
+          0.088,
+          0.17
+        ]
+      },
+      {
+        "center": [
+          0,
+          0.26,
+          -0.043
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.043,
+          0.18,
+          0.12
+        ]
+      },
+      {
+        "center": [
+          0,
+          0.449,
+          0.009
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.048,
+          0.462,
+          0.079
+        ]
+      }
+    ],
+    "dimensions": [
+      0.052,
+      0.68,
+      0.18
+    ],
+    "grip": [
+      0,
+      0.265,
+      -0.055
+    ]
+  },
+  "weapon.sling": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.19,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.142,
+          0.38,
+          0.046
+        ]
+      }
+    ],
+    "dimensions": [
+      0.142,
+      0.38,
+      0.046
+    ],
+    "grip": [
+      0,
+      0.34,
+      0
+    ],
+    "grip_rotation": [
+      0,
+      0,
+      0,
+      1
+    ]
+  },
+  "weapon.spear": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.615,
+          0
+        ],
+        "length": 1.194,
+        "radius": 0.018,
+        "shape": "capsule"
+      }
+    ],
+    "dimensions": [
+      0.11,
+      1.23,
+      0.036
+    ],
+    "grip": [
+      0,
+      0.57,
       0
     ]
   }

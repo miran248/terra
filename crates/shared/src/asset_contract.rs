@@ -7,6 +7,8 @@ pub struct AssetContract {
     /// Nominal local-space displacement between adjacent repeatable modules.
     pub repeat_step: Option<[f32; 3]>,
     pub grip: Option<[f32; 3]>,
+    /// Optional hand-local orientation; absent means authored +Y points forward.
+    pub grip_rotation: Option<[f32; 4]>,
     pub dimensions: [f32; 3],
     pub colliders: Vec<CollisionPart>,
 }
@@ -40,16 +42,42 @@ pub fn candidate_contract(name: &str) -> Option<&'static AssetContract> {
     CONTRACTS.get(name)
 }
 
-/// Place an authored grip on a hand socket, with the blade pointing glTF forward.
+/// Place an authored grip on a hand socket, using its authored hand-local orientation.
 pub fn grip_transform(name: &str) -> Option<bevy::prelude::Transform> {
     use bevy::prelude::*;
-    let grip = Vec3::from_array(candidate_contract(name)?.grip?);
-    let rotation = Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2);
+    let contract = candidate_contract(name)?;
+    let grip = Vec3::from_array(contract.grip?);
+    let rotation = contract
+        .grip_rotation
+        .map(Quat::from_array)
+        .unwrap_or_else(|| Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
     Some(Transform::from_rotation(rotation).with_translation(-(rotation * grip)))
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn all_weapons_anchor_to_the_hand_with_sling_hanging_below_it() {
+        use crate::art::AssetName;
+        use bevy::prelude::*;
+        for kind in crate::items::WeaponKind::ALL {
+            let name = kind.asset_name();
+            let contract = super::candidate_contract(name).unwrap();
+            let transform = super::grip_transform(name).unwrap();
+            assert!(
+                transform
+                    .transform_point(Vec3::from_array(contract.grip.unwrap()))
+                    .length()
+                    < 1e-6
+            );
+            if name == "weapon.sling" {
+                assert!(transform.transform_point(Vec3::ZERO).y < -0.3);
+            } else {
+                assert!((transform.rotation * Vec3::Y - Vec3::NEG_Z).length() < 1e-6);
+            }
+        }
+    }
+
     #[test]
     fn every_terrain_selected_scenery_variant_has_a_dimension_contract() {
         use crate::{art::*, terrain::Terrain};

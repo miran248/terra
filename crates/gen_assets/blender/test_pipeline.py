@@ -34,6 +34,69 @@ def float_accessor(path, doc, index):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_all_three_actors_share_rig_clips_and_hand_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            assets = json.loads((Path(temporary) / 'manifest.json').read_text())['assets']
+            self.assertEqual({n for n in assets if n.startswith('actor.')},
+                             {'actor.player', 'actor.zombie.0', 'actor.zombie.1'})
+            for name in ['actor.player', 'actor.zombie.0', 'actor.zombie.1']:
+                with self.subTest(actor=name):
+                    path = Path(temporary) / (name+'.glb')
+                    doc = document(path)
+                    self.assertEqual(len(doc['skins'][0]['joints']), 15)
+                    self.assertEqual({a['name'] for a in doc['animations']}, {'idle','walk','attack'})
+                    socket = next(i for i,n in enumerate(doc['nodes']) if n.get('name') == 'socket.hand')
+                    self.assertEqual(next(n for n in doc['nodes'] if socket in n.get('children', []))['name'], 'hand.right')
+                    self.assertAlmostEqual(bounds(doc, doc['scenes'][0])[1], 0, places=5)
+                    self.assertTrue(.95 <= assets[name]['dimensions'][1] <= 1.05)
+                    for extent in assets[name]['animation_bounds'].values():
+                        self.assertGreaterEqual(extent[1], -1e-5)
+                        self.assertLess(extent[4], assets[name]['dimensions'][1]+.05)
+                    for clip in doc['animations']:
+                        for sampler in clip['samplers']:
+                            self.assertAlmostEqual(doc['accessors'][sampler['input']]['max'][0], 1.0)
+                            channel = float_accessor(path, doc, sampler['output'])
+                            for first, last in zip(channel[0], channel[-1]):
+                                self.assertAlmostEqual(first, last, places=5)
+
+    def test_items_preserve_all_nine_identities_and_meter_grip_anchors(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            assets = json.loads((output / 'manifest.json').read_text())['assets']
+            expected = {'material.'+n for n in ['metal', 'wood', 'rope', 'cloth']} | {
+                'weapon.'+n for n in ['knife', 'spear', 'pistol', 'sling', 'rifle']}
+            self.assertEqual({n for n in assets if n.startswith(('material.', 'weapon.'))}, expected)
+            contracts = json.loads((SCRIPT.parents[3] / 'crates/shared/asset_dimensions.json').read_text())
+            for name in sorted(expected):
+                with self.subTest(scene=name):
+                    doc = document(output / (name+'.glb'))
+                    self.assertEqual([s['name'] for s in doc['scenes']], [name])
+                    extent = bounds(doc, doc['scenes'][0])
+                    self.assertAlmostEqual(extent[1], 0, places=5)
+                    self.assertTrue(assets[name]['collider'])
+                    self.assertEqual(assets[name]['runtime_scale'], [1,1,1])
+                    self.assertFalse(doc.get('textures'))
+                    for part in assets[name]['collider']:
+                        size = part.get('size', [part.get('radius', 0)*2,
+                            part.get('length', 0)+part.get('radius', 0)*2, part.get('radius', 0)*2])
+                        for axis in range(3):
+                            self.assertGreaterEqual(part['center'][axis]-size[axis]/2, extent[axis]-.012)
+                            self.assertLessEqual(part['center'][axis]+size[axis]/2, extent[axis+3]+.012)
+                    if name.startswith('weapon.'):
+                        transforms = {}
+                        def visit(index, parent):
+                            node = doc['nodes'][index]
+                            transform = multiply(parent, matrix(node))
+                            transforms[node.get('name')] = transform
+                            for child in node.get('children', []):
+                                visit(child, transform)
+                        for root in doc['scenes'][0]['nodes']:
+                            visit(root, IDENTITY)
+                        for actual, expected in zip(transforms['socket.grip'][12:15], contracts[name]['grip']):
+                            self.assertAlmostEqual(actual, expected, places=5)
+
     def test_exports_isolated_named_pair_at_meter_scale(self):
         with tempfile.TemporaryDirectory() as temporary:
             result = subprocess.run([sys.executable, str(SCRIPT), "--out-dir", temporary],

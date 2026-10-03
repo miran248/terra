@@ -5,6 +5,17 @@ from mathutils import Vector, Quaternion
 
 
 def rig_humanoid(model, owner):
+    # Keep the approved player byte-stable. New variants bake their dimensions
+    # into mesh and skeleton together: glTF skin export must not inherit a fit scale.
+    fit = model.root.scale.copy() if model.name != 'actor.player' else Vector((1,1,1))
+    if model.name != 'actor.player':
+        for obj in model.scene.objects:
+            if obj.type == 'MESH':
+                for vertex in obj.data.vertices:
+                    vertex.co = Vector(tuple(vertex.co[i]*fit[i] for i in range(3)))
+            elif obj.parent == model.root:
+                obj.location = Vector(tuple(obj.location[i]*fit[i] for i in range(3)))
+        model.root.scale = (1,1,1)
     armature = bpy.data.armatures.new(model.name + '.skeleton')
     armature[owner] = True
     rig = bpy.data.objects.new(model.name + '.rig', armature)
@@ -17,7 +28,8 @@ def rig_humanoid(model, owner):
 
     def bone(name, head, tail, parent=None):
         item = armature.edit_bones.new(name)
-        item.head, item.tail = head, tail
+        item.head = tuple(head[i]*fit[i] for i in range(3))
+        item.tail = tuple(tail[i]*fit[i] for i in range(3))
         if parent:
             item.parent = armature.edit_bones[parent]
         return item
@@ -50,7 +62,7 @@ def rig_humanoid(model, owner):
         if limb == 'leg':
             lower = obj.vertex_groups.new(name='shin.'+side)
             for vertex in obj.data.vertices:
-                upper_weight = max(0., min(1., (vertex.co.z-.23)/.06))
+                upper_weight = max(0., min(1., (vertex.co.z/fit.z-.23)/.06))
                 if upper_weight:
                     group.add([vertex.index], upper_weight, 'REPLACE')
                 if upper_weight < 1:
@@ -118,7 +130,7 @@ def rig_humanoid(model, owner):
             boots = [o for o in model.scene.objects if o.type == 'MESH' and '.boot' in o.name]
             lowest = min((o.evaluated_get(depsgraph).matrix_world @ v.co).z
                 for o in boots for v in o.evaluated_get(depsgraph).data.vertices)
-            rig.pose.bones['root'].location = armature.bones['root'].matrix_local.to_quaternion().inverted() @ Vector((0,0,-lowest))
+            rig.pose.bones['root'].location = armature.bones['root'].matrix_local.to_quaternion().inverted() @ Vector((0,0,-lowest/model.root.scale.z))
             for pose in rig.pose.bones:
                 pose.keyframe_insert('rotation_quaternion', frame=frame, group=pose.name)
                 pose.keyframe_insert('location', frame=frame, group=pose.name)

@@ -1,6 +1,6 @@
 # Structure candidates and review
 
-Ticket [#19](https://github.com/miran248/terra/issues/19) extends the approved house construction style to all 17 structure scenes. The house is retained; the other 16 scenes add readable joinery, masonry courses, framing, planks, roof slabs, and hardware. The family verdict is pending. Production activation remains #21.
+Ticket [#19](https://github.com/miran248/terra/issues/19) extends the approved house construction style to all 17 structure scenes. The house is retained; the other 16 scenes add readable joinery, masonry courses, framing, planks, roof slabs, and hardware. The user approved the family (“looking good!”); #19 is closed. Production activation remains #21.
 
 ## Reproduce and inspect
 
@@ -70,6 +70,6 @@ Dimensions are width × height × depth in meters; collider counts reflect compo
 - Actual Avian checks cover open interiors, stepped ruin clearance, narrow lamp shafts, solid deck/roof surfaces, and contact between adjacent repeated modules. Existing player/tree ground and clearance checks remain green.
 - 117 workspace tests, 10 preview tests, and 11 Blender integration tests passed. Final collision refinements were rechecked with focused Rust/export tests. Workspace check/Clippy and formatting pass with existing unrelated warnings. Candidate files/manifest reproduce byte-for-byte; baseline catalogs also still match their unchanged generator.
 - All 17 candidates were imported, instantiated and captured in Bevy, including baseline comparisons. Both Blender contact sheets and representative Bevy well/fence/tower/tent views were inspected. The actual-planet overview, collision overlay, and connected-module view were also inspected. A roughly 121 FPS display-limited debug smoke sample is not a populated-world performance guarantee; that remains #21.
-- Standards review: no remaining findings against the root/subtree contracts. Spec review: implementation and review artifacts complete; human family acceptance remains pending. Reviews were performed separately in the main session per the user's request to continue here rather than delegate.
+- Standards review: no remaining findings against the root/subtree contracts. Spec review: implementation and review artifacts complete; human family acceptance was subsequently received. Reviews were performed separately in the main session per the user's request to continue here rather than delegate.
 
-The next implementation ticket is #20 (remaining items and actors), after the structure-family verdict required by #19.
+The next implementation ticket is #20 (remaining items and actors), now unblocked by the structure-family approval.
