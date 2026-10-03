@@ -36,10 +36,14 @@ observation for the later exit decision, not an exit implementation.
 | Camera release and orientation easing | Exponential blend at 6/s |
 
 Gravity and collisions remain Avian-owned. Driving starts from the actual
-physics velocity, preserves motion normal to the support, and applies traction
-along the surface. There is no throttle, grip, or steering while airborne or
+physics velocity and applies traction along the surface. While a driveable
+support is within the existing probe reach, it removes velocity directed away
+from that surface so leftover uphill momentum does not launch the car over
+small crests. Inward velocity remains for physics to resolve. There is no throttle, grip, or steering while airborne or
 on supports steeper than 45°. Gravity can still carry the car downhill and
-external impulses can exceed powered-speed limits temporarily.
+external tangential impulses can exceed powered-speed limits temporarily. Ground
+adhesion suppresses outward impulses while driveable support is still in reach;
+once airborne, the controller leaves velocity unchanged and steering disabled.
 
 Terrain, ice, and bridge meshes correct internal triangle-edge contacts so
 shared edges do not act like obstacles. Support changes do not rotate the
@@ -105,11 +109,12 @@ the actual driving plugin. It checks support and powered movement, then lifts
 the car a metre and checks that it becomes airborne. The original center-only
 probe failed this scenario; the footprint probes pass.
 
-Two headless replays use positions, headings, and velocities captured from live
+Three headless replays use positions, headings, and velocities captured from live
 seed-1337 driving. One crosses a gentle terrain edge that previously stopped
 the car from 30 m/s; the other climbs an ice bank that previously launched it.
-They exercise the production mesh-collider builder and driving plugin, checking
-continued speed and ground support. These replace the synthetic flat-to-30°
+A third holds steering over a captured crest that previously caused a short
+airborne interval and a steering pause. They exercise the production mesh-collider
+builder and driving plugin, checking continued speed, ground support, and steering. These replace the synthetic flat-to-30°
 join test, which did not capture the live failure. A shared-model regression
 checks that changing support does not add a velocity impulse. Further live
 terrain testing is still required to judge handling.

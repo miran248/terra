@@ -100,7 +100,9 @@ impl CarMotion {
         Self {
             velocity: forward * next_speed
                 + side * velocity.dot(side) * (-8.0 * dt).exp()
-                + normal * velocity.dot(normal),
+                // Ground adhesion: do not carry uphill momentum away from a
+                // descending support. Keep inward velocity for physics to resolve.
+                + normal * velocity.dot(normal).min(0.0),
             heading,
         }
     }

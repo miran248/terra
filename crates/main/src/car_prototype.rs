@@ -133,6 +133,42 @@ mod tests {
     }
 
     #[test]
+    fn captured_crest_keeps_ground_contact_and_steering() {
+        let (mut app, car) = replay_car(
+            Vec3::new(-1676.6333, -1096.849, 271.30713),
+            Vec3::new(-0.26067144, 0.5875229, 0.76607263),
+            Vec3::new(-6.6882915, 19.858925, 21.473635),
+            false,
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyD);
+        for _ in 0..24 {
+            let before = app.world().get::<Player>(car).unwrap().heading;
+            app.update();
+            assert!(
+                app.world()
+                    .get::<CarPrototype>(car)
+                    .unwrap()
+                    .support
+                    .is_some(),
+                "car lost contact on the captured crest"
+            );
+            assert!(
+                app.world().get::<LinearVelocity>(car).unwrap().0.length() > 25.0,
+                "ground following must preserve useful driving speed"
+            );
+            let after = app.world().get::<Player>(car).unwrap().heading;
+            let up = app.world().get::<Position>(car).unwrap().0.normalize();
+            let turn = before.cross(after).dot(up);
+            assert!(
+                turn < -0.001,
+                "held steering paused on the captured crest: turn={turn}"
+            );
+        }
+    }
+
+    #[test]
     fn captured_ice_bank_keeps_the_car_supported() {
         let (mut app, car) = replay_car(
             Vec3::new(-1327.5901, -1439.8948, 397.2706),
