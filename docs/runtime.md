@@ -29,6 +29,7 @@
 ## Physics and input
 
 - The opt-in [on-foot prototype](../crates/main/on-foot-prototype.md) compares exploration movement and camera framing on the actual planet via `just on-foot-prototype`; it does not change the default game settings.
+- The opt-in [car prototype](../crates/main/car-prototype.md) replaces the controlled body with a simple arcade car via `just car-prototype`. It owns driving and camera when enabled, uses existing world colliders, and keeps vehicle lifecycle and production assets out of scope.
 
 - Actors use Avian3d `RigidBody`, `Collider`, and `Forces` plus custom `RadialGravity`. Read normal position from the physics-synchronized `Transform.translation`. Teleports update Avian `Position` and velocity; never author motion by editing `Transform`.
 - Player movement overrides tangential velocity through `Forces::linear_velocity_mut()` while preserving radial velocity; gravity applies force continuously. The approved 1 m actor capsule uses a body-center origin; its ground-pivot visual is offset down by half its height, at scale one. Terrain margin is .02 m and swept CCD remains enabled.

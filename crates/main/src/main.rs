@@ -4,13 +4,15 @@ mod asset_catalog;
 mod asset_collision;
 #[cfg(feature = "asset-review")]
 mod asset_showcase_prototype;
+#[cfg(feature = "car-prototype")]
+mod car_prototype;
 mod chunks;
 // mod combat;
 mod constants;
 // mod loot;
 mod map;
 mod minimap;
-#[cfg(feature = "on-foot-prototype")]
+#[cfg(all(feature = "on-foot-prototype", not(feature = "car-prototype")))]
 mod on_foot_prototype;
 mod physics;
 // mod prestige;
@@ -94,8 +96,10 @@ fn main() {
         asset_showcase_prototype::AssetShowcasePlugin,
         asset_acceptance::AssetAcceptancePlugin,
     ));
-    #[cfg(feature = "on-foot-prototype")]
+    #[cfg(all(feature = "on-foot-prototype", not(feature = "car-prototype")))]
     app.add_plugins(on_foot_prototype::OnFootPrototypePlugin);
+    #[cfg(feature = "car-prototype")]
+    app.add_plugins(car_prototype::CarPrototypePlugin);
     app.run();
 }
 

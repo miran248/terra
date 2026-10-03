@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 on-foot-prototype = []
+car-prototype = []
 
 [dependencies]
 bevy = "0.19.0"

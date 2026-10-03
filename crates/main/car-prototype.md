@@ -1,0 +1,83 @@
+# Arcade car handling prototype
+
+Decision ticket: [Validate arcade car handling](https://github.com/miran248/terra/issues/24).
+
+Run `just car-prototype`. This feature-gated, throwaway experiment starts you
+already seated in a placeholder car at the normal settlement spawn. It uses the
+existing planet, roads, physics terrain, bridges, and obstacle colliders. It
+does not implement summoning, vehicle ownership, or entry/exit. Normal `just run`
+and `just on-foot-prototype` keep their existing behavior. When both prototype
+features are enabled, the car owns movement and camera.
+
+- **W** accelerates forward, or brakes when reversing.
+- **S** brakes forward motion to a stop, then reverses while held.
+- **A/D** steer; reversing reverses the turning direction. Steering requires
+  motion and becomes gentler at higher speed.
+- **R** resets position, heading, and velocity to the prototype's spawn.
+
+The overlay shows signed forward speed, support slope/airborne state, and whether
+the car is nearly stopped (supported and below 0.5 m/s). The latter is an
+observation for the later exit decision, not an exit implementation.
+
+## Starting parameters
+
+| Parameter | Value |
+| --- | --- |
+| Forward / reverse powered speed | 30 / 8 m/s |
+| Acceleration / braking / coasting deceleration | 6 / 12 / 2 m/s² |
+| Sideways grip | Exponential decay at 8/s |
+| Steering | Up to 1.5 rad/s, reduced with speed; fades below 2 m/s |
+| Powered slope limit | 45° relative to local spherical up |
+| Body / mass | 1.8 × 0.8 × 3.2 m box / 800 kg |
+| Gravity | 20 m/s² toward the planet center |
+| Camera height / back / look ahead | 3 / 8 / 15 m from body center |
+| Camera obstruction | 0.2 m sphere with 0.1 m clearance |
+| Camera release and orientation easing | Exponential blend at 6/s |
+
+Gravity and collisions remain Avian-owned. Driving starts from the actual
+physics velocity, preserves motion normal to the support, and applies traction
+along the surface. There is no throttle, grip, or steering while airborne or
+on supports steeper than 45°. Gravity can still carry the car downhill and
+external impulses can exceed powered-speed limits temporarily.
+
+Rollover policy for this experiment is an upright chassis relative to the
+planet. This intentionally favors easy exploration over simulated suspension.
+The colored body, cabin, and static wheels are primitive placeholders, not
+production assets. Wheels are visual only; the chassis box owns collision.
+
+## Human evaluation
+
+1. On a road, accelerate, release W, brake with S, then continue holding S to
+   reverse. Compare stopping distance with visible landmarks.
+2. Turn at low, medium, and full speed; back around a corner. Does steering feel
+   predictable and forgiving without being too sharp?
+3. Leave the road for uneven ground. Check traction, obstacle contacts, and
+   whether the rigid chassis catches too often on terrain.
+4. Approach gentle and steep slopes. Check the powered climbing cutoff,
+   downhill motion, landings, and upright assistance. Reset with R if stuck.
+5. Drive beside walls, trees, slopes, and bridges. Check camera retraction,
+   smooth release, local horizon, and enough visibility ahead.
+6. Come to a complete stop and inspect the nearly-stopped indicator. Actual
+   exiting remains in the vehicle lifecycle decision.
+
+Record feedback on the ticket before resolving handling and camera values.
+
+## Limits to carry into integration
+
+Support is one 0.75 m center ray. There are no wheel contacts or suspension,
+and the chassis does not pitch or roll to match slopes. This can make sharp
+crests and uneven ground difficult and is a specific point for feedback.
+Reset always returns to the starting spot; there is no water recovery rule or
+safe-placement search. Use R rather than the on-foot map teleport, whose
+placement clearance has not been adapted to the car.
+
+Camera collision follows physics colliders; foliage without colliders can
+obscure the view. If the camera cast begins overlapped, it retracts to the body
+center. The sphere approximates near-plane clearance. Camera orientation and
+obstruction release are smoothed; emergency retraction is immediate.
+
+The shared-model tests cover acceleration, braking before reverse, speed limits,
+steering, grip, unsupported/steep-slope behavior, and spherical camera retraction
+and recovery. Live testing on generated terrain is still required to judge feel
+and find limits of the simple support model. No production vehicle lifecycle or
+asset decision is implied by this prototype.

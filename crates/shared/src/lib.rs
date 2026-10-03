@@ -3,6 +3,8 @@ mod coarse_river;
 pub mod actor_animation;
 pub mod art;
 pub mod asset_contract;
+#[cfg(feature = "car-prototype")]
+pub mod car_prototype;
 pub mod items;
 pub mod level;
 #[cfg(feature = "on-foot-prototype")]

@@ -270,12 +270,17 @@ impl Plugin for MapPlugin {
                 Update,
                 read_player_input.run_if(in_state(AppState::Playing)),
             )
-            .add_systems(FixedUpdate, move_player.run_if(in_state(AppState::Playing)))
+            .add_systems(
+                FixedUpdate,
+                move_player
+                    .run_if(in_state(AppState::Playing))
+                    .run_if(|| !cfg!(feature = "car-prototype")),
+            )
             .add_systems(
                 Update,
                 (
                     orient_player,
-                    camera_follow,
+                    camera_follow.run_if(|| !cfg!(feature = "car-prototype")),
                     diagnose_player_fall,
                     drive_daynight,
                     drive_fog,
@@ -291,7 +296,7 @@ impl Plugin for MapPlugin {
 
 use shared::state::AppState;
 
-fn setup_map(
+pub(crate) fn setup_map(
     motion: Res<crate::shader_motion::ShaderMotionBuffer>,
     mut commands: Commands,
     catalog: Res<crate::asset_catalog::AssetCatalog>,

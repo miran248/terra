@@ -44,7 +44,10 @@ Compare both modes at the same locations:
 
 ## Limits and evidence
 
-This is throwaway, feature-gated code awaiting live feedback. The proposed camera
+The human accepted the proposed starting values after trying the prototype and
+reporting that it is “much better”; the decision ticket is closed. That feedback
+does not claim every scenario above was separately exercised. This remains
+throwaway, feature-gated code for later production integration. The proposed camera
 uses direct placement and orientation to isolate framing; it does not yet ease
 obstruction release or mode changes. It tests physics colliders, so non-colliding
 foliage can still obscure the view. If the cast origin already overlaps an

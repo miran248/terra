@@ -54,3 +54,7 @@ run:
 # Compare current and proposed on-foot controls on the actual planet.
 on-foot-prototype:
     cargo run -p main --features on-foot-prototype
+
+# Drive a placeholder car through the existing world.
+car-prototype:
+    cargo run -p main --features car-prototype
