@@ -4,6 +4,8 @@ use std::{collections::BTreeMap, sync::LazyLock};
 
 #[derive(Debug, Deserialize)]
 pub struct AssetContract {
+    /// Nominal local-space displacement between adjacent repeatable modules.
+    pub repeat_step: Option<[f32; 3]>,
     pub grip: Option<[f32; 3]>,
     pub dimensions: [f32; 3],
     pub colliders: Vec<CollisionPart>,

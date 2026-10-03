@@ -3,7 +3,7 @@ import argparse
 from pathlib import Path
 
 
-def render(output):
+def render(output, family='scenery'):
     import bpy
     import math
     from mathutils import Vector, Matrix
@@ -51,16 +51,21 @@ def render(output):
         camera_data.type='ORTHO';scene.camera=camera
         up=camera.rotation_euler.to_quaternion() @ Vector((0,1,0))
         right=Vector((1,0,0))
-        sources=sorted((s for s in bpy.data.scenes if s.name.startswith('scenery.') and s.get(owner)), key=lambda s:s.name)
+        sources=sorted((s for s in bpy.data.scenes if s.name.startswith('structure.' if family=='structures' else 'scenery.') and s.get(owner)), key=lambda s:s.name)
         tall=[s for s in sources if s.name.startswith(('scenery.tree.','scenery.dead_tree.'))]
         ground=[s for s in sources if s not in tall]
+        groups=[(tall,'trees',3,4.2),(ground,'ground',5,1.7)]
+        if family=='structures':
+            buildings=[s for s in sources if s.name.split('.')[-1] in ['house','watchtower','well','tent','ruin','suspension']]
+            props=[s for s in sources if s not in buildings]
+            groups=[(buildings,'buildings',3,4.8),(props,'props',3,3.6)]
         output=Path(output);output.mkdir(parents=True,exist_ok=True)
         def label(body,position,size):
             curve=bpy.data.curves.new('review.label','FONT');curve.body=body;curve.size=size
             obj=bpy.data.objects.new('review.label',curve);scene.collection.objects.link(obj)
             obj.location=position;obj.rotation_euler=camera.rotation_euler
             curve.materials.append(ink)
-        for group,title,columns,cell in [(tall,'trees',3,4.2),(ground,'ground',5,1.7)]:
+        for group,title,columns,cell in groups:
             rows=math.ceil(len(group)/columns)
             width=columns*cell
             height=rows*cell*1.03+.8
@@ -86,15 +91,15 @@ def render(output):
                 bpy.context.window.scene=scene
                 # Shared scale within a sheet, actual meter labels, no per-object normalization.
                 dims=[max(p[i] for p in points)-min(p[i] for p in points) for i in range(3)]
-                label(source.name.removeprefix('scenery.'),origin+right*(-cell*.45)-up*(cell*.14),cell*.061)
-                label(f'{dims[0]:.2f} x {dims[2]:.2f} x {dims[1]:.2f} m',origin+right*(-cell*.45)-up*(cell*.22),cell*.043)
+                label(source.name.split('.',1)[1],origin+right*(-cell*.45)-up*(cell*(.22 if family=='structures' else .14)),cell*.061)
+                label(f'{dims[0]:.2f} x {dims[2]:.2f} x {dims[1]:.2f} m',origin+right*(-cell*.45)-up*(cell*(.29 if family=='structures' else .22)),cell*.043)
                 bpy.ops.mesh.primitive_cube_add(size=1,location=origin+right*(-cell*.44)+Vector((0,0,.5)))
                 bar=bpy.context.object;bar.scale=(.012,.012,1);bar.data.materials.append(ink)
-            scene.render.filepath=str(output/f'terra-scenery-{title}.png')
+            scene.render.filepath=str(output/f'terra-{family}-{title}.png')
             bpy.ops.render.render(write_still=True)
             for obj in set(scene.objects)-before:
                 remove_review_object(obj)
-        return {'sheets':[str(output/f'terra-scenery-{g}.png') for g in ['trees','ground']]}
+        return {'sheets':[str(output/f'terra-{family}-{g[1]}.png') for g in groups]}
     finally:
         bpy.context.window.scene=original
         for obj in list(scene.objects):
@@ -108,6 +113,7 @@ if __name__=='__main__':
     import generate
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--out-dir',type=Path,default=Path('/tmp/terra-scenery-review'))
+    parser.add_argument('--family', choices=['scenery','structures'], default='scenery')
     args=parser.parse_args()
     script=Path(__file__).resolve()
-    print(generate.execute(f"import runpy\nmodule = runpy.run_path({str(script)!r})\nresult = module['render']({str(args.out_dir.resolve())!r})\nresult"))
+    print(generate.execute(f"import runpy\nmodule = runpy.run_path({str(script)!r})\nresult = module['render']({str(args.out_dir.resolve())!r}, {args.family!r})\nresult"))

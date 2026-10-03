@@ -44,3 +44,7 @@ This opt-in walkthrough loads every scene and available candidate, captures insp
 ## Scenery family review
 
 All 37 scenery candidates are available through the paged catalog selector; the five original pilot shortcuts remain fixed so the sidebar fits. Use the candidate/baseline toggle and C for measurement and collision overlays. `TERRA_SCENERY_CAPTURE=1 just asset-preview` imports and instantiates every scenery scene, captures it under `/tmp/terra-scenery-review/`, then exits. It does not change the production catalog. See [scenery inventory and review](scenery-review.md) for contact sheets and canonical dimensions.
+
+## Structure family review
+
+The same paged selector includes all 17 structures. `TERRA_STRUCTURE_CAPTURE=1 just asset-preview` captures each candidate; add `TERRA_STRUCTURE_COMPARE=1` for paired baseline views. `just asset-structure-showcase` opens representative buildings and joined modules on actual terrain. See [structure review](structure-review.md) for artifacts and repeat spacing.

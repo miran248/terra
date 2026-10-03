@@ -82,3 +82,7 @@ The geometry is modest, but authoring parts currently create too many primitives
 ## Full scenery candidates
 
 All 37 scenery scenes are now authored through the same MCP pipeline; see the [scenery inventory and review](scenery-review.md). The 35 additional scenes each export one mesh primitive by joining compatible static recipe parts. The already-approved pilot tree/rock are unchanged. Nonblocking foliage has an empty collider list; the Avian adapter returns no shape for it.
+
+## Structure candidates
+
+All 17 structures now have candidates; see the [structure inventory and review](structure-review.md) for dimensions, compound colliders, repeat sockets, baseline comparisons, and actual-terrain evidence. The 16 additions each export one mesh primitive. Production bridge decks and catalog activation remain separate.

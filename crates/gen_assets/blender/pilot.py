@@ -272,7 +272,8 @@ def generate(out_dir):
     manifest = {'blender': '.'.join(map(str, VERSION)), 'seed': 0, 'assets': {}}
     try:
         scenery = runpy.run_path(str(Path(__file__).with_name('scenery.py')))
-        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model):
+        structures = runpy.run_path(str(Path(__file__).with_name('structures.py')))
+        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model) + structures['recipes'](Model):
             model = build()
             # All recipes use a ground pivot even when a thin leaf or root extends below zero.
             meshes = [o for o in model.scene.objects if o.type == 'MESH']
@@ -297,6 +298,12 @@ def generate(out_dir):
             target = contract['dimensions']
             model.root.scale = (target[0]/raw[0], target[2]/raw[1], target[1]/raw[2])
             bpy.context.view_layer.update()
+            if 'repeat_step' in contract:
+                # Socket coordinates describe nominal meter spacing, independent of fitting.
+                step = contract['repeat_step']
+                local = (step[0]/model.root.scale.x, step[2]/model.root.scale.y, step[1]/model.root.scale.z)
+                for sign, end in [(-1, 'start'), (1, 'end')]:
+                    model.empty(model.name+'.socket.repeat.'+end, tuple(sign*v/2 for v in local)).parent = model.root
             animation_bounds = None
             if model.name == 'actor.player':
                 animation_bounds = runpy.run_path(str(Path(__file__).with_name('rig.py')))['rig_humanoid'](model, OWNER)
@@ -313,6 +320,8 @@ def generate(out_dir):
             manifest['assets'][model.name] = {'file': filename, 'scene': model.name,
                 'bounds': extent, 'dimensions': [extent[i+3]-extent[i] for i in range(3)],
                 'runtime_scale': [1,1,1], 'collider': contract['colliders']}
+            if 'repeat_step' in contract:
+                manifest['assets'][model.name]['repeat_step'] = contract['repeat_step']
             if animation_bounds is not None:
                 manifest['assets'][model.name]['animation_bounds'] = animation_bounds
             if model.name == 'structure.house':

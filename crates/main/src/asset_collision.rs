@@ -51,6 +51,65 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repeated_structure_collision_surfaces_meet_at_the_shared_spacing() {
+        use avian3d::collision::collider::contact_query::contact;
+        for name in [
+            "fence",
+            "wall",
+            "guardrail",
+            "railing",
+            "dock",
+            "suspension",
+        ] {
+            let name = format!("structure.{name}");
+            let step = Vec3::from_array(
+                shared::asset_contract::candidate_contract(&name)
+                    .unwrap()
+                    .repeat_step
+                    .unwrap(),
+            );
+            let shape = candidate_collider(&name, Vec3::ONE).unwrap();
+            assert!(
+                contact(
+                    &shape,
+                    Vec3::ZERO,
+                    Quat::IDENTITY,
+                    &shape,
+                    step,
+                    Quat::IDENTITY,
+                    0.005
+                )
+                .unwrap()
+                .is_some(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn structures_keep_their_open_spaces_and_solid_surfaces() {
+        let inside = |name, point| {
+            candidate_collider(name, Vec3::ONE).unwrap().contains_point(
+                Vec3::ZERO,
+                Quat::IDENTITY,
+                point,
+            )
+        };
+        assert!(!inside("structure.ruin", Vec3::new(0.7, 0.8, 0.61)));
+        assert!(!inside("structure.lamp_post", Vec3::new(0.07, 0.8, 0.)));
+        assert!(inside("structure.lamp_post", Vec3::new(0.31, 1.34, 0.)));
+        assert!(!inside("structure.watchtower", Vec3::new(0., 1., 0.)));
+        assert!(inside("structure.watchtower", Vec3::new(0., 2.04, 0.)));
+        assert!(!inside("structure.well", Vec3::new(0., 0.23, 0.)));
+        assert!(inside("structure.well", Vec3::new(0.39, 0.23, 0.)));
+        assert!(!inside("structure.tent", Vec3::new(0., 0.6, 0.)));
+        assert!(inside("structure.tent", Vec3::new(0., 0.6, 0.91)));
+        assert!(inside("structure.tent", Vec3::new(0.4, 0.69, 0.)));
+        assert!(inside("structure.dock", Vec3::new(0., 0.41, 0.)));
+        assert!(!inside("structure.dock", Vec3::new(0., 0.15, 0.)));
+    }
+
+    #[test]
     fn nonblocking_foliage_has_no_physics_shape() {
         for name in [
             "scenery.grass",

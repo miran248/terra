@@ -1,5 +1,6 @@
 """Integration contracts for the public MCP generation command (Blender must be open)."""
 import json
+import itertools
 from pathlib import Path
 import struct
 import subprocess
@@ -9,7 +10,7 @@ import unittest
 
 SCRIPT = Path(__file__).with_name("generate.py")
 sys.path.insert(0, str(SCRIPT.parents[3] / "crates/shared/tools"))
-from glb import bounds
+from glb import bounds, matrix, multiply, IDENTITY
 
 
 def document(path):
@@ -120,6 +121,73 @@ class PipelineTests(unittest.TestCase):
                         for primitive in mesh['primitives']:
                             self.assertIn('COLOR_0', primitive['attributes'])
                             self.assertIn('NORMAL', primitive['attributes'])
+
+    def test_structure_catalog_preserves_all_17_scenes_and_physical_dimensions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            baseline_dir = Path(temporary) / 'baseline'
+            subprocess.run(['cargo', 'run', '-p', 'gen_assets', '--', '--out-dir', str(baseline_dir)],
+                           cwd=SCRIPT.parents[3], check=True, capture_output=True)
+            expected = {scene['name'] for scene in document(baseline_dir / 'structures.glb')['scenes']}
+            self.assertEqual(len(expected), 17)
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            assets = json.loads((Path(temporary) / 'manifest.json').read_text())['assets']
+            self.assertEqual({n for n in assets if n.startswith('structure.')}, expected)
+            for name in sorted(expected):
+                with self.subTest(scene=name):
+                    doc = document(Path(temporary) / (name + '.glb'))
+                    self.assertEqual([s['name'] for s in doc['scenes']], [name])
+                    self.assertIn(name + '.mesh', [m.get('name') for m in doc['meshes']])
+                    self.assertIn(name + '.material', [m.get('name') for m in doc['materials']])
+                    self.assertAlmostEqual(bounds(doc, doc['scenes'][0])[1], 0, places=5)
+                    self.assertEqual(assets[name]['runtime_scale'], [1, 1, 1])
+                    self.assertTrue(all(0 < d <= 4 for d in assets[name]['dimensions']))
+                    self.assertFalse(doc.get('textures'))
+                    self.assertTrue(all(m['pbrMetallicRoughness']['roughnessFactor'] >= .9 for m in doc['materials']))
+                    extent = assets[name]['bounds']
+                    for part in assets[name]['collider']:
+                        if part['shape'] == 'box':
+                            size = part['size']
+                        else:
+                            size = [part['radius']*2, part['length'], part['radius']*2]
+                            if part['shape'] == 'capsule':
+                                size[1] += part['radius']*2
+                        transform = matrix({'translation': part['center'], 'rotation': part.get('rotation', [0,0,0,1])})
+                        for corner in itertools.product(*[(-d/2,d/2) for d in size]):
+                            for axis in range(3):
+                                value = sum(transform[k*4+axis]*corner[k] for k in range(3))+transform[12+axis]
+                                self.assertGreaterEqual(value, extent[axis]-.025)
+                                self.assertLessEqual(value, extent[axis+3]+.025)
+                    if name != 'structure.house':
+                        self.assertEqual(sum(len(m['primitives']) for m in doc['meshes']), 1)
+                    for mesh in doc['meshes']:
+                        for primitive in mesh['primitives']:
+                            self.assertIn('COLOR_0', primitive['attributes'])
+                            self.assertIn('NORMAL', primitive['attributes'])
+
+    def test_repeated_structure_sockets_meet_at_nominal_spacing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            assets = json.loads((Path(temporary) / 'manifest.json').read_text())['assets']
+            for name, axis, length in [('fence', 0, 2.), ('wall', 0, 2.), ('guardrail', 0, 2.),
+                                       ('railing', 0, 2.), ('suspension', 0, 2.), ('dock', 2, 2.4)]:
+                doc = document(Path(temporary) / ('structure.' + name + '.glb'))
+                transforms = {}
+                def visit(index, parent):
+                    node = doc['nodes'][index]
+                    transform = multiply(parent, matrix(node))
+                    transforms[node.get('name')] = transform
+                    for child in node.get('children', []):
+                        visit(child, transform)
+                for root in doc['scenes'][0]['nodes']:
+                    visit(root, IDENTITY)
+                start = transforms['structure.'+name+'.socket.repeat.start'][12:15]
+                end = transforms['structure.'+name+'.socket.repeat.end'][12:15]
+                step = assets['structure.' + name]['repeat_step']
+                self.assertAlmostEqual(step[axis], length, places=5)
+                for i in range(3):
+                    self.assertAlmostEqual(start[i]+step[i], end[i], places=5)
+                extent = bounds(doc, doc['scenes'][0])
+                self.assertAlmostEqual(extent[axis+3], extent[axis]+length, places=5)
 
     def test_visual_exports_consume_shared_dimensions_and_collision_contract(self):
         contracts = json.loads((SCRIPT.parents[3] / 'crates/shared/asset_dimensions.json').read_text())

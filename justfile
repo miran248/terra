@@ -2,7 +2,7 @@
 asset-preview:
     python3 crates/main/examples/asset_preview_prototype.py
 
-# Generate the approved pilot and scenery candidates using the running Blender MCP add-on.
+# Generate candidate assets using the running Blender MCP add-on.
 asset-candidates:
     python3 crates/gen_assets/blender/generate.py
 
@@ -21,3 +21,11 @@ asset-showcase:
 # Generate meter-scale scenery review sheets through the running Blender MCP.
 asset-scenery-sheets: asset-candidates
     python3 crates/gen_assets/blender/contact_sheet.py
+
+# Render the structure family sheets using the running Blender MCP.
+asset-structure-sheets: asset-candidates
+    python3 crates/gen_assets/blender/contact_sheet.py --family structures --out-dir /tmp/terra-structures-review
+
+# Inspect candidate structures and repeated modules on the actual terrain.
+asset-structure-showcase:
+    TERRA_ASSET_SHOWCASE=1 TERRA_STRUCTURE_SHOWCASE=1 cargo run -p main

@@ -51,6 +51,7 @@ struct Showcase {
     phase: usize,
     knife: Handle<WorldAsset>,
     baseline: bool,
+    structures: bool,
 }
 
 fn setup(
@@ -85,20 +86,57 @@ fn setup(
     let center_direction = (player_transform.translation + forward * 4.).normalize();
     let center = center_direction * planet.facet_radius(center_direction, PLANET_RADIUS);
     let baseline = std::env::var_os("TERRA_ASSET_BASELINE").is_some();
+    let structures = std::env::var_os("TERRA_STRUCTURE_SHOWCASE").is_some();
+    assert!(
+        !(baseline && structures),
+        "Structure terrain review uses candidates; use the workbench for baseline comparison"
+    );
     window.title = format!(
         "Terra | ASSET REVIEW PROTOTYPE | {}",
-        if baseline { "baseline" } else { "candidates" }
+        if structures {
+            "structures"
+        } else if baseline {
+            "baseline"
+        } else {
+            "candidates"
+        }
     );
     assert!(
         center.length() > PLANET_RADIUS * 0.9,
         "review scene must be on the terrain, not the unit lookup sphere"
     );
     let source: Handle<Gltf> = server.load("models/candidates/actor.player.glb");
-    for (name, x, z, baseline_scale) in [
+    let mut props = vec![
         ("structure.house", 2., 4., Vec3::new(8., 5., 6.)),
         ("scenery.tree.0", -3., 1., Vec3::ONE),
         ("scenery.rock.0", 2., -1.5, Vec3::ONE),
-    ] {
+    ];
+    if structures {
+        props = vec![
+            ("structure.house", -4., 7., Vec3::ONE),
+            ("structure.watchtower", 0., 7., Vec3::ONE),
+            ("structure.well", 4., 7., Vec3::ONE),
+            ("structure.tent", -4., 1., Vec3::ONE),
+            ("structure.dock", 4., 1., Vec3::ONE),
+            ("structure.dock", 4., 3.4, Vec3::ONE),
+            ("structure.suspension", -4., 12., Vec3::ONE),
+        ];
+        for (name, z) in [
+            ("structure.fence", -2.),
+            ("structure.wall", 12.),
+            ("structure.railing", 15.),
+            ("structure.guardrail", 18.),
+        ] {
+            let step = shared::asset_contract::candidate_contract(name)
+                .unwrap()
+                .repeat_step
+                .unwrap()[0];
+            for index in -1..=1 {
+                props.push((name, index as f32 * step, z, Vec3::ONE));
+            }
+        }
+    }
+    for (name, x, z, baseline_scale) in props {
         let direction = (center + right * x + forward * z).normalize();
         let position = direction * planet.facet_radius(direction, PLANET_RADIUS);
         let heading = (-forward).reject_from(direction).normalize();
@@ -116,10 +154,10 @@ fn setup(
             Transform::from_translation(position).with_rotation(rotation),
             Visibility::default(),
         ));
-        if !baseline {
+        if !baseline && let Some(collider) = candidate_collider(name, Vec3::ONE) {
             root.insert((
                 RigidBody::Static,
-                candidate_collider(name, Vec3::ONE).unwrap(),
+                collider,
                 DebugRender {
                     collider_color: Some(Color::srgb(0.95, 0.72, 0.22)),
                     ..DebugRender::none()
@@ -188,6 +226,7 @@ fn setup(
             server.load("models/candidates/weapon.knife.glb#Scene0")
         },
         baseline,
+        structures,
     });
 }
 
@@ -239,13 +278,31 @@ fn capture(
     if stage.phase > 0
         && let Ok(mut camera) = camera.single_mut()
     {
-        *camera = Transform::from_translation(stage.center - stage.forward * 10. + stage.up * 4.)
-            .looking_at(stage.center + stage.forward * 1. + stage.up * 1.5, stage.up);
+        let (eye, target) = if stage.structures && stage.phase >= 5 {
+            let center = stage.center + stage.forward * 14.;
+            (
+                center + stage.forward.cross(stage.up) * 10. - stage.forward * 4. + stage.up * 6.,
+                center + stage.up * 0.5,
+            )
+        } else if stage.structures {
+            (
+                stage.center - stage.forward * 17. + stage.up * 10.,
+                stage.center + stage.forward * 6. + stage.up,
+            )
+        } else {
+            (
+                stage.center - stage.forward * 10. + stage.up * 4.,
+                stage.center + stage.forward + stage.up * 1.5,
+            )
+        };
+        *camera = Transform::from_translation(eye).looking_at(target, stage.up);
     }
     if stage.elapsed > 8. && stage.phase == 0 {
         commands
             .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(if stage.baseline {
+            .observe(save_to_disk(if stage.structures {
+                "/tmp/terra-structures-gameplay.png"
+            } else if stage.baseline {
                 "/tmp/terra-planet-gameplay-baseline.png"
             } else {
                 "/tmp/terra-planet-gameplay-candidates.png"
@@ -253,7 +310,9 @@ fn capture(
         stage.phase = 1;
     }
     if stage.elapsed > 12. && stage.phase == 1 {
-        let path = if std::env::var_os("TERRA_ASSET_BASELINE").is_some() {
+        let path = if stage.structures {
+            "/tmp/terra-structures-planet.png"
+        } else if stage.baseline {
             "/tmp/terra-planet-baseline.png"
         } else {
             "/tmp/terra-planet-candidates.png"
@@ -281,13 +340,30 @@ fn capture(
         if !stage.baseline {
             commands
                 .spawn(Screenshot::primary_window())
-                .observe(save_to_disk("/tmp/terra-planet-colliders.png"));
+                .observe(save_to_disk(if stage.structures {
+                    "/tmp/terra-structures-planet-colliders.png"
+                } else {
+                    "/tmp/terra-planet-colliders.png"
+                }));
         }
         stage.phase = 4;
     }
     if stage.elapsed > 16. && stage.phase == 4 {
-        exit.write(AppExit::Success);
+        if !stage.structures {
+            exit.write(AppExit::Success);
+        }
+        gizmos.config_mut::<PhysicsGizmos>().0.enabled = false;
         stage.phase = 5;
+    }
+    if stage.structures && stage.elapsed > 19. && stage.phase == 5 {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk("/tmp/terra-structures-repeats.png"));
+        stage.phase = 6;
+    }
+    if stage.structures && stage.elapsed > 20. && stage.phase == 6 {
+        exit.write(AppExit::Success);
+        stage.phase = 7;
     }
 }
 

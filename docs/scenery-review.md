@@ -1,6 +1,6 @@
 # Scenery candidates and review
 
-Ticket [#18](https://github.com/miran248/terra/issues/18) extends the approved representative set to every scenery scene. These are review candidates; production selection, placement, density, and wind remain unchanged. The family verdict is still pending.
+Ticket [#18](https://github.com/miran248/terra/issues/18) extends the approved representative set to every scenery scene. These are review candidates; production selection, placement, density, and wind remain unchanged. The user accepted the family set (“looking good”) after the explicit review question; #18 is closed at local commit `9bb19f6`.
 
 ## Reproduce and inspect
 
@@ -75,6 +75,6 @@ Dimensions are meters at nominal scale. Physical shapes may omit thin branches, 
 - Empty collider lists initially panicked in Avian's compound constructor; the adapter now returns `None`. Physical point/contact checks cover trunk clearance and scale 0.7, 1, and 1.3.
 - Workspace: 115 tests passed; preview: 8; Blender MCP integration: 9. Workspace check and Clippy pass with existing unrelated warnings. Repeated candidate exports, including the manifest, are byte-identical; non-writing corruption detection and original Blender scene preservation pass.
 - All 37 candidate GLBs were imported, instantiated, and captured in Bevy. Both contact sheets were inspected, along with representative Bevy tree, fern, log, and cactus views. The review found and corrected contact-sheet framing, disconnected cactus detail, a boxy log, and preview shortcut overflow. This is a visual/import smoke review, not a populated-world performance test.
-- Standards review against the root and subtree contracts: no remaining findings. Spec review against #18: implementation and artifacts complete; actual human family approval remains pending. Reviews were performed separately in the main session, following the user's request to continue here rather than delegate.
+- Standards review against the root and subtree contracts: no remaining findings. Spec review against #18: implementation and artifacts complete; actual human family approval was subsequently received. Reviews were performed separately in the main session, following the user's request to continue here rather than delegate.
 
-The next ticket (#19, structures) remains dependent on the human scenery verdict. Full-world cutover and population-level performance validation remain #21.
+The scenery verdict resolved #18 and allowed #19 (structures) to start. Full-world cutover and population-level performance validation remain #21.

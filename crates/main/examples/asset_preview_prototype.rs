@@ -238,7 +238,10 @@ fn main() {
         )
         .add_systems(
             Update,
-            capture_scenery.run_if(|| std::env::var_os("TERRA_SCENERY_CAPTURE").is_some()),
+            capture_family.run_if(|| {
+                std::env::var_os("TERRA_SCENERY_CAPTURE").is_some()
+                    || std::env::var_os("TERRA_STRUCTURE_CAPTURE").is_some()
+            }),
         )
         .run();
 }
@@ -1063,8 +1066,8 @@ fn overlay_status(name: &str, runtime: Vec3, comparison: bool) -> String {
     )
 }
 
-// Every scenery candidate instantiated in Bevy, including nonblocking foliage.
-fn capture_scenery(
+// Every requested family candidate instantiated in Bevy, including nonblocking props.
+fn capture_family(
     mut commands: Commands,
     time: Res<Time<Real>>,
     server: Res<AssetServer>,
@@ -1077,20 +1080,32 @@ fn capture_scenery(
     if now < 4. || now < *next_at {
         return;
     }
-    let scenery: Vec<usize> = work
+    let compare = std::env::var_os("TERRA_STRUCTURE_COMPARE").is_some();
+    let structures = std::env::var_os("TERRA_STRUCTURE_CAPTURE").is_some();
+    let prefix = if structures { "structure." } else { "scenery." };
+    let directory = if structures {
+        "/tmp/terra-structures-review"
+    } else {
+        "/tmp/terra-scenery-review"
+    };
+    std::fs::create_dir_all(directory).unwrap();
+    let family: Vec<usize> = work
         .entries
         .iter()
         .enumerate()
-        .filter(|(_, e)| e.name.starts_with("scenery.") && e.candidate.is_some())
+        .filter(|(_, e)| e.name.starts_with(prefix) && e.candidate.is_some())
         .map(|(i, _)| i)
         .collect();
-    assert_eq!(scenery.len(), 37);
-    if *phase >= scenery.len() * 2 {
-        println!("SCENERY PREVIEW: all 37 candidates imported, instantiated and captured");
+    assert_eq!(family.len(), if structures { 17 } else { 37 });
+    if *phase >= family.len() * 2 {
+        println!(
+            "FAMILY PREVIEW: all {} {prefix} candidates imported, instantiated and captured",
+            family.len()
+        );
         exit.write(AppExit::Success);
         return;
     }
-    let selected = scenery[*phase / 2];
+    let selected = family[*phase / 2];
     let asset = work.entries[selected].candidate.as_ref().unwrap();
     if !server.is_loaded_with_dependencies(&asset.scene) {
         return;
@@ -1099,19 +1114,30 @@ fn capture_scenery(
         work.use_candidates = true;
         apply(Action::Select(selected), &mut work);
         apply(Action::Reset, &mut work);
-        work.layout = 0;
+        work.layout = usize::from(compare);
         work.view = 0;
         work.overlay = true;
         let size = work.dimensions();
         work.distance = (size.max_element() * 2.7).max(2.2);
         work.target = Vec3::Y * size.y * 0.5;
+        if compare {
+            let baseline = work.entries[selected].baseline.dimensions();
+            let width = work.offset() * 2. + (baseline.x + size.x) * 0.5;
+            work.distance = width.max(baseline.y).max(baseline.z) * 2.4;
+            work.target = Vec3::new(
+                (size.x - baseline.x) * 0.25,
+                baseline.y.max(size.y) * 0.4,
+                0.,
+            );
+        }
         *next_at = now + 0.6;
     } else {
         commands
             .spawn(Screenshot::primary_window())
             .observe(save_to_disk(format!(
-                "/tmp/terra-scenery-review/{}.png",
-                work.entries[selected].name
+                "{directory}/{}{}.png",
+                work.entries[selected].name,
+                if compare { "-compare" } else { "" }
             )));
         *next_at = now + 0.15;
     }
