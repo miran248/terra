@@ -37,4 +37,4 @@ All final commands passed: 120 workspace tests, 10 preview tests, and 14 Blender
 
 Standards review against `dfe9f9d`: shared contracts remain in `shared`, physics uses Avian state, and generated files remain reproducible and ignored. No blocking findings. Historical dormant code is explicitly identified above.
 
-Spec review against #21: production migration, consolidation, deterministic generation, independent preview retention, collision/animation checks and populated-world evidence are implemented. Final production visual acceptance remains pending; the preceding user approval covered the item/actor family (#20). #21 and the map remain open until the final verdict is recorded.
+Spec review against #21: production migration, consolidation, deterministic generation, independent preview retention, collision/animation checks and populated-world evidence are implemented. The user approved the final production version on 2026-10-03 with “looking good” after the normal game was reopened at local commit `c857929`. This satisfies the final visual acceptance gate for #21 and completes the asset-refresh map #11.
