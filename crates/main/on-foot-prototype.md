@@ -1,5 +1,10 @@
 # On-foot exploration prototype
 
+> Historical prototype record. The accepted handling is now integrated into the
+> default game (`just run`); the former prototype launch commands are retired.
+> Production lifecycle controls are V, E and hold R. The controls below describe
+> the isolated experiment, not the current game.
+
 Decision ticket: [Tune on-foot movement and camera](https://github.com/miran248/terra/issues/23).
 
 Run `just on-foot-prototype` from the repository root. This uses the normal

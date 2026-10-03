@@ -1,0 +1,1174 @@
+//! Default exploration lifecycle. The explorer and reusable vehicles keep distinct bodies.
+mod placement;
+mod view;
+mod world;
+use crate::{
+    map::{Ground, MainCamera, Player},
+    physics::{RadialGravity, RadialUpright},
+};
+use avian3d::prelude::*;
+use bevy::prelude::*;
+use placement::Placement;
+use shared::{
+    car_prototype::CarMotion,
+    plane_prototype::{FlightInput, PlaneFlight, gentle_landing},
+    planet::PlanetMesh,
+    state::AppState,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Car,
+    Plane,
+}
+impl Kind {
+    fn index(self) -> usize {
+        usize::from(self == Self::Plane)
+    }
+    fn height(self) -> f32 {
+        if self == Self::Car { 0.4 } else { 0.5 }
+    }
+    fn name(self) -> &'static str {
+        if self == Self::Car { "Car" } else { "Plane" }
+    }
+    fn asset(self) -> &'static str {
+        if self == Self::Car {
+            "vehicle.car"
+        } else {
+            "vehicle.plane"
+        }
+    }
+    fn collider(self) -> Collider {
+        crate::asset_collision::collider_with_origin(
+            self.asset(),
+            Vec3::ONE,
+            Vec3::Y * self.height(),
+        )
+        .expect("vehicle collision contract")
+    }
+}
+#[derive(Component)]
+struct Vehicle {
+    kind: Kind,
+    flight: PlaneFlight,
+    parked: bool,
+    crashed: bool,
+    stable: f32,
+    air_time: f32,
+    previous_velocity: Vec3,
+    clearance: f32,
+}
+impl Vehicle {
+    fn new(kind: Kind, heading: Vec3) -> Self {
+        Self {
+            kind,
+            flight: PlaneFlight::new(heading),
+            parked: true,
+            crashed: false,
+            stable: 0.0,
+            air_time: 0.0,
+            previous_velocity: Vec3::ZERO,
+            clearance: 0.0,
+        }
+    }
+}
+#[derive(Resource, Default)]
+pub struct Exploration {
+    occupied: Option<Entity>,
+    vehicles: [Option<Entity>; 2],
+    start: Option<Vec3>,
+    safe: Option<Vec3>,
+    selector: bool,
+    suppress_input: bool,
+    recovery: f32,
+    recover_latched: bool,
+    target: Option<Entity>,
+    message: String,
+    actions: std::collections::VecDeque<Action>,
+    snap_camera: bool,
+}
+#[derive(Clone, Copy, PartialEq)]
+pub enum Action {
+    Summon(Kind),
+    Interact,
+    Recover,
+    Teleport(Vec3),
+}
+impl Exploration {
+    pub fn request(&mut self, action: Action) {
+        self.actions.push_back(action);
+    }
+}
+#[derive(Resource)]
+struct Liquid(PlanetMesh);
+type ExplorationBody = Or<(With<Player>, With<Vehicle>)>;
+
+#[derive(Component)]
+struct Seated;
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExplorationUpdate;
+
+pub struct ExplorationPlugin;
+impl Plugin for ExplorationPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<Exploration>()
+            .add_systems(
+                OnEnter(AppState::Playing),
+                (world::setup, initialize, view::setup)
+                    .chain()
+                    .after(crate::map::setup_map),
+            )
+            .add_systems(
+                PreUpdate,
+                (input, world::residency)
+                    .chain()
+                    .run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                FixedUpdate,
+                (drive, align).chain().run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                contacts
+                    .after(PhysicsSystems::Last)
+                    .run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                Update,
+                (
+                    actions,
+                    sync_explorer,
+                    track_safe,
+                    view::tag_visuals,
+                    view::camera,
+                    view::animate,
+                    view::readout,
+                )
+                    .chain()
+                    .in_set(ExplorationUpdate)
+                    .run_if(in_state(AppState::Playing)),
+            );
+    }
+}
+pub fn on_foot(state: Option<Res<Exploration>>) -> bool {
+    state.is_none_or(|s| s.occupied.is_none() && !s.selector && !s.suppress_input)
+}
+fn tangent(heading: Vec3, up: Vec3) -> Vec3 {
+    let projected = heading - up * heading.dot(up);
+    if projected.length_squared() > 1e-8 {
+        projected.normalize()
+    } else {
+        up.any_orthonormal_vector()
+    }
+}
+
+fn facing(heading: Vec3, up: Vec3) -> Quat {
+    Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading))
+}
+fn initialize(mut state: ResMut<Exploration>, player: Query<&Position, With<Player>>) {
+    if let Ok(p) = player.single() {
+        state.start = Some(p.0);
+        state.snap_camera = true;
+    }
+}
+fn input(
+    keys: Res<ButtonInput<KeyCode>>,
+    real: Res<Time<Real>>,
+    mut time: ResMut<Time<Virtual>>,
+    mut state: ResMut<Exploration>,
+) {
+    if state.suppress_input
+        && [
+            KeyCode::KeyW,
+            KeyCode::KeyS,
+            KeyCode::KeyA,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+        ]
+        .iter()
+        .all(|k| !keys.pressed(*k))
+    {
+        state.suppress_input = false;
+    }
+    if keys.just_pressed(KeyCode::KeyV) {
+        if state.occupied.is_some() {
+            state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
+        } else {
+            state.selector = !state.selector;
+            if state.selector {
+                time.pause();
+            } else {
+                time.unpause();
+                state.suppress_input = true;
+            }
+        }
+    }
+    if state.selector {
+        if keys.just_pressed(KeyCode::Escape) {
+            state.selector = false;
+            time.unpause();
+            state.suppress_input = true;
+        }
+        let kind = if keys.just_pressed(KeyCode::KeyC) {
+            Some(Kind::Car)
+        } else if keys.just_pressed(KeyCode::KeyP) {
+            Some(Kind::Plane)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            state.request(Action::Summon(kind));
+            state.selector = false;
+            time.unpause();
+            state.suppress_input = true;
+        }
+        state.recovery = 0.0;
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        state.request(Action::Interact);
+    }
+    if keys.pressed(KeyCode::KeyR) && !state.recover_latched {
+        state.recovery += real.delta_secs().min(0.1);
+        if state.recovery >= 1.0 {
+            state.request(Action::Recover);
+            state.recover_latched = true;
+        }
+    } else if !keys.pressed(KeyCode::KeyR) {
+        state.recovery = 0.0;
+        state.recover_latched = false;
+    }
+}
+fn drive(
+    time: Res<Time>,
+    keys: Res<ButtonInput<KeyCode>>,
+    state: Res<Exploration>,
+    placement: Placement,
+    mut vehicles: Query<(Entity, &Position, &mut Vehicle, Forces)>,
+) {
+    for (entity, pos, mut vehicle, mut forces) in &mut vehicles {
+        let up = pos.0.normalize();
+        let mass = if vehicle.kind == Kind::Car {
+            800.0
+        } else {
+            900.0
+        };
+        if vehicle.crashed {
+            forces.apply_force(-up * mass * 20.0);
+            continue;
+        }
+        if vehicle.parked {
+            continue;
+        }
+        let controlled = state.occupied == Some(entity) && !state.selector && !state.suppress_input;
+        let support = placement.support(entity, pos.0, vehicle.flight.heading, vehicle.kind);
+        let axis = |a, b| {
+            if controlled {
+                f32::from(keys.pressed(a)) - f32::from(keys.pressed(b))
+            } else {
+                0.0
+            }
+        };
+        if vehicle.kind == Kind::Car {
+            let motion = CarMotion {
+                velocity: forces.linear_velocity(),
+                heading: vehicle.flight.heading,
+            }
+            .step(
+                time.delta_secs(),
+                axis(KeyCode::KeyW, KeyCode::KeyS),
+                axis(KeyCode::KeyA, KeyCode::KeyD),
+                up,
+                support,
+            );
+            vehicle.flight.heading = motion.heading;
+            *forces.linear_velocity_mut() = motion.velocity;
+            forces.apply_force(-up * mass * 20.0);
+        } else {
+            let input = FlightInput {
+                pitch: axis(KeyCode::KeyS, KeyCode::KeyW),
+                bank: axis(KeyCode::KeyA, KeyCode::KeyD),
+                throttle: if controlled
+                    && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight))
+                {
+                    1.0
+                } else if controlled
+                    && (keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight))
+                {
+                    -1.0
+                } else {
+                    0.0
+                },
+                brake: controlled && keys.pressed(KeyCode::Space),
+            };
+            let velocity = vehicle.flight.step(
+                time.delta_secs(),
+                input,
+                forces.linear_velocity(),
+                up,
+                support,
+            );
+            *forces.linear_velocity_mut() = velocity;
+            vehicle.previous_velocity = velocity;
+            if !vehicle.flight.airborne {
+                forces.apply_force(-up * mass * 20.0);
+            }
+            vehicle.air_time = if vehicle.flight.airborne {
+                vehicle.air_time + time.delta_secs()
+            } else {
+                0.0
+            };
+        }
+    }
+}
+fn align(mut vehicles: Query<(&Position, &Vehicle, &mut Rotation)>) {
+    for (pos, v, mut rotation) in &mut vehicles {
+        if !v.crashed {
+            rotation.0 = v.flight.rotation(pos.0.normalize());
+        }
+    }
+}
+fn contacts(
+    mut commands: Commands,
+    time: Res<Time>,
+    placement: Placement,
+    mut vehicles: Query<(
+        Entity,
+        &Position,
+        &LinearVelocity,
+        &CollidingEntities,
+        &mut Vehicle,
+    )>,
+) {
+    for (e, p, velocity, contacts, mut v) in &mut vehicles {
+        let support = placement.support(e, p.0, v.flight.heading, v.kind);
+        v.clearance = placement.clearance(e, p.0);
+        let landed = v.kind == Kind::Car || !v.flight.airborne || v.crashed;
+        let touching_ground = v.parked || contacts.0.iter().any(|e| !placement.obstacle(*e));
+        v.stable = if landed && touching_ground && support.is_some() && velocity.length() < 0.5 {
+            v.stable + time.delta_secs()
+        } else {
+            0.0
+        };
+        if v.kind != Kind::Plane || v.crashed || v.parked {
+            continue;
+        }
+        let obstacle = contacts.0.iter().any(|e| placement.obstacle(*e));
+        let wet = placement.wet(p.0, 0.5);
+        let gentle = !wet
+            && !obstacle
+            && support.is_some_and(|n| {
+                gentle_landing(
+                    v.previous_velocity,
+                    n,
+                    p.0.normalize(),
+                    v.flight.pitch,
+                    v.flight.bank,
+                )
+            });
+        if wet
+            || obstacle
+            || (v.flight.airborne && !contacts.0.is_empty() && (v.air_time > 0.3 || !gentle))
+        {
+            if gentle {
+                v.flight.airborne = false;
+                v.flight.stalled = false;
+                v.flight.pitch = 0.0;
+                v.flight.bank = 0.0;
+                v.flight.throttle = 0.0;
+            } else {
+                v.crashed = true;
+                v.flight.throttle = 0.0;
+                commands.entity(e).remove::<LockedAxes>().insert((
+                    Friction::new(0.6),
+                    Restitution::new(0.1),
+                    LinearDamping(0.1),
+                    AngularDamping(1.5),
+                ));
+            }
+        }
+    }
+}
+fn physics_reset() -> impl Bundle {
+    (
+        LockedAxes::ROTATION_LOCKED,
+        AngularVelocity::ZERO,
+        LinearVelocity::ZERO,
+        Friction::ZERO,
+        Restitution::ZERO,
+        LinearDamping(0.0),
+        AngularDamping(0.0),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn actions(
+    mut commands: Commands,
+    mut state: ResMut<Exploration>,
+    placement: Placement,
+    mut player: Query<(Entity, &Position, &mut Player), Without<Vehicle>>,
+    mut vehicles: Query<(Entity, &Position, &Rotation, &Collider, &mut Vehicle)>,
+    catalog: Option<Res<crate::asset_catalog::AssetCatalog>>,
+    world: Option<Res<world::CollisionWorld>>,
+) {
+    let Ok((explorer, position, mut player)) = player.single_mut() else {
+        return;
+    };
+    let origin = state
+        .occupied
+        .and_then(|e| vehicles.get(e).ok().map(|(_, p, _, _, _)| p.0))
+        .unwrap_or(position.0);
+    state.target = vehicles
+        .iter()
+        .filter(|(_, _, _, _, v)| v.stable >= 0.25)
+        .filter_map(|(e, p, r, c, _)| {
+            let nearest = c.project_point(p.0, r.0, origin, true);
+            let d = nearest.0.distance(origin);
+            (d <= 3.0).then_some((e, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
+        .map(|(e, _)| e);
+    // Residency runs before physics; one fully built query frame is required for
+    // distant requests. Requests stay queued while collider preparation completes.
+    if world
+        .as_ref()
+        .is_some_and(|w| !w.ready || w.last_action != state.actions.front().copied())
+    {
+        return;
+    }
+    // Process only the destination prepared by this frame's residency pass.
+    for action in state.actions.pop_front().into_iter() {
+        let heading = state
+            .occupied
+            .and_then(|e| vehicles.get(e).ok().map(|(_, _, _, _, v)| v.flight.heading))
+            .unwrap_or(player.heading);
+        match action {
+            Action::Summon(kind) => {
+                if state.occupied.is_some() {
+                    state.message = "Exit before summoning".into();
+                    continue;
+                }
+                let existing = state.vehicles[kind.index()];
+                let excluded = existing.into_iter().collect::<Vec<_>>();
+                let preferred = origin + tangent(heading, origin.normalize()) * 8.0;
+                let radius = if kind == Kind::Car { 30.0 } else { 100.0 };
+                let Some((p, h)) =
+                    placement.locate(preferred, heading, Some(kind), &excluded, radius - 8.0)
+                else {
+                    state.message =
+                        "No clear dry ground with enough room / takeoff run nearby".into();
+                    continue;
+                };
+                let e = existing.unwrap_or_else(|| commands.spawn_empty().id());
+                commands.entity(e).insert((
+                    Vehicle::new(kind, h),
+                    RigidBody::Static,
+                    kind.collider(),
+                    Mass(if kind == Kind::Car { 800.0 } else { 900.0 }),
+                    Position(p),
+                    Rotation(facing(h, p.normalize())),
+                    Transform::from_translation(p).with_rotation(facing(h, p.normalize())),
+                    Visibility::default(),
+                    SweptCcd::default(),
+                    CollidingEntities::default(),
+                    physics_reset(),
+                ));
+                if existing.is_none()
+                    && let Some(catalog) = catalog.as_ref()
+                {
+                    commands.entity(e).with_child((
+                        WorldAssetRoot(catalog.scene(kind.asset())),
+                        Transform::from_translation(Vec3::NEG_Y * kind.height()),
+                        view::VehicleVisual,
+                    ));
+                }
+                state.vehicles[kind.index()] = Some(e);
+                state.message = format!("{} ready — approach and press E", kind.name());
+            }
+            Action::Interact => {
+                if let Some(e) = state.occupied {
+                    let Ok((_, p, _, _, mut v)) = vehicles.get_mut(e) else {
+                        continue;
+                    };
+                    if v.stable < 0.25 {
+                        state.message =
+                            "Stop on stable ground before exiting; hold R to recover".into();
+                        continue;
+                    }
+                    let side = tangent(v.flight.heading, p.0.normalize()).cross(p.0.normalize());
+                    let width = if v.kind == Kind::Car { 1.6 } else { 4.8 };
+                    let exit = [-1.0, 1.0].into_iter().find_map(|sign| {
+                        placement.at(
+                            p.0 + side * width * sign,
+                            v.flight.heading,
+                            None,
+                            &[explorer],
+                        )
+                    });
+                    let Some(exit) = exit else {
+                        state.message = "Both exits blocked — hold R to recover".into();
+                        continue;
+                    };
+                    if !v.crashed {
+                        v.parked = true;
+                        commands.entity(e).insert((
+                            RigidBody::Static,
+                            LinearVelocity::ZERO,
+                            AngularVelocity::ZERO,
+                        ));
+                    }
+                    player.heading = tangent(v.flight.heading, exit.normalize());
+                    release(&mut commands, explorer, exit, &mut state);
+                } else if let Some(e) = state.target {
+                    let Ok((_, _, _, _, mut v)) = vehicles.get_mut(e) else {
+                        continue;
+                    };
+                    if v.crashed {
+                        state.message = "Wreck — summon the vehicle to restore it".into();
+                        continue;
+                    }
+                    v.parked = false;
+                    commands
+                        .entity(e)
+                        .insert((RigidBody::Dynamic, physics_reset()));
+                    commands
+                        .entity(explorer)
+                        .insert((
+                            RigidBody::Kinematic,
+                            ColliderDisabled,
+                            Seated,
+                            Visibility::Hidden,
+                            LinearVelocity::ZERO,
+                        ))
+                        .remove::<(RadialGravity, RadialUpright)>();
+                    state.occupied = Some(e);
+                    state.message = "Entered vehicle".into();
+                } else {
+                    state.message = "No stopped vehicle within reach".into();
+                }
+            }
+            Action::Recover | Action::Teleport(_) => {
+                if matches!(action, Action::Teleport(_))
+                    && (state.occupied.is_some() || state.selector)
+                {
+                    state.message = "Map teleport is available on foot only".into();
+                    continue;
+                }
+                let destination = if let Action::Teleport(p) = action {
+                    placement
+                        .at(p, heading, None, &[explorer])
+                        .map(|p| (p, heading))
+                } else {
+                    state
+                        .safe
+                        .into_iter()
+                        .chain(state.start)
+                        .find_map(|center| {
+                            placement.locate(center, heading, None, &[explorer], 30.0)
+                        })
+                };
+                if let Some((p, h)) = destination {
+                    player.heading = tangent(h, p.normalize());
+                    // Abandoned moving/crashed vehicles continue physics; recovery is
+                    // not an implicit parking brake or vehicle repair.
+                    release(&mut commands, explorer, p, &mut state);
+                    state.snap_camera = true;
+                    state.message = "Returned to safe ground".into();
+                } else {
+                    state.message = "Recovery failed: no clear dry standing location".into();
+                }
+            }
+        }
+    }
+}
+fn release(commands: &mut Commands, explorer: Entity, position: Vec3, state: &mut Exploration) {
+    commands
+        .entity(explorer)
+        .remove::<(ColliderDisabled, Seated)>()
+        .insert((
+            RigidBody::Dynamic,
+            RadialGravity,
+            RadialUpright,
+            Position(position),
+            Rotation(Quat::from_rotation_arc(Vec3::Y, position.normalize())),
+            LinearVelocity::ZERO,
+            Visibility::Visible,
+        ));
+    state.occupied = None;
+    state.safe = Some(position);
+    state.recovery = 0.0;
+}
+fn sync_explorer(
+    state: Res<Exploration>,
+    vehicles: Query<(&Position, &Vehicle), Without<Player>>,
+    mut player: Query<(&mut Position, &mut Player), With<Seated>>,
+) {
+    let Some(e) = state.occupied else {
+        return;
+    };
+    if let (Ok((p, v)), Ok((mut pos, mut player))) = (vehicles.get(e), player.single_mut()) {
+        pos.0 = p.0;
+        player.heading = v.flight.heading;
+    }
+}
+fn track_safe(
+    mut state: ResMut<Exploration>,
+    placement: Placement,
+    player: Query<
+        (
+            Entity,
+            &Position,
+            &Player,
+            &CollidingEntities,
+            &LinearVelocity,
+        ),
+        Without<Vehicle>,
+    >,
+    vehicles: Query<(&Position, &Vehicle)>,
+) {
+    let Ok((e, p, player, contacts, velocity)) = player.single() else {
+        return;
+    };
+    if let Some(occupied) = state.occupied {
+        if let Ok((p, v)) = vehicles.get(occupied)
+            && v.stable >= 0.25
+        {
+            let side = v.flight.heading.cross(p.0.normalize());
+            let width = if v.kind == Kind::Car { 1.6 } else { 4.8 };
+            if let Some(safe) = [-1.0, 1.0]
+                .into_iter()
+                .find_map(|s| placement.at(p.0 + side * width * s, v.flight.heading, None, &[e]))
+            {
+                state.safe = Some(safe);
+            }
+        }
+    } else if contacts.0.iter().any(|e| !placement.obstacle(*e))
+        && velocity.dot(p.0.normalize()).abs() < 0.5
+        && let Some(safe) = placement.at(p.0, player.heading, None, &[e])
+        && safe.distance(p.0) < 0.2
+    {
+        state.safe = Some(safe);
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn fixture() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            bevy::state::app::StatesPlugin,
+            PhysicsPlugins::default(),
+        ))
+        .init_state::<AppState>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_asset::<Mesh>()
+        .init_asset::<StandardMaterial>()
+        .insert_resource(Gravity::ZERO)
+        .insert_resource(SubstepCount(12))
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(1.0 / 60.0),
+        ))
+        .add_plugins(ExplorationPlugin);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(1000.0, 1.0, 1000.0),
+            Transform::from_xyz(0.0, 1999.5, 0.0),
+            Ground,
+        ));
+        let explorer = app
+            .world_mut()
+            .spawn(crate::map::player_physics_bundle(
+                Vec3::new(0.0, 2000.6, 0.0),
+                Vec3::NEG_Z,
+            ))
+            .id();
+        app.finish();
+        app.cleanup();
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .insert_resource(State::new(AppState::Playing));
+        app.world_mut().resource_mut::<Exploration>().start = Some(Vec3::new(0.0, 2000.6, 0.0));
+        (app, explorer)
+    }
+    fn act(app: &mut App, action: Action) {
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(action);
+        app.update();
+    }
+    #[test]
+    fn selector_pause_and_cancel_do_not_leak_held_airbrake() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ControlLeft);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.update();
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        assert!(app.world().resource::<Exploration>().suppress_input);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .vehicles
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn plane_runway_follows_the_curved_planet() {
+        let (mut app, _) = fixture();
+        let floor = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(floor);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::sphere(2000.0),
+            Transform::default(),
+            Ground,
+        ));
+        for _ in 0..3 {
+            app.update();
+        }
+        act(&mut app, Action::Summon(Kind::Plane));
+        assert!(
+            app.world().resource::<Exploration>().vehicles[1].is_some(),
+            "{}",
+            app.world().resource::<Exploration>().message
+        );
+    }
+
+    #[test]
+    fn occupied_actions_are_atomic_and_recovery_requires_a_complete_hold() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(car).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + Vec3::X * 2.0));
+        act(&mut app, Action::Interact);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        act(&mut app, Action::Summon(Kind::Plane));
+        assert!(app.world().resource::<Exploration>().vehicles[1].is_none());
+        act(&mut app, Action::Teleport(Vec3::Y * 2100.0));
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        assert!(app.world().get::<Position>(car).unwrap().y < 2002.0);
+        app.world_mut()
+            .entity_mut(car)
+            .insert(Position(Vec3::new(30.0, 2050.0, 0.0)));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+        for _ in 0..20 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyR);
+        app.update();
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+        for _ in 0..65 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().occupied.is_none());
+        assert!(app.world().get::<Vehicle>(car).is_some());
+        assert!(app.world().get::<Position>(explorer).unwrap().y < 2002.0);
+        assert!(app.world().get::<Position>(car).unwrap().x > 20.0);
+    }
+
+    #[test]
+    fn each_distant_request_waits_for_its_own_collision_preparation() {
+        let (mut app, explorer) = fixture();
+        let first = Action::Teleport(Vec3::new(50.0, 2000.0, 0.0));
+        let second = Action::Teleport(Vec3::new(-50.0, 2000.0, 0.0));
+        let mut collision = world::CollisionWorld::default();
+        collision.ready = true;
+        collision.last_action = Some(first);
+        app.world_mut().insert_resource(collision);
+        app.world_mut().resource_mut::<Exploration>().request(first);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(second);
+        app.update();
+        assert_eq!(app.world().resource::<Exploration>().actions.len(), 1);
+        assert!(app.world().get::<Position>(explorer).unwrap().x > 40.0);
+        app.update();
+        app.update();
+        assert!(app.world().resource::<Exploration>().actions.is_empty());
+        assert!(app.world().get::<Position>(explorer).unwrap().x < -40.0);
+    }
+
+    #[test]
+    fn blocked_map_target_fails_instead_of_searching_somewhere_else() {
+        let (mut app, explorer) = fixture();
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(5.0, 2.0, 5.0),
+            Transform::from_xyz(20.0, 2001.0, 0.0),
+            Ground,
+            crate::chunks::WorldObstacle,
+        ));
+        for _ in 0..3 {
+            app.update();
+        }
+        act(&mut app, Action::Teleport(Vec3::new(20.0, 2000.0, 0.0)));
+        assert!(app.world().get::<Position>(explorer).unwrap().x.abs() < 1.0);
+    }
+
+    #[test]
+    fn blocked_exit_preserves_occupancy_then_uses_the_clear_side() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(car).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + Vec3::X * 2.0));
+        act(&mut app, Action::Interact);
+        for _ in 0..30 {
+            app.update();
+        }
+        let mut walls = Vec::new();
+        for side in [-1.0, 1.0] {
+            walls.push(
+                app.world_mut()
+                    .spawn((
+                        RigidBody::Static,
+                        Collider::cuboid(0.6, 3.0, 3.0),
+                        Transform::from_translation(p + Vec3::X * side * 1.6),
+                        Ground,
+                        crate::chunks::WorldObstacle,
+                    ))
+                    .id(),
+            );
+        }
+        for _ in 0..3 {
+            app.update();
+        }
+        act(&mut app, Action::Interact);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        assert!(!app.world().get::<Vehicle>(car).unwrap().parked);
+        app.world_mut().despawn(walls[1]);
+        for _ in 0..3 {
+            app.update();
+        }
+        act(&mut app, Action::Interact);
+        assert!(app.world().resource::<Exploration>().occupied.is_none());
+        assert!(app.world().get::<Position>(explorer).unwrap().x > p.x + 1.0);
+        assert!(app.world().get::<Vehicle>(car).unwrap().parked);
+    }
+
+    #[test]
+    fn production_obstacle_contact_crashes_taxiing_and_departing_planes() {
+        for airborne in [false, true] {
+            let (mut app, _) = fixture();
+            act(&mut app, Action::Summon(Kind::Plane));
+            let plane = app.world().resource::<Exploration>().vehicles[1].unwrap();
+            let p = app.world().get::<Position>(plane).unwrap().0;
+            {
+                let mut v = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+                v.parked = false;
+                v.flight.airborne = airborne;
+            }
+            app.world_mut()
+                .entity_mut(plane)
+                .insert((RigidBody::Dynamic, LinearVelocity(Vec3::X)));
+            let side = app.world().get::<Rotation>(plane).unwrap().0 * Vec3::X;
+            app.world_mut().spawn((
+                RigidBody::Static,
+                Collider::cuboid(0.5, 4.0, 0.5),
+                Transform::from_translation(p + side * 3.0),
+                Ground,
+                crate::chunks::WorldObstacle,
+            ));
+            for _ in 0..5 {
+                app.update();
+            }
+            assert!(
+                app.world().get::<Vehicle>(plane).unwrap().crashed,
+                "airborne={airborne}, p={:?}, rotation={:?}, contacts={:?}",
+                app.world().get::<Position>(plane),
+                app.world().get::<Rotation>(plane),
+                app.world().get::<CollidingEntities>(plane)
+            );
+            assert!(app.world().get::<LockedAxes>(plane).is_none());
+            assert!(app.world().get::<Position>(plane).unwrap().distance(p) < 5.0);
+        }
+    }
+
+    #[test]
+    fn car_placement_tries_a_rotated_pose_on_a_narrow_platform() {
+        let (mut app, explorer) = fixture();
+        let floor = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(floor);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(3.8, 1.0, 2.2),
+            Transform::from_xyz(0.0, 1999.5, 0.0),
+            Ground,
+        ));
+        for _ in 0..3 {
+            app.update();
+        }
+        let mut query = bevy::ecs::system::SystemState::<Placement>::new(app.world_mut());
+        let placement = query.get(app.world()).unwrap();
+        let result = placement.locate(
+            Vec3::Y * 2000.6,
+            Vec3::NEG_Z,
+            Some(Kind::Car),
+            &[explorer],
+            0.0,
+        );
+        let (_, heading) = result.expect("the car fits sideways on the platform");
+        assert!(heading.dot(Vec3::X).abs() > 0.99);
+    }
+
+    #[test]
+    fn airborne_explorer_does_not_update_last_safe_ground() {
+        let (mut app, explorer) = fixture();
+        let previous = Vec3::new(10.0, 2000.58, 0.0);
+        app.world_mut().resource_mut::<Exploration>().safe = Some(previous);
+        app.world_mut().entity_mut(explorer).insert((
+            Position(Vec3::new(0.0, 2000.65, 0.0)),
+            LinearVelocity(Vec3::Y),
+        ));
+        app.update();
+        assert_eq!(app.world().resource::<Exploration>().safe, Some(previous));
+        app.world_mut().insert_resource(Gravity(Vec3::NEG_Y * 20.0));
+        for _ in 0..60 {
+            app.update();
+        }
+        let safe = app.world().resource::<Exploration>().safe.unwrap();
+        assert!(safe.distance(Vec3::new(0.0, 2000.58, 0.0)) < 0.2);
+    }
+
+    #[test]
+    fn remote_relocation_updates_heading_before_camera_snap() {
+        for recover in [false, true] {
+            let (mut app, explorer) = fixture();
+            let destination = Vec3::NEG_Z * 2000.6;
+            let floor = app
+                .world_mut()
+                .query_filtered::<Entity, With<Ground>>()
+                .single(app.world())
+                .unwrap();
+            app.world_mut().despawn(floor);
+            app.world_mut().spawn((
+                RigidBody::Static,
+                Collider::sphere(2000.0),
+                Transform::default(),
+                Ground,
+            ));
+            let camera = app
+                .world_mut()
+                .spawn((MainCamera, Transform::default()))
+                .id();
+            for _ in 0..3 {
+                app.update();
+            }
+            app.world_mut().resource_mut::<Exploration>().safe = Some(destination);
+            act(
+                &mut app,
+                if recover {
+                    Action::Recover
+                } else {
+                    Action::Teleport(destination)
+                },
+            );
+            let p = app.world().get::<Position>(explorer).unwrap().0;
+            assert!(
+                p.distance(destination) < 0.2,
+                "{p:?}: {}",
+                app.world().resource::<Exploration>().message
+            );
+            let heading = app.world().get::<Player>(explorer).unwrap().heading;
+            assert!(
+                heading.dot(p.normalize()).abs() < 0.001,
+                "relocated heading must be tangent"
+            );
+            let view = app.world().get::<Transform>(camera).unwrap();
+            assert!(view.rotation.is_finite());
+            assert!(view.translation.length() > p.length());
+        }
+    }
+
+    #[test]
+    fn entering_vehicle_blends_from_previous_camera_position() {
+        let (mut app, explorer) = fixture();
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::default()))
+            .id();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        let p = app.world().get::<Position>(car).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + Vec3::X * 2.0));
+        for _ in 0..60 {
+            app.update();
+        }
+        let before = app.world().get::<Transform>(camera).unwrap().translation;
+        act(&mut app, Action::Interact);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        let after = app.world().get::<Transform>(camera).unwrap().translation;
+        assert!(
+            before.distance(after) < 1.0,
+            "entry camera jumped {} m",
+            before.distance(after)
+        );
+    }
+
+    #[test]
+    fn highlighted_vehicle_keeps_opaque_depth_rendering() {
+        let (mut app, explorer) = fixture();
+        app.world_mut().spawn((MainCamera, Transform::default()));
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(car).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + Vec3::X * 2.0));
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial::default());
+        let mesh = app
+            .world_mut()
+            .spawn((ChildOf(car), MeshMaterial3d(material), Transform::default()))
+            .id();
+        app.update();
+        assert_eq!(app.world().resource::<Exploration>().target, Some(car));
+        let handle = &app
+            .world()
+            .get::<MeshMaterial3d<StandardMaterial>>(mesh)
+            .unwrap()
+            .0;
+        assert_eq!(
+            app.world()
+                .resource::<Assets<StandardMaterial>>()
+                .get(handle)
+                .unwrap()
+                .alpha_mode,
+            AlphaMode::Opaque
+        );
+    }
+
+    #[test]
+    fn plane_near_ground_is_not_enterable_while_airborne() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Plane));
+        let plane = app.world().resource::<Exploration>().vehicles[1].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(plane).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + Vec3::X * 4.8));
+        {
+            let mut v = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+            v.flight.airborne = true;
+            v.parked = false;
+            v.stable = 1.0;
+        }
+        app.world_mut()
+            .entity_mut(plane)
+            .insert((RigidBody::Dynamic, Position(p + Vec3::Y * 0.2)));
+        act(&mut app, Action::Interact);
+        assert!(app.world().resource::<Exploration>().occupied.is_none());
+    }
+
+    #[test]
+    fn hard_ground_impact_crashes_during_takeoff_grace() {
+        let (mut app, _) = fixture();
+        act(&mut app, Action::Summon(Kind::Plane));
+        let plane = app.world().resource::<Exploration>().vehicles[1].unwrap();
+        {
+            let mut v = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+            v.parked = false;
+            v.flight.airborne = true;
+            v.flight.pitch = -0.55;
+        }
+        app.world_mut().entity_mut(plane).insert((
+            RigidBody::Dynamic,
+            Position(Vec3::new(0.0, 2000.65, -8.0)),
+            LinearVelocity(Vec3::new(0.0, -20.0, -30.0)),
+        ));
+        for _ in 0..5 {
+            app.update();
+        }
+        assert!(app.world().get::<Vehicle>(plane).unwrap().crashed);
+    }
+
+    #[test]
+    fn summon_enter_exit_reuses_a_distinct_vehicle() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        assert_ne!(car, explorer);
+        assert!(app.world().resource::<Exploration>().occupied.is_none());
+        for _ in 0..30 {
+            app.update();
+        }
+        // Move within reach of the parked vehicle, through the same physics pose path.
+        let pos = app.world().get::<Position>(car).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(pos + Vec3::X * 2.0));
+        act(&mut app, Action::Interact);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        for _ in 0..30 {
+            app.update();
+        }
+        act(&mut app, Action::Interact);
+        assert!(app.world().resource::<Exploration>().occupied.is_none());
+        assert!(app.world().get::<Vehicle>(car).unwrap().parked);
+        act(&mut app, Action::Summon(Kind::Car));
+        assert_eq!(app.world().resource::<Exploration>().vehicles[0], Some(car));
+    }
+}

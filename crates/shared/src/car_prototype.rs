@@ -1,4 +1,4 @@
-//! Throwaway arcade driving model. Inputs are normalized; distances are meters.
+//! Accepted arcade driving model. Inputs are normalized; distances are meters.
 use bevy::prelude::*;
 
 pub const CHASSIS_SIZE: Vec3 = Vec3::new(1.8, 0.8, 3.2);

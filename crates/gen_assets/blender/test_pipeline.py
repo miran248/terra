@@ -33,6 +33,16 @@ def float_accessor(path, doc, index):
     return [struct.unpack_from('<'+'f'*width, data, offset+i*stride) for i in range(accessor['count'])]
 
 
+def joint_accessor(path, doc, index):
+    data=path.read_bytes()
+    binary=20+struct.unpack_from('<I',data,12)[0]+8
+    accessor=doc['accessors'][index];view=doc['bufferViews'][accessor['bufferView']]
+    code,width={5121:('B',1),5123:('H',2)}[accessor['componentType']]
+    offset=binary+view.get('byteOffset',0)+accessor.get('byteOffset',0)
+    stride=view.get('byteStride',width*4)
+    return [struct.unpack_from('<'+code*4,data,offset+i*stride) for i in range(accessor['count'])]
+
+
 class PipelineTests(unittest.TestCase):
     def test_production_exports_complete_catalog_with_one_primitive_per_scene(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -40,7 +50,7 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
             output = Path(temporary)
             assets = json.loads((output/'manifest.json').read_text())['assets']
-            self.assertEqual(len(assets), 66)
+            self.assertEqual(len(assets), 68)
             for name in assets:
                 doc = document(output/(name+'.glb'))
                 self.assertEqual([s['name'] for s in doc['scenes']], [name])
@@ -54,6 +64,16 @@ class PipelineTests(unittest.TestCase):
                     self.assertIn('WEIGHTS_0', primitive['attributes'])
                     self.assertIn('JOINTS_0', primitive['attributes'])
                     self.assertIn('socket.hand', [n.get('name') for n in doc['nodes']])
+                elif name.startswith('vehicle.'):
+                    self.assertEqual(len(doc['skins'][0]['joints']), 5 if name == 'vehicle.car' else 2)
+                    names = {n.get('name') for n in doc['nodes']}
+                    self.assertIn('vehicle.wheel.front.left' if name == 'vehicle.car' else 'vehicle.propeller', names)
+                    self.assertIn('WEIGHTS_0', doc['meshes'][0]['primitives'][0]['attributes'])
+                    attributes=doc['meshes'][0]['primitives'][0]['attributes']
+                    joints=joint_accessor(output/(name+'.glb'),doc,attributes['JOINTS_0'])
+                    weights=float_accessor(output/(name+'.glb'),doc,attributes['WEIGHTS_0'])
+                    used={joint for row,amounts in zip(joints,weights) for joint,weight in zip(row,amounts) if weight>.5}
+                    self.assertEqual(used,set(range(len(doc['skins'][0]['joints']))))
                 elif name.startswith('weapon.'):
                     self.assertIn('socket.grip', [n.get('name') for n in doc['nodes']])
             checked = subprocess.run([sys.executable, str(SCRIPT), '--production', '--out-dir', temporary, '--check'], capture_output=True, text=True)

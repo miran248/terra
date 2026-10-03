@@ -1,5 +1,10 @@
 # Arcade car handling prototype
 
+> Historical prototype record. The accepted handling is now integrated into the
+> default game (`just run`); the former prototype launch commands are retired.
+> Production lifecycle controls are V, E and hold R. The controls below describe
+> the isolated experiment, not the current game.
+
 Decision ticket: [Validate arcade car handling](https://github.com/miran248/terra/issues/24).
 
 Run `just car-prototype`. This feature-gated, throwaway experiment starts you

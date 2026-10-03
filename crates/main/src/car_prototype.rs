@@ -292,8 +292,6 @@ struct CarReadout;
 impl Plugin for CarPrototypePlugin {
     fn build(&self, app: &mut App) {
         // Both feature flags can be enabled for CI; car owns input/camera then.
-        #[cfg(feature = "on-foot-prototype")]
-        app.init_resource::<shared::on_foot_prototype::OnFootPrototype>();
         app.add_systems(
             OnEnter(AppState::Playing),
             setup.after(crate::map::setup_map),

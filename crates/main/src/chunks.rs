@@ -28,6 +28,7 @@
 
 use crate::asset_catalog::AssetCatalog;
 use crate::map::{CullRange, Ground, MainCamera, scenery_cull};
+#[cfg(test)]
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
@@ -528,11 +529,6 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
         Visibility::default(),
         Ground,
     ));
-    if let Some(collider) =
-        crate::asset_collision::candidate_collider(s.kind.asset_name(), Vec3::ONE)
-    {
-        root.insert((RigidBody::Static, collider, WorldObstacle));
-    }
     root.with_child((
         WorldAssetRoot(catalog.scene(s.kind.asset_name())),
         Transform::default(),
@@ -558,17 +554,6 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
         Ground,
     ));
 
-    let name = shared::art::scenery_variant_name(f.kind, f.variant as u32);
-    if let Some(collider) = crate::asset_collision::candidate_collider(&name, Vec3::splat(scale)) {
-        root.insert((
-            RigidBody::Static,
-            WorldObstacle,
-            collider,
-            Friction::ZERO,
-            Restitution::ZERO,
-        ));
-    }
-
     root.with_child((
         WorldAssetRoot(catalog.scene(&shared::art::scenery_variant_name(f.kind, f.variant as u32))),
         Transform::from_scale(Vec3::splat(scale)),
@@ -580,7 +565,7 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
 mod tests {
     use shared::level::StructureKind;
     #[test]
-    fn production_spawns_use_meter_shapes_and_leave_tree_canopy_clear() {
+    fn render_spawns_do_not_own_collision_residency() {
         use super::*;
         use bevy::ecs::world::CommandQueue;
         let mut world = World::new();
@@ -611,14 +596,10 @@ mod tests {
             (house, tree)
         };
         queue.apply(&mut world);
-        assert!(world.get::<WorldObstacle>(house).is_some());
-        assert!(world.get::<WorldObstacle>(tree).is_some());
-        let house_shape = world.get::<Collider>(house).unwrap();
-        assert!(!house_shape.contains_point(Vec3::ZERO, Quat::IDENTITY, Vec3::new(0., 0.8, 0.)));
+        assert!(world.get::<Collider>(house).is_none());
+        assert!(world.get::<Collider>(tree).is_none());
         let visual = world.get::<Children>(house).unwrap()[0];
         assert_eq!(world.get::<Transform>(visual).unwrap().scale, Vec3::ONE);
-        let tree_shape = world.get::<Collider>(tree).unwrap();
-        assert!(!tree_shape.contains_point(Vec3::ZERO, Quat::IDENTITY, Vec3::new(0.4, 0.5, 0.)));
     }
     use super::*;
     use shared::planet::{PlanetMesh, unit_icosphere_tris};

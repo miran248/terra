@@ -96,12 +96,12 @@ mod tests {
     #[test]
     fn complete_catalog_has_unique_paths_and_meter_contracts() {
         let names = shared::art::asset_names();
-        assert_eq!(names.len(), 66);
+        assert_eq!(names.len(), 68);
         let paths: std::collections::HashSet<_> = names
             .iter()
             .map(|name| shared::art::asset_path(name))
             .collect();
-        assert_eq!(paths.len(), 66);
+        assert_eq!(paths.len(), 68);
         for name in names {
             assert!(
                 shared::asset_contract::candidate_contract(&name).is_some(),

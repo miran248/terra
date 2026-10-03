@@ -2,7 +2,6 @@
 use crate::map::{LevelRegions, Player, Settlement};
 use crate::ui::UiFont;
 // use crate::zombie::Zombie;
-use avian3d::prelude::{LinearVelocity, Position};
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
 use bevy::image::Image;
@@ -564,10 +563,7 @@ fn world_map_click(
     terrain: Option<Res<TerrainGen>>,
     regions: Option<Res<LevelRegions>>,
     view: Res<WorldMapView>,
-    mut player_q: Query<
-        (&mut Position, &mut LinearVelocity),
-        (With<Player>, Without<WorldMapCamera>),
-    >,
+    mut exploration: ResMut<crate::exploration::Exploration>,
 ) {
     const CLICK_DRAG_THRESHOLD: f32 = 4.0;
     if !open.0
@@ -616,11 +612,7 @@ fn world_map_click(
     };
     open.0 = false;
 
-    // Place the player just above the surface at the target, velocity zeroed.
-    if let Ok((mut position, mut vel)) = player_q.single_mut() {
-        position.0 = hit.position + hit.normal * 2.0;
-        vel.0 = Vec3::ZERO;
-    }
+    exploration.request(crate::exploration::Action::Teleport(hit.position));
 }
 
 fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {

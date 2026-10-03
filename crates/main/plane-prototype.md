@@ -1,5 +1,10 @@
 # Arcade plane prototype
 
+> Historical prototype record. The accepted handling is now integrated into the
+> default game (`just run`); the former prototype launch commands are retired.
+> Production lifecycle controls are V, E and hold R. The controls below describe
+> the isolated experiment, not the current game.
+
 Decision: [Validate plane flight and landing](https://github.com/miran248/terra/issues/25).
 
 Run `just plane-prototype`. This throwaway experiment starts seated in a primitive

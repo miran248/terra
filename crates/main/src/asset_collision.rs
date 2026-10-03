@@ -3,6 +3,11 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
+    collider_with_origin(name, scale, Vec3::ZERO)
+}
+
+/// Express a ground-pivot contract relative to a runtime body origin.
+pub fn collider_with_origin(name: &str, scale: Vec3, origin: Vec3) -> Option<Collider> {
     use shared::asset_contract::{CollisionPart, candidate_contract};
     let contract = candidate_contract(name)?;
     if contract.colliders.is_empty() {
@@ -17,7 +22,7 @@ pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
                 size,
                 rotation,
             } => (
-                Vec3::from_array(center),
+                Vec3::from_array(center) - origin,
                 Quat::from_array(rotation),
                 Collider::cuboid(size[0], size[1], size[2]),
             ),
@@ -26,7 +31,7 @@ pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
                 radius,
                 length,
             } => (
-                Vec3::from_array(center),
+                Vec3::from_array(center) - origin,
                 Quat::IDENTITY,
                 Collider::capsule(radius, length),
             ),
@@ -35,7 +40,7 @@ pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
                 radius,
                 length,
             } => (
-                Vec3::from_array(center),
+                Vec3::from_array(center) - origin,
                 Quat::IDENTITY,
                 Collider::cylinder(radius, length),
             ),

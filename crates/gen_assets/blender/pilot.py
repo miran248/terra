@@ -275,7 +275,8 @@ def generate(out_dir, production=False):
         structures = runpy.run_path(str(Path(__file__).with_name('structures.py')))
         actors = runpy.run_path(str(Path(__file__).with_name('actors.py')))
         items = runpy.run_path(str(Path(__file__).with_name('items.py')))
-        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model) + structures['recipes'](Model) + items['recipes'](Model) + actors['recipes'](humanoid):
+        vehicles = runpy.run_path(str(Path(__file__).with_name('vehicles.py')))
+        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model) + structures['recipes'](Model) + items['recipes'](Model) + actors['recipes'](humanoid) + vehicles['recipes'](Model):
             # Blender names are global, but sockets are a per-export scene API.
             for socket_name in ('socket.hand', 'socket.grip'):
                 previous = bpy.data.objects.get(socket_name)
@@ -284,7 +285,12 @@ def generate(out_dir, production=False):
             model = build()
             # All recipes use a ground pivot even when a thin leaf or root extends below zero.
             meshes = [o for o in model.scene.objects if o.type == 'MESH']
-            if not model.name.startswith('actor.') and model.name not in ('structure.house', 'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'):
+            if model.name.startswith('vehicle.'):
+                bottom = min(v.co.z for obj in meshes for v in obj.data.vertices)
+                for obj in meshes:
+                    for vertex in obj.data.vertices:
+                        vertex.co.z -= bottom
+            if not model.name.startswith(('actor.', 'vehicle.')) and model.name not in ('structure.house', 'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'):
                 bottom = min(v.co.z for obj in meshes for v in obj.data.vertices)
                 for obj in meshes:
                     for vertex in obj.data.vertices:
@@ -318,6 +324,8 @@ def generate(out_dir, production=False):
             animation_bounds = None
             if model.name.startswith('actor.'):
                 animation_bounds = runpy.run_path(str(Path(__file__).with_name('rig.py')))['rig_humanoid'](model, OWNER)
+            if model.name.startswith('vehicle.'):
+                vehicles['rig_vehicle'](model, OWNER)
             if production:
                 # Join compatible parts after rigging, preserving vertex groups,
                 # the shared armature modifier, sockets, and material attributes.

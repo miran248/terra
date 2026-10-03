@@ -40,8 +40,6 @@ struct PlaneReadout;
 
 impl Plugin for PlanePrototypePlugin {
     fn build(&self, app: &mut App) {
-        #[cfg(feature = "on-foot-prototype")]
-        app.init_resource::<shared::on_foot_prototype::OnFootPrototype>();
         app.add_systems(
             OnEnter(AppState::Playing),
             setup.after(crate::map::setup_map),

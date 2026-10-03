@@ -1,5 +1,4 @@
 use crate::constants::*;
-use crate::minimap::MinimapCamera;
 use crate::physics::RadialGravity;
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -15,7 +14,7 @@ use shared::terrain::TerrainGen;
 /// Small speculative skin; swept CCD protects fast motion without a half-meter visual offset.
 const TERRAIN_MARGIN: f32 = 0.02;
 
-fn player_half_height() -> f32 {
+pub(crate) fn player_half_height() -> f32 {
     shared::asset_contract::candidate_contract("actor.player")
         .unwrap()
         .dimensions[1]
@@ -274,15 +273,12 @@ impl Plugin for MapPlugin {
                 FixedUpdate,
                 move_player
                     .run_if(in_state(AppState::Playing))
-                    .run_if(|| !cfg!(any(feature = "car-prototype", feature = "plane-prototype"))),
+                    .run_if(crate::exploration::on_foot),
             )
             .add_systems(
                 Update,
                 (
                     orient_player,
-                    camera_follow.run_if(|| {
-                        !cfg!(any(feature = "car-prototype", feature = "plane-prototype"))
-                    }),
                     diagnose_player_fall,
                     drive_daynight,
                     drive_fog,
@@ -590,7 +586,7 @@ fn player_spawn_position(up: Vec3, surface_radius: f32) -> Vec3 {
     up * (surface_radius + player_half_height() + TERRAIN_MARGIN + 0.1)
 }
 
-fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bundle {
+pub(crate) fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bundle {
     (
         RigidBody::Dynamic,
         crate::asset_collision::actor_body("actor.player").0,
@@ -1081,7 +1077,6 @@ fn read_player_input(keys: Res<ButtonInput<KeyCode>>, mut input: ResMut<PlayerIn
 }
 
 fn move_player(
-    #[cfg(feature = "on-foot-prototype")] tuning: Res<shared::on_foot_prototype::OnFootPrototype>,
     time: Res<Time>,
     input: Res<PlayerInput>,
     planet: Res<PlanetMesh>,
@@ -1108,12 +1103,8 @@ fn move_player(
         .copied()
         .unwrap_or(false);
     let slowed_by_water = underwater || on_frozen_water;
-    #[cfg(not(feature = "on-foot-prototype"))]
-    let speed = PLAYER_SPEED
-        * if slowed_by_water { 0.4 } else { 1.0 }
-        * if input.sprint { 2.5 } else { 1.0 };
-    #[cfg(feature = "on-foot-prototype")]
-    let speed = tuning.speed(input.sprint, slowed_by_water);
+    let speed =
+        shared::on_foot_prototype::OnFootPrototype::default().speed(input.sprint, slowed_by_water);
 
     if input.fwd != 0 {
         let dir = player.heading * input.fwd as f32;
@@ -1194,33 +1185,6 @@ fn orient_player(
     visual.translation = Vec3::NEG_Y * player_half_height();
     visual.rotation = body_rotation.0.inverse() * facing;
     playback.action = usize::from(input.fwd != 0);
-}
-
-fn camera_follow(
-    #[cfg(feature = "on-foot-prototype")] tuning: Res<shared::on_foot_prototype::OnFootPrototype>,
-    time: Res<Time>,
-    player_q: Query<(&Player, &Transform), Without<MainCamera>>,
-    mut camera_q: Query<&mut Transform, (With<MainCamera>, Without<MinimapCamera>)>,
-) {
-    #[cfg(feature = "on-foot-prototype")]
-    if !tuning.baseline {
-        return;
-    }
-    let Ok((player, tf)) = player_q.single() else {
-        return;
-    };
-    let Ok(mut cam_tf) = camera_q.single_mut() else {
-        return;
-    };
-
-    let up = tf.translation.normalize();
-    let feet = tf.translation;
-
-    cam_tf.translation = feet + up * CAMERA_HEIGHT - player.heading * CAMERA_BACK;
-    let look_target = feet + player.heading * CAMERA_LOOK_AHEAD;
-    let t = 1.0 - (-6.0 * time.delta_secs()).exp();
-    let current_look = cam_tf.rotation * -Vec3::Z + cam_tf.translation;
-    cam_tf.look_at(current_look.lerp(look_target, t), up);
 }
 
 /// Advances the day and orbits the world sun around the planet's Y axis.

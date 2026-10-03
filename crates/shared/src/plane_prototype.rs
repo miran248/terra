@@ -1,4 +1,4 @@
-//! Throwaway arcade flight model; distances and speeds are in metres.
+//! Accepted arcade flight model; distances and speeds are in meters.
 use bevy::prelude::*;
 
 #[derive(Default, Clone, Copy)]

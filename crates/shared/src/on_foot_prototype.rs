@@ -1,4 +1,4 @@
-//! Throwaway tuning model for the on-foot exploration decision.
+//! Accepted on-foot exploration tuning, retaining the baseline for comparison tests.
 
 use bevy::prelude::*;
 

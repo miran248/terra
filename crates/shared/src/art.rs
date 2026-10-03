@@ -26,6 +26,7 @@ pub fn asset_names() -> Vec<String> {
     names.extend(Material::ALL.map(|kind| kind.asset_name().to_owned()));
     names.extend(WeaponKind::ALL.map(|kind| kind.asset_name().to_owned()));
     names.extend(ACTOR_SCENES.map(str::to_owned));
+    names.extend(["vehicle.car", "vehicle.plane"].map(str::to_owned));
     names
 }
 
