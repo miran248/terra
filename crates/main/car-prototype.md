@@ -8,7 +8,7 @@ existing planet, roads, physics terrain, bridges, and obstacle colliders. It
 does not implement summoning, vehicle ownership, or entry/exit. Normal `just run`
 and `just on-foot-prototype` retain their on-foot movement and cameras. The mesh
 contact correction is shared by all modes. When both prototype features are
-enabled, the car owns movement and camera.
+enabled, the car owns movement and camera unless the plane prototype is also enabled.
 
 - **W** accelerates forward, or brakes when reversing.
 - **S** brakes forward motion to a stop, then reverses while held.

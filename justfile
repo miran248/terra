@@ -58,3 +58,7 @@ on-foot-prototype:
 # Drive a placeholder car through the existing world.
 car-prototype:
     cargo run -p main --features car-prototype
+
+# Fly a placeholder plane through the existing world.
+plane-prototype:
+    cargo run -p main --features plane-prototype

@@ -4,15 +4,20 @@ mod asset_catalog;
 mod asset_collision;
 #[cfg(feature = "asset-review")]
 mod asset_showcase_prototype;
-#[cfg(feature = "car-prototype")]
+#[cfg(all(feature = "car-prototype", any(not(feature = "plane-prototype"), test)))]
 mod car_prototype;
 mod chunks;
+#[cfg(feature = "plane-prototype")]
+mod plane_prototype;
 // mod combat;
 mod constants;
 // mod loot;
 mod map;
 mod minimap;
-#[cfg(all(feature = "on-foot-prototype", not(feature = "car-prototype")))]
+#[cfg(all(
+    feature = "on-foot-prototype",
+    not(any(feature = "car-prototype", feature = "plane-prototype"))
+))]
 mod on_foot_prototype;
 mod physics;
 // mod prestige;
@@ -96,10 +101,15 @@ fn main() {
         asset_showcase_prototype::AssetShowcasePlugin,
         asset_acceptance::AssetAcceptancePlugin,
     ));
-    #[cfg(all(feature = "on-foot-prototype", not(feature = "car-prototype")))]
+    #[cfg(all(
+        feature = "on-foot-prototype",
+        not(any(feature = "car-prototype", feature = "plane-prototype"))
+    ))]
     app.add_plugins(on_foot_prototype::OnFootPrototypePlugin);
-    #[cfg(feature = "car-prototype")]
+    #[cfg(all(feature = "car-prototype", not(feature = "plane-prototype")))]
     app.add_plugins(car_prototype::CarPrototypePlugin);
+    #[cfg(feature = "plane-prototype")]
+    app.add_plugins(plane_prototype::PlanePrototypePlugin);
     app.run();
 }
 

@@ -9,6 +9,8 @@ pub mod items;
 pub mod level;
 #[cfg(feature = "on-foot-prototype")]
 pub mod on_foot_prototype;
+#[cfg(feature = "plane-prototype")]
+pub mod plane_prototype;
 pub mod planet;
 pub mod roads;
 pub mod sphere;

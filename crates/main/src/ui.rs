@@ -697,7 +697,7 @@ fn update_terrain_hud(
     );
 
     *text = Text::new(format!(
-        "{tile_line}{region_text}\nAlt: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
+        "{tile_line}{region_text}\nTerrain elevation: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
     ));
     *color = TextColor(hud_tile_color(tile));
 }

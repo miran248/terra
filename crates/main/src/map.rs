@@ -274,13 +274,15 @@ impl Plugin for MapPlugin {
                 FixedUpdate,
                 move_player
                     .run_if(in_state(AppState::Playing))
-                    .run_if(|| !cfg!(feature = "car-prototype")),
+                    .run_if(|| !cfg!(any(feature = "car-prototype", feature = "plane-prototype"))),
             )
             .add_systems(
                 Update,
                 (
                     orient_player,
-                    camera_follow.run_if(|| !cfg!(feature = "car-prototype")),
+                    camera_follow.run_if(|| {
+                        !cfg!(any(feature = "car-prototype", feature = "plane-prototype"))
+                    }),
                     diagnose_player_fall,
                     drive_daynight,
                     drive_fog,
