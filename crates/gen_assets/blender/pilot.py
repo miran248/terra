@@ -252,7 +252,7 @@ def clear_owned():
                 container.remove(item, do_unlink=True)
 
 
-def generate(out_dir):
+def generate(out_dir, production=False):
     if bpy.app.version != VERSION:
         raise RuntimeError(f"Pinned Blender version is {VERSION}; running {bpy.app.version}")
     output = Path(out_dir).resolve()
@@ -318,6 +318,18 @@ def generate(out_dir):
             animation_bounds = None
             if model.name.startswith('actor.'):
                 animation_bounds = runpy.run_path(str(Path(__file__).with_name('rig.py')))['rig_humanoid'](model, OWNER)
+            if production:
+                # Join compatible parts after rigging, preserving vertex groups,
+                # the shared armature modifier, sockets, and material attributes.
+                meshes = [o for o in model.scene.objects if o.type == 'MESH']
+                primary = next((o for o in meshes if o.data.name == model.name+'.mesh'), meshes[0])
+                bpy.ops.object.select_all(action='DESELECT')
+                for obj in meshes:
+                    obj.select_set(True)
+                bpy.context.view_layer.objects.active = primary
+                bpy.ops.object.join()
+                primary.name = model.name+'.visual'
+                primary.data.name = model.name+'.mesh'
             filename = model.name + '.glb'
             bpy.ops.export_scene.gltf(filepath=str(output / filename), export_format='GLB',
                 use_active_scene=True, export_yup=True,

@@ -50,3 +50,7 @@ All 37 scenery candidates are available through the paged catalog selector; the 
 The same paged selector includes all 17 structures. `TERRA_STRUCTURE_CAPTURE=1 just asset-preview` captures each candidate; add `TERRA_STRUCTURE_COMPARE=1` for paired baseline views. `just asset-structure-showcase` opens representative buildings and joined modules on actual terrain. See [structure review](structure-review.md) for artifacts and repeat spacing.
 
 The items/actors review adds a **Held weapon [W]** selector for every candidate actor. A cycles idle/walk/attack and Space toggles playback. `TERRA_ITEM_CAPTURE=1 just asset-preview` captures nine items plus all three actions on each of the three actors; add `TERRA_ITEM_COMPARE=1` for baseline comparisons. See [items and actors review](items-actors-review.md).
+
+## Production integration
+
+After #21 activation the default meter-scale source is `models/production/`, including consolidated skinned actors. The selector still compares against the old catalog at its historical scales. Pass `--candidates` to the Python launcher to inspect authoring exports instead. This remains a standalone development example; it is not compiled into normal gameplay. Terrain review modules require the explicit `asset-review` feature. See [production pipeline](glb-pipeline.md).

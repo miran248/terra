@@ -46,6 +46,23 @@ pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
     Some(collider)
 }
 
+/// Dynamic actors use a body-center origin; exported scenes retain a ground pivot.
+pub fn actor_body(name: &str) -> (Collider, f32) {
+    use shared::asset_contract::CollisionPart;
+    let contract = shared::asset_contract::candidate_contract(name).expect("actor contract");
+    let [
+        CollisionPart::Capsule {
+            center,
+            radius,
+            length,
+        },
+    ] = contract.colliders.as_slice()
+    else {
+        panic!("actor body requires one upright capsule: {name}");
+    };
+    (Collider::capsule(*radius, *length), center[1])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

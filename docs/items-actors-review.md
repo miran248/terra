@@ -1,6 +1,6 @@
 # Items and actors candidates
 
-Ticket [#20](https://github.com/miran248/terra/issues/20) completes the candidate catalog: nine items and three actors, including the approved knife and player. All 66 original scene identities now have scripted Blender candidates. Human family approval is pending; production activation remains #21.
+Ticket [#20](https://github.com/miran248/terra/issues/20) completes the candidate catalog: nine items and three actors, including the approved knife and player. All 66 original scene identities now have scripted Blender candidates. The user approved this family (“looking good”); #20 is closed; production activation remains #21.
 
 ## Reproduce and inspect
 
@@ -63,6 +63,6 @@ Width × height × depth, in meters. Triangle/primitive counts are from exported
 - 118 workspace tests and 10 workbench/physics tests pass. Workspace check and Clippy pass with existing unrelated warnings; the final preview Clippy check is clean apart from the existing workspace manifest warning. Formatting and diff checks pass. Logs are under `/tmp/terra-items-*.log`.
 - Bevy imported all 12 family scenes. Eighteen individual captures and eighteen baseline comparisons cover every item and every actor/action pair. Manual inspection included the Blender sheets, both new actor variants in motion, held gun/spear examples, the terrain overview and gold collider view. Review caught a stale held-weapon preview after switching W; equipment now participates in the stage rebuild identity, and recaptures show the selected weapon.
 - The terrain smoke was captured while Blender rendering and workspace tests were also running, so its FPS is not a useful performance benchmark. Full populated-world performance remains #21. Current game lighting is unchanged from the approved representative review.
-- Standards review: no remaining findings against the root/subtree contracts. Spec review: technical deliverables and review artifacts are complete; human family acceptance is still required before closure. The two passes were performed separately in the main session, honoring the request not to delegate.
+- Standards review: no remaining findings against the root/subtree contracts. Spec review: technical deliverables and review artifacts are complete; human family acceptance was subsequently received. The two passes were performed separately in the main session, honoring the request not to delegate.
 
 After the family verdict, #21 can consolidate compatible primitives, activate the complete catalog and meter/collider contracts in production, and perform final runtime/performance/visual acceptance.

@@ -31,9 +31,7 @@ use crate::map::{CullRange, Ground, MainCamera, scenery_cull};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
-use shared::level::{
-    FloraKind, SceneryData, SceneryKind, StructureData, StructureKind, WaterPhase,
-};
+use shared::level::{FloraKind, SceneryData, SceneryKind, StructureData, WaterPhase};
 use shared::sphere::PLANET_RADIUS;
 
 /// Chunk count: the subdivision-2 icosphere faces (20 × 4²).
@@ -521,42 +519,19 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
     let pos = Vec3::from_array(s.pos);
     let up = pos.normalize();
     let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(s.yaw);
-    let scale = match s.kind {
-        StructureKind::Ruin => Vec3::new(6.0, 3.0, 6.0),
-        StructureKind::Watchtower => Vec3::new(4.5, 12.0, 4.5),
-        StructureKind::Dock => Vec3::new(3.0, 0.8, 10.0),
-        StructureKind::Farm => Vec3::new(9.0, 0.3, 9.0),
-        StructureKind::Wall => Vec3::new(6.0, 3.0, 1.2),
-        StructureKind::Well => Vec3::new(2.0, 1.2, 2.0),
-        StructureKind::Campfire => Vec3::splat(1.6),
-        StructureKind::Tent => Vec3::new(3.0, 2.0, 3.0),
-        StructureKind::Crate => Vec3::new(1.5, 1.5, 1.5),
-        StructureKind::Fence => Vec3::new(6.0, 1.5, 0.6),
-        StructureKind::Barricade => Vec3::new(4.0, 1.0, 0.5),
-        StructureKind::LampPost => Vec3::new(1.2, 3.0, 1.2),
-        StructureKind::Signpost => Vec3::new(1.5, 2.5, 0.3),
-        StructureKind::Guardrail => Vec3::new(3.0, 1.0, 0.4),
-        StructureKind::Railing => Vec3::new(3.0, 1.0, 0.2),
-        StructureKind::Suspension => Vec3::new(2.0, 6.0, 0.6),
-        StructureKind::House => Vec3::new(8.0, 5.0, 6.0),
-    };
     let mut root = commands.spawn((
         Transform::from_translation(pos).with_rotation(rotation),
         Visibility::default(),
         Ground,
     ));
-    if !matches!(
-        s.kind,
-        StructureKind::Farm | StructureKind::Campfire | StructureKind::Tent
-    ) {
-        root.insert((
-            RigidBody::Static,
-            Collider::cuboid(scale.x * 0.5, scale.y * 0.5, scale.z * 0.5),
-        ));
+    if let Some(collider) =
+        crate::asset_collision::candidate_collider(s.kind.asset_name(), Vec3::ONE)
+    {
+        root.insert((RigidBody::Static, collider));
     }
     root.with_child((
         WorldAssetRoot(catalog.scene(s.kind.asset_name())),
-        Transform::from_scale(scale),
+        Transform::default(),
     ));
     root.id()
 }
@@ -579,29 +554,14 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
         Ground,
     ));
 
-    match shared::art::scenery_collider(f.kind) {
-        shared::art::ColliderSpec::None => {}
-        shared::art::ColliderSpec::Box { half_extents } => {
-            root.insert((
-                RigidBody::Static,
-                Collider::cuboid(
-                    half_extents[0] * scale,
-                    half_extents[1] * scale,
-                    half_extents[2] * scale,
-                ),
-                Friction::ZERO,
-                Restitution::ZERO,
-            ));
-        }
-        shared::art::ColliderSpec::Capsule {
-            radius,
-            half_length,
-        } => {
-            root.insert((
-                RigidBody::Static,
-                Collider::capsule(radius * scale, half_length * 2.0 * scale),
-            ));
-        }
+    let name = shared::art::scenery_variant_name(f.kind, f.variant as u32);
+    if let Some(collider) = crate::asset_collision::candidate_collider(&name, Vec3::splat(scale)) {
+        root.insert((
+            RigidBody::Static,
+            collider,
+            Friction::ZERO,
+            Restitution::ZERO,
+        ));
     }
 
     root.with_child((
@@ -613,6 +573,46 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
 
 #[cfg(test)]
 mod tests {
+    use shared::level::StructureKind;
+    #[test]
+    fn production_spawns_use_meter_shapes_and_leave_tree_canopy_clear() {
+        use super::*;
+        use bevy::ecs::world::CommandQueue;
+        let mut world = World::new();
+        let mut queue = CommandQueue::default();
+        let catalog = AssetCatalog::fixture(&["structure.house", "scenery.tree.0"]);
+        let (house, tree) = {
+            let mut commands = Commands::new(&mut queue, &world);
+            let house = spawn_structure(
+                &mut commands,
+                &catalog,
+                &StructureData {
+                    pos: [0., 2000., 0.],
+                    face: 0,
+                    kind: StructureKind::House,
+                    yaw: 0.,
+                },
+            );
+            let tree = spawn_scenery(
+                &mut commands,
+                &catalog,
+                &SceneryData {
+                    pos: [0., 2000., 0.],
+                    face: 0,
+                    kind: SceneryKind::Flora(FloraKind::Tree),
+                    variant: 0,
+                },
+            );
+            (house, tree)
+        };
+        queue.apply(&mut world);
+        let house_shape = world.get::<Collider>(house).unwrap();
+        assert!(!house_shape.contains_point(Vec3::ZERO, Quat::IDENTITY, Vec3::new(0., 0.8, 0.)));
+        let visual = world.get::<Children>(house).unwrap()[0];
+        assert_eq!(world.get::<Transform>(visual).unwrap().scale, Vec3::ONE);
+        let tree_shape = world.get::<Collider>(tree).unwrap();
+        assert!(!tree_shape.contains_point(Vec3::ZERO, Quat::IDENTITY, Vec3::new(0.4, 0.5, 0.)));
+    }
     use super::*;
     use shared::planet::{PlanetMesh, unit_icosphere_tris};
 

@@ -1,5 +1,8 @@
+#[cfg(feature = "asset-review")]
+mod asset_acceptance;
 mod asset_catalog;
 mod asset_collision;
+#[cfg(feature = "asset-review")]
 mod asset_showcase_prototype;
 mod chunks;
 // mod combat;
@@ -32,60 +35,64 @@ use shared::sphere::PLANET_RADIUS;
 use shared::state::AppState;
 
 fn main() {
-    App::new()
-        .add_plugins((
-            DefaultPlugins,
-            PhysicsPlugins::default()
-                .build()
-                .disable::<PhysicsInterpolationPlugin>(),
-            PhysicsDiagnosticsPlugin,
-            PhysicsDiagnosticsUiPlugin,
-            FrameTimeDiagnosticsPlugin::default(),
-            // Draws collider wireframes (a sphere on the player capsule + terrain
-            // trimesh triangles), which read as grainy speckle around the player.
-            // Re-enable when debugging physics.
-            // PhysicsDebugPlugin,
-        ))
-        .insert_resource(SubstepCount(12))
-        .insert_resource(PhysicsDiagnosticsUiSettings {
-            enabled: false,
-            ..default()
-        })
-        // Soft sky-blue fill so the shadowed sides of terrain and flora read as
-        // lit rather than pure black. The sun (map.rs) still does the key light.
-        // Cool constant fill that reads as moonlight on the night hemisphere
-        // (the day side is dominated by the ~13000-lux sun, so this mostly shows
-        // at night). Global, so it can't track the hemispheres itself.
-        .insert_resource(GlobalAmbientLight {
-            color: Color::srgb(0.5, 0.62, 0.9),
-            brightness: 150.0,
-            ..default()
-        })
-        // Sits behind the atmosphere (space). Must be dark, otherwise it shows
-        // through the dark night-side sky and makes night look bright. During the
-        // day the atmosphere covers it.
-        .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.07)))
-        .init_state::<AppState>()
-        .add_plugins((
-            asset_catalog::AssetCatalogPlugin,
-            asset_showcase_prototype::AssetShowcasePlugin,
-            map::MapPlugin,
-            // wave::WavePlugin,
-            // zombie::ZombiePlugin,
-            // turret::TurretPlugin,
-            // combat::CombatPlugin,
-            // loot::LootPlugin,
-            ui::UiPlugin,
-            minimap::MinimapPlugin,
-            // prestige::PrestigePlugin,
-            physics::PhysicsPlugin,
-            weather::WeatherPlugin,
-            shader_motion::ShaderMotionPlugin,
-            water::WaterPlugin,
-            foliage::FoliagePlugin,
-        ))
-        .add_systems(Startup, setup_camera)
-        .run();
+    let mut app = App::new();
+    app.add_plugins((
+        DefaultPlugins,
+        PhysicsPlugins::default()
+            .build()
+            .disable::<PhysicsInterpolationPlugin>(),
+        PhysicsDiagnosticsPlugin,
+        PhysicsDiagnosticsUiPlugin,
+        FrameTimeDiagnosticsPlugin::default(),
+        // Draws collider wireframes (a sphere on the player capsule + terrain
+        // trimesh triangles), which read as grainy speckle around the player.
+        // Re-enable when debugging physics.
+        // PhysicsDebugPlugin,
+    ))
+    .insert_resource(SubstepCount(12))
+    .insert_resource(PhysicsDiagnosticsUiSettings {
+        enabled: false,
+        ..default()
+    })
+    // Soft sky-blue fill so the shadowed sides of terrain and flora read as
+    // lit rather than pure black. The sun (map.rs) still does the key light.
+    // Cool constant fill that reads as moonlight on the night hemisphere
+    // (the day side is dominated by the ~13000-lux sun, so this mostly shows
+    // at night). Global, so it can't track the hemispheres itself.
+    .insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.5, 0.62, 0.9),
+        brightness: 150.0,
+        ..default()
+    })
+    // Sits behind the atmosphere (space). Must be dark, otherwise it shows
+    // through the dark night-side sky and makes night look bright. During the
+    // day the atmosphere covers it.
+    .insert_resource(ClearColor(Color::srgb(0.02, 0.03, 0.07)))
+    .init_state::<AppState>()
+    .add_plugins((
+        asset_catalog::AssetCatalogPlugin,
+        map::MapPlugin,
+        // wave::WavePlugin,
+        // zombie::ZombiePlugin,
+        // turret::TurretPlugin,
+        // combat::CombatPlugin,
+        // loot::LootPlugin,
+        ui::UiPlugin,
+        minimap::MinimapPlugin,
+        // prestige::PrestigePlugin,
+        physics::PhysicsPlugin,
+        weather::WeatherPlugin,
+        shader_motion::ShaderMotionPlugin,
+        water::WaterPlugin,
+        foliage::FoliagePlugin,
+    ))
+    .add_systems(Startup, setup_camera);
+    #[cfg(feature = "asset-review")]
+    app.add_plugins((
+        asset_showcase_prototype::AssetShowcasePlugin,
+        asset_acceptance::AssetAcceptancePlugin,
+    ));
+    app.run();
 }
 
 fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMedium>>) {

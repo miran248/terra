@@ -131,48 +131,51 @@ fn scatter_loot(mut commands: Commands, assets: Res<LootAssets>) {
 
 fn spawn_material(commands: &mut Commands, assets: &LootAssets, m: Material, dir: Vec3) {
     let i = Material::ALL.iter().position(|x| *x == m).unwrap();
-    let r = PLANET_RADIUS + SCRAP_SIZE * 0.5 + 0.5;
+    let r = PLANET_RADIUS + 0.5;
     commands
         .spawn((
             RigidBody::Dynamic,
-            Collider::sphere(SCRAP_SIZE * 0.5),
+            crate::asset_collision::candidate_collider(m.asset_name(), Vec3::ONE).unwrap(),
+            crate::physics::RadialUpright,
             GravityScale(0.0),
             LinearDamping(0.95),
             AngularDamping(1.0),
             LockedAxes::ROTATION_LOCKED,
             Restitution::ZERO,
             Friction::ZERO,
-            Transform::from_translation(dir * r),
+            Transform::from_translation(dir * r)
+                .with_rotation(Quat::from_rotation_arc(Vec3::Y, dir)),
             Visibility::default(),
             LootMaterial(m),
         ))
         .with_child((
             WorldAssetRoot(assets.material_scenes[i].clone()),
-            Transform::from_xyz(0.0, -SCRAP_SIZE * 0.5, 0.0).with_scale(Vec3::splat(SCRAP_SIZE)),
+            Transform::default(),
         ));
 }
 
 fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, dir: Vec3) {
     let i = WeaponKind::ALL.iter().position(|x| *x == w).unwrap();
-    let r = PLANET_RADIUS + SCRAP_SIZE * 1.8 * 0.5 + 0.5;
+    let r = PLANET_RADIUS + 0.5;
     commands
         .spawn((
             RigidBody::Dynamic,
-            Collider::sphere(SCRAP_SIZE * 1.8 * 0.5),
+            crate::asset_collision::candidate_collider(w.asset_name(), Vec3::ONE).unwrap(),
+            crate::physics::RadialUpright,
             GravityScale(0.0),
             LinearDamping(0.95),
             AngularDamping(1.0),
             LockedAxes::ROTATION_LOCKED,
             Restitution::ZERO,
             Friction::ZERO,
-            Transform::from_translation(dir * r),
+            Transform::from_translation(dir * r)
+                .with_rotation(Quat::from_rotation_arc(Vec3::Y, dir)),
             Visibility::default(),
             LootWeapon(w),
         ))
         .with_child((
             WorldAssetRoot(assets.weapon_scenes[i].clone()),
-            Transform::from_xyz(0.0, -SCRAP_SIZE * 0.9, 0.0)
-                .with_scale(Vec3::splat(SCRAP_SIZE * 1.8)),
+            Transform::default(),
         ));
 }
 
@@ -290,12 +293,16 @@ fn sync_equipped_weapon(
     loot: Res<LootState>,
     assets: Res<LootAssets>,
     sockets: Query<(Entity, &Name)>,
+    parents: Query<&ChildOf>,
+    players: Query<(), With<Player>>,
     visuals: Query<(Entity, &EquippedWeaponVisual, &ChildOf)>,
 ) {
-    let Some((socket, _)) = sockets
-        .iter()
-        .find(|(_, name)| name.as_str() == "socket.hand")
-    else {
+    let Some((socket, _)) = sockets.iter().find(|(entity, name)| {
+        name.as_str() == "socket.hand"
+            && parents
+                .iter_ancestors(*entity)
+                .any(|parent| players.contains(parent))
+    }) else {
         return;
     };
     let equipped = loot.equipped.map(|(kind, _)| kind);
@@ -318,7 +325,6 @@ fn sync_equipped_weapon(
     commands.entity(socket).with_child((
         EquippedWeaponVisual(kind),
         WorldAssetRoot(assets.weapon_scenes[index].clone()),
-        Transform::from_rotation(Quat::from_rotation_y(std::f32::consts::PI))
-            .with_scale(Vec3::splat(0.7)),
+        shared::asset_contract::grip_transform(kind.asset_name()).unwrap(),
     ));
 }

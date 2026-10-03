@@ -60,17 +60,24 @@ fn spawn_zombies(
     wave.zombies_spawned_this_wave += 1;
 
     let w = wave.wave;
-    let half = ZOMBIE_SIZE * 0.5;
+    let name = if wave.wave.is_multiple_of(2) {
+        "actor.zombie.1"
+    } else {
+        "actor.zombie.0"
+    };
+    let (collider, half) = crate::asset_collision::actor_body(name);
     let spawn_r = PLANET_RADIUS + half + 1.0;
     commands
         .spawn((
             RigidBody::Dynamic,
             RadialGravity,
-            Collider::sphere(ZOMBIE_SIZE * 0.5),
+            collider,
+            crate::physics::RadialUpright,
             LockedAxes::ROTATION_LOCKED,
             Restitution::ZERO,
             Friction::ZERO,
-            Transform::from_translation(spawn_dir * spawn_r),
+            Transform::from_translation(spawn_dir * spawn_r)
+                .with_rotation(Quat::from_rotation_arc(Vec3::Y, spawn_dir)),
             Visibility::default(),
             Zombie {
                 hp: crate::wave::zombie_hp(w),
@@ -78,12 +85,9 @@ fn spawn_zombies(
             },
         ))
         .with_child((
-            WorldAssetRoot(catalog.scene(if wave.wave.is_multiple_of(2) {
-                "actor.zombie.1"
-            } else {
-                "actor.zombie.0"
-            })),
-            Transform::from_xyz(0.0, -half, 0.0).with_scale(Vec3::splat(ZOMBIE_SIZE)),
+            WorldAssetRoot(catalog.scene(name)),
+            catalog.actor(name, 1),
+            Transform::from_xyz(0.0, -half, 0.0),
         ));
 }
 

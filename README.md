@@ -10,7 +10,7 @@
 | Crate | Purpose |
 |-------|---------|
 | `shared` | Library: terrain gen, topology, water, roads, level schema, items, upgrades, theme |
-| `gen_assets` | CLI: deterministic procedural GLB catalog generator |
+| `gen_assets` | CLI: deterministic Blender MCP asset generator |
 | `gen_level` | CLI: precomputes planet-level data to a versioned Postcard binary |
 | `main` | Bevy binary: loads precomputed world, chunks terrain/water/scenery/structures, weather, minimap |
 
@@ -18,12 +18,13 @@
 
 - Rust 1.96.1 (see `rust-toolchain.toml`)
 - `rust-analyzer`, `clippy`
+- Python 3, `just`, Blender 5.2.2 LTS with its MCP add-on running (see [asset pipeline](docs/glb-pipeline.md))
 
 ## Quickstart
 
 ```sh
 # Generate GLB models (once, or after changing art definitions)
-cargo run -p gen_assets -- --out-dir crates/main/assets/models
+just assets  # requires running Blender 5.2.2 + MCP add-on
 
 # Precompute the planet (once, or after terrain changes)
 cargo run -p gen_level -- crates/main/assets/level_1337.bin
@@ -35,7 +36,7 @@ cargo run -p main --release
 ## Offline pipeline
 
 1. `gen_level` precomputes terrain, water, rivers, roads, settlements → `level_{seed}.bin` (embedded via `include_bytes!`)
-2. `gen_assets` generates GLB catalogs (environment, structures, items, actors) → `assets/models/`
+2. `gen_assets` invokes scripted Blender recipes through MCP, generating 66 meter-scale scenes → `assets/models/production/`
 3. `main` loads both at startup, streams the world with 3-LOD chunking
 
 Different seed: `PLANET_SEED=42 cargo run -p gen_level -- crates/main/assets/level_42.bin`
@@ -46,8 +47,9 @@ Different seed: `PLANET_SEED=42 cargo run -p gen_level -- crates/main/assets/lev
 cargo check                    # whole workspace
 cargo clippy                   # whole workspace
 cargo test -p shared           # shared crate tests
-cargo test -p gen_assets       # asset generator tests
-cargo run -p gen_assets -- --check --out-dir crates/main/assets/models  # GLB determinism
+just asset-candidates-test    # Blender export integration tests
+cargo test -p gen_assets       # retained baseline generator tests
+just assets-check             # production GLB determinism via Blender MCP
 cargo bench -p gen_level --bench worldgen    # level gen benchmark
 ```
 

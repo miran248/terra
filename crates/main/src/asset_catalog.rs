@@ -1,131 +1,112 @@
+//! Load the complete approved meter-scale catalog before entering the world.
 use bevy::{gltf::Gltf, prelude::*};
 use shared::{
-    art::{
-        ACTOR_ANIMATIONS, ACTORS_CATALOG, ENVIRONMENT_CATALOG, ITEMS_CATALOG, STRUCTURES_CATALOG,
-    },
+    actor_animation::{ActorAnimationPlugin, ActorPlayback},
+    art::{asset_names, asset_path},
     state::AppState,
 };
 use std::collections::HashMap;
 
 #[derive(Resource)]
 pub struct AssetCatalog {
-    catalogs: [Handle<Gltf>; 4],
+    sources: HashMap<String, Handle<Gltf>>,
     pub scenes: HashMap<String, Handle<WorldAsset>>,
-    pub animations: HashMap<String, Handle<AnimationClip>>,
-    animation_graph: Option<Handle<AnimationGraph>>,
-    animation_nodes: Vec<AnimationNodeIndex>,
 }
 
 impl AssetCatalog {
+    #[cfg(test)]
+    pub fn fixture(names: &[&str]) -> Self {
+        Self {
+            sources: HashMap::new(),
+            scenes: names
+                .iter()
+                .map(|name| ((*name).to_owned(), Handle::default()))
+                .collect(),
+        }
+    }
     pub fn scene(&self, name: &str) -> Handle<WorldAsset> {
         self.scenes
             .get(name)
             .unwrap_or_else(|| panic!("missing asset scene {name}"))
             .clone()
     }
+
+    pub fn actor(&self, name: &str, action: usize) -> ActorPlayback {
+        ActorPlayback {
+            source: self.sources[name].clone(),
+            action,
+            paused: false,
+        }
+    }
 }
 
 pub struct AssetCatalogPlugin;
-
 impl Plugin for AssetCatalogPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, begin_loading)
-            .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)))
-            .add_systems(
-                Update,
-                bind_actor_animations.run_if(in_state(AppState::Playing)),
-            );
+        app.add_plugins(ActorAnimationPlugin)
+            .add_systems(Startup, begin_loading)
+            .add_systems(Update, finish_loading.run_if(in_state(AppState::Loading)));
     }
 }
 
 fn begin_loading(mut commands: Commands, server: Res<AssetServer>) {
     commands.insert_resource(AssetCatalog {
-        catalogs: [
-            server.load(ENVIRONMENT_CATALOG),
-            server.load(STRUCTURES_CATALOG),
-            server.load(ITEMS_CATALOG),
-            server.load(ACTORS_CATALOG),
-        ],
+        sources: asset_names()
+            .into_iter()
+            .map(|name| {
+                let handle = server.load(asset_path(&name));
+                (name, handle)
+            })
+            .collect(),
         scenes: HashMap::new(),
-        animations: HashMap::new(),
-        animation_graph: None,
-        animation_nodes: Vec::new(),
     });
 }
 
 fn finish_loading(
     mut catalog: ResMut<AssetCatalog>,
+    server: Res<AssetServer>,
     gltfs: Res<Assets<Gltf>>,
-    mut graphs: ResMut<Assets<AnimationGraph>>,
     mut next: ResMut<NextState<AppState>>,
 ) {
-    let Some(loaded) = catalog
-        .catalogs
+    if !catalog
+        .sources
+        .values()
+        .all(|handle| server.is_loaded_with_dependencies(handle))
+    {
+        return;
+    }
+    let scenes = catalog
+        .sources
         .iter()
-        .map(|h| gltfs.get(h))
-        .collect::<Option<Vec<_>>>()
-    else {
-        return;
-    };
-    for gltf in &loaded {
-        for (name, scene) in &gltf.named_scenes {
-            catalog.scenes.insert(name.to_string(), scene.clone());
-        }
-    }
-    let actors = loaded[3];
-    for name in ACTOR_ANIMATIONS {
-        let clip = actors
-            .named_animations
-            .get(name)
-            .unwrap_or_else(|| panic!("actors catalog is missing animation {name}"));
-        catalog.animations.insert(name.to_owned(), clip.clone());
-    }
-    let clips = ACTOR_ANIMATIONS.map(|name| catalog.animations[name].clone());
-    let (graph, nodes) = AnimationGraph::from_clips(clips);
-    catalog.animation_graph = Some(graphs.add(graph));
-    catalog.animation_nodes = nodes;
+        .map(|(name, handle)| {
+            let gltf = gltfs.get(handle).expect("loaded catalog source");
+            let scene = gltf
+                .named_scenes
+                .get(name.as_str())
+                .unwrap_or_else(|| panic!("missing canonical scene {name}"));
+            (name.clone(), scene.clone())
+        })
+        .collect();
+    catalog.scenes = scenes;
     next.set(AppState::Playing);
-}
-
-fn bind_actor_animations(
-    mut commands: Commands,
-    catalog: Res<AssetCatalog>,
-    mut players: Query<(Entity, &mut AnimationPlayer), Added<AnimationPlayer>>,
-    parents: Query<&ChildOf>,
-    individual: Query<&shared::actor_animation::ActorPlayback>,
-) {
-    let (Some(graph), Some(&idle)) = (
-        catalog.animation_graph.as_ref(),
-        catalog.animation_nodes.first(),
-    ) else {
-        return;
-    };
-    for (entity, mut player) in &mut players {
-        if parents
-            .iter_ancestors(entity)
-            .any(|e| individual.contains(e))
-        {
-            continue;
-        }
-        player.play(idle).repeat();
-        commands
-            .entity(entity)
-            .insert(AnimationGraphHandle(graph.clone()));
-    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[test]
-    fn catalog_paths_are_unique() {
-        let mut paths = [
-            ENVIRONMENT_CATALOG,
-            STRUCTURES_CATALOG,
-            ITEMS_CATALOG,
-            ACTORS_CATALOG,
-        ];
-        paths.sort_unstable();
-        assert!(paths.windows(2).all(|pair| pair[0] != pair[1]));
+    fn complete_catalog_has_unique_paths_and_meter_contracts() {
+        let names = shared::art::asset_names();
+        assert_eq!(names.len(), 66);
+        let paths: std::collections::HashSet<_> = names
+            .iter()
+            .map(|name| shared::art::asset_path(name))
+            .collect();
+        assert_eq!(paths.len(), 66);
+        for name in names {
+            assert!(
+                shared::asset_contract::candidate_contract(&name).is_some(),
+                "{name}"
+            );
+        }
     }
 }

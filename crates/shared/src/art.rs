@@ -12,6 +12,27 @@ pub const ITEMS_CATALOG: &str = "models/items.glb";
 pub const ACTORS_CATALOG: &str = "models/actors.glb";
 pub const ACTOR_ANIMATIONS: [&str; 3] = ["idle", "walk", "attack"];
 
+pub const ACTOR_SCENES: [&str; 3] = ["actor.player", "actor.zombie.0", "actor.zombie.1"];
+
+/// Stable semantic identities; physical files are one consolidated scene each.
+pub fn asset_names() -> Vec<String> {
+    let mut names = Vec::new();
+    for kind in SCENERY_KINDS {
+        for variant in 0..scenery_variant_count(kind) {
+            names.push(scenery_variant_name(kind, variant));
+        }
+    }
+    names.extend(STRUCTURE_KINDS.map(|kind| kind.asset_name().to_owned()));
+    names.extend(Material::ALL.map(|kind| kind.asset_name().to_owned()));
+    names.extend(WeaponKind::ALL.map(|kind| kind.asset_name().to_owned()));
+    names.extend(ACTOR_SCENES.map(str::to_owned));
+    names
+}
+
+pub fn asset_path(name: &str) -> String {
+    format!("models/production/{name}.glb")
+}
+
 /// The plant-life subset of environmental scenery.
 pub const FLORA_KINDS: [FloraKind; 14] = [
     FloraKind::Tree,

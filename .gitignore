@@ -3,3 +3,5 @@
 **/assets/**/*.glb
 **/__pycache__/
 /crates/main/assets/models/candidates/manifest.json
+
+/crates/main/assets/models/production/manifest.json

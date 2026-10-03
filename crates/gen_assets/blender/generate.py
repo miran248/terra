@@ -29,30 +29,32 @@ def execute(code):
     return result["result"]
 
 
-def generate(destination):
+def generate(destination, production=False):
     script = Path(__file__).with_name("pilot.py")
     code = (f"import runpy\n"
             f"pilot = runpy.run_path({str(script)!r})\n"
-            f"result = pilot['generate']({str(destination)!r})\nresult")
+            f"result = pilot['generate']({str(destination)!r}, production={production!r})\nresult")
     return execute(code)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--out-dir", type=Path)
+    parser.add_argument("--production", action="store_true", help="Consolidate approved scenes for production")
     parser.add_argument("--check", action="store_true", help="Regenerate in a temporary directory and compare; never writes output")
     args = parser.parse_args()
-    output = args.out_dir.resolve()
+    output = (args.out_dir or (DEFAULT_OUTPUT.parent / "production" if args.production else DEFAULT_OUTPUT)).resolve()
     if args.check:
         with tempfile.TemporaryDirectory(prefix="terra-blender-check-") as temporary:
-            generate(temporary)
+            generate(temporary, args.production)
             generated = Path(temporary)
             for name in sorted(p.name for p in generated.iterdir()):
                 if not (output / name).exists() or (output / name).read_bytes() != (generated / name).read_bytes():
                     raise SystemExit(f"Candidate differs: {output / name}")
         print("Candidate GLBs and manifest are byte-identical")
     else:
-        print(json.dumps(generate(output), indent=2))
+        manifest = generate(output, args.production)
+        print(f"Generated {len(manifest['assets'])} scenes in {output}")
 
 
 if __name__ == "__main__":

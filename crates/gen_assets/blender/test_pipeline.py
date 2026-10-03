@@ -34,6 +34,31 @@ def float_accessor(path, doc, index):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_production_exports_complete_catalog_with_one_primitive_per_scene(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            result = subprocess.run([sys.executable, str(SCRIPT), '--production', '--out-dir', temporary], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+            output = Path(temporary)
+            assets = json.loads((output/'manifest.json').read_text())['assets']
+            self.assertEqual(len(assets), 66)
+            for name in assets:
+                doc = document(output/(name+'.glb'))
+                self.assertEqual([s['name'] for s in doc['scenes']], [name])
+                self.assertEqual(sum(len(m['primitives']) for m in doc['meshes']), 1, name)
+                self.assertEqual(doc['meshes'][0]['name'], name+'.mesh')
+                self.assertAlmostEqual(bounds(doc, doc['scenes'][0])[1], 0, places=5)
+                if name.startswith('actor.'):
+                    self.assertEqual({a['name'] for a in doc['animations']}, {'idle','walk','attack'})
+                    self.assertEqual(len(doc['skins'][0]['joints']), 15)
+                    primitive = doc['meshes'][0]['primitives'][0]
+                    self.assertIn('WEIGHTS_0', primitive['attributes'])
+                    self.assertIn('JOINTS_0', primitive['attributes'])
+                    self.assertIn('socket.hand', [n.get('name') for n in doc['nodes']])
+                elif name.startswith('weapon.'):
+                    self.assertIn('socket.grip', [n.get('name') for n in doc['nodes']])
+            checked = subprocess.run([sys.executable, str(SCRIPT), '--production', '--out-dir', temporary, '--check'], capture_output=True, text=True)
+            self.assertEqual(checked.returncode, 0, checked.stdout+checked.stderr)
+
     def test_all_three_actors_share_rig_clips_and_hand_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
@@ -146,7 +171,7 @@ class PipelineTests(unittest.TestCase):
     def test_scenery_catalog_preserves_all_37_scenes_at_grounded_meter_scale(self):
         with tempfile.TemporaryDirectory() as temporary:
             baseline_dir = Path(temporary) / 'baseline'
-            subprocess.run(['cargo', 'run', '-p', 'gen_assets', '--', '--out-dir', str(baseline_dir)],
+            subprocess.run(['cargo', 'run', '-p', 'gen_assets', '--bin', 'legacy_assets', '--', '--out-dir', str(baseline_dir)],
                            cwd=SCRIPT.parents[3], check=True, capture_output=True)
             expected = {scene['name'] for scene in document(baseline_dir / 'environment.glb')['scenes']}
             self.assertEqual(len(expected), 37)
@@ -188,7 +213,7 @@ class PipelineTests(unittest.TestCase):
     def test_structure_catalog_preserves_all_17_scenes_and_physical_dimensions(self):
         with tempfile.TemporaryDirectory() as temporary:
             baseline_dir = Path(temporary) / 'baseline'
-            subprocess.run(['cargo', 'run', '-p', 'gen_assets', '--', '--out-dir', str(baseline_dir)],
+            subprocess.run(['cargo', 'run', '-p', 'gen_assets', '--bin', 'legacy_assets', '--', '--out-dir', str(baseline_dir)],
                            cwd=SCRIPT.parents[3], check=True, capture_output=True)
             expected = {scene['name'] for scene in document(baseline_dir / 'structures.glb')['scenes']}
             self.assertEqual(len(expected), 17)

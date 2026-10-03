@@ -1,4 +1,4 @@
-# Generate the baseline catalogs and launch the asset preview prototype.
+# Launch the separate asset preview using the production catalog.
 asset-preview:
     python3 crates/main/examples/asset_preview_prototype.py
 
@@ -16,7 +16,7 @@ asset-candidates-test:
 
 # Review candidate animation on the actual planet without changing the catalog.
 asset-showcase:
-    TERRA_ASSET_SHOWCASE=1 cargo run -p main
+    TERRA_ASSET_SHOWCASE=1 cargo run -p main --features asset-review
 
 # Generate meter-scale scenery review sheets through the running Blender MCP.
 asset-scenery-sheets: asset-candidates
@@ -28,7 +28,7 @@ asset-structure-sheets: asset-candidates
 
 # Inspect candidate structures and repeated modules on the actual terrain.
 asset-structure-showcase:
-    TERRA_ASSET_SHOWCASE=1 TERRA_STRUCTURE_SHOWCASE=1 cargo run -p main
+    TERRA_ASSET_SHOWCASE=1 TERRA_STRUCTURE_SHOWCASE=1 cargo run -p main --features asset-review
 
 # Render items and actor variants at their actual meter dimensions.
 asset-item-sheets: asset-candidates
@@ -37,4 +37,16 @@ asset-item-sheets: asset-candidates
 
 # Inspect all actors/actions, held weapons and dropped items on the terrain.
 asset-item-showcase:
-    TERRA_ASSET_SHOWCASE=1 TERRA_ITEM_SHOWCASE=1 cargo run -p main
+    TERRA_ASSET_SHOWCASE=1 TERRA_ITEM_SHOWCASE=1 cargo run -p main --features asset-review
+
+# Generate the complete production catalog through the running Blender MCP.
+assets:
+    cargo run -p gen_assets
+
+# Regenerate into scratch storage and compare production bytes without writing.
+assets-check:
+    cargo run -p gen_assets -- --check
+
+# Start the normal game with the generated production catalog.
+run:
+    cargo run -p main

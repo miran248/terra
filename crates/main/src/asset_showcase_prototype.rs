@@ -10,10 +10,7 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
 };
 use shared::{
-    actor_animation::{ActorAnimationPlugin, ActorPlayback},
-    planet::PlanetMesh,
-    sphere::PLANET_RADIUS,
-    state::AppState,
+    actor_animation::ActorPlayback, planet::PlanetMesh, sphere::PLANET_RADIUS, state::AppState,
 };
 
 pub struct AssetShowcasePlugin;
@@ -22,7 +19,7 @@ impl Plugin for AssetShowcasePlugin {
         if std::env::var_os("TERRA_ASSET_SHOWCASE").is_none() {
             return;
         }
-        app.add_plugins((ActorAnimationPlugin, PhysicsDebugPlugin))
+        app.add_plugins(PhysicsDebugPlugin)
             .insert_gizmo_config(
                 PhysicsGizmos {
                     axis_lengths: None,

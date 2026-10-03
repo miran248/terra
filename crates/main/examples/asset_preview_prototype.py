@@ -20,11 +20,12 @@ from glb import bounds, read
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--baseline-only', action='store_true')
+    parser.add_argument('--candidates', action='store_true', help='Inspect authoring exports instead of consolidated production')
     args = parser.parse_args()
-    candidate_dir = ROOT / 'crates/main/assets/models/candidates'
+    candidate_dir = ROOT / 'crates/main/assets/models' / ('candidates' if args.candidates else 'production')
     candidate_manifest = candidate_dir / 'manifest.json'
     candidates = {} if args.baseline_only or not candidate_manifest.exists() else json.loads(candidate_manifest.read_text())['assets']
-    subprocess.run(["cargo", "run", "-p", "gen_assets", "--", "--out-dir",
+    subprocess.run(["cargo", "run", "-p", "gen_assets", "--bin", "legacy_assets", "--", "--out-dir",
                     "crates/main/assets/models"], cwd=ROOT, check=True)
     rows = []
     for name in ("environment", "structures", "items", "actors"):
@@ -36,7 +37,7 @@ def main():
                 filename = candidates[scene['name']]['file']
                 candidate = read(candidate_dir / filename)
                 candidate_index = next(i for i, s in enumerate(candidate['scenes']) if s['name'] == scene['name'])
-                row += [f"models/candidates/{filename}#Scene{candidate_index}", *map(str, bounds(candidate, candidate['scenes'][candidate_index]))]
+                row += [f"models/{candidate_dir.name}/{filename}#Scene{candidate_index}", *map(str, bounds(candidate, candidate['scenes'][candidate_index]))]
             rows.append("\t".join(row))
     with tempfile.TemporaryDirectory(prefix="terra-asset-preview-") as temporary:
         manifest = Path(temporary) / "catalog.tsv"

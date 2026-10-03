@@ -1,6 +1,8 @@
 # Blender representative asset pilot
 
-This implements [Prove scripted Blender authoring with a humanoid and house](https://github.com/miran248/terra/issues/12). The humanoid/house direction was accepted for extension; the representative set awaits in-game review before production rollout. The [asset refresh decision](adr/0001-scripted-asset-refresh.md) remains the scope boundary.
+This historical authoring/review record implements [Prove scripted Blender authoring with a humanoid and house](https://github.com/miran248/terra/issues/12). The humanoid/house direction was accepted for extension; the representative set awaits in-game review before production rollout. The [asset refresh decision](adr/0001-scripted-asset-refresh.md) remains the scope boundary.
+
+For the activated consolidated catalog and current default preview source, see the [production pipeline](glb-pipeline.md). Commands and candidate paths below describe the authoring/review stage.
 
 ## Run through Blender MCP
 

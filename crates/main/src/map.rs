@@ -12,13 +12,22 @@ use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
 
-/// Speculative collision skin added to the thin terrain trimesh so fast movement
-/// doesn't tunnel through it. The player mesh is dropped by this much to hide the
-/// float it would otherwise cause.
-const TERRAIN_MARGIN: f32 = 0.5;
+/// Small speculative skin; swept CCD protects fast motion without a half-meter visual offset.
+const TERRAIN_MARGIN: f32 = 0.02;
+
+fn player_half_height() -> f32 {
+    shared::asset_contract::candidate_contract("actor.player")
+        .unwrap()
+        .dimensions[1]
+        * 0.5
+}
 
 #[derive(Component)]
 pub struct Ground;
+
+/// The displaced triangles used for physics, distinct from the unit-sphere face index.
+#[derive(Resource)]
+pub(crate) struct CollisionTerrain(pub PlanetMesh);
 
 #[derive(Component)]
 pub struct Sun;
@@ -174,7 +183,7 @@ impl LevelRegions {
             return Vec::new();
         };
         let player_radius = player_position.length();
-        let collider_radius = crate::constants::PLAYER_SIZE * 0.5;
+        let collider_radius = player_half_height();
         let minimum_clearance = collider_radius - BELOW_DECK_TOLERANCE;
         let maximum_clearance = collider_radius + ABOVE_DECK_TOLERANCE;
 
@@ -493,22 +502,14 @@ fn setup_map(
         sun_dir: Vec3::new(spawn_noon_angle.cos(), 0.35, spawn_noon_angle.sin()).normalize(),
         ..Default::default()
     });
-    let capsule_radius = PLAYER_SIZE * 0.4;
     let spawn_pos = player_spawn_position(up, spawn_surface_r);
     commands
         .spawn(player_physics_bundle(spawn_pos, start.tangent_basis().1))
-        // The visual capsule is taller than the sphere collider, so on the entity
-        // origin its base sank ~capsule_radius into the terrain — a z-fighting
-        // ring around the feet that flickered as the body micro-jittered. Lift the
-        // mesh onto a child so its base rests exactly on the collider's ground
-        // contact point.
         .with_child((
             PlayerVisual,
             WorldAssetRoot(catalog.scene("actor.player")),
-            // Rest the base on the ground contact point, then drop by the terrain
-            // collision margin so the visual doesn't float above the terrain.
-            Transform::from_xyz(0.0, -capsule_radius + TERRAIN_MARGIN, 0.0)
-                .with_scale(Vec3::splat(PLAYER_SIZE)),
+            catalog.actor("actor.player", 0),
+            Transform::from_translation(Vec3::NEG_Y * player_half_height()),
         ));
 
     // Settlement markers
@@ -538,6 +539,7 @@ fn setup_map(
     let face_types = level.face_types.clone();
     commands.insert_resource(terrain);
     commands.insert_resource(planet_mesh);
+    commands.insert_resource(CollisionTerrain(ground));
     commands.insert_resource(LevelTags(tags));
     commands.insert_resource(LevelFaceTypes(face_types));
     commands.insert_resource(LevelFaceCornerTypes(level.face_corner_types.clone()));
@@ -578,15 +580,14 @@ fn setup_map(
 }
 
 fn player_spawn_position(up: Vec3, surface_radius: f32) -> Vec3 {
-    let capsule_radius = PLAYER_SIZE * 0.4;
-    let capsule_half = capsule_radius + PLAYER_SIZE * 0.5;
-    up * (surface_radius + capsule_half + 0.5)
+    up * (surface_radius + player_half_height() + TERRAIN_MARGIN + 0.1)
 }
 
 fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bundle {
     (
         RigidBody::Dynamic,
-        Collider::sphere(PLAYER_SIZE * 0.5),
+        crate::asset_collision::actor_body("actor.player").0,
+        crate::physics::RadialUpright,
         // Swept CCD: thin trimesh colliders (terrain, bridge decks) must not be
         // tunneled through during fast falls.
         SweptCcd::default(),
@@ -596,7 +597,8 @@ fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bundle {
         Mass(80.0),
         ColliderDensity(1000.0),
         LockedAxes::ROTATION_LOCKED,
-        Transform::from_translation(spawn_pos),
+        Transform::from_translation(spawn_pos)
+            .with_rotation(Quat::from_rotation_arc(Vec3::Y, spawn_pos.normalize())),
         Visibility::default(),
         Player {
             fire_timer: Timer::from_seconds(ATTACK_INTERVAL, TimerMode::Repeating),
@@ -611,6 +613,22 @@ fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bundle {
 mod region_identity_tests {
     use super::*;
     use shared::level::{RoadData, RoadKind};
+
+    #[test]
+    fn production_player_has_a_one_meter_radial_capsule() {
+        for up in [Vec3::Y, Vec3::X, Vec3::NEG_Z] {
+            let mut world = World::new();
+            let position = up * 2001.;
+            let entity = world.spawn(player_physics_bundle(position, Vec3::Z)).id();
+            let collider = world.get::<Collider>(entity).unwrap();
+            let rotation = world.get::<Transform>(entity).unwrap().rotation;
+            assert!(collider.contains_point(position, rotation, position + up * 0.49));
+            assert!(collider.contains_point(position, rotation, position - up * 0.49));
+            assert!(!collider.contains_point(position, rotation, position + up * 0.51));
+            let tangent = up.any_orthonormal_vector();
+            assert!(!collider.contains_point(position, rotation, position + tangent * 0.13));
+        }
+    }
 
     fn bridge(name: &str) -> RoadData {
         RoadData {
@@ -654,7 +672,7 @@ mod region_identity_tests {
                 deck.top_surface,
             )]),
         };
-        let player_collider_radius = crate::constants::PLAYER_SIZE * 0.5;
+        let player_collider_radius = player_half_height();
         let on_deck = direction * (deck_radius + player_collider_radius);
         let above_deck = direction * (deck_radius + player_collider_radius + 3.0);
         let below_deck = direction * (deck_radius - 1.7);
@@ -715,8 +733,7 @@ mod region_identity_tests {
                 if !level.face_tags[face].contains(&FaceTag::Bridge) {
                     untagged_faces += 1;
                 }
-                let player_position =
-                    direction * (deck_radius + crate::constants::PLAYER_SIZE * 0.5);
+                let player_position = direction * (deck_radius + player_half_height());
 
                 assert_eq!(
                     regions.bridge_names_at_position(player_position),
@@ -1106,7 +1123,7 @@ fn move_player(
 fn diagnose_player_fall(
     real_time: Res<Time<Real>>,
     fixed_time: Res<Time<Fixed>>,
-    terrain: Option<Res<TerrainGen>>,
+    terrain: Option<Res<CollisionTerrain>>,
     player_q: Query<(&Position, &LinearVelocity, &CollidingEntities), With<Player>>,
     mut was_below_surface: Local<bool>,
 ) {
@@ -1119,7 +1136,7 @@ fn diagnose_player_fall(
     if up == Vec3::ZERO {
         return;
     }
-    let surface_radius = terrain.surface_radius(shared::sphere::SpherePos::new(up));
+    let surface_radius = terrain.0.facet_radius(up, PLANET_RADIUS);
     let altitude = radius - surface_radius;
     let below_surface = altitude < 0.0;
 
@@ -1142,25 +1159,28 @@ fn diagnose_player_fall(
 }
 
 fn orient_player(
-    player_q: Query<(&Player, &Position)>,
-    mut visual_q: Query<&mut Transform, With<PlayerVisual>>,
+    input: Res<PlayerInput>,
+    player_q: Query<(&Player, &Position, &Rotation)>,
+    mut visual_q: Query<
+        (&mut Transform, &mut shared::actor_animation::ActorPlayback),
+        With<PlayerVisual>,
+    >,
 ) {
-    let Ok((player, position)) = player_q.single() else {
+    let Ok((player, position, body_rotation)) = player_q.single() else {
         return;
     };
-    let Ok(mut visual_tf) = visual_q.single_mut() else {
+    let Ok((mut visual, mut playback)) = visual_q.single_mut() else {
         return;
     };
     let up = position.0.normalize();
-    // Child translation is expressed in the unrotated physics parent's space;
-    // rotating this child does not rotate its own offset. Keep the capsule lift
-    // radial explicitly so its base remains on the collider contact point.
-    visual_tf.translation = up * (PLAYER_SIZE * 0.4 - TERRAIN_MARGIN);
-    visual_tf.rotation = Quat::from_mat3(&Mat3::from_cols(
+    let facing = Quat::from_mat3(&Mat3::from_cols(
         player.heading.cross(up),
         up,
         -player.heading,
     ));
+    visual.translation = Vec3::NEG_Y * player_half_height();
+    visual.rotation = body_rotation.0.inverse() * facing;
+    playback.action = usize::from(input.fwd != 0);
 }
 
 fn camera_follow(
