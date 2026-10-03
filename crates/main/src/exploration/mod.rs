@@ -337,6 +337,7 @@ fn contacts(
     mut commands: Commands,
     time: Res<Time>,
     placement: Placement,
+    disabled: Query<(), With<ColliderDisabled>>,
     mut vehicles: Query<(
         Entity,
         &Position,
@@ -349,7 +350,11 @@ fn contacts(
         let support = placement.support(e, p.0, v.flight.heading, v.kind);
         v.clearance = placement.clearance(e, p.0);
         let landed = v.kind == Kind::Car || !v.flight.airborne || v.crashed;
-        let touching_ground = v.parked || contacts.0.iter().any(|e| !placement.obstacle(*e));
+        let touching_ground = v.parked
+            || contacts
+                .0
+                .iter()
+                .any(|e| !disabled.contains(*e) && !placement.obstacle(*e));
         v.stable = if landed && touching_ground && support.is_some() && velocity.length() < 0.5 {
             v.stable + time.delta_secs()
         } else {
@@ -358,7 +363,12 @@ fn contacts(
         if v.kind != Kind::Plane || v.crashed || v.parked {
             continue;
         }
-        let obstacle = contacts.0.iter().any(|e| placement.obstacle(*e));
+        // Disabling the seated explorer's collider can leave a contact from
+        // the previous physics step; it is no longer an obstacle.
+        let obstacle = contacts
+            .0
+            .iter()
+            .any(|e| !disabled.contains(*e) && placement.obstacle(*e));
         let wet = placement.wet(p.0, 0.5);
         let gentle = !wet
             && !obstacle
@@ -377,7 +387,7 @@ fn contacts(
             && v.previous_velocity.dot(p.0.normalize()) > 0.0
             && v.flight.pitch >= 0.0
             && v.flight.bank.abs() <= 0.35;
-        if wet || obstacle || (v.flight.airborne && !contacts.0.is_empty() && !departing) {
+        if wet || obstacle || (v.flight.airborne && touching_ground && !departing) {
             if gentle {
                 v.flight.airborne = false;
                 v.flight.stalled = false;
@@ -1254,6 +1264,33 @@ mod tests {
             .insert((RigidBody::Dynamic, Position(p + Vec3::Y * 0.2)));
         act(&mut app, Action::Interact);
         assert!(app.world().resource::<Exploration>().occupied.is_none());
+    }
+
+    #[test]
+    fn entering_a_plane_while_touching_its_wing_does_not_crash() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Plane));
+        let plane = app.world().resource::<Exploration>().vehicles[1].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(plane).unwrap().0;
+        let side = app.world().get::<Rotation>(plane).unwrap().0 * Vec3::X;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + side * 3.8 + p.normalize() * 0.6));
+        for _ in 0..3 {
+            app.update();
+        }
+        act(&mut app, Action::Interact);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(plane));
+        for frame in 0..10 {
+            app.update();
+            assert!(
+                !app.world().get::<Vehicle>(plane).unwrap().crashed,
+                "entry crash at frame {frame}"
+            );
+        }
     }
 
     #[test]
