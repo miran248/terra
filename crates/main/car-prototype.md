@@ -70,9 +70,13 @@ setting still needs a live verdict.
 
 ## Limits to carry into integration
 
-Support is one 0.75 m center ray. There are no wheel contacts or suspension,
-and the chassis does not pitch or roll to match slopes. This can make sharp
-crests and uneven ground difficult and is a specific point for feedback.
+Support uses five 0.75 m downward rays at the center and chassis corners. The
+nearest upward-facing hit supplies the support slope. This keeps the car
+grounded when an uphill edge supports the upright body but the center ray alone
+cannot reach the terrain. Probe placement shares the physics chassis dimensions.
+These discrete samples can still miss a narrow support between probes. There
+are no wheel contacts or suspension, and the chassis does not pitch or roll to
+match slopes. Sharp crests and uneven ground remain points for feedback.
 Reset always returns to the starting spot; there is no water recovery rule or
 safe-placement search. Use R rather than the on-foot map teleport, whose
 placement clearance has not been adapted to the car.
@@ -89,3 +93,8 @@ steering, grip, unsupported/steep-slope behavior, and spherical camera retractio
 and recovery. Live testing on generated terrain is still required to judge feel
 and find limits of the simple support model. No production vehicle lifecycle or
 asset decision is implied by this prototype.
+
+A headless Avian regression places the real chassis on a 20° ramp and exercises
+the actual driving plugin. It checks support and powered movement, then lifts
+the car a metre and checks that it becomes airborne. The original center-only
+probe failed this scenario; the footprint probes pass.

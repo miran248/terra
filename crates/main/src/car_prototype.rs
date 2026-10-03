@@ -6,7 +6,7 @@ use crate::{
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::{
-    car_prototype::{CarCamera, CarMotion},
+    car_prototype::{CHASSIS_SIZE, CarCamera, CarMotion, support_origins},
     state::AppState,
 };
 
@@ -15,6 +15,99 @@ pub struct CarPrototypePlugin;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chassis_supported_by_a_gentle_slope_is_not_reported_airborne() {
+        use std::time::Duration;
+
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            bevy::state::app::StatesPlugin,
+            PhysicsPlugins::default(),
+        ))
+        .init_state::<AppState>()
+        .init_asset::<Mesh>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .insert_resource(Gravity::ZERO)
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            Duration::from_secs_f32(1.0 / 60.0),
+        ))
+        .add_plugins(CarPrototypePlugin);
+
+        let angle = 20.0_f32.to_radians();
+        let rotation = Quat::from_rotation_x(angle);
+        let normal = rotation * Vec3::Y;
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 1.0, 20.0),
+            Transform::from_translation(Vec3::Y * 2000.0 - normal * 0.5).with_rotation(rotation),
+        ));
+        // The upright box's uphill edge rests on this ordinary 20° ramp.
+        let position = Vec3::Y * (2000.0 + 0.4 + 1.6 * angle.tan() + 0.01);
+        let car = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::cuboid(1.8, 0.8, 3.2),
+                Mass(800.0),
+                LockedAxes::ROTATION_LOCKED,
+                Transform::from_translation(position),
+                Player {
+                    fire_timer: Timer::default(),
+                    damage: 0.0,
+                    range: 0.0,
+                    heading: Vec3::NEG_Z,
+                },
+                CarPrototype {
+                    spawn: position,
+                    spawn_heading: Vec3::NEG_Z,
+                    support: None,
+                },
+            ))
+            .id();
+        app.finish();
+        app.cleanup();
+        // Populate Avian's real broad phase while driving is disabled.
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .insert_resource(State::new(AppState::Playing));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(
+            app.world()
+                .get::<CarPrototype>(car)
+                .unwrap()
+                .support
+                .is_some(),
+            "an upright chassis resting on a 20° ramp must retain ground support"
+        );
+        assert!(
+            app.world()
+                .get::<LinearVelocity>(car)
+                .unwrap()
+                .0
+                .dot(Vec3::NEG_Z)
+                > 0.1,
+            "ground support must enable powered motion on this gentle slope"
+        );
+        app.world_mut().get_mut::<Position>(car).unwrap().0 += Vec3::Y;
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(
+            app.world()
+                .get::<CarPrototype>(car)
+                .unwrap()
+                .support
+                .is_none(),
+            "a car lifted a metre off the same ramp must still be airborne"
+        );
+    }
 
     #[test]
     fn driving_plugin_can_initialize_its_physics_schedule() {
@@ -97,7 +190,7 @@ fn setup(
                 spawn_heading: player.heading,
                 support: None,
             },
-            Collider::cuboid(1.8, 0.8, 3.2),
+            Collider::cuboid(CHASSIS_SIZE.x, CHASSIS_SIZE.y, CHASSIS_SIZE.z),
             Mass(800.0),
             Friction::ZERO,
             Restitution::ZERO,
@@ -156,13 +249,14 @@ fn drive(
         return;
     };
     let up = position.0.normalize();
-    let support = spatial.cast_ray(
-        position.0,
-        Dir3::new(-up).unwrap(),
-        0.75,
-        false,
-        &SpatialQueryFilter::from_excluded_entities([entity]),
-    );
+    let filter = SpatialQueryFilter::from_excluded_entities([entity]);
+    let support = support_origins(position.0, player.heading)
+        .into_iter()
+        .filter_map(|origin| {
+            spatial.cast_ray(origin, Dir3::new(-up).unwrap(), 0.75, false, &filter)
+        })
+        .filter(|hit| hit.normal.dot(up) > 0.0)
+        .min_by(|a, b| a.distance.total_cmp(&b.distance));
     car.support = support.map(|hit| hit.normal);
     let throttle = f32::from(keys.pressed(KeyCode::KeyW)) - f32::from(keys.pressed(KeyCode::KeyS));
     let steering = f32::from(keys.pressed(KeyCode::KeyA)) - f32::from(keys.pressed(KeyCode::KeyD));

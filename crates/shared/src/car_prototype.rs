@@ -1,6 +1,24 @@
 //! Throwaway arcade driving model. Inputs are normalized; distances are meters.
 use bevy::prelude::*;
 
+pub const CHASSIS_SIZE: Vec3 = Vec3::new(1.8, 0.8, 3.2);
+
+/// Sample under the center and chassis corners rather than assuming that the
+/// center is the lowest point above terrain. Positions share the body's height.
+pub fn support_origins(position: Vec3, heading: Vec3) -> [Vec3; 5] {
+    let up = position.normalize();
+    let forward = (heading - up * heading.dot(up)).normalize();
+    let side = forward.cross(up) * (CHASSIS_SIZE.x * 0.5);
+    let end = forward * (CHASSIS_SIZE.z * 0.5);
+    [
+        position,
+        position + side + end,
+        position - side + end,
+        position + side - end,
+        position - side - end,
+    ]
+}
+
 #[derive(Clone, Copy)]
 pub struct CarMotion {
     pub velocity: Vec3,
