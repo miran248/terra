@@ -24,7 +24,7 @@ observation for the later exit decision, not an exit implementation.
 | Parameter | Value |
 | --- | --- |
 | Forward / reverse powered speed | 30 / 8 m/s |
-| Acceleration / braking / coasting deceleration | 6 / 12 / 2 m/s² |
+| Acceleration / braking / coasting deceleration | 18 / 12 / 2 m/s² |
 | Sideways grip | Exponential decay at 8/s |
 | Steering | Up to 1.5 rad/s, reduced with speed; fades below 2 m/s |
 | Powered slope limit | 45° relative to local spherical up |
@@ -62,6 +62,12 @@ production assets. Wheels are visual only; the chassis box owns collision.
 
 Record feedback on the ticket before resolving handling and camera values.
 
+Initial live feedback requested more torque and higher acceleration. The second
+tuning pass raises drive acceleration from 6 to 18 m/s², keeping powered speed
+limits and braking unchanged. This directly increases available uphill drive;
+the prototype does not model an engine torque curve or gearbox. This stronger
+setting still needs a live verdict.
+
 ## Limits to carry into integration
 
 Support is one 0.75 m center ray. There are no wheel contacts or suspension,
@@ -70,6 +76,8 @@ crests and uneven ground difficult and is a specific point for feedback.
 Reset always returns to the starting spot; there is no water recovery rule or
 safe-placement search. Use R rather than the on-foot map teleport, whose
 placement clearance has not been adapted to the car.
+Spawn and reset place the body above the surface for clearance; it briefly falls
+before the support ray reaches the ground and enables driving.
 
 Camera collision follows physics colliders; foliage without colliders can
 obscure the view. If the camera cast begins overlapped, it retracts to the body

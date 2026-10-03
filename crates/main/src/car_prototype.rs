@@ -227,7 +227,7 @@ fn camera(
         return;
     };
     let origin = transform.translation;
-    let offset = origin.normalize() * 3.0 - player.heading * 8.0;
+    let offset = CarCamera::offset(origin, player.heading);
     let hit = spatial.cast_shape(
         &Collider::sphere(0.2),
         origin,
@@ -265,6 +265,6 @@ fn readout(
     let support = slope.map_or("airborne".to_owned(), |slope| format!("slope {slope:.0}°"));
     let stopped = car.support.is_some() && velocity.0.length() < 0.5;
     **text = format!(
-        "CAR PROTOTYPE — W/S accelerate · brake/reverse · A/D steer · R reset\nSpeed {speed:.1} m/s · {support} · nearly stopped: {stopped}\nForward 30 / reverse 8 m/s · acceleration 6 / braking 12 m/s²\nGrip 8/s · powered slope ≤45° · upright assist · camera 3/8/15 m\nAlready seated; entry/exit and summoning are separate decisions"
+        "CAR PROTOTYPE — W/S accelerate · brake/reverse · A/D steer · R reset\nSpeed {speed:.1} m/s · {support} · nearly stopped: {stopped}\nForward 30 / reverse 8 m/s · acceleration 18 / braking 12 m/s²\nGrip 8/s · powered slope ≤45° · upright assist · camera 3/8/15 m\nAlready seated; entry/exit and summoning are separate decisions"
     );
 }

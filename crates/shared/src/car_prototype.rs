@@ -14,6 +14,10 @@ pub struct CarCamera {
 }
 
 impl CarCamera {
+    pub fn offset(position: Vec3, heading: Vec3) -> Vec3 {
+        position.normalize() * 3.0 - heading * 8.0
+    }
+
     pub fn follow(
         &mut self,
         position: Vec3,
@@ -22,7 +26,7 @@ impl CarCamera {
         hit: Option<f32>,
     ) -> Transform {
         let up = position.normalize();
-        let offset = up * 3.0 - heading * 8.0;
+        let offset = Self::offset(position, heading);
         let maximum = hit.map_or(offset.length(), |hit| {
             (hit - 0.1).clamp(0.0, offset.length())
         });
@@ -66,9 +70,9 @@ impl CarMotion {
         let (target, rate) = if throttle * speed < -0.1 {
             (0.0, 12.0)
         } else if throttle > 0.0 {
-            (30.0, 6.0)
+            (30.0, 18.0)
         } else if throttle < 0.0 {
-            (-8.0, 6.0)
+            (-8.0, 18.0)
         } else {
             (0.0, 2.0)
         };
@@ -158,10 +162,26 @@ mod tests {
     }
 
     #[test]
+    fn powered_drive_overcomes_gravity_on_a_forty_degree_slope() {
+        let normal = Vec3::new(0.0, 0.76604444, 0.6427876);
+        let uphill = Vec3::new(0.0, 0.6427876, -0.76604444);
+        let gravity = Vec3::NEG_Y * 20.0;
+        // Contact supports the normal component of gravity; its remaining
+        // downhill component still opposes the powered motion each step.
+        let downhill = gravity - normal * gravity.dot(normal);
+        let mut car = stopped();
+        for _ in 0..20 {
+            car = car.step(0.1, 1.0, 0.0, Vec3::Y, Some(normal));
+            car.velocity += downhill * 0.1;
+        }
+        assert!(car.velocity.dot(uphill) > 5.0);
+    }
+
+    #[test]
     fn accelerates_brakes_before_reversing_and_limits_powered_speed() {
         let mut car = stopped();
         car = car.step(1.0, 1.0, 0.0, Vec3::Y, Some(Vec3::Y));
-        assert!((car.velocity.length() - 6.0).abs() < 0.001);
+        assert!((car.velocity.length() - 18.0).abs() < 0.001);
         for _ in 0..100 {
             car = car.step(0.1, 1.0, 0.0, Vec3::Y, Some(Vec3::Y));
         }
