@@ -4,6 +4,17 @@ Terra is a spherical world with natural geography and built features. This gloss
 
 ## Language
 
+**Vehicle summoning**:
+Bringing a reusable vehicle to suitable nearby ground while the explorer remains on foot.
+_Avoid_: Recovery when referring only to relocating a vehicle.
+
+**Explorer recovery**:
+An explicitly requested return of the explorer to safe ground, leaving the occupied vehicle behind.
+_Avoid_: Automatic respawn; vehicle summoning.
+
+**Last safe grounded location**:
+The explorer's most recent validated clear, dry standing location, used as the preferred destination for recovery.
+
 **Landform**:
 The broad shape of the ground, such as a valley, hills, mountains, or a plateau. A mountain landform can support a forest biome.
 _Avoid_: Biome when referring to ground shape.
