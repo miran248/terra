@@ -10,6 +10,8 @@ mod constants;
 // mod loot;
 mod map;
 mod minimap;
+#[cfg(feature = "on-foot-prototype")]
+mod on_foot_prototype;
 mod physics;
 // mod prestige;
 // mod turret;
@@ -92,6 +94,8 @@ fn main() {
         asset_showcase_prototype::AssetShowcasePlugin,
         asset_acceptance::AssetAcceptancePlugin,
     ));
+    #[cfg(feature = "on-foot-prototype")]
+    app.add_plugins(on_foot_prototype::OnFootPrototypePlugin);
     app.run();
 }
 

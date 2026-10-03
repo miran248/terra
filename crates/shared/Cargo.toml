@@ -3,6 +3,9 @@ name = "shared"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+on-foot-prototype = []
+
 [dependencies]
 bevy = "0.19.0"
 noise = "0.9.0"

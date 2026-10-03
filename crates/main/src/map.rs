@@ -1072,6 +1072,7 @@ fn read_player_input(keys: Res<ButtonInput<KeyCode>>, mut input: ResMut<PlayerIn
 }
 
 fn move_player(
+    #[cfg(feature = "on-foot-prototype")] tuning: Res<shared::on_foot_prototype::OnFootPrototype>,
     time: Res<Time>,
     input: Res<PlayerInput>,
     planet: Res<PlanetMesh>,
@@ -1098,9 +1099,12 @@ fn move_player(
         .copied()
         .unwrap_or(false);
     let slowed_by_water = underwater || on_frozen_water;
+    #[cfg(not(feature = "on-foot-prototype"))]
     let speed = PLAYER_SPEED
         * if slowed_by_water { 0.4 } else { 1.0 }
         * if input.sprint { 2.5 } else { 1.0 };
+    #[cfg(feature = "on-foot-prototype")]
+    let speed = tuning.speed(input.sprint, slowed_by_water);
 
     if input.fwd != 0 {
         let dir = player.heading * input.fwd as f32;
@@ -1184,10 +1188,15 @@ fn orient_player(
 }
 
 fn camera_follow(
+    #[cfg(feature = "on-foot-prototype")] tuning: Res<shared::on_foot_prototype::OnFootPrototype>,
     time: Res<Time>,
     player_q: Query<(&Player, &Transform), Without<MainCamera>>,
     mut camera_q: Query<&mut Transform, (With<MainCamera>, Without<MinimapCamera>)>,
 ) {
+    #[cfg(feature = "on-foot-prototype")]
+    if !tuning.baseline {
+        return;
+    }
     let Ok((player, tf)) = player_q.single() else {
         return;
     };

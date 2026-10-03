@@ -28,6 +28,8 @@
 
 ## Physics and input
 
+- The opt-in [on-foot prototype](../crates/main/on-foot-prototype.md) compares exploration movement and camera framing on the actual planet via `just on-foot-prototype`; it does not change the default game settings.
+
 - Actors use Avian3d `RigidBody`, `Collider`, and `Forces` plus custom `RadialGravity`. Read normal position from the physics-synchronized `Transform.translation`. Teleports update Avian `Position` and velocity; never author motion by editing `Transform`.
 - Player movement overrides tangential velocity through `Forces::linear_velocity_mut()` while preserving radial velocity; gravity applies force continuously. The approved 1 m actor capsule uses a body-center origin; its ground-pivot visual is offset down by half its height, at scale one. Terrain margin is .02 m and swept CCD remains enabled.
 - `PlayerInput` is collected in `Update` and consumed by `move_player` in `FixedUpdate`. W/S move along heading, A/D rotate heading. Physics torque remains locked. `RadialUpright` updates Avian `Rotation` in the fixed schedule so the capsule follows local up; `orient_player` computes render-child facing relative to that body rotation. The visual selects idle/walk from existing movement input without changing movement or damage rules.

@@ -4,6 +4,7 @@ use bevy::prelude::*;
 
 pub const PLAYER_SIZE: f32 = 0.55; // capsule totals ~1m tall
 pub const PLAYER_HP: f32 = 500.0;
+#[cfg(not(feature = "on-foot-prototype"))]
 pub const PLAYER_SPEED: f32 = 60.0; // m/s
 pub const PLAYER_TURN: f32 = 2.5; // rad/s
 

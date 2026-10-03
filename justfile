@@ -50,3 +50,7 @@ assets-check:
 # Start the normal game with the generated production catalog.
 run:
     cargo run -p main
+
+# Compare current and proposed on-foot controls on the actual planet.
+on-foot-prototype:
+    cargo run -p main --features on-foot-prototype
