@@ -371,10 +371,13 @@ fn contacts(
                     v.flight.bank,
                 )
             });
-        if wet
-            || obstacle
-            || (v.flight.airborne && !contacts.0.is_empty() && (v.air_time > 0.3 || !gentle))
-        {
+        // The tail can still touch the runway after the support rays lose reach.
+        // Only upward departure gets grace; impacts and obstacles never do.
+        let departing = v.air_time <= 0.3
+            && v.previous_velocity.dot(p.0.normalize()) > 0.0
+            && v.flight.pitch >= 0.0
+            && v.flight.bank.abs() <= 0.35;
+        if wet || obstacle || (v.flight.airborne && !contacts.0.is_empty() && !departing) {
             if gentle {
                 v.flight.airborne = false;
                 v.flight.stalled = false;
@@ -552,6 +555,36 @@ fn actions(
                     state.message = "No stopped vehicle within reach".into();
                 }
             }
+            Action::Recover if state.occupied.is_some() => {
+                let e = state.occupied.unwrap();
+                let Ok((_, _, _, _, mut vehicle)) = vehicles.get_mut(e) else {
+                    continue;
+                };
+                let kind = vehicle.kind;
+                let radius = if kind == Kind::Car { 30.0 } else { 100.0 };
+                let destination = std::iter::once(origin)
+                    .chain(state.safe)
+                    .chain(state.start)
+                    .find_map(|center| {
+                        placement.locate(center, heading, Some(kind), &[explorer, e], radius)
+                    });
+                let Some((p, h)) = destination else {
+                    state.message =
+                        "Vehicle recovery failed: no clear dry ground / takeoff run".into();
+                    continue;
+                };
+                *vehicle = Vehicle::new(kind, h);
+                vehicle.parked = false;
+                commands.entity(e).insert((
+                    RigidBody::Dynamic,
+                    Position(p),
+                    Rotation(facing(h, p.normalize())),
+                    physics_reset(),
+                ));
+                state.recovery = 0.0;
+                state.snap_camera = true;
+                state.message = format!("{} recovered — ready to go", kind.name());
+            }
             Action::Recover | Action::Teleport(_) => {
                 if matches!(action, Action::Teleport(_))
                     && (state.occupied.is_some() || state.selector)
@@ -574,8 +607,6 @@ fn actions(
                 };
                 if let Some((p, h)) = destination {
                     player.heading = tangent(h, p.normalize());
-                    // Abandoned moving/crashed vehicles continue physics; recovery is
-                    // not an implicit parking brake or vehicle repair.
                     release(&mut commands, explorer, p, &mut state);
                     state.snap_camera = true;
                     state.message = "Returned to safe ground".into();
@@ -766,6 +797,108 @@ mod tests {
     }
 
     #[test]
+    fn failed_vehicle_recovery_keeps_the_occupied_wreck_unchanged() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(car).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + Vec3::X * 2.0));
+        act(&mut app, Action::Interact);
+        app.world_mut().get_mut::<Vehicle>(car).unwrap().crashed = true;
+        let wreck_pose = Rotation(Quat::from_rotation_x(1.3));
+        app.world_mut()
+            .entity_mut(car)
+            .remove::<LockedAxes>()
+            .insert((RigidBody::Static, wreck_pose));
+        let floor = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(floor);
+        for _ in 0..3 {
+            app.update();
+        }
+        let before = *app.world().get::<Position>(car).unwrap();
+        act(&mut app, Action::Recover);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+        assert!(app.world().get::<Vehicle>(car).unwrap().crashed);
+        assert_eq!(*app.world().get::<Position>(car).unwrap(), before);
+        assert_eq!(*app.world().get::<Rotation>(car).unwrap(), wreck_pose);
+        assert!(app.world().get::<LockedAxes>(car).is_none());
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .message
+                .contains("recovery failed")
+        );
+    }
+
+    #[test]
+    fn occupied_recovery_repairs_and_repositions_the_same_vehicle() {
+        for kind in [Kind::Car, Kind::Plane] {
+            let (mut app, explorer) = fixture();
+            act(&mut app, Action::Summon(kind));
+            let vehicle = app.world().resource::<Exploration>().vehicles[kind.index()].unwrap();
+            for _ in 0..30 {
+                app.update();
+            }
+            let p = app.world().get::<Position>(vehicle).unwrap().0;
+            let side = app.world().get::<Rotation>(vehicle).unwrap().0 * Vec3::X;
+            let width = if kind == Kind::Car { 2.0 } else { 4.8 };
+            app.world_mut()
+                .entity_mut(explorer)
+                .insert(Position(p + side * width));
+            act(&mut app, Action::Interact);
+            assert_eq!(
+                app.world().resource::<Exploration>().occupied,
+                Some(vehicle)
+            );
+            app.world_mut().get_mut::<Vehicle>(vehicle).unwrap().crashed = true;
+            app.world_mut()
+                .entity_mut(vehicle)
+                .remove::<LockedAxes>()
+                .insert((
+                    Position(p + Vec3::Y * 20.0),
+                    Rotation(Quat::from_rotation_x(1.3)),
+                    LinearVelocity(Vec3::X * 5.0),
+                    AngularVelocity(Vec3::Y),
+                    Friction::new(0.6),
+                    LinearDamping(0.1),
+                    AngularDamping(1.5),
+                ));
+            act(&mut app, Action::Recover);
+            assert_eq!(
+                app.world().resource::<Exploration>().occupied,
+                Some(vehicle)
+            );
+            let v = app.world().get::<Vehicle>(vehicle).unwrap();
+            assert!(!v.crashed && !v.parked && !v.flight.airborne);
+            assert_eq!(
+                app.world().get::<LinearVelocity>(vehicle).unwrap().0,
+                Vec3::ZERO
+            );
+            assert_eq!(
+                app.world().get::<AngularVelocity>(vehicle).unwrap().0,
+                Vec3::ZERO
+            );
+            assert!(app.world().get::<LockedAxes>(vehicle).is_some());
+            assert_eq!(app.world().get::<LinearDamping>(vehicle).unwrap().0, 0.0);
+            assert!(app.world().get::<Position>(vehicle).unwrap().y < 2002.0);
+            assert!(app.world().get::<ColliderDisabled>(explorer).is_some());
+            assert_eq!(
+                app.world().resource::<Exploration>().vehicles[kind.index()],
+                Some(vehicle)
+            );
+        }
+    }
+
+    #[test]
     fn occupied_actions_are_atomic_and_recovery_requires_a_complete_hold() {
         let (mut app, explorer) = fixture();
         act(&mut app, Action::Summon(Kind::Car));
@@ -804,10 +937,10 @@ mod tests {
         for _ in 0..65 {
             app.update();
         }
-        assert!(app.world().resource::<Exploration>().occupied.is_none());
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
         assert!(app.world().get::<Vehicle>(car).is_some());
         assert!(app.world().get::<Position>(explorer).unwrap().y < 2002.0);
-        assert!(app.world().get::<Position>(car).unwrap().x > 20.0);
+        assert!(app.world().get::<Position>(car).unwrap().y < 2002.0);
     }
 
     #[test]
@@ -1121,6 +1254,44 @@ mod tests {
             .insert((RigidBody::Dynamic, Position(p + Vec3::Y * 0.2)));
         act(&mut app, Action::Interact);
         assert!(app.world().resource::<Exploration>().occupied.is_none());
+    }
+
+    #[test]
+    fn summoned_plane_takes_off_without_crashing_on_departing_ground() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Plane));
+        let plane = app.world().resource::<Exploration>().vehicles[1].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let p = app.world().get::<Position>(plane).unwrap().0;
+        let side = app.world().get::<Rotation>(plane).unwrap().0 * Vec3::X;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(p + side * 4.8));
+        act(&mut app, Action::Interact);
+        assert_eq!(app.world().resource::<Exploration>().occupied, Some(plane));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::ShiftLeft);
+        for frame in 0..600 {
+            if app.world().get::<LinearVelocity>(plane).unwrap().length() >= 24.0 {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(KeyCode::KeyS);
+            }
+            app.update();
+            let v = app.world().get::<Vehicle>(plane).unwrap();
+            assert!(
+                !v.crashed,
+                "takeoff crashed at frame {frame}, clearance={}, pitch={}, air_time={}",
+                v.clearance, v.flight.pitch, v.air_time
+            );
+            if v.flight.airborne && v.clearance > 5.0 {
+                return;
+            }
+        }
+        panic!("plane did not leave the runway");
     }
 
     #[test]

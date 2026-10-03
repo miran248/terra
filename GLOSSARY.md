@@ -9,8 +9,12 @@ Bringing a reusable vehicle to suitable nearby ground while the explorer remains
 _Avoid_: Recovery when referring only to relocating a vehicle.
 
 **Explorer recovery**:
-An explicitly requested return of the explorer to safe ground, leaving the occupied vehicle behind.
+An explicitly requested return to safe ground while the explorer is on foot.
 _Avoid_: Automatic respawn; vehicle summoning.
+
+**Vehicle recovery**:
+An explicitly requested restoration of the occupied car or plane to usable condition on safe ground, with the explorer remaining inside.
+_Avoid_: Vehicle summoning; automatic respawn.
 
 **Last safe grounded location**:
 The explorer's most recent validated clear, dry standing location, used as the preferred destination for recovery.
