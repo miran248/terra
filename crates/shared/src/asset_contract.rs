@@ -49,6 +49,38 @@ pub fn grip_transform(name: &str) -> Option<bevy::prelude::Transform> {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn every_terrain_selected_scenery_variant_has_a_dimension_contract() {
+        use crate::{art::*, terrain::Terrain};
+        let mut names = std::collections::BTreeSet::new();
+        for kind in SCENERY_KINDS {
+            for variant in 0..scenery_variant_count(kind) {
+                let name = scenery_variant_name(kind, variant);
+                let contract = super::candidate_contract(&name).expect(&name);
+                assert!(contract.dimensions.iter().all(|d| d.is_finite() && *d > 0.));
+                names.insert(name);
+            }
+            for terrain in [
+                Terrain::Forest,
+                Terrain::Jungle,
+                Terrain::Desert,
+                Terrain::Savanna,
+                Terrain::Swamp,
+                Terrain::Snow,
+                Terrain::Glacier,
+            ] {
+                for hash in 0..64 {
+                    let variant = scenery_variant_for(kind, terrain, hash);
+                    assert!(
+                        super::candidate_contract(&scenery_variant_name(kind, variant.into()))
+                            .is_some()
+                    );
+                }
+            }
+        }
+        assert_eq!(names.len(), 37);
+    }
+
+    #[test]
     fn equipped_knife_places_its_grip_at_the_hand_and_points_forward() {
         use bevy::prelude::*;
         let transform = super::grip_transform("weapon.knife").unwrap();

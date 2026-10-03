@@ -40,3 +40,7 @@ TERRA_PREVIEW_CAPTURE=1 just asset-preview
 ```
 
 This opt-in walkthrough loads every scene and available candidate, captures inspection, a house comparison, the tree bounds/collider distinction, a 1 m actor measurement, and a close house view to `/tmp/terra-preview-*.png`, then exits. With candidates, it compares authored dimensions unchanged; without them, it demonstrates a temporary house resize. The candidate actor plays its own clips and carries the knife on its animated hand socket. Side-view walk/attack captures are included. It exercises actual rendering and dimension controls; it is not a substitute for reviewing every asset, mouse interaction, or animation envelope.
+
+## Scenery family review
+
+All 37 scenery candidates are available through the paged catalog selector; the five original pilot shortcuts remain fixed so the sidebar fits. Use the candidate/baseline toggle and C for measurement and collision overlays. `TERRA_SCENERY_CAPTURE=1 just asset-preview` imports and instantiates every scenery scene, captures it under `/tmp/terra-scenery-review/`, then exits. It does not change the production catalog. See [scenery inventory and review](scenery-review.md) for contact sheets and canonical dimensions.

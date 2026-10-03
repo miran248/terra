@@ -63,7 +63,7 @@ The script uses tapered segments with explicit bone weights and keyed poses; it 
 
 ## Representative review status
 
-[Approve the representative assets on the planet](https://github.com/miran248/terra/issues/17) is awaiting the user's verdict on proportions, detail, animations, and shadow readability. No full-catalog replacement is authorized by this review until that verdict arrives.
+[Approve the representative assets on the planet](https://github.com/miran248/terra/issues/17) was explicitly approved by the user after reopening the in-game showcase: “looking good! approved lets proceed”. Its proportions, detail, animation, and current lighting are the accepted direction for sequential catalog work. Production activation remains ticket #21.
 
 The current game lighting renders shaded faces much darker than the workbench; no lighting change has been silently applied. An earlier review capture accidentally sampled the unit-sphere lookup mesh and is superseded by the displaced-terrain captures. Multipart scene naming also exposed a foliage-binding bug; the binder now finds canonical scene ancestors so the existing wind and matching prepass shaders apply.
 
@@ -78,3 +78,7 @@ A short M4 Pro/Metal debug-build comparison, with the existing world resident an
 | Knife | 146 | 8 |
 
 The geometry is modest, but authoring parts currently create too many primitives for dense rollout. Consolidate compatible parts during production export and remeasure populated scenes before activation; do not extrapolate a five-asset smoke check to the full world. Dedicated LOD work is not yet justified by these measurements.
+
+## Full scenery candidates
+
+All 37 scenery scenes are now authored through the same MCP pipeline; see the [scenery inventory and review](scenery-review.md). The 35 additional scenes each export one mesh primitive by joining compatible static recipe parts. The already-approved pilot tree/rock are unchanged. Nonblocking foliage has an empty collider list; the Avian adapter returns no shape for it.

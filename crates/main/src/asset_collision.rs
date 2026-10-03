@@ -5,6 +5,9 @@ use bevy::prelude::*;
 pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
     use shared::asset_contract::{CollisionPart, candidate_contract};
     let contract = candidate_contract(name)?;
+    if contract.colliders.is_empty() {
+        return None;
+    }
     let shapes = contract
         .colliders
         .iter()
@@ -46,6 +49,39 @@ pub fn candidate_collider(name: &str, scale: Vec3) -> Option<Collider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonblocking_foliage_has_no_physics_shape() {
+        for name in [
+            "scenery.grass",
+            "scenery.fern",
+            "scenery.flower",
+            "scenery.reed",
+        ] {
+            assert!(candidate_collider(name, Vec3::ONE).is_none());
+        }
+    }
+
+    #[test]
+    fn scenery_instance_scale_keeps_tree_collision_under_its_canopy() {
+        for variant in 0..7 {
+            for scale in [0.7, 1., 1.3] {
+                let tree =
+                    candidate_collider(&format!("scenery.tree.{variant}"), Vec3::splat(scale))
+                        .unwrap();
+                assert!(tree.contains_point(
+                    Vec3::ZERO,
+                    Quat::IDENTITY,
+                    Vec3::new(0., 0.5, 0.) * scale
+                ));
+                assert!(!tree.contains_point(
+                    Vec3::ZERO,
+                    Quat::IDENTITY,
+                    Vec3::new(0.4, 0.5, 0.) * scale
+                ));
+            }
+        }
+    }
 
     #[test]
     fn trunk_blocks_its_wood_but_leaves_space_under_the_canopy() {

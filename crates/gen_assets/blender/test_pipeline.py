@@ -62,8 +62,8 @@ class PipelineTests(unittest.TestCase):
             subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
             output = Path(temporary)
             manifest = json.loads((output / 'manifest.json').read_text())
-            self.assertEqual(set(manifest['assets']), {'actor.player', 'structure.house',
-                'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'})
+            self.assertTrue({'actor.player', 'structure.house',
+                'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'} <= set(manifest['assets']))
             for name in ['scenery.tree.0', 'scenery.rock.0', 'weapon.knife']:
                 doc = document(output / (name + '.glb'))
                 self.assertEqual(doc['scenes'][0]['name'], name)
@@ -78,6 +78,48 @@ class PipelineTests(unittest.TestCase):
             self.assertGreater(knife['dimensions'][1], .2)
             self.assertLess(knife['dimensions'][1], .35)
             self.assertIn('socket.grip', [n.get('name') for n in document(output / 'weapon.knife.glb')['nodes']])
+
+    def test_scenery_catalog_preserves_all_37_scenes_at_grounded_meter_scale(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            baseline_dir = Path(temporary) / 'baseline'
+            subprocess.run(['cargo', 'run', '-p', 'gen_assets', '--', '--out-dir', str(baseline_dir)],
+                           cwd=SCRIPT.parents[3], check=True, capture_output=True)
+            expected = {scene['name'] for scene in document(baseline_dir / 'environment.glb')['scenes']}
+            self.assertEqual(len(expected), 37)
+            subprocess.run([sys.executable, str(SCRIPT), '--out-dir', temporary], check=True, capture_output=True)
+            assets = json.loads((Path(temporary) / 'manifest.json').read_text())['assets']
+            self.assertEqual({name for name in assets if name.startswith('scenery.')}, expected)
+            barrel = assets['scenery.cactus.1']['dimensions']
+            self.assertLess(barrel[1], .8, 'Variant 1 retains the short barrel-cactus silhouette')
+            self.assertGreater(barrel[0] / barrel[1], .7)
+            for name in sorted(expected):
+                with self.subTest(scene=name):
+                    doc = document(Path(temporary) / (name + '.glb'))
+                    self.assertEqual([s['name'] for s in doc['scenes']], [name])
+                    self.assertAlmostEqual(bounds(doc, doc['scenes'][0])[1], 0, places=5)
+                    self.assertEqual(assets[name]['runtime_scale'], [1, 1, 1])
+                    self.assertTrue(all(0 < d < 4 for d in assets[name]['dimensions']))
+                    self.assertFalse(doc.get('textures'))
+                    self.assertTrue(all(m['pbrMetallicRoughness']['roughnessFactor'] >= .9 for m in doc['materials']))
+                    extent = assets[name]['bounds']
+                    for part in assets[name]['collider']:
+                        if part['shape'] == 'box':
+                            half = [d / 2 for d in part['size']]
+                        else:
+                            half = [part['radius'], part['length']/2, part['radius']]
+                            if part['shape'] == 'capsule':
+                                half[1] += part['radius']
+                        for axis in range(3):
+                            self.assertGreaterEqual(part['center'][axis]-half[axis], extent[axis]-.025)
+                            self.assertLessEqual(part['center'][axis]+half[axis], extent[axis+3]+.025)
+                    self.assertIn(name + '.mesh', [m.get('name') for m in doc['meshes']])
+                    if name not in ('scenery.tree.0', 'scenery.rock.0'):
+                        self.assertEqual(sum(len(m['primitives']) for m in doc['meshes']), 1,
+                                         'Static scenery must batch compatible authoring parts')
+                    for mesh in doc['meshes']:
+                        for primitive in mesh['primitives']:
+                            self.assertIn('COLOR_0', primitive['attributes'])
+                            self.assertIn('NORMAL', primitive['attributes'])
 
     def test_visual_exports_consume_shared_dimensions_and_collision_contract(self):
         contracts = json.loads((SCRIPT.parents[3] / 'crates/shared/asset_dimensions.json').read_text())

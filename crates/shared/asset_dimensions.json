@@ -1,314 +1,783 @@
 {
   "actor.player": {
-    "dimensions": [
-      0.434,
-      1.0,
-      0.172721
-    ],
     "colliders": [
       {
-        "shape": "capsule",
         "center": [
           0,
           0.5,
           0
         ],
+        "length": 0.76,
         "radius": 0.12,
-        "length": 0.76
+        "shape": "capsule"
       }
+    ],
+    "dimensions": [
+      0.434,
+      1.0,
+      0.172721
+    ]
+  },
+  "scenery.anemone": {
+    "colliders": [],
+    "dimensions": [
+      0.44,
+      0.3,
+      0.42
+    ]
+  },
+  "scenery.berry": {
+    "colliders": [],
+    "dimensions": [
+      0.82,
+      0.57,
+      0.8
+    ]
+  },
+  "scenery.bush.0": {
+    "colliders": [],
+    "dimensions": [
+      0.85,
+      0.58,
+      0.78
+    ]
+  },
+  "scenery.bush.1": {
+    "colliders": [],
+    "dimensions": [
+      0.72,
+      0.66,
+      0.7
+    ]
+  },
+  "scenery.cactus.0": {
+    "colliders": [],
+    "dimensions": [
+      0.59,
+      1.2,
+      0.23
+    ]
+  },
+  "scenery.cactus.1": {
+    "colliders": [],
+    "dimensions": [
+      0.55,
+      0.66,
+      0.53
+    ]
+  },
+  "scenery.cattail": {
+    "colliders": [],
+    "dimensions": [
+      0.55,
+      0.85,
+      0.5
+    ]
+  },
+  "scenery.coral": {
+    "colliders": [],
+    "dimensions": [
+      0.63,
+      0.55,
+      0.45
+    ]
+  },
+  "scenery.dead_tree.0": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.714,
+          0
+        ],
+        "length": 1.428,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      1.02,
+      1.68,
+      0.94
+    ]
+  },
+  "scenery.dead_tree.1": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.612,
+          0
+        ],
+        "length": 1.224,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      0.95,
+      1.44,
+      0.88
+    ]
+  },
+  "scenery.fern": {
+    "colliders": [],
+    "dimensions": [
+      0.92,
+      0.37,
+      0.87
+    ]
+  },
+  "scenery.flower": {
+    "colliders": [],
+    "dimensions": [
+      0.37,
+      0.43,
+      0.35
+    ]
+  },
+  "scenery.grass": {
+    "colliders": [],
+    "dimensions": [
+      0.43,
+      0.28,
+      0.43
+    ]
+  },
+  "scenery.icicle": {
+    "colliders": [],
+    "dimensions": [
+      0.38,
+      0.5,
+      0.1
+    ]
+  },
+  "scenery.kelp": {
+    "colliders": [],
+    "dimensions": [
+      0.65,
+      1.25,
+      0.52
+    ]
+  },
+  "scenery.lilypad": {
+    "colliders": [],
+    "dimensions": [
+      0.56,
+      0.11,
+      0.48
+    ]
+  },
+  "scenery.log": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.115,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          1.1,
+          0.23,
+          0.22
+        ]
+      }
+    ],
+    "dimensions": [
+      1.13,
+      0.42,
+      0.25
+    ]
+  },
+  "scenery.mushroom": {
+    "colliders": [],
+    "dimensions": [
+      0.38,
+      0.28,
+      0.3
+    ]
+  },
+  "scenery.reed": {
+    "colliders": [],
+    "dimensions": [
+      0.56,
+      0.74,
+      0.5
     ]
   },
   "scenery.rock.0": {
-    "dimensions": [
-      0.817417,
-      0.49,
-      0.623954
-    ],
     "colliders": [
       {
-        "shape": "box",
         "center": [
           0,
           0.125,
           0.025
         ],
-        "size": [
-          0.65,
-          0.25,
-          0.48
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.65,
+          0.25,
+          0.48
         ]
       },
       {
-        "shape": "box",
         "center": [
           0,
           0.34,
           0.025
         ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
         "size": [
           0.43,
           0.18,
           0.34
+        ]
+      }
+    ],
+    "dimensions": [
+      0.817417,
+      0.49,
+      0.623954
+    ]
+  },
+  "scenery.rock.1": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.17,
+          0
         ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.6,
+          0.34,
+          0.44
+        ]
+      },
+      {
+        "center": [
+          0,
+          0.46,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.39,
+          0.24,
+          0.3
         ]
       }
+    ],
+    "dimensions": [
+      0.76,
+      0.6,
+      0.57
+    ]
+  },
+  "scenery.seaweed": {
+    "colliders": [],
+    "dimensions": [
+      0.46,
+      0.52,
+      0.42
+    ]
+  },
+  "scenery.shell": {
+    "colliders": [],
+    "dimensions": [
+      0.4,
+      0.06,
+      0.35
+    ]
+  },
+  "scenery.skull": {
+    "colliders": [],
+    "dimensions": [
+      0.43,
+      0.26,
+      0.3
+    ]
+  },
+  "scenery.snowdrift": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.09,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0,
+          1
+        ],
+        "shape": "box",
+        "size": [
+          0.9,
+          0.18,
+          0.48
+        ]
+      }
+    ],
+    "dimensions": [
+      1.24,
+      0.31,
+      0.68
+    ]
+  },
+  "scenery.snowman": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.44,
+          0
+        ],
+        "length": 0.54,
+        "radius": 0.17,
+        "shape": "capsule"
+      }
+    ],
+    "dimensions": [
+      0.77,
+      1.09,
+      0.5
+    ]
+  },
+  "scenery.starfish": {
+    "colliders": [],
+    "dimensions": [
+      0.43,
+      0.065,
+      0.43
+    ]
+  },
+  "scenery.stump": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.16,
+          0
+        ],
+        "length": 0.32,
+        "radius": 0.13,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      0.54,
+      0.33,
+      0.5
     ]
   },
   "scenery.tree.0": {
-    "dimensions": [
-      1.859494,
-      2.63,
-      1.288438
-    ],
     "colliders": [
       {
-        "shape": "cylinder",
         "center": [
           0,
           0.9,
           0
         ],
+        "length": 1.8,
         "radius": 0.1,
-        "length": 1.8
+        "shape": "cylinder"
       }
+    ],
+    "dimensions": [
+      1.859494,
+      2.63,
+      1.288438
+    ]
+  },
+  "scenery.tree.1": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.9,
+          0
+        ],
+        "length": 1.8,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      2.05,
+      3.1,
+      1.8
+    ]
+  },
+  "scenery.tree.2": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.9,
+          0
+        ],
+        "length": 1.8,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      1.45,
+      3.0,
+      1.45
+    ]
+  },
+  "scenery.tree.3": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.9,
+          0
+        ],
+        "length": 1.8,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      2.05,
+      2.7,
+      2.0
+    ]
+  },
+  "scenery.tree.4": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.9,
+          0
+        ],
+        "length": 1.8,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      2.65,
+      2.6,
+      2.2
+    ]
+  },
+  "scenery.tree.5": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.9,
+          0
+        ],
+        "length": 1.8,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      1.5,
+      2.35,
+      1.3
+    ]
+  },
+  "scenery.tree.6": {
+    "colliders": [
+      {
+        "center": [
+          0,
+          0.9,
+          0
+        ],
+        "length": 1.8,
+        "radius": 0.1,
+        "shape": "cylinder"
+      }
+    ],
+    "dimensions": [
+      1.9,
+      2.63,
+      1.65
+    ]
+  },
+  "scenery.tumbleweed": {
+    "colliders": [],
+    "dimensions": [
+      0.51,
+      0.5,
+      0.5
+    ]
+  },
+  "scenery.vine": {
+    "colliders": [],
+    "dimensions": [
+      0.72,
+      0.78,
+      0.18
     ]
   },
   "structure.house": {
-    "dimensions": [
-      3.03,
-      2.495,
-      2.51
-    ],
     "colliders": [
       {
-        "shape": "box",
         "center": [
           0,
           0.07,
           0
         ],
-        "size": [
-          2.8,
-          0.14,
-          2.2
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          2.8,
+          0.14,
+          2.2
         ]
       },
       {
-        "shape": "box",
         "center": [
           0,
           0.875,
           0.97
         ],
-        "size": [
-          2.6,
-          1.47,
-          0.12
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          2.6,
+          1.47,
+          0.12
         ]
       },
       {
-        "shape": "box",
         "center": [
           -1.24,
           0.875,
           0
         ],
-        "size": [
-          0.12,
-          1.47,
-          1.94
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.12,
+          1.47,
+          1.94
         ]
       },
       {
-        "shape": "box",
         "center": [
           1.24,
           0.875,
           0
         ],
-        "size": [
-          0.12,
-          1.47,
-          1.94
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.12,
+          1.47,
+          1.94
         ]
       },
       {
-        "shape": "box",
         "center": [
           -0.805,
           0.875,
           -0.97
         ],
-        "size": [
-          0.99,
-          1.47,
-          0.12
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.99,
+          1.47,
+          0.12
         ]
       },
       {
-        "shape": "box",
         "center": [
           0.805,
           0.875,
           -0.97
         ],
-        "size": [
-          0.99,
-          1.47,
-          0.12
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.99,
+          1.47,
+          0.12
         ]
       },
       {
-        "shape": "box",
         "center": [
           0,
           1.49,
           -0.97
         ],
-        "size": [
-          0.62,
-          0.24,
-          0.12
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.62,
+          0.24,
+          0.12
         ]
       },
       {
-        "shape": "box",
         "center": [
           0,
           0.74,
           -0.932
         ],
-        "size": [
-          0.6,
-          1.2,
-          0.04
-        ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.6,
+          1.2,
+          0.04
         ]
       },
       {
-        "shape": "box",
         "center": [
           -0.74,
           2.045,
           0
-        ],
-        "size": [
-          1.6871573726241427,
-          0.08,
-          2.45
         ],
         "rotation": [
           0,
           0,
           0.24777495289470328,
           0.9688176158173568
-        ]
-      },
-      {
-        "shape": "box",
-        "center": [
-          0.74,
-          2.045,
-          0
         ],
+        "shape": "box",
         "size": [
           1.6871573726241427,
           0.08,
           2.45
+        ]
+      },
+      {
+        "center": [
+          0.74,
+          2.045,
+          0
         ],
         "rotation": [
           0,
           0,
           -0.24777495289470328,
           0.9688176158173568
+        ],
+        "shape": "box",
+        "size": [
+          1.6871573726241427,
+          0.08,
+          2.45
         ]
       }
+    ],
+    "dimensions": [
+      3.03,
+      2.495,
+      2.51
     ]
   },
   "weapon.knife": {
-    "dimensions": [
-      0.065,
-      0.285,
-      0.026
-    ],
     "colliders": [
       {
-        "shape": "box",
         "center": [
           0,
           0.1425,
           0
-        ],
-        "size": [
-          0.04,
-          0.285,
-          0.026
         ],
         "rotation": [
           0,
           0,
           0,
           1
+        ],
+        "shape": "box",
+        "size": [
+          0.04,
+          0.285,
+          0.026
         ]
       }
+    ],
+    "dimensions": [
+      0.065,
+      0.285,
+      0.026
     ],
     "grip": [
       0,

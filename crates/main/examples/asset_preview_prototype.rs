@@ -236,6 +236,10 @@ fn main() {
             Update,
             capture.run_if(|| std::env::var_os("TERRA_PREVIEW_CAPTURE").is_some()),
         )
+        .add_systems(
+            Update,
+            capture_scenery.run_if(|| std::env::var_os("TERRA_SCENERY_CAPTURE").is_some()),
+        )
         .run();
 }
 
@@ -645,12 +649,17 @@ fn rebuild(
         ),
         Action::Page(1),
     );
-    for (i, asset) in work
-        .entries
-        .iter()
-        .enumerate()
-        .filter(|(_, asset)| asset.candidate.is_some())
-    {
+    for (i, asset) in work.entries.iter().enumerate().filter(|(_, asset)| {
+        asset.candidate.is_some()
+            && matches!(
+                asset.name.as_str(),
+                "actor.player"
+                    | "structure.house"
+                    | "scenery.tree.0"
+                    | "scenery.rock.0"
+                    | "weapon.knife"
+            )
+    }) {
         button(
             &mut commands,
             list,
@@ -1052,6 +1061,61 @@ fn overlay_status(name: &str, runtime: Vec3, comparison: bool) -> String {
         collider.label(),
         location
     )
+}
+
+// Every scenery candidate instantiated in Bevy, including nonblocking foliage.
+fn capture_scenery(
+    mut commands: Commands,
+    time: Res<Time<Real>>,
+    server: Res<AssetServer>,
+    mut work: ResMut<Workbench>,
+    mut phase: Local<usize>,
+    mut next_at: Local<f32>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let now = time.elapsed_secs();
+    if now < 4. || now < *next_at {
+        return;
+    }
+    let scenery: Vec<usize> = work
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e.name.starts_with("scenery.") && e.candidate.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(scenery.len(), 37);
+    if *phase >= scenery.len() * 2 {
+        println!("SCENERY PREVIEW: all 37 candidates imported, instantiated and captured");
+        exit.write(AppExit::Success);
+        return;
+    }
+    let selected = scenery[*phase / 2];
+    let asset = work.entries[selected].candidate.as_ref().unwrap();
+    if !server.is_loaded_with_dependencies(&asset.scene) {
+        return;
+    }
+    if (*phase).is_multiple_of(2) {
+        work.use_candidates = true;
+        apply(Action::Select(selected), &mut work);
+        apply(Action::Reset, &mut work);
+        work.layout = 0;
+        work.view = 0;
+        work.overlay = true;
+        let size = work.dimensions();
+        work.distance = (size.max_element() * 2.7).max(2.2);
+        work.target = Vec3::Y * size.y * 0.5;
+        *next_at = now + 0.6;
+    } else {
+        commands
+            .spawn(Screenshot::primary_window())
+            .observe(save_to_disk(format!(
+                "/tmp/terra-scenery-review/{}.png",
+                work.entries[selected].name
+            )));
+        *next_at = now + 0.15;
+    }
+    *phase += 1;
 }
 
 // Opt-in visual smoke walkthrough, not part of the normal interactive workflow.

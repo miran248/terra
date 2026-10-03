@@ -2,7 +2,7 @@
 asset-preview:
     python3 crates/main/examples/asset_preview_prototype.py
 
-# Generate the humanoid/house candidates using the running Blender MCP add-on.
+# Generate the approved pilot and scenery candidates using the running Blender MCP add-on.
 asset-candidates:
     python3 crates/gen_assets/blender/generate.py
 
@@ -17,3 +17,7 @@ asset-candidates-test:
 # Review candidate animation on the actual planet without changing the catalog.
 asset-showcase:
     TERRA_ASSET_SHOWCASE=1 cargo run -p main
+
+# Generate meter-scale scenery review sheets through the running Blender MCP.
+asset-scenery-sheets: asset-candidates
+    python3 crates/gen_assets/blender/contact_sheet.py

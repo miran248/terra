@@ -1,4 +1,4 @@
-"""Blender MCP entry point. Editable source for the static humanoid/house pilot.
+"""Blender MCP entry point. Candidate catalog entry point and approved representative recipes.
 
 Model recipes use Z-up, forward -Y; the mesh helper reflects Y so Blender's
 Y-up exporter produces glTF forward -Z. Reflected face winding is corrected.
@@ -271,8 +271,24 @@ def generate(out_dir):
     contracts = json.loads((ROOT / 'crates/shared/asset_dimensions.json').read_text())
     manifest = {'blender': '.'.join(map(str, VERSION)), 'seed': 0, 'assets': {}}
     try:
-        for build in [humanoid, house, tree, rock, knife]:
+        scenery = runpy.run_path(str(Path(__file__).with_name('scenery.py')))
+        for build in [humanoid, house, tree, rock, knife] + scenery['recipes'](Model):
             model = build()
+            # All recipes use a ground pivot even when a thin leaf or root extends below zero.
+            meshes = [o for o in model.scene.objects if o.type == 'MESH']
+            if model.name not in ('actor.player', 'structure.house', 'scenery.tree.0', 'scenery.rock.0', 'weapon.knife'):
+                bottom = min(v.co.z for obj in meshes for v in obj.data.vertices)
+                for obj in meshes:
+                    for vertex in obj.data.vertices:
+                        vertex.co.z -= bottom
+                # Static recipe parts share one material; join without changing vertex colors.
+                bpy.ops.object.select_all(action='DESELECT')
+                for obj in meshes:
+                    obj.select_set(True)
+                bpy.context.view_layer.objects.active = meshes[0]
+                bpy.ops.object.join()
+                meshes[0].name = model.name + '.visual'
+                meshes[0].data.name = model.name + '.mesh'
             bpy.context.view_layer.update()
             contract = contracts[model.name]
             points = [obj.matrix_world @ v.co for obj in model.scene.objects
