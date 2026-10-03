@@ -40,6 +40,12 @@ along the surface. There is no throttle, grip, or steering while airborne or
 on supports steeper than 45°. Gravity can still carry the car downhill and
 external impulses can exceed powered-speed limits temporarily.
 
+Across two supported, driveable faces, the controller rotates existing velocity
+into the new support plane before applying drive input. This carries momentum
+over facet joins instead of directing it into the next face and losing speed
+in collision response. Entering or leaving airborne/steep support does not apply
+this adjustment; normal obstacle collisions still affect the physics velocity.
+
 Rollover policy for this experiment is an upright chassis relative to the
 planet. This intentionally favors easy exploration over simulated suspension.
 The colored body, cabin, and static wheels are primitive placeholders, not
@@ -98,3 +104,10 @@ A headless Avian regression places the real chassis on a 20° ramp and exercises
 the actual driving plugin. It checks support and powered movement, then lifts
 the car a metre and checks that it becomes airborne. The original center-only
 probe failed this scenario; the footprint probes pass.
+
+A second headless test drives across a flat-to-30° triangle join. It catches a
+sharp per-frame speed loss while requiring the car to travel through the join.
+The shared model also checks a momentum-preserving support change and unchanged
+velocity when support becomes airborne or too steep. These regressions cover
+the reproduced slowdown; other terrain/contact combinations still need live
+evaluation.

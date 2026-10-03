@@ -16,10 +16,8 @@ pub struct CarPrototypePlugin;
 mod tests {
     use super::*;
 
-    #[test]
-    fn chassis_supported_by_a_gentle_slope_is_not_reported_airborne() {
+    fn physics_app() -> App {
         use std::time::Duration;
-
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -32,10 +30,90 @@ mod tests {
         .init_asset::<Mesh>()
         .init_resource::<ButtonInput<KeyCode>>()
         .insert_resource(Gravity::ZERO)
+        .insert_resource(SubstepCount(12))
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
             Duration::from_secs_f32(1.0 / 60.0),
         ))
         .add_plugins(CarPrototypePlugin);
+        app
+    }
+
+    #[test]
+    fn crossing_a_gentle_terrain_join_does_not_abruptly_brake() {
+        let mut app = physics_app();
+        let height = 50.0 * 30.0_f32.to_radians().tan();
+        let vertices = vec![
+            Vec3::new(-10., 0., 50.),
+            Vec3::new(10., 0., 50.),
+            Vec3::new(-10., 0., 0.),
+            Vec3::new(10., 0., 0.),
+            Vec3::new(-10., height, -50.),
+            Vec3::new(10., height, -50.),
+        ];
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::trimesh(vertices, vec![[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]]),
+            CollisionMargin(0.02),
+            Transform::from_xyz(0., 2000., 0.),
+        ));
+        let position = Vec3::new(0., 2000.43, 8.);
+        let car = app
+            .world_mut()
+            .spawn((
+                RigidBody::Dynamic,
+                Collider::cuboid(1.8, 0.8, 3.2),
+                Mass(800.),
+                Friction::ZERO,
+                Restitution::ZERO,
+                SweptCcd::default(),
+                LockedAxes::ROTATION_LOCKED,
+                Transform::from_translation(position),
+                LinearVelocity(Vec3::NEG_Z * 12.),
+                Player {
+                    fire_timer: Timer::default(),
+                    damage: 0.,
+                    range: 0.,
+                    heading: Vec3::NEG_Z,
+                },
+                CarPrototype {
+                    spawn: position,
+                    spawn_heading: Vec3::NEG_Z,
+                    support: None,
+                },
+            ))
+            .id();
+        app.finish();
+        app.cleanup();
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .insert_resource(State::new(AppState::Playing));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        let mut previous = 12.0;
+        let mut largest_drop = 0.0_f32;
+        for _ in 0..120 {
+            app.update();
+            let speed = app.world().get::<LinearVelocity>(car).unwrap().0.length();
+            largest_drop = largest_drop.max(previous - speed);
+            previous = speed;
+        }
+        let position = app.world().get::<Position>(car).unwrap().0;
+        assert!(
+            largest_drop < 3.0,
+            "car abruptly lost {largest_drop:.2} m/s crossing a 30° terrain join; ended at {position:?}"
+        );
+        assert!(
+            position.z < -10.0,
+            "car must drive across the join, ended at {position:?}"
+        );
+    }
+
+    #[test]
+    fn chassis_supported_by_a_gentle_slope_is_not_reported_airborne() {
+        let mut app = physics_app();
 
         let angle = 20.0_f32.to_radians();
         let rotation = Quat::from_rotation_x(angle);
@@ -257,14 +335,16 @@ fn drive(
         })
         .filter(|hit| hit.normal.dot(up) > 0.0)
         .min_by(|a, b| a.distance.total_cmp(&b.distance));
-    car.support = support.map(|hit| hit.normal);
+    let next_support = support.map(|hit| hit.normal);
     let throttle = f32::from(keys.pressed(KeyCode::KeyW)) - f32::from(keys.pressed(KeyCode::KeyS));
     let steering = f32::from(keys.pressed(KeyCode::KeyA)) - f32::from(keys.pressed(KeyCode::KeyD));
     let motion = CarMotion {
         velocity: forces.linear_velocity(),
         heading: player.heading,
+        support: car.support,
     }
-    .step(time.delta_secs(), throttle, steering, up, car.support);
+    .step(time.delta_secs(), throttle, steering, up, next_support);
+    car.support = motion.support;
     player.heading = motion.heading;
     *forces.linear_velocity_mut() = motion.velocity;
     forces.apply_force(-up * 16000.0); // 20 m/s² at the prototype's 800 kg mass.

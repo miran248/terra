@@ -23,6 +23,8 @@ pub fn support_origins(position: Vec3, heading: Vec3) -> [Vec3; 5] {
 pub struct CarMotion {
     pub velocity: Vec3,
     pub heading: Vec3,
+    /// Support plane used by the preceding driving step, if grounded.
+    pub support: Option<Vec3>,
 }
 
 #[derive(Default)]
@@ -75,10 +77,23 @@ impl CarMotion {
         let Some(normal) =
             ground.filter(|normal| normal.dot(up) >= std::f32::consts::FRAC_1_SQRT_2)
         else {
-            return Self { heading, ..self };
+            return Self {
+                heading,
+                support: ground,
+                ..self
+            };
         };
+        // Carry momentum with a changing driveable surface. Keeping the old
+        // direction points the car into the new facet and lets the collision
+        // solver remove speed at a join. Preserve physics velocity otherwise.
+        let velocity = self
+            .support
+            .filter(|previous| previous.dot(up) >= std::f32::consts::FRAC_1_SQRT_2)
+            .map_or(self.velocity, |previous| {
+                Quat::from_rotation_arc(previous, normal) * self.velocity
+            });
         let forward = (heading - normal * heading.dot(normal)).normalize();
-        let speed = self.velocity.dot(forward);
+        let speed = velocity.dot(forward);
         let turn_rate = 1.5 / (1.0 + speed.abs() / 15.0);
         let heading = Quat::from_axis_angle(
             up,
@@ -98,9 +113,10 @@ impl CarMotion {
         let side = normal.cross(forward);
         Self {
             velocity: forward * next_speed
-                + side * self.velocity.dot(side) * (-8.0 * dt).exp()
-                + normal * self.velocity.dot(normal),
+                + side * velocity.dot(side) * (-8.0 * dt).exp()
+                + normal * velocity.dot(normal),
             heading,
+            support: ground,
         }
     }
 }
@@ -113,7 +129,28 @@ mod tests {
         CarMotion {
             velocity: Vec3::ZERO,
             heading: Vec3::NEG_Z,
+            support: None,
         }
+    }
+
+    #[test]
+    fn a_driveable_facet_change_redirects_momentum_without_braking() {
+        let moving = CarMotion {
+            velocity: Vec3::NEG_Z * 12.0,
+            support: Some(Vec3::Y),
+            ..stopped()
+        };
+        let next = moving.step(0.0, 0.0, 0.0, Vec3::Y, Some(Vec3::new(0.0, 0.8660254, 0.5)));
+        assert!(
+            next.velocity
+                .abs_diff_eq(Vec3::new(0.0, 6.0, -10.392305), 0.001)
+        );
+        assert!((next.velocity.length() - 12.0).abs() < 0.001);
+        let airborne = moving.step(0.1, 1.0, 0.0, Vec3::Y, None);
+        assert_eq!(airborne.velocity, moving.velocity);
+        assert_eq!(airborne.support, None);
+        let steep = moving.step(0.1, 1.0, 0.0, Vec3::Y, Some(Vec3::new(0.0, 0.5, 0.8660254)));
+        assert_eq!(steep.velocity, moving.velocity);
     }
 
     #[test]
