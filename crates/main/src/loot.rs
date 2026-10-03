@@ -4,7 +4,7 @@ use crate::map::Player;
 use crate::ui::UpgradeLevels;
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use rand::Rng;
+use rand::RngExt;
 use shared::art::AssetName;
 use shared::items::{Material, WeaponKind};
 use shared::sphere::{PLANET_RADIUS, random_point};
@@ -114,17 +114,17 @@ fn setup_loot_assets(mut commands: Commands, catalog: Res<crate::asset_catalog::
 }
 
 fn scatter_loot(mut commands: Commands, assets: Res<LootAssets>) {
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rng();
 
     for _ in 0..MATERIAL_COUNT {
-        let m = Material::ALL[rng.gen_range(0..Material::ALL.len())];
-        let pos = random_point(rng.r#gen(), rng.r#gen());
+        let m = Material::ALL[rng.random_range(0..Material::ALL.len())];
+        let pos = random_point(rng.random(), rng.random());
         spawn_material(&mut commands, &assets, m, pos.0);
     }
 
     for _ in 0..WEAPON_COUNT {
-        let w = WeaponKind::ALL[rng.gen_range(0..WeaponKind::ALL.len())];
-        let pos = random_point(rng.r#gen(), rng.r#gen());
+        let w = WeaponKind::ALL[rng.random_range(0..WeaponKind::ALL.len())];
+        let pos = random_point(rng.random(), rng.random());
         spawn_weapon(&mut commands, &assets, w, pos.0);
     }
 }
@@ -180,12 +180,12 @@ fn spawn_weapon(commands: &mut Commands, assets: &LootAssets, w: WeaponKind, dir
 }
 
 pub fn drop_zombie_loot(commands: &mut Commands, assets: &LootAssets, dir: Vec3) {
-    let mut rng = rand::thread_rng();
-    if rng.gen_bool(ZOMBIE_WEAPON_DROP_CHANCE) {
-        let w = WeaponKind::ALL[rng.gen_range(0..WeaponKind::ALL.len())];
+    let mut rng = rand::rng();
+    if rng.random_bool(ZOMBIE_WEAPON_DROP_CHANCE) {
+        let w = WeaponKind::ALL[rng.random_range(0..WeaponKind::ALL.len())];
         spawn_weapon(commands, assets, w, dir);
-    } else if rng.gen_bool(ZOMBIE_DROP_CHANCE) {
-        let m = Material::ALL[rng.gen_range(0..Material::ALL.len())];
+    } else if rng.random_bool(ZOMBIE_DROP_CHANCE) {
+        let m = Material::ALL[rng.random_range(0..Material::ALL.len())];
         spawn_material(commands, assets, m, dir);
     }
 }

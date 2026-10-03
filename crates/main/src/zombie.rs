@@ -4,7 +4,7 @@ use crate::physics::RadialGravity;
 use crate::wave::WaveManager;
 use avian3d::prelude::*;
 use bevy::prelude::*;
-use rand::Rng;
+use rand::RngExt;
 use shared::sphere::PLANET_RADIUS;
 use shared::state::AppState;
 
@@ -50,8 +50,8 @@ fn spawn_zombies(
         .single()
         .map(|t| t.translation.normalize())
         .unwrap_or(Vec3::Y);
-    let mut rng = rand::thread_rng();
-    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+    let mut rng = rand::rng();
+    let angle = rng.random_range(0.0..std::f32::consts::TAU);
     let perp = Vec3::new(center_pos.z, 0.0, -center_pos.x).normalize_or(Vec3::X);
     let step = SPAWN_RADIUS / PLANET_RADIUS;
     let spawn_dir =

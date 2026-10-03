@@ -16,7 +16,7 @@
 
 ## Prerequisites
 
-- Rust 1.96.1 (see `rust-toolchain.toml`)
+- Rust 1.99.0 (see `rust-toolchain.toml`)
 - `rust-analyzer`, `clippy`
 - Python 3, `just`, Blender 5.2.2 LTS with its MCP add-on running (see [asset pipeline](docs/glb-pipeline.md))
 
