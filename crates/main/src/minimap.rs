@@ -1520,3 +1520,21 @@ mod tests {
         );
     }
 }
+
+/// Development capture opens the real map through its normal state and camera systems.
+#[cfg(feature = "asset-review")]
+pub(crate) fn showcase_map(world: &mut World, open: bool, center: Vec3) {
+    let mut state = world.resource_mut::<WorldMapOpen>();
+    if state.0 != open {
+        state.0 = open;
+    }
+    if open {
+        world.resource_mut::<WorldMapView>().center = Some(center.normalize());
+    }
+    for mut node in world
+        .query_filtered::<&mut Node, With<Minimap>>()
+        .iter_mut(world)
+    {
+        node.display = if open { Display::None } else { Display::Flex };
+    }
+}

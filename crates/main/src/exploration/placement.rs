@@ -29,7 +29,8 @@ impl Placement<'_, '_> {
                 self.spatial.cast_ray(
                     origin,
                     Dir3::new(-up).unwrap(),
-                    if kind == Kind::Plane { 0.9 } else { 0.75 },
+                    // Include the plane collision envelope and speculative contact margin.
+                    if kind == Kind::Plane { 1.25 } else { 0.75 },
                     false,
                     &SpatialQueryFilter::from_excluded_entities([entity]),
                 )
@@ -38,6 +39,32 @@ impl Placement<'_, '_> {
             .min_by(|a, b| a.distance.total_cmp(&b.distance))
             .map(|h| h.normal)
     }
+    /// Fit the attitude across the footprint, so crossing a facet boundary
+    /// cannot lift an axle by adopting just the nearest triangle's slope.
+    pub fn car_attitude(&self, entity: Entity, position: Vec3, heading: Vec3) -> Option<Vec3> {
+        let up = position.normalize();
+        let origins = shared::car_prototype::support_origins(position, heading);
+        let mut points = [Vec3::ZERO; 4];
+        for (point, origin) in points.iter_mut().zip(origins.into_iter().skip(1)) {
+            let origin = origin + up * 2.0;
+            let hit = self.spatial.cast_ray(
+                origin,
+                Dir3::new(-up).ok()?,
+                5.0,
+                false,
+                &SpatialQueryFilter::from_excluded_entities([entity]),
+            )?;
+            if !self.ground.contains(hit.entity) || hit.normal.dot(up) <= 0.7 {
+                return None;
+            }
+            *point = origin - up * hit.distance;
+        }
+        let across = points[0] + points[2] - points[1] - points[3];
+        let along = points[0] + points[1] - points[2] - points[3];
+        let normal = across.cross(along).try_normalize()?;
+        (normal.dot(up) > 0.7).then_some(normal)
+    }
+
     pub fn clearance(&self, entity: Entity, position: Vec3) -> f32 {
         let solid = self
             .spatial

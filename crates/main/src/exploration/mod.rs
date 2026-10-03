@@ -1,5 +1,7 @@
 //! Default exploration lifecycle. The explorer and reusable vehicles keep distinct bodies.
 mod placement;
+#[cfg(feature = "asset-review")]
+pub(crate) mod showcase;
 mod view;
 mod world;
 use crate::{
@@ -57,6 +59,7 @@ struct Vehicle {
     air_time: f32,
     previous_velocity: Vec3,
     clearance: f32,
+    support_normal: Option<Vec3>,
 }
 impl Vehicle {
     fn new(kind: Kind, heading: Vec3) -> Self {
@@ -69,6 +72,7 @@ impl Vehicle {
             air_time: 0.0,
             previous_velocity: Vec3::ZERO,
             clearance: 0.0,
+            support_normal: None,
         }
     }
 }
@@ -249,6 +253,8 @@ fn drive(
     keys: Res<ButtonInput<KeyCode>>,
     state: Res<Exploration>,
     placement: Placement,
+    collisions: Collisions,
+    #[cfg(feature = "asset-review")] pilot: Option<Res<showcase::PilotControls>>,
     mut vehicles: Query<(Entity, &Position, &mut Vehicle, Forces)>,
 ) {
     for (entity, pos, mut vehicle, mut forces) in &mut vehicles {
@@ -274,18 +280,47 @@ fn drive(
                 0.0
             }
         };
+        #[cfg(feature = "asset-review")]
+        let scripted = pilot
+            .as_ref()
+            .filter(|p| p.entity == Some(entity) && controlled);
+        let car_axes = (
+            axis(KeyCode::KeyW, KeyCode::KeyS),
+            axis(KeyCode::KeyA, KeyCode::KeyD),
+        );
+        #[cfg(feature = "asset-review")]
+        let car_axes = scripted.map_or(car_axes, |p| (p.throttle, p.steering));
         if vehicle.kind == Kind::Car {
+            let velocity = forces.linear_velocity();
+            // At a slope boundary the nose can already touch the next facet
+            // while the ground probe still sees the old one. Drive along the
+            // touching surface opposing motion, rather than pushing into it.
+            let ground = collisions
+                .collisions_with(entity)
+                .filter(|pair| {
+                    !placement.obstacle(if pair.collider1 == entity {
+                        pair.collider2
+                    } else {
+                        pair.collider1
+                    })
+                })
+                .flat_map(|pair| {
+                    pair.manifolds.iter().map(move |manifold| {
+                        if pair.collider1 == entity {
+                            -manifold.normal
+                        } else {
+                            manifold.normal
+                        }
+                    })
+                })
+                .filter(|normal| normal.dot(up) > 0.7)
+                .min_by(|a, b| a.dot(velocity).total_cmp(&b.dot(velocity)))
+                .or(support);
             let motion = CarMotion {
                 velocity: forces.linear_velocity(),
                 heading: vehicle.flight.heading,
             }
-            .step(
-                time.delta_secs(),
-                axis(KeyCode::KeyW, KeyCode::KeyS),
-                axis(KeyCode::KeyA, KeyCode::KeyD),
-                up,
-                support,
-            );
+            .step(time.delta_secs(), car_axes.0, car_axes.1, up, ground);
             vehicle.flight.heading = motion.heading;
             *forces.linear_velocity_mut() = motion.velocity;
             forces.apply_force(-up * mass * 20.0);
@@ -306,6 +341,8 @@ fn drive(
                 },
                 brake: controlled && keys.pressed(KeyCode::Space),
             };
+            #[cfg(feature = "asset-review")]
+            let input = scripted.map_or(input, |p| p.flight);
             let velocity = vehicle.flight.step(
                 time.delta_secs(),
                 input,
@@ -326,9 +363,22 @@ fn drive(
         }
     }
 }
-fn align(mut vehicles: Query<(&Position, &Vehicle, &mut Rotation)>) {
+fn align(time: Res<Time>, mut vehicles: Query<(&Position, &Vehicle, &mut Rotation)>) {
     for (pos, v, mut rotation) in &mut vehicles {
-        if !v.crashed {
+        if v.crashed {
+            continue;
+        }
+        if v.kind == Kind::Car {
+            // Keep the last attitude through short hops; contact determines pitch and roll.
+            let normal = v.support_normal.unwrap_or(rotation.0 * Vec3::Y);
+            let desired = facing(tangent(v.flight.heading, normal), normal);
+            // Avoid continually waking a resting body for sub-millimeter ray noise.
+            if rotation.0.angle_between(desired) > 0.001 {
+                rotation.0 = rotation
+                    .0
+                    .slerp(desired, 1.0 - (-12.0 * time.delta_secs()).exp());
+            }
+        } else {
             rotation.0 = v.flight.rotation(pos.0.normalize());
         }
     }
@@ -348,6 +398,15 @@ fn contacts(
 ) {
     for (e, p, velocity, contacts, mut v) in &mut vehicles {
         let support = placement.support(e, p.0, v.flight.heading, v.kind);
+        v.support_normal = support.and_then(|normal| {
+            if v.kind == Kind::Car {
+                placement
+                    .car_attitude(e, p.0, v.flight.heading)
+                    .or(Some(normal))
+            } else {
+                Some(normal)
+            }
+        });
         v.clearance = placement.clearance(e, p.0);
         let landed = v.kind == Kind::Car || !v.flight.airborne || v.crashed;
         let touching_ground = v.parked
@@ -699,7 +758,7 @@ fn track_safe(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn fixture() -> (App, Entity) {
+    pub(super) fn fixture() -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -747,6 +806,240 @@ mod tests {
             .request(action);
         app.update();
     }
+    #[test]
+    fn car_carries_speed_from_the_captured_downhill_onto_flat_ground() {
+        let (mut app, explorer) = fixture();
+        let ground = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(ground);
+        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+            "../../assets/level_1337.bin"
+        ))
+        .unwrap();
+        let position = Vec3::new(-1108.6824, 1206.2986, -1174.9358);
+        let heading = Vec3::new(-0.52003485, 0.30083457, 0.7994138);
+        let normal = Vec3::new(-0.76097286, 0.6037492, -0.23750219);
+        let patch = level
+            .terrain_tris
+            .iter()
+            .filter(|tri| {
+                tri.iter()
+                    .any(|p| Vec3::from_array(*p).distance(position) < 60.0)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        app.world_mut().spawn((
+            RigidBody::Static,
+            crate::map::build_collider(&patch),
+            Transform::default(),
+            Ground,
+        ));
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert((ColliderDisabled, RigidBody::Kinematic));
+        let mut vehicle = Vehicle::new(Kind::Car, heading);
+        vehicle.parked = false;
+        let rotation = facing(tangent(heading, normal), normal);
+        let car = app
+            .world_mut()
+            .spawn((
+                vehicle,
+                RigidBody::Dynamic,
+                Kind::Car.collider(),
+                Mass(800.0),
+                Position(position),
+                Rotation(rotation),
+                Transform::from_translation(position).with_rotation(rotation),
+                CollidingEntities::default(),
+                SweptCcd::default(),
+                physics_reset(),
+            ))
+            .insert(LinearVelocity(Vec3::new(-3.1557772, 0.7239393, 11.952755)))
+            .id();
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(car);
+        let mut minimum = f32::INFINITY;
+        for _ in 0..180 {
+            let speed = app.world().get::<LinearVelocity>(car).unwrap().length();
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.reset_all();
+            if speed < 11.8 {
+                keys.press(KeyCode::KeyW);
+            } else if speed > 12.4 {
+                keys.press(KeyCode::KeyS);
+            }
+            app.update();
+            minimum = minimum.min(app.world().get::<LinearVelocity>(car).unwrap().length());
+        }
+        assert!(
+            minimum > 10.0,
+            "a terrain transition must not stall a cruising car: minimum={minimum}"
+        );
+        assert!(
+            app.world()
+                .get::<Position>(car)
+                .unwrap()
+                .0
+                .distance(position)
+                > 25.0
+        );
+    }
+
+    #[test]
+    fn car_settles_at_captured_road_stop() {
+        let (mut app, explorer) = fixture();
+        let ground = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(ground);
+        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+            "../../assets/level_1337.bin"
+        ))
+        .unwrap();
+        let position = Vec3::new(-1120.5538, 1211.4692, -1145.928);
+        let patch = level
+            .terrain_tris
+            .iter()
+            .filter(|tri| {
+                tri.iter()
+                    .any(|p| Vec3::from_array(*p).distance(position) < 30.0)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        app.world_mut().spawn((
+            RigidBody::Static,
+            crate::map::build_collider(&patch),
+            Transform::default(),
+            Ground,
+        ));
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert((ColliderDisabled, RigidBody::Kinematic));
+        let heading = tangent(
+            Vec3::from_array(level.roads[20].points[38])
+                - Vec3::from_array(level.roads[20].points[37]),
+            position.normalize(),
+        );
+        let mut vehicle = Vehicle::new(Kind::Car, heading);
+        vehicle.parked = false;
+        let rotation = facing(heading, position.normalize());
+        let car = app
+            .world_mut()
+            .spawn((
+                vehicle,
+                RigidBody::Dynamic,
+                Kind::Car.collider(),
+                Mass(800.0),
+                Position(position),
+                Rotation(rotation),
+                Transform::from_translation(position).with_rotation(rotation),
+                CollidingEntities::default(),
+                SweptCcd::default(),
+                physics_reset(),
+            ))
+            .id();
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(car);
+        for _ in 0..600 {
+            app.update();
+        }
+        assert!(
+            app.world().get::<Vehicle>(car).unwrap().stable > 0.3,
+            "a stopped car must settle: velocity={:?}, support={:?}, position={:?}, contacts={:?}, stable={}",
+            app.world().get::<LinearVelocity>(car),
+            app.world().get::<Vehicle>(car).unwrap().support_normal,
+            app.world().get::<Position>(car),
+            app.world().get::<CollidingEntities>(car),
+            app.world().get::<Vehicle>(car).unwrap().stable
+        );
+    }
+
+    #[test]
+    fn car_spanning_a_crest_keeps_both_axles_level() {
+        let (mut app, explorer) = fixture();
+        let ground = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        app.world_mut().despawn(ground);
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(ColliderDisabled);
+        let mut triangles = Vec::new();
+        for (a, b) in [(-10.0_f32, 0.0_f32), (0.0, 10.0)] {
+            let p = |x, z: f32| [x, 2000.0 - z.abs() * 0.3, z];
+            triangles.push([p(-10.0, a), p(-10.0, b), p(10.0, a)]);
+            triangles.push([p(10.0, a), p(-10.0, b), p(10.0, b)]);
+        }
+        app.world_mut().spawn((
+            RigidBody::Static,
+            crate::map::build_collider(&triangles),
+            Transform::default(),
+            Ground,
+        ));
+        let car = app
+            .world_mut()
+            .spawn((
+                Vehicle::new(Kind::Car, Vec3::NEG_Z),
+                RigidBody::Static,
+                Kind::Car.collider(),
+                Position(Vec3::Y * 2000.55),
+                Rotation::default(),
+                Transform::from_xyz(0.0, 2000.55, 0.0),
+                CollidingEntities::default(),
+            ))
+            .id();
+        for _ in 0..90 {
+            app.update();
+        }
+        let forward = app.world().get::<Rotation>(car).unwrap().0 * Vec3::NEG_Z;
+        assert!(
+            forward.y.abs() < 0.02,
+            "equal-height front and rear ground must not tip the car onto one axle: {forward:?}"
+        );
+    }
+
+    #[test]
+    fn car_body_follows_the_supporting_slope_in_pitch_and_roll() {
+        let (mut app, _) = fixture();
+        let ground = app
+            .world_mut()
+            .query_filtered::<Entity, With<Ground>>()
+            .single(app.world())
+            .unwrap();
+        let slope = Quat::from_rotation_x(0.15) * Quat::from_rotation_z(0.10);
+        app.world_mut().entity_mut(ground).insert(Rotation(slope));
+        let car = app
+            .world_mut()
+            .spawn((
+                Vehicle::new(Kind::Car, Vec3::NEG_Z),
+                RigidBody::Static,
+                Kind::Car.collider(),
+                Position(Vec3::Y * 2000.55),
+                Rotation::default(),
+                Transform::from_xyz(0.0, 2000.55, 0.0),
+                CollidingEntities::default(),
+            ))
+            .id();
+        for _ in 0..90 {
+            app.update();
+        }
+        let rotation = app.world().get::<Rotation>(car).unwrap().0;
+        let normal = slope * Vec3::Y;
+        assert!(
+            (rotation * Vec3::Y).dot(normal) > 0.999,
+            "car must follow both slope axes"
+        );
+        assert!(
+            (rotation * Vec3::NEG_Z).dot(tangent(Vec3::NEG_Z, normal)) > 0.999,
+            "terrain alignment must preserve the driver's heading"
+        );
+    }
+
     #[test]
     fn selector_pause_and_cancel_do_not_leak_held_airbrake() {
         let (mut app, _) = fixture();

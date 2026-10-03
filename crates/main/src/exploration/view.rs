@@ -270,6 +270,7 @@ pub(super) fn animate(
     time: Res<Time>,
     state: Res<Exploration>,
     keys: Res<ButtonInput<KeyCode>>,
+    #[cfg(feature = "asset-review")] pilot: Option<Res<super::showcase::PilotControls>>,
     vehicles: Query<(&Vehicle, &LinearVelocity)>,
     mut parts: Query<(&mut Transform, &mut MovingPart)>,
 ) {
@@ -296,6 +297,11 @@ pub(super) fn animate(
                 } else {
                     0.0
                 };
+            #[cfg(feature = "asset-review")]
+            let desired = pilot
+                .as_ref()
+                .filter(|p| p.entity == Some(part.owner) && part.front)
+                .map_or(desired, |p| p.steering * 0.4);
             part.steering += (desired - part.steering) * (1.0 - (-10.0 * time.delta_secs()).exp());
             transform.rotation = part.rest
                 * Quat::from_rotation_y(part.steering)

@@ -53,6 +53,14 @@ impl Default for Weather {
 }
 
 impl Weather {
+    /// Hold an authored weather front while keeping the normal transition and particles.
+    #[cfg(feature = "asset-review")]
+    pub(crate) fn showcase_front(&mut self, precip: f32, wind: Vec3) {
+        self.target_precip = precip;
+        self.target_wind = wind;
+        self.front_timer = f32::INFINITY;
+    }
+
     fn next_u32(&mut self) -> u32 {
         self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
         self.rng

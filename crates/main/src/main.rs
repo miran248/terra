@@ -96,6 +96,7 @@ fn main() {
     app.add_plugins((
         asset_showcase_prototype::AssetShowcasePlugin,
         asset_acceptance::AssetAcceptancePlugin,
+        exploration::showcase::ShowcasePlugin,
     ));
     app.add_plugins(exploration::ExplorationPlugin);
     app.run();

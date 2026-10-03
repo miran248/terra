@@ -50,3 +50,7 @@ assets-check:
 # Start the normal game with the generated production catalog.
 run:
     cargo run -p main
+
+# Record the connected expedition and encode the MP4 + README GIF (requires FFmpeg).
+flight-showcase:
+    python3 scripts/record_flight.py

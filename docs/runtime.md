@@ -40,6 +40,13 @@
 - Fall-through diagnostics query the actual displaced collision triangles retained in `CollisionTerrain`, and emit one warning after crossing beneath that surface, including altitude, radial/total velocity, frame/fixed-step durations, and Avian contact state.
 - The sun orbits the polar axis for the day/night cycle. Sun-lock holds it overhead the player and freezes time progression.
 
+Cars align smoothly to ground sampled across their footprint in pitch and roll,
+rather than adopting a single terrain facet, and retain their attitude through
+brief losses of contact. Driving uses touching terrain normals before ray-probed
+support so the car does not push into the next facet at a downhill-to-flat junction.
+Sub-milliradian alignment noise does not wake resting bodies. Plane landing support includes
+the collision envelope so a gentle first contact can transition to ground handling.
+
 ## Maps, visuals, and gameplay state
 
 - Minimap is fixed heading-up 2D with a rotating edge compass. Minimap markers use flat projection. Fullscreen map is a north-up perspective `Camera3d` globe with the same circular border and shared actor, loot, settlement, named-region, and edge-cardinal overlays; it supports pan/drag and release-without-drag ray casting to the nearest visible terrain, sea-level water, or bridge deck. A bridge deck receives clicks only when its top surface is in front of terrain along the camera ray. Region labels annotate centroids, vertically centered immediately to the right of their markers. Labels stay on one line and truncate at the circular boundary; they never shift away from their markers or use leader lines. Blank map clicks request a validated safe-ground teleport on foot only; occupied vehicles cannot be map-teleported.
@@ -54,3 +61,29 @@
 ## Verification
 
 Run the focused test first, then workspace `cargo check` and `cargo clippy`. If GLB catalogs or embedded `LevelData` are affected, follow the [GLB pipeline](glb-pipeline.md) or [level pipeline](level-pipeline.md) generation and deterministic comparison checks.
+
+## Showcase capture
+
+The `asset-review` development feature includes `exploration::showcase`. Setting
+`TERRA_FLIGHT_CAPTURE` to an output directory runs one connected expedition at
+30 Hz after a streaming warmup, captures PNG frames from an offscreen render
+target so window focus cannot interrupt recording, and exits after the explorer
+physically returns home. `TERRA_FLIGHT_PREVIEW=1` saves one still every three
+seconds. `beats.tsv` records story transitions and `scenes.tsv` records the
+completed frame count; an incomplete journey fails rather than producing a film.
+
+Only initial placement authors actor positions. Subsequent walking, driving,
+flying, collision and vehicle transfers use the production systems. Shared
+`flight_showcase` supplies bounded flight controls; the capture director chooses
+baked destinations and overrides only the cinematic camera, weather and light.
+The normal gameplay UI, HUD and minimap remain visible. Both vehicles persist throughout the journey. The real world
+map brackets the expedition, and the return is validated before closing.
+
+`just flight-showcase` records and encodes the repository media. The editor may
+compress uneventful ground travel and straight flight with selective dissolves;
+interactions, takeoff, maneuvers and landing remain continuous. The closing camera
+returns to the opening pose after a matching-direction walk. Departure is in
+morning light, flight and landing stay in daylight, and the final return reaches
+evening light; the closing map advances through night
+to the next morning. Decoded first/last video frames must hash identically. See [the cinematic brief](showcase.md) and the root README
+for prerequisites and preview usage.

@@ -2,8 +2,24 @@
 
 3D spherical-planet procedural world experiment. Bevy 0.19 + Avian3d physics.
 
-![1](https://github.com/user-attachments/assets/7095a5f7-a04f-4eb5-a65a-d28b509700ed)
-![2](https://github.com/user-attachments/assets/4631fd01-0fc6-4e84-aa10-97391faf8128)
+[![Exploration across Terra](docs/media/flight-preview.gif)](docs/media/flight-showcase.mp4)
+
+[Watch the expedition](docs/media/flight-showcase.mp4): leave a house, walk to a car, drive through rain,
+then take off over forests, waterways, and snowy mountains. Depart in morning light,
+explore and land in daylight, return to the doorstep toward evening, then watch night turn
+to morning on the map. The loopable film uses normal gameplay movement, vehicle
+physics, and entry/exit controls.
+
+
+## Screenshots
+
+| Settlements and exploration | Cars and weather |
+| --- | --- |
+| ![Explorer at an Oakford house entrance with HUD and minimap](docs/media/settlement.png) | ![Driving a car along a rural road in the rain](docs/media/driving.png) |
+
+| Mountain flight | Planet map |
+| --- | --- |
+| ![Plane crossing mountains in rain with flight instruments and minimap](docs/media/mountain-flight.png) | ![Globe map showing named settlements, roads, mountains, forests, and lakes](docs/media/planet-map.png) |
 
 ## Crates
 
@@ -36,7 +52,7 @@ cargo run -p main --release
 ## Offline pipeline
 
 1. `gen_level` precomputes terrain, water, rivers, roads, settlements → `level_{seed}.bin` (embedded via `include_bytes!`)
-2. `gen_assets` invokes scripted Blender recipes through MCP, generating 66 meter-scale scenes → `assets/models/production/`
+2. `gen_assets` invokes scripted Blender recipes through MCP, generating 68 meter-scale scenes → `assets/models/production/`
 3. `main` loads both at startup, streams the world with 3-LOD chunking
 
 Different seed: `PLANET_SEED=42 cargo run -p gen_level -- crates/main/assets/level_42.bin`
@@ -88,13 +104,70 @@ Day/night cycle with a world sun orbiting the planet's Y axis so the lit hemisph
 
 Dynamic weather: randomized fronts ease a global wind vector and precipitation intensity (rain or snow, resolved per-location by local temperature). 1500-particle camera-anchored pool renders streaks (rain) or flakes (snow), wrapping around the camera. Wind drives water swell, plant sway, and precipitation drift.
 
+## Exploration and vehicles
+
+Walk or sprint across the planet, summon a car or plane on suitable nearby ground,
+and enter it with `E`. Vehicles remain where you leave them. Each has its own chase
+camera; cars follow terrain pitch and roll, with animated wheels and steering.
+Planes have animated propellers, unrestricted rolls and loops, stalls, and speed
+changes from climbing and diving. Hold thrust to maintain or build airspeed.
+
+Land and stop before exiting. Terrain, trees, and other solid obstacles can crash
+a plane; crashes leave a wreck rather than resetting it. Hold `R` while seated to
+restore and reposition the occupied vehicle on safe ground. On foot, recovery
+returns the explorer to a safe standing location.
+
+## Assets
+
+The current Blender-generated catalog contains 68 scenes: scenery, settlement
+structures, items and weapons, animated actors, and the car and plane. Vehicles
+have shaped body panels and contrasting paint colors. Actor clips, equipment sockets,
+wheel steering/rotation, and propeller animation use the exported GLB rigs.
+See the [asset pipeline](docs/glb-pipeline.md) for generation and validation.
+
 ## Controls
 
-| Key | Action |
-|-----|--------|
-| W/S | Move forward/back |
-| A/D | Rotate left/right |
-| Shift | Sprint (hold) |
-| Space | Jump |
-| 1 | Toggle day/night cycle |
+| Key | On foot | Car | Plane |
+|-----|---------|-----|-------|
+| W / S | Walk forward / backward | Accelerate / brake and reverse | Pitch down / up |
+| A / D | Turn left / right | Steer left / right | Bank left / right |
+| Shift (hold) | Sprint | — | Apply thrust |
+| Ctrl (hold) | — | — | Reduce airspeed |
+| Space | Jump | — | Ground brake |
+| E | Enter nearby vehicle | Exit when stopped | Exit when landed and stopped |
+| R (hold 1 second) | Recover explorer | Recover occupied car | Recover occupied plane |
+
+| Key | Shared action |
+|-----|---------------|
+| V | Open vehicle selector while on foot; pauses the game |
+| C / P | In the selector: summon car / plane |
+| Esc | Close vehicle selector |
 | M | Toggle world map |
+| 1 | Toggle sun-lock: sun overhead, or normal day/night cycle |
+
+On the world map, drag to pan; click terrain to travel there while on foot.
+Vehicle summoning and recovery validate clear, dry ground before moving anything.
+
+## Exploration showcase
+
+Run `just flight-showcase` after generating the normal assets and seed-1337 level.
+It requires FFmpeg/ffprobe and a working graphics display, renders offscreen, then
+saves a 1280×720, 30 fps MP4, an eight-second GIF preview, and four screenshots under
+`docs/media/`. Temporary PNG frames are removed after encoding.
+
+For a still every three seconds while validating the journey:
+
+```sh
+TERRA_FLIGHT_CAPTURE=/tmp/terra-flight-preview TERRA_FLIGHT_PREVIEW=1 \
+  cargo run -p main --features asset-review
+```
+
+The development capture follows one connected route using normal gameplay
+controls, with a cinematic camera and the normal HUD and minimap. It includes real vehicle
+transfers, weather changes, morning departure and evening arrival, an actual landing,
+and a physical return approached in the original departure direction.
+Uneventful ground travel and straight flight are shortened with selective cuts.
+A closing map timelapse advances through night to the opening morning.
+Decoded first and last video frames match exactly. See
+[the cinematic brief](docs/showcase.md).
+The normal game is unaffected when `TERRA_FLIGHT_CAPTURE` is unset.
