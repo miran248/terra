@@ -13,7 +13,7 @@ on-foot and car commands retain their own controls.
 | Hold Shift | Apply thrust; releasing it cuts thrust and lets drag slow the plane |
 | Hold Ctrl | Additional air braking |
 | W / S | Pitch down / up through full loops; S initiates takeoff above 24 m/s |
-| A / D | Bank with assisted turning; steer while on the ground |
+| A / D | Roll through full rotations with assisted turning; steer on the ground |
 | Space | Ground braking |
 | R | Manual flight reset, 60 m above the last ground reset, at 60 m/s |
 | T | Manual search for a nearby clear ground reset and takeoff run |
@@ -42,8 +42,9 @@ damage, fuel, or repair.
   angle-of-attack or aerodynamic simulation.
 - Pitch input is 0.55 rad/s without a pitch limit; angle wrapping permits full
   loops. Outside a stall, released pitch eases toward level at 0.7/s.
-- Bank target is ±0.7 rad (about 40°), easing at 2.5/s; assisted yaw is
-  `0.6 × tan(bank)` rad/s at normal airspeed. Non-stalled velocity follows the
+- Held bank input rolls at 1 rad/s through full rotations; releasing it levels
+  at 2.5/s. Assisted yaw is `0.8 × sin(bank)` rad/s at normal airspeed,
+  remaining finite through vertical bank. Non-stalled velocity follows the
   nose, including through vertical and inverted flight.
 - Flight direction uses radial up at the current position. Powered level flight
   approximately maintains radius around the planet; terrain can rise into the

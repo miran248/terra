@@ -198,6 +198,7 @@ fn setup(
 
 fn ground_hit(
     spatial: &SpatialQuery,
+    ground: &Query<(), (With<Ground>, Without<crate::chunks::WorldObstacle>)>,
     entity: Entity,
     position: Vec3,
     heading: Vec3,
@@ -222,7 +223,7 @@ fn ground_hit(
             &filter,
         )
     })
-    .filter(|hit| hit.normal.dot(up) > 0.7)
+    .filter(|hit| ground.contains(hit.entity) && hit.normal.dot(up) > 0.7)
     .min_by(|a, b| a.distance.total_cmp(&b.distance))
 }
 
@@ -230,6 +231,7 @@ fn fly(
     time: Res<Time>,
     keys: Res<ButtonInput<KeyCode>>,
     spatial: SpatialQuery,
+    ground: Query<(), (With<Ground>, Without<crate::chunks::WorldObstacle>)>,
     mut planes: Query<(Entity, &Position, &mut Player, &mut PlanePrototype, Forces)>,
 ) {
     let Ok((entity, position, mut player, mut plane, mut forces)) = planes.single_mut() else {
@@ -243,7 +245,7 @@ fn fly(
         return;
     }
     let up = position.0.normalize();
-    let hit = ground_hit(&spatial, entity, position.0, plane.flight.heading);
+    let hit = ground_hit(&spatial, &ground, entity, position.0, plane.flight.heading);
     let input = FlightInput {
         pitch: f32::from(keys.pressed(KeyCode::KeyS)) - f32::from(keys.pressed(KeyCode::KeyW)),
         bank: f32::from(keys.pressed(KeyCode::KeyA)) - f32::from(keys.pressed(KeyCode::KeyD)),
@@ -349,7 +351,7 @@ fn touchdown(
     mut commands: Commands,
     spatial: SpatialQuery,
     water: Option<Res<PlaneWater>>,
-    ground: Query<(), With<Ground>>,
+    ground: Query<(), (With<Ground>, Without<crate::chunks::WorldObstacle>)>,
     mut planes: Query<(Entity, &Position, &CollidingEntities, &mut PlanePrototype)>,
 ) {
     for (entity, position, contacts, mut plane) in &mut planes {
@@ -371,7 +373,7 @@ fn touchdown(
         } else if obstacle_impact
             || (!contacts.0.is_empty() && plane.flight.airborne && plane.air_time > 0.3)
         {
-            let hit = ground_hit(&spatial, entity, position.0, plane.flight.heading);
+            let hit = ground_hit(&spatial, &ground, entity, position.0, plane.flight.heading);
             let gentle = !obstacle_impact
                 && hit.is_some_and(|hit| {
                     ground.contains(hit.entity)
@@ -409,7 +411,7 @@ fn clear_ground(
     origin: Vec3,
     heading: Vec3,
     water: Option<&PlaneWater>,
-    ground: &Query<(), With<Ground>>,
+    ground: &Query<(), (With<Ground>, Without<crate::chunks::WorldObstacle>)>,
 ) -> Option<(Vec3, Vec3)> {
     let up = origin.normalize();
     let side = heading.cross(up);
@@ -486,7 +488,7 @@ fn reset(
     keys: Res<ButtonInput<KeyCode>>,
     spatial: SpatialQuery,
     water: Option<Res<PlaneWater>>,
-    ground: Query<(), With<Ground>>,
+    ground: Query<(), (With<Ground>, Without<crate::chunks::WorldObstacle>)>,
     planes: Query<(Entity, &Position, &PlanePrototype)>,
 ) {
     let Ok((entity, position, old)) = planes.single() else {
@@ -777,6 +779,26 @@ mod tests {
     }
 
     #[test]
+    fn obstacle_top_does_not_provide_runway_support() {
+        let (mut app, entity) = physics_app(Vec3::new(0.0, 2010.8, 0.0), Vec3::ZERO, false);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 1.0, 20.0),
+            Ground,
+            crate::chunks::WorldObstacle,
+            Transform::from_xyz(0.0, 2009.5, 0.0),
+        ));
+        app.update();
+        assert!(
+            app.world()
+                .get::<PlanePrototype>(entity)
+                .unwrap()
+                .flight
+                .airborne
+        );
+    }
+
+    #[test]
     fn obstacle_contact_crashes_at_low_speed_and_during_takeoff_grace() {
         for airborne in [false, true] {
             let (mut app, entity) =
@@ -789,6 +811,8 @@ mod tests {
             app.world_mut().spawn((
                 RigidBody::Static,
                 Collider::cylinder(0.25, 6.0),
+                Ground,
+                crate::chunks::WorldObstacle,
                 Transform::from_xyz(3.5, 2003.0, 0.0),
             ));
             for _ in 0..5 {

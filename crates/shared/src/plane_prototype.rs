@@ -82,24 +82,28 @@ impl PlaneFlight {
             forward_speed < 22.0
         };
         self.pitch = if input.pitch.abs() > 0.01 {
-            wrap_pitch(self.pitch + input.pitch * 0.55 * dt)
+            wrap_angle(self.pitch + input.pitch * 0.55 * dt)
         } else if !self.stalled {
             self.pitch * (-0.7 * dt).exp()
         } else {
             self.pitch
         };
         if self.stalled {
-            let down = wrap_pitch(-std::f32::consts::FRAC_PI_2 - self.pitch);
-            self.pitch = wrap_pitch(self.pitch + down.clamp(-0.65 * dt, 0.65 * dt));
+            let down = wrap_angle(-std::f32::consts::FRAC_PI_2 - self.pitch);
+            self.pitch = wrap_angle(self.pitch + down.clamp(-0.65 * dt, 0.65 * dt));
         }
-        self.bank += (input.bank * 0.7 - self.bank) * (1.0 - (-2.5 * dt).exp());
+        self.bank = if input.bank.abs() > 0.01 {
+            wrap_angle(self.bank + input.bank * dt)
+        } else {
+            self.bank * (-2.5 * dt).exp()
+        };
         let authority = if self.stalled {
             (forward_speed / 28.0).clamp(0.15, 1.0)
         } else {
             1.0
         };
         self.heading =
-            Quat::from_axis_angle(up, self.bank.tan() * 0.6 * authority * dt) * self.heading;
+            Quat::from_axis_angle(up, self.bank.sin() * 0.8 * authority * dt) * self.heading;
         let nose = self.heading * self.pitch.cos() + up * self.pitch.sin();
         let speed = velocity.length();
         let drag = 2.0 + 0.0008 * speed * speed + if input.throttle < 0.0 { 12.0 } else { 0.0 };
@@ -125,6 +129,33 @@ impl PlaneFlight {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_bank_completes_a_roll_without_a_vertical_turn_singularity() {
+        let mut plane = PlaneFlight::new(Vec3::NEG_Z);
+        plane.airborne = true;
+        let mut velocity = Vec3::NEG_Z * 100.0;
+        let mut rolled = 0.0;
+        for _ in 0..400 {
+            let previous = plane.bank;
+            let heading = plane.heading;
+            velocity = plane.step(
+                0.02,
+                FlightInput {
+                    bank: 1.0,
+                    throttle: 1.0,
+                    ..default()
+                },
+                velocity,
+                Vec3::Y,
+                None,
+            );
+            rolled += wrap_angle(plane.bank - previous);
+            assert!(heading.angle_between(plane.heading) < 0.03);
+            assert!(velocity.is_finite());
+        }
+        assert!(rolled > std::f32::consts::TAU, "roll stopped at {rolled}");
+    }
 
     #[test]
     fn taxi_accelerates_brakes_and_needs_speed_and_pull_up_to_take_off() {
@@ -182,7 +213,7 @@ mod tests {
     }
 }
 
-fn wrap_pitch(pitch: f32) -> f32 {
+fn wrap_angle(pitch: f32) -> f32 {
     (pitch + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 

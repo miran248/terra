@@ -515,6 +515,10 @@ fn build_border_mesh(tris: &[[[f32; 3]; 3]]) -> Mesh {
     mesh
 }
 
+/// Solid scenery and structures are obstacles, even though Ground also owns cleanup.
+#[derive(Component)]
+pub(crate) struct WorldObstacle;
+
 fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &StructureData) -> Entity {
     let pos = Vec3::from_array(s.pos);
     let up = pos.normalize();
@@ -527,7 +531,7 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
     if let Some(collider) =
         crate::asset_collision::candidate_collider(s.kind.asset_name(), Vec3::ONE)
     {
-        root.insert((RigidBody::Static, collider));
+        root.insert((RigidBody::Static, collider, WorldObstacle));
     }
     root.with_child((
         WorldAssetRoot(catalog.scene(s.kind.asset_name())),
@@ -558,6 +562,7 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
     if let Some(collider) = crate::asset_collision::candidate_collider(&name, Vec3::splat(scale)) {
         root.insert((
             RigidBody::Static,
+            WorldObstacle,
             collider,
             Friction::ZERO,
             Restitution::ZERO,
@@ -606,6 +611,8 @@ mod tests {
             (house, tree)
         };
         queue.apply(&mut world);
+        assert!(world.get::<WorldObstacle>(house).is_some());
+        assert!(world.get::<WorldObstacle>(tree).is_some());
         let house_shape = world.get::<Collider>(house).unwrap();
         assert!(!house_shape.contains_point(Vec3::ZERO, Quat::IDENTITY, Vec3::new(0., 0.8, 0.)));
         let visual = world.get::<Children>(house).unwrap()[0];
