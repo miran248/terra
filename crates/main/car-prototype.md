@@ -6,8 +6,9 @@ Run `just car-prototype`. This feature-gated, throwaway experiment starts you
 already seated in a placeholder car at the normal settlement spawn. It uses the
 existing planet, roads, physics terrain, bridges, and obstacle colliders. It
 does not implement summoning, vehicle ownership, or entry/exit. Normal `just run`
-and `just on-foot-prototype` keep their existing behavior. When both prototype
-features are enabled, the car owns movement and camera.
+and `just on-foot-prototype` retain their on-foot movement and cameras. The mesh
+contact correction is shared by all modes. When both prototype features are
+enabled, the car owns movement and camera.
 
 - **W** accelerates forward, or brakes when reversing.
 - **S** brakes forward motion to a stop, then reverses while held.
@@ -40,11 +41,10 @@ along the surface. There is no throttle, grip, or steering while airborne or
 on supports steeper than 45°. Gravity can still carry the car downhill and
 external impulses can exceed powered-speed limits temporarily.
 
-Across two supported, driveable faces, the controller rotates existing velocity
-into the new support plane before applying drive input. This carries momentum
-over facet joins instead of directing it into the next face and losing speed
-in collision response. Entering or leaving airborne/steep support does not apply
-this adjustment; normal obstacle collisions still affect the physics velocity.
+Terrain, ice, and bridge meshes correct internal triangle-edge contacts so
+shared edges do not act like obstacles. Support changes do not rotate the
+existing velocity: collisions resolve changes in travel direction, avoiding
+an extra controller impulse when a probe switches surfaces.
 
 Rollover policy for this experiment is an upright chassis relative to the
 planet. This intentionally favors easy exploration over simulated suspension.
@@ -105,9 +105,11 @@ the actual driving plugin. It checks support and powered movement, then lifts
 the car a metre and checks that it becomes airborne. The original center-only
 probe failed this scenario; the footprint probes pass.
 
-A second headless test drives across a flat-to-30° triangle join. It catches a
-sharp per-frame speed loss while requiring the car to travel through the join.
-The shared model also checks a momentum-preserving support change and unchanged
-velocity when support becomes airborne or too steep. These regressions cover
-the reproduced slowdown; other terrain/contact combinations still need live
-evaluation.
+Two headless replays use positions, headings, and velocities captured from live
+seed-1337 driving. One crosses a gentle terrain edge that previously stopped
+the car from 30 m/s; the other climbs an ice bank that previously launched it.
+They exercise the production mesh-collider builder and driving plugin, checking
+continued speed and ground support. These replace the synthetic flat-to-30°
+join test, which did not capture the live failure. A shared-model regression
+checks that changing support does not add a velocity impulse. Further live
+terrain testing is still required to judge handling.

@@ -38,46 +38,62 @@ mod tests {
         app
     }
 
-    #[test]
-    fn crossing_a_gentle_terrain_join_does_not_abruptly_brake() {
+    // Replay live failures against nearby triangles from the actual seed-1337 world.
+    fn replay_car(position: Vec3, heading: Vec3, velocity: Vec3, on_ice: bool) -> (App, Entity) {
         let mut app = physics_app();
-        let height = 50.0 * 30.0_f32.to_radians().tan();
-        let vertices = vec![
-            Vec3::new(-10., 0., 50.),
-            Vec3::new(10., 0., 50.),
-            Vec3::new(-10., 0., 0.),
-            Vec3::new(10., 0., 0.),
-            Vec3::new(-10., height, -50.),
-            Vec3::new(10., height, -50.),
-        ];
-        app.world_mut().spawn((
-            RigidBody::Static,
-            Collider::trimesh(vertices, vec![[0, 1, 2], [1, 3, 2], [2, 3, 4], [3, 5, 4]]),
-            CollisionMargin(0.02),
-            Transform::from_xyz(0., 2000., 0.),
-        ));
-        let position = Vec3::new(0., 2000.43, 8.);
+        let up = position.normalize();
+        let rotation = Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading));
+        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+            "../assets/level_1337.bin"
+        ))
+        .unwrap();
+        let mut surfaces = vec![level.terrain_tris.clone()];
+        if on_ice {
+            let (_, ice) = crate::water::build_ice_surface(
+                &level.terrain_tris,
+                &level.face_water_r,
+                &level.face_river_r,
+                &level.water_phase,
+            )
+            .unwrap();
+            surfaces.push(ice);
+        }
+        for surface in surfaces {
+            let nearby: Vec<_> = surface
+                .into_iter()
+                .filter(|triangle| {
+                    triangle
+                        .iter()
+                        .any(|v| Vec3::from_array(*v).distance(position) < 60.0)
+                })
+                .collect();
+            app.world_mut().spawn((
+                RigidBody::Static,
+                crate::map::build_collider(&nearby),
+                CollisionMargin(0.02),
+                Transform::default(),
+            ));
+        }
         let car = app
             .world_mut()
             .spawn((
                 RigidBody::Dynamic,
-                Collider::cuboid(1.8, 0.8, 3.2),
+                Collider::cuboid(CHASSIS_SIZE.x, CHASSIS_SIZE.y, CHASSIS_SIZE.z),
                 Mass(800.),
                 Friction::ZERO,
                 Restitution::ZERO,
                 SweptCcd::default(),
                 LockedAxes::ROTATION_LOCKED,
-                Transform::from_translation(position),
-                LinearVelocity(Vec3::NEG_Z * 12.),
+                Transform::from_translation(position).with_rotation(rotation),
                 Player {
                     fire_timer: Timer::default(),
                     damage: 0.,
                     range: 0.,
-                    heading: Vec3::NEG_Z,
+                    heading,
                 },
                 CarPrototype {
                     spawn: position,
-                    spawn_heading: Vec3::NEG_Z,
+                    spawn_heading: heading,
                     support: None,
                 },
             ))
@@ -88,27 +104,53 @@ mod tests {
             app.update();
         }
         app.world_mut()
+            .entity_mut(car)
+            .insert((Position(position), LinearVelocity(velocity)));
+        app.world_mut()
             .insert_resource(State::new(AppState::Playing));
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyW);
-        let mut previous = 12.0;
-        let mut largest_drop = 0.0_f32;
-        for _ in 0..120 {
+        (app, car)
+    }
+
+    #[test]
+    fn captured_terrain_edge_does_not_stop_the_car() {
+        let (mut app, car) = replay_car(
+            Vec3::new(-1295.7529, -1537.0782, 83.25296),
+            Vec3::new(-0.7583623, 0.62991464, -0.16761376),
+            Vec3::new(-23.325546, 18.013994, -5.10847),
+            false,
+        );
+        for _ in 0..12 {
             app.update();
             let speed = app.world().get::<LinearVelocity>(car).unwrap().0.length();
-            largest_drop = largest_drop.max(previous - speed);
-            previous = speed;
+            assert!(
+                speed > 25.0,
+                "gentle captured terrain edge reduced speed to {speed:.3} m/s"
+            );
         }
-        let position = app.world().get::<Position>(car).unwrap().0;
-        assert!(
-            largest_drop < 3.0,
-            "car abruptly lost {largest_drop:.2} m/s crossing a 30° terrain join; ended at {position:?}"
+    }
+
+    #[test]
+    fn captured_ice_bank_keeps_the_car_supported() {
+        let (mut app, car) = replay_car(
+            Vec3::new(-1327.5901, -1439.8948, 397.2706),
+            Vec3::new(0.46975398, -0.6096097, -0.63851964),
+            Vec3::new(14.008424, -18.294634, -19.087753),
+            true,
         );
-        assert!(
-            position.z < -10.0,
-            "car must drive across the join, ended at {position:?}"
-        );
+        for _ in 0..12 {
+            app.update();
+            assert!(
+                app.world()
+                    .get::<CarPrototype>(car)
+                    .unwrap()
+                    .support
+                    .is_some(),
+                "car launched off the captured ice bank"
+            );
+        }
     }
 
     #[test]
@@ -341,10 +383,9 @@ fn drive(
     let motion = CarMotion {
         velocity: forces.linear_velocity(),
         heading: player.heading,
-        support: car.support,
     }
     .step(time.delta_secs(), throttle, steering, up, next_support);
-    car.support = motion.support;
+    car.support = next_support;
     player.heading = motion.heading;
     *forces.linear_velocity_mut() = motion.velocity;
     forces.apply_force(-up * 16000.0); // 20 m/s² at the prototype's 800 kg mass.

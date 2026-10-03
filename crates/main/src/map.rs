@@ -1035,7 +1035,7 @@ fn build_smooth_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Mesh {
     mesh
 }
 
-fn build_collider(tris: &[[[f32; 3]; 3]]) -> Collider {
+pub(crate) fn build_collider(tris: &[[[f32; 3]; 3]]) -> Collider {
     // Shared corners get one vertex — the subdivided mesh would otherwise
     // triple the collider's vertex count.
     let mut map: std::collections::HashMap<[u32; 3], u32> = std::collections::HashMap::new();
@@ -1052,7 +1052,9 @@ fn build_collider(tris: &[[[f32; 3]; 3]]) -> Collider {
         }
         indices.push(idx);
     }
-    Collider::trimesh(vertices, indices)
+    // Adjacent triangles form one surface. Treating their shared edges as
+    // independent features can produce sideways contacts that stop a car.
+    Collider::trimesh_with_config(vertices, indices, TrimeshFlags::FIX_INTERNAL_EDGES)
 }
 
 // ---- player movement ----

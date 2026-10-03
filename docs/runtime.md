@@ -23,7 +23,7 @@
 - Distance is camera to chunk edge (centroid distance minus radius). Transitions are incremental: static meshes build once, water rebuilds only on subdivision change, and structures/scenery apply deltas. Downgrades use 15% hysteresis; transitions are budgeted and scenery streams nearest-first under `SCENERY_PER_FRAME`.
 - Chunk entities carry `Ground` for prestige cleanup. `DEBUG_CHUNK_BORDERS` is diagnostic-only and must be off for shipping.
 - Physics never streams. Whole-planet terrain, ice, and bridge trimeshes spawn in `setup_map`; scenery/structure colliders live in chunks well beyond the 120 m zombie ring. `setup_map` constructs terrain, ice, bridge, and player colliders directly before the first fixed physics step. Avian resolves deferred `ColliderConstructor`s in `Update`, after that frame's fixed-step loop; with a 155 ms seed-1337 state-entry frame, that race reproduced the player 0.252 m below terrain with no contacts.
-- Terrain collision uses full-resolution displaced triangles. Bridge decks are built from baked spans and have separate static colliders matching their visual geometry.
+- Terrain collision uses full-resolution displaced triangles. Terrain, ice, and bridge trimeshes weld shared corners and enable internal-edge correction so adjacent faces do not create spurious obstacle contacts. Bridge decks are built from baked spans and have separate static colliders matching their visual geometry.
 - Non-bridge roads are visual-only 4 m ribbons subdivided at roughly 4 m intervals, sampled against displaced terrain at both edges, and vertex-colored from baked `RoadMaterial`; they never replace or add collision.
 
 ## Physics and input
