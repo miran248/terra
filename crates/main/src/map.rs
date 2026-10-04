@@ -1256,11 +1256,9 @@ fn drive_daynight(
     light.color = Color::WHITE;
 }
 
-/// Tint the distance fog by how sunlit the camera's location is. With a fixed
-/// bright fog colour, at night the distant terrain faded to bright blue while the
-/// near (unlit) terrain went dark — distant looked brighter than near. Scaling
-/// the fog colour with the local day factor keeps distance haze consistent with
-/// the sky's day/night state.
+/// Update camera-local haze and controlled-body global ambient from the current
+/// world pose. Fog color follows the camera's hemisphere, while ambient follows
+/// the controlled body so orbiting cannot relight the whole world.
 fn drive_fog(
     tod: Res<TimeOfDay>,
     mut ambient: ResMut<GlobalAmbientLight>,
