@@ -49,6 +49,7 @@ pub struct PlanetViewCamera {
     phase: Phase,
     requested_open: bool,
     resume_on_open: bool,
+    retain_orbit_target_on_open: bool,
     follow: bool,
     requested_radius: f32,
     attained_radius: f32,
@@ -63,6 +64,7 @@ impl Default for PlanetViewCamera {
             phase: Phase::Chase,
             requested_open: false,
             resume_on_open: false,
+            retain_orbit_target_on_open: false,
             follow: true,
             requested_radius: PLANET_VIEW_FAR_RADIUS,
             attained_radius: PLANET_RADIUS,
@@ -78,12 +80,14 @@ impl PlanetViewCamera {
     pub fn toggle(&mut self) {
         self.requested_open = !self.requested_open;
         self.resume_on_open = false;
+        self.retain_orbit_target_on_open = false;
     }
 
     /// Request a return to the gameplay chase camera.
     pub fn close(&mut self) {
         self.requested_open = false;
         self.resume_on_open = false;
+        self.retain_orbit_target_on_open = false;
     }
 
     /// Whether the view is open or transitioning toward open.
@@ -218,6 +222,7 @@ impl PlanetViewCamera {
         if self.is_active() && !self.requested_open {
             self.requested_open = true;
             self.resume_on_open = true;
+            self.retain_orbit_target_on_open = true;
         }
     }
 
@@ -255,6 +260,7 @@ impl PlanetViewCamera {
         if !self.requested_open {
             self.requested_open = true;
             self.resume_on_open = true;
+            self.retain_orbit_target_on_open = true;
         }
     }
 
@@ -277,12 +283,14 @@ impl PlanetViewCamera {
         );
         if self.requested_open != transitioning_to_open {
             let opening = self.requested_open;
+            let retain_orbit_target = opening && self.retain_orbit_target_on_open;
             if opening {
                 if !self.resume_on_open {
                     self.follow = true;
                     self.requested_radius = PLANET_VIEW_FAR_RADIUS;
                 }
                 self.resume_on_open = false;
+                self.retain_orbit_target_on_open = false;
                 self.phase = Phase::Opening;
             } else {
                 self.phase = Phase::Returning;
@@ -290,7 +298,9 @@ impl PlanetViewCamera {
             let from_direction = current
                 .translation
                 .normalize_or(controlled_position.normalize_or(Vec3::Y));
-            self.detached_direction = from_direction;
+            if !retain_orbit_target {
+                self.detached_direction = from_direction;
+            }
             self.transition = Some(Transition {
                 from: current,
                 from_direction,
@@ -584,6 +594,59 @@ mod tests {
 
         assert!(after_orbit.translation.distance(before_orbit.translation) < 100.0);
         assert!(after_orbit.translation.length() > PLANET_RADIUS * 2.0);
+    }
+
+    #[test]
+    fn first_orbit_during_return_survives_the_reopen_transition() {
+        let controlled_position = Vec3::Y * PLANET_RADIUS;
+        let chase = Transform::from_xyz(0.0, PLANET_RADIUS + 5.0, -5.0)
+            .looking_at(controlled_position, Vec3::Y);
+        let mut current = chase;
+        let mut camera = PlanetViewCamera::default();
+        camera.toggle();
+        for _ in 0..120 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+
+        camera.close();
+        for _ in 0..20 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+        }
+        let before_orbit = current;
+        let delta = Vec2::new(0.4, -0.1);
+        let target_direction = orbit_transform(before_orbit.translation.normalize(), delta).0;
+        camera.orbit_from(before_orbit, delta);
+        assert!(camera.is_requested_open());
+        assert!(!camera.follows_body());
+
+        let resumed = camera.update(
+            before_orbit,
+            chase,
+            controlled_position,
+            Vec3::NEG_Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        assert!(
+            resumed.translation.normalize().dot(target_direction)
+                > before_orbit.translation.normalize().dot(target_direction) + 1e-5,
+            "the first return-orbit delta was lost when reopening: before={before_orbit:?}, resumed={resumed:?}, target={target_direction:?}"
+        );
     }
 
     #[test]
