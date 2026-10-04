@@ -109,10 +109,23 @@ pub struct LevelLandform(pub Vec<Landform>);
 #[derive(Resource)]
 pub struct LevelRoadMaterial(pub Vec<Option<RoadMaterial>>);
 
-/// Distance-based render culling for scatter props: beyond `0` metres the
-/// entity is hidden. Tiny ground cover culls close, trees stay visible far.
+/// Render culling data for scatter props. Large forms use regional camera
+/// scale; small forms stay within their authored near-camera range.
 #[derive(Component, Copy, Clone)]
-pub struct CullRange(pub f32);
+pub struct CullRange {
+    pub meters: f32,
+    pub tier: shared::planet_detail::SceneryTier,
+}
+
+pub(crate) fn altitude_above_surface(position: Vec3, terrain: Option<&TerrainGen>) -> f32 {
+    let direction = position.normalize_or(Vec3::Y);
+    let surface_radius = terrain.map_or(PLANET_RADIUS, |terrain| {
+        terrain.surface_radius(shared::sphere::SpherePos::new(direction))
+    });
+    position.length() - surface_radius
+}
+
+const PROP_CULL_PER_UPDATE: usize = 2_048;
 
 /// Per-scenery-kind cull distance (metres) — the smaller the prop, the sooner it
 /// stops being drawn in the distance.
@@ -151,13 +164,16 @@ pub fn scenery_cull(kind: SceneryKind) -> f32 {
     }
 }
 
-/// Hide props past their cull range from the camera (throttled — the set only
-/// changes as the player moves). Frustum culling is on top of this, in Bevy.
+/// Refresh a bounded round-robin slice of prop visibility against the current
+/// main-camera scale. Frustum culling remains on top of this, in Bevy.
 fn cull_props(
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut timer: Local<f32>,
+    mut cursor: Local<usize>,
     camera: Query<&Transform, With<MainCamera>>,
     mut props: Query<(&CullRange, &GlobalTransform, &mut Visibility)>,
+    chunks: Res<crate::chunks::ChunkManager>,
+    terrain: Option<Res<TerrainGen>>,
 ) {
     *timer += time.delta_secs();
     if *timer < 0.2 {
@@ -166,17 +182,38 @@ fn cull_props(
     *timer = 0.0;
     let Ok(cam) = camera.single() else { return };
     let eye = cam.translation;
-    for (range, tf, mut vis) in &mut props {
-        let far = tf.translation().distance_squared(eye) > range.0 * range.0;
-        let want = if far {
-            Visibility::Hidden
-        } else {
+    let altitude = altitude_above_surface(eye, terrain.as_deref());
+    let total = chunks.cull_order.len();
+    if total == 0 {
+        return;
+    }
+    let count = PROP_CULL_PER_UPDATE.min(total);
+    let start = *cursor % total;
+    for offset in 0..count {
+        let entity = chunks.cull_order[(start + offset) % total];
+        let Ok((range, tf, mut vis)) = props.get_mut(entity) else {
+            continue;
+        };
+        let point = tf.translation();
+        let surface_distance = shared::planet_detail::radial_surface_distance(eye, point);
+        let visible = shared::planet_detail::scenery_visible(
+            range.tier,
+            point.distance(eye),
+            surface_distance,
+            altitude,
+            range.meters,
+            *vis != Visibility::Hidden,
+        );
+        let want = if visible {
             Visibility::Inherited
+        } else {
+            Visibility::Hidden
         };
         if *vis != want {
             *vis = want;
         }
     }
+    *cursor = (start + count) % total;
 }
 
 /// Face-based region memberships and named bridge surfaces for the HUD.
@@ -308,9 +345,9 @@ impl Plugin for MapPlugin {
                         .after(drive_daynight)
                         .after(crate::exploration::ExplorationUpdate),
                     toggle_sun_lock,
-                    cull_props,
-                    crate::chunks::update_chunk_lods,
-                    crate::chunks::stream_scenery,
+                    crate::chunks::update_chunk_lods.after(crate::exploration::ExplorationUpdate),
+                    crate::chunks::stream_scenery.after(crate::chunks::update_chunk_lods),
+                    cull_props.after(crate::chunks::stream_scenery),
                 )
                     .run_if(in_state(AppState::Playing)),
             );
