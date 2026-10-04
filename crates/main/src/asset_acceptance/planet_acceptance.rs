@@ -1682,20 +1682,22 @@ fn drive_entry_route(
         if (37.0..39.0).contains(&elapsed) {
             set_key(world, KeyCode::KeyW, false);
         }
-        if elapsed >= 24.0 && elapsed < 35.0 && !actions.base_rate_changed {
-            if let Some(mut clock) = world.get_resource_mut::<PlanetSimulationClock>() {
-                clock.set_base_rate(0.8);
-                actions.base_rate_changed = true;
-                record_event(run, elapsed, "base-rate-change", "set-to-0.8");
-            }
+        if (24.0..35.0).contains(&elapsed)
+            && !actions.base_rate_changed
+            && let Some(mut clock) = world.get_resource_mut::<PlanetSimulationClock>()
+        {
+            clock.set_base_rate(0.8);
+            actions.base_rate_changed = true;
+            record_event(run, elapsed, "base-rate-change", "set-to-0.8");
         }
-        if elapsed >= 39.0 && !actions.base_rate_restored {
-            if let Some(mut clock) = world.get_resource_mut::<PlanetSimulationClock>() {
-                clock.set_base_rate(1.0);
-                actions.base_rate_restored = true;
-                run.coverage.base_rate_changed_and_restored = true;
-                record_event(run, elapsed, "base-rate-change", "restored-to-1.0");
-            }
+        if elapsed >= 39.0
+            && !actions.base_rate_restored
+            && let Some(mut clock) = world.get_resource_mut::<PlanetSimulationClock>()
+        {
+            clock.set_base_rate(1.0);
+            actions.base_rate_restored = true;
+            run.coverage.base_rate_changed_and_restored = true;
+            record_event(run, elapsed, "base-rate-change", "restored-to-1.0");
         }
     }
 }
@@ -1710,22 +1712,27 @@ fn drive_live_selection_and_teleport(
         .resource::<Exploration>()
         .selected_planet_destination()
         .is_some();
-    if elapsed >= 3.0 && !selected && !actions.selection_attempted {
-        if request_center_selection(world) {
-            actions.selection_attempted = true;
-            record_event(
-                run,
-                elapsed,
-                "destination-selection",
-                "requested-screen-center",
-            );
-        }
+    if elapsed >= 3.0
+        && !selected
+        && !actions.selection_attempted
+        && request_center_selection(world)
+    {
+        actions.selection_attempted = true;
+        record_event(
+            run,
+            elapsed,
+            "destination-selection",
+            "requested-screen-center",
+        );
     }
-    if elapsed >= 5.0 && !selected && actions.selection_attempted && !actions.selection_retried {
-        if request_center_selection(world) {
-            actions.selection_retried = true;
-            record_event(run, elapsed, "destination-selection", "retry-screen-center");
-        }
+    if elapsed >= 5.0
+        && !selected
+        && actions.selection_attempted
+        && !actions.selection_retried
+        && request_center_selection(world)
+    {
+        actions.selection_retried = true;
+        record_event(run, elapsed, "destination-selection", "retry-screen-center");
     }
     selected = world
         .resource::<Exploration>()
@@ -2074,7 +2081,7 @@ fn drive_vehicle_route(
         set_key(world, KeyCode::KeyA, turn > 0);
         set_key(world, KeyCode::KeyD, turn < 0);
         set_key(world, KeyCode::KeyR, false);
-        if elapsed >= 2.0 && elapsed < 37.0 && distance <= 2.5 {
+        if (2.0..37.0).contains(&elapsed) && distance <= 2.5 {
             set_key(world, KeyCode::KeyW, false);
             if elapsed - actions.last_interaction_at >= 1.0 {
                 world
