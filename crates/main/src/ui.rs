@@ -4,11 +4,13 @@ use crate::map::{
     LevelFaceCornerTypes, LevelFaceTypes, LevelRegions, LevelSlope, LevelTags, Player,
 };
 // use crate::wave::WaveManager;
+use bevy::color::Alpha;
 use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use shared::items::Recipe;
 use shared::level::RegionKind;
 use shared::planet::PlanetMesh;
+use shared::planet_view_interface::GameplayHudElement;
 use shared::terrain::Terrain;
 use shared::theme;
 use shared::upgrades::Upgrade;
@@ -507,9 +509,15 @@ fn spawn_terrain_hud(mut commands: Commands, font: Res<UiFont>) {
             },
             BackgroundColor(theme::PANEL_BG),
             GlobalZIndex(10),
+            GameplayHudElement::default(),
             TerrainHud,
         ))
-        .with_child((Text::new(""), text_font(&font, 12.0), TextColor(theme::INK)));
+        .with_child((
+            Text::new(""),
+            text_font(&font, 12.0),
+            TextColor(theme::INK),
+            GameplayHudElement::default(),
+        ));
 }
 
 #[allow(
@@ -535,8 +543,11 @@ fn update_terrain_hud(
     landform_r: Option<Res<crate::map::LevelLandform>>,
     road_mat: Option<Res<crate::map::LevelRoadMaterial>>,
     hud_q: Query<&Children, With<TerrainHud>>,
-    mut text_q: Query<(&mut Text, &mut TextColor)>,
-    time: Res<Time>,
+    mut text_q: Query<(&mut Text, &mut TextColor, &mut GameplayHudElement)>,
+    presentation: (
+        Res<Time<Real>>,
+        Option<Res<crate::exploration::Exploration>>,
+    ),
     // Combined into one tuple param to stay within Bevy's 16-param system limit.
     sky: (
         Option<Res<crate::map::TimeOfDay>>,
@@ -545,13 +556,14 @@ fn update_terrain_hud(
     mut timer: ResMut<TerrainHudTimer>,
 ) {
     let (tod, weather) = sky;
+    let (time, exploration) = presentation;
     let (water_depth, water_phase) = water;
     let (face_types, face_corner_types) = terrain_faces;
     let Ok(children) = hud_q.single() else { return };
     let Some(child) = children.first() else {
         return;
     };
-    let Ok((mut text, mut color)) = text_q.get_mut(*child) else {
+    let Ok((mut text, mut color, mut fade)) = text_q.get_mut(*child) else {
         return;
     };
     let Some(terrain) = terrain else {
@@ -699,7 +711,10 @@ fn update_terrain_hud(
     *text = Text::new(format!(
         "{tile_line}{region_text}\nTerrain elevation: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
     ));
-    *color = TextColor(hud_tile_color(tile));
+    let base_color = hud_tile_color(tile);
+    fade.set_text_color(base_color);
+    let opacity = exploration.map_or(1.0, |state| state.gameplay_hud_opacity());
+    *color = TextColor(base_color.with_alpha(base_color.alpha() * opacity));
 }
 
 fn format_region_lines(face: usize, regions: &LevelRegions, player_position: Vec3) -> Vec<String> {

@@ -1,6 +1,7 @@
 //! Default exploration lifecycle. The explorer and reusable vehicles keep distinct bodies.
 #[cfg(test)]
 mod diagnostics;
+mod interface;
 mod placement;
 #[cfg(feature = "asset-review")]
 pub(crate) mod showcase;
@@ -18,6 +19,7 @@ use shared::{
     plane_prototype::{FlightInput, PlaneFlight, gentle_landing},
     planet::PlanetMesh,
     planet_view::PlanetViewCamera,
+    planet_view_interface::{PlanetViewPointer, PlanetViewPresentation},
     state::AppState,
 };
 
@@ -94,6 +96,11 @@ pub struct Exploration {
     actions: std::collections::VecDeque<Action>,
     snap_camera: bool,
     planet_camera: PlanetViewCamera,
+    planet_presentation: PlanetViewPresentation,
+    planet_pointer: PlanetViewPointer,
+    pressed_planet_control: Option<Entity>,
+    planet_selection_click: Option<Vec2>,
+    planet_teleport_requested: bool,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Action {
@@ -111,10 +118,68 @@ impl Exploration {
         if self.planet_camera.is_requested_open() != open {
             self.planet_camera.toggle();
         }
+        self.planet_presentation.request_open(open);
+        if !open {
+            self.planet_pointer.cancel();
+            self.pressed_planet_control = None;
+            self.planet_selection_click = None;
+            self.planet_teleport_requested = false;
+        }
     }
 
     pub fn is_planet_view_active(&self) -> bool {
         self.planet_camera.is_active()
+    }
+
+    /// Selection and teleport are enabled only after the interface fully opens.
+    pub fn planet_view_ready(&self) -> bool {
+        !self.selector && self.planet_presentation.selection_ready()
+    }
+
+    /// Request selection at a physical screen position while Planet view is ready.
+    pub fn request_planet_view_selection(&mut self, physical_position: Vec2) -> bool {
+        if !self.planet_view_ready() || !physical_position.is_finite() {
+            return false;
+        }
+        self.planet_selection_click = Some(physical_position);
+        true
+    }
+
+    /// Take the pending physical-pixel selection position for the destination consumer.
+    pub fn take_planet_view_selection(&mut self) -> Option<Vec2> {
+        self.planet_selection_click.take()
+    }
+
+    /// Request the shared T/selection teleport action while Planet view is ready.
+    pub fn request_planet_view_teleport(&mut self) -> bool {
+        if !self.planet_view_ready() {
+            return false;
+        }
+        self.planet_teleport_requested = true;
+        true
+    }
+
+    /// Take the pending T intent for the destination consumer.
+    pub fn take_planet_view_teleport_request(&mut self) -> bool {
+        std::mem::take(&mut self.planet_teleport_requested)
+    }
+
+    /// Current opacity for gameplay HUD and minimap presentation.
+    pub fn gameplay_hud_opacity(&self) -> f32 {
+        self.planet_presentation.gameplay_opacity()
+    }
+
+    pub fn planet_view_follows_body(&self) -> bool {
+        self.planet_camera.follows_body()
+    }
+
+    pub fn toggle_planet_view_follow(&mut self, camera_direction: Vec3) {
+        if self.planet_camera.follows_body() {
+            self.planet_camera
+                .detach(camera_direction.normalize_or(Vec3::Y));
+        } else {
+            self.planet_camera.follow_body();
+        }
     }
 }
 #[derive(Resource)]
@@ -132,13 +197,13 @@ impl Plugin for ExplorationPlugin {
         app.init_resource::<Exploration>()
             .add_systems(
                 OnEnter(AppState::Playing),
-                (world::setup, initialize, view::setup)
+                (world::setup, initialize, view::setup, interface::setup)
                     .chain()
                     .after(crate::map::setup_map),
             )
             .add_systems(
                 PreUpdate,
-                (input, world::residency)
+                (input, interface::pointer_input, world::residency)
                     .chain()
                     .run_if(in_state(AppState::Playing)),
             )
@@ -158,6 +223,7 @@ impl Plugin for ExplorationPlugin {
                     actions,
                     sync_explorer,
                     track_safe,
+                    interface::update_presentation,
                     view::tag_visuals,
                     view::camera,
                     view::animate,
@@ -195,6 +261,7 @@ fn input(
     real: Res<Time<Real>>,
     mut time: ResMut<Time<Virtual>>,
     mut state: ResMut<Exploration>,
+    cameras: Query<&Transform, With<MainCamera>>,
 ) {
     if state.suppress_input
         && [
@@ -213,24 +280,15 @@ fn input(
     {
         state.suppress_input = false;
     }
-    if keys.just_pressed(KeyCode::KeyV) {
-        if state.occupied.is_some() {
-            state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
-        } else {
-            state.selector = !state.selector;
-            if state.selector {
-                time.pause();
-            } else {
-                time.unpause();
-                state.suppress_input = true;
-            }
-        }
-    }
     if state.selector {
-        if keys.just_pressed(KeyCode::Escape) {
+        state.planet_selection_click = None;
+        state.planet_teleport_requested = false;
+        if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyV) {
             state.selector = false;
             time.unpause();
             state.suppress_input = true;
+            state.recovery = 0.0;
+            return;
         }
         let kind = if keys.just_pressed(KeyCode::KeyC) {
             Some(Kind::Car)
@@ -248,12 +306,32 @@ fn input(
         state.recovery = 0.0;
         return;
     }
+    if keys.just_pressed(KeyCode::KeyV) {
+        if state.occupied.is_some() {
+            state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
+        } else {
+            state.selector = true;
+            state.planet_selection_click = None;
+            state.planet_teleport_requested = false;
+            time.pause();
+            state.recovery = 0.0;
+            return;
+        }
+    }
     if keys.just_pressed(KeyCode::KeyM) {
         let open = !state.planet_camera.is_requested_open();
         state.set_planet_view_open(open);
     }
     if keys.just_pressed(KeyCode::Escape) && state.planet_camera.is_requested_open() {
-        state.planet_camera.close();
+        state.set_planet_view_open(false);
+    }
+    if keys.just_pressed(KeyCode::KeyF) && state.planet_camera.is_requested_open() {
+        if let Ok(camera) = cameras.single() {
+            state.toggle_planet_view_follow(camera.translation);
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyT) {
+        state.request_planet_view_teleport();
     }
     if keys.just_pressed(KeyCode::KeyE) {
         state.request(Action::Interact);
@@ -779,6 +857,164 @@ fn track_safe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn destination_selection_and_teleport_share_public_readiness_intents() {
+        let mut state = Exploration::default();
+        let screen_position = Vec2::new(240.0, 180.0);
+
+        assert!(!state.planet_view_ready());
+        assert!(!state.request_planet_view_selection(screen_position));
+        assert!(!state.request_planet_view_teleport());
+
+        state.set_planet_view_open(true);
+        assert!(!state.request_planet_view_selection(screen_position));
+        assert!(!state.request_planet_view_teleport());
+        state.planet_presentation.advance(0.28);
+
+        assert!(state.planet_view_ready());
+        state.selector = true;
+        assert!(!state.planet_view_ready());
+        assert!(!state.request_planet_view_selection(screen_position));
+        assert!(!state.request_planet_view_teleport());
+        state.selector = false;
+        assert!(state.planet_view_ready());
+        assert!(state.request_planet_view_selection(screen_position));
+        assert_eq!(state.take_planet_view_selection(), Some(screen_position));
+        assert!(state.request_planet_view_teleport());
+        assert!(state.take_planet_view_teleport_request());
+        assert!(!state.take_planet_view_teleport_request());
+
+        state.set_planet_view_open(false);
+        assert!(!state.planet_view_ready());
+        assert!(!state.request_planet_view_selection(screen_position));
+        assert!(!state.request_planet_view_teleport());
+    }
+
+    #[test]
+    fn interface_readiness_advances_while_simulation_time_is_paused() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+
+        for _ in 0..20 {
+            app.update();
+        }
+
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+    }
+
+    #[test]
+    fn t_publishes_a_teleport_intent_only_while_planet_view_is_ready() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyT);
+        app.update();
+        assert!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_view_teleport_request()
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear_just_pressed(KeyCode::KeyT);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyT);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyT);
+        app.update();
+        assert!(
+            !app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_view_teleport_request()
+        );
+    }
+
+    #[test]
+    fn f_toggles_follow_outside_the_vehicle_selector() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2005.0, -5.0)));
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        app.update();
+
+        for expected_follow in [false, true] {
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyF);
+            app.update();
+            assert_eq!(
+                app.world()
+                    .resource::<Exploration>()
+                    .planet_view_follows_body(),
+                expected_follow
+            );
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear_just_pressed(KeyCode::KeyF);
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .release(KeyCode::KeyF);
+        }
+
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_view_follows_body()
+        );
+    }
+
+    #[test]
+    fn vehicle_selector_owns_map_keys_and_escape_cannot_leak_to_planet_view() {
+        let (mut app, _) = fixture();
+        app.world_mut().spawn((
+            MainCamera,
+            Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(app.world().resource::<Exploration>().selector);
+
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+            keys.press(KeyCode::Escape);
+            keys.press(KeyCode::KeyM);
+            keys.press(KeyCode::KeyF);
+            keys.press(KeyCode::KeyT);
+        }
+        app.update();
+
+        let state = app.world().resource::<Exploration>();
+        assert!(!state.selector);
+        assert!(!state.planet_camera.is_requested_open());
+        assert!(!state.planet_view_ready());
+        assert!(state.planet_view_follows_body());
+    }
+
     pub(super) fn fixture() -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((
@@ -790,6 +1026,8 @@ mod tests {
         ))
         .init_state::<AppState>()
         .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .add_message::<bevy::input::mouse::MouseWheel>()
         .init_asset::<Mesh>()
         .init_asset::<StandardMaterial>()
         .insert_resource(Gravity::ZERO)

@@ -9,6 +9,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::text::LineHeight;
 use shared::level::RegionKind;
+use shared::planet_view_interface::GameplayHudElement;
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
@@ -237,7 +238,8 @@ fn sync_minimap_visibility(
     exploration: Option<Res<crate::exploration::Exploration>>,
     mut minimaps: Query<&mut Node, With<Minimap>>,
 ) {
-    let hidden = exploration.is_some_and(|state| state.is_planet_view_active());
+    let hidden = exploration
+        .is_some_and(|state| state.is_planet_view_active() && state.gameplay_hud_opacity() <= 0.0);
     for mut node in &mut minimaps {
         node.display = if hidden { Display::None } else { Display::Flex };
     }
@@ -394,6 +396,7 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             BorderColor::all(theme::TEXT_WEAK),
             BackgroundColor(theme::PANEL_BG),
             GlobalZIndex(10),
+            GameplayHudElement::default(),
             Minimap,
         ))
         .with_child((
@@ -410,6 +413,7 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
                 overflow: Overflow::clip(),
                 ..default()
             },
+            GameplayHudElement::default(),
         ));
 }
 
@@ -457,7 +461,7 @@ fn draw_overlay(
     // weapons: Query<(&Transform, &ViewVisibility), With<LootWeapon>>,
     settlements: Query<(&Transform, &Settlement)>,
     font: Res<UiFont>,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut timer: ResMut<MinimapTimer>,
 ) {
     let timer_finished = timer.0.tick(time.delta()).just_finished();
@@ -521,6 +525,7 @@ fn draw_overlay(
                 },
                 BackgroundColor(color),
                 ZIndex(1),
+                GameplayHudElement::default(),
                 MinimapDot,
                 ChildOf(minimap_entity),
             ));
@@ -561,6 +566,7 @@ fn draw_overlay(
             BackgroundColor(theme::WARNING),
             BorderColor::all(theme::INK),
             ZIndex(1),
+            GameplayHudElement::default(),
             MinimapDot,
             ChildOf(minimap_entity),
         ));
@@ -613,6 +619,7 @@ fn draw_overlay(
                 },
                 BackgroundColor(color),
                 ZIndex(1),
+                GameplayHudElement::default(),
                 MinimapDot,
                 ChildOf(minimap_entity),
             ));
@@ -656,6 +663,7 @@ fn draw_overlay(
                 BackgroundColor(theme::WARNING),
                 BorderColor::all(theme::INK),
                 ZIndex(1),
+                GameplayHudElement::default(),
                 MinimapDot,
                 ChildOf(minimap_entity),
             ));
@@ -692,6 +700,7 @@ fn draw_overlay(
             },
             TextColor(label.color),
             ZIndex(label.z_index),
+            GameplayHudElement::default(),
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(placement.left),
@@ -725,6 +734,7 @@ fn draw_overlay(
             } else {
                 theme::TEXT_WEAK
             }),
+            GameplayHudElement::default(),
             ZIndex(1),
             Node {
                 position_type: PositionType::Absolute,
