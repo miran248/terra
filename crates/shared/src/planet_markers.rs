@@ -67,6 +67,51 @@ pub fn triangle_area_weighted_centroid(triangles: &[[[f32; 3]; 3]]) -> Option<Ve
     (total_area > f32::EPSILON).then_some(weighted_center / total_area)
 }
 
+/// Compare surface positions by direction, ignoring height differences such as
+/// a raised bridge deck. This lets independent typed collections deduplicate
+/// duplicate presentation anchors without relying on display names.
+pub fn same_surface_location(
+    left: Vec3,
+    right: Vec3,
+    planet_radius: f32,
+    tolerance_meters: f32,
+) -> bool {
+    if !left.is_finite()
+        || !right.is_finite()
+        || !planet_radius.is_finite()
+        || planet_radius <= 0.0
+        || !tolerance_meters.is_finite()
+        || tolerance_meters < 0.0
+    {
+        return false;
+    }
+    let left = left.normalize_or_zero();
+    let right = right.normalize_or_zero();
+    if left == Vec3::ZERO || right == Vec3::ZERO {
+        return false;
+    }
+    let surface_distance = left.dot(right).clamp(-1.0, 1.0).acos() * planet_radius;
+    surface_distance <= tolerance_meters
+}
+
+/// Hit a visible named marker's dot or label. A missing projected center means
+/// the marker is hidden or clipped and is never selectable.
+pub fn cursor_hits_planet_marker(
+    cursor: Vec2,
+    projected_center: Option<Vec2>,
+    dot_radius: f32,
+    visible_label: Option<Rect>,
+) -> bool {
+    if !cursor.is_finite() || !dot_radius.is_finite() || dot_radius < 0.0 {
+        return false;
+    }
+    let Some(center) = projected_center.filter(|center| center.is_finite()) else {
+        return false;
+    };
+    cursor.distance_squared(center) <= dot_radius * dot_radius
+        || visible_label.is_some_and(|bounds| bounds.contains(cursor))
+}
+
 /// Convert a camera NDC point into logical viewport coordinates, clipping
 /// markers outside the frustum before they can be drawn or selected.
 pub fn project_ndc_to_logical_viewport(ndc: Vec3, viewport: Rect) -> Option<Vec2> {
@@ -127,7 +172,8 @@ mod tests {
     use super::{
         PlanetMarkerLabelKind, marker_clears_spherical_horizon,
         planet_marker_label_priority, planet_marker_label_visible,
-        project_ndc_to_logical_viewport, triangle_area_weighted_centroid,
+        cursor_hits_planet_marker, project_ndc_to_logical_viewport,
+        same_surface_location, triangle_area_weighted_centroid,
     };
 
     #[test]
@@ -244,5 +290,50 @@ mod tests {
         let center = triangle_area_weighted_centroid(&triangles).unwrap();
 
         assert!(center.distance(Vec3::new(9.2, 0.6, 0.0)) < 0.001);
+    }
+
+    #[test]
+    fn marker_hit_area_matches_its_dot_or_visible_name() {
+        let center = Vec2::new(100.0, 100.0);
+        let label = Rect::from_corners(Vec2::new(112.0, 92.0), Vec2::new(190.0, 116.0));
+
+        assert!(cursor_hits_planet_marker(
+            Vec2::new(114.0, 100.0),
+            Some(center),
+            16.0,
+            Some(label),
+        ));
+        assert!(cursor_hits_planet_marker(
+            Vec2::new(180.0, 108.0),
+            Some(center),
+            16.0,
+            Some(label),
+        ));
+        assert!(!cursor_hits_planet_marker(
+            Vec2::new(180.0, 108.0),
+            None,
+            16.0,
+            Some(label),
+        ));
+    }
+
+    #[test]
+    fn surface_identity_compares_anchor_location_instead_of_display_name() {
+        let first_anchor = Vec3::new(2_010.0, 0.0, 0.0);
+        let same_place_with_another_height = Vec3::new(2_080.0, 0.0, 0.0);
+        let distinct_place = Vec3::new(2_000.0, 0.0, 120.0);
+
+        assert!(same_surface_location(
+            first_anchor,
+            same_place_with_another_height,
+            2_000.0,
+            10.0,
+        ));
+        assert!(!same_surface_location(
+            first_anchor,
+            distinct_place,
+            2_000.0,
+            10.0,
+        ));
     }
 }
