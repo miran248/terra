@@ -169,6 +169,11 @@ impl Exploration {
         self.planet_presentation.gameplay_opacity()
     }
 
+    /// Current opacity for controls shown while Planet view is open.
+    pub fn planet_view_interface_opacity(&self) -> f32 {
+        self.planet_presentation.interface_opacity()
+    }
+
     pub fn planet_view_follows_body(&self) -> bool {
         self.planet_camera.follows_body()
     }
