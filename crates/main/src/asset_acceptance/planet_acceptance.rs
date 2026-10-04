@@ -229,6 +229,32 @@ fn transition_action_due(
     stage_ready && previous_action_at.is_some_and(|previous| elapsed - previous >= minimum_gap)
 }
 
+fn radius_motion_flags(
+    attained_radius: f32,
+    previous_sample_radius: Option<f32>,
+    latest_sample_radius: Option<f32>,
+) -> (bool, bool) {
+    const MIN_RADIUS_STEP_M: f32 = 0.25;
+
+    // The driver runs in PreUpdate, before the camera update, while samples are
+    // captured in PostUpdate. If the current radius still equals the latest
+    // completed sample, infer the in-flight direction from the last two
+    // completed camera poses instead of comparing the same value to itself.
+    let latest_step = latest_sample_radius
+        .map(|latest| attained_radius - latest)
+        .unwrap_or(0.0);
+    let sampled_step = previous_sample_radius
+        .zip(latest_sample_radius)
+        .map(|(previous, latest)| latest - previous)
+        .unwrap_or(0.0);
+    let step = if latest_step.abs() > MIN_RADIUS_STEP_M {
+        latest_step
+    } else {
+        sampled_step
+    };
+    (step > MIN_RADIUS_STEP_M, step < -MIN_RADIUS_STEP_M)
+}
+
 #[derive(Clone, Copy)]
 struct DiagnosticSample {
     elapsed: f64,
@@ -650,14 +676,21 @@ fn drive_transition_diagnostic(world: &mut World) {
             attained_radius,
         )
     };
-    let previous_radius = diagnostic
+    let previous_sample_radius = diagnostic
+        .samples
+        .iter()
+        .rev()
+        .nth(1)
+        .map(|sample| sample.attained_radius);
+    let latest_sample_radius = diagnostic
         .samples
         .last()
         .map(|sample| sample.attained_radius);
-    let radius_increasing =
-        previous_radius.is_some_and(|previous| attained_radius > previous + 0.25);
-    let radius_decreasing =
-        previous_radius.is_some_and(|previous| previous > attained_radius + 0.25);
+    let (radius_increasing, radius_decreasing) = radius_motion_flags(
+        attained_radius,
+        previous_sample_radius,
+        latest_sample_radius,
+    );
     let weather_is_hidden = diagnostic.samples.last().is_some_and(|sample| {
         sample.weather_intensity > 0.2
             && sample.precipitation_active >= 100
@@ -3235,7 +3268,7 @@ fn csv(value: &str) -> String {
 mod transition_diagnostic_tests {
     use super::{
         DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup,
-        opposite_side_drag, transition_action_due,
+        opposite_side_drag, radius_motion_flags, transition_action_due,
     };
 
     #[test]
@@ -3275,6 +3308,18 @@ mod transition_diagnostic_tests {
         assert!(!transition_action_due(0.55, Some(0.0), 0.55, false));
         assert!(transition_action_due(0.55, Some(0.0), 0.55, true));
         assert!(!transition_action_due(0.55, None, 0.55, true));
+    }
+
+    #[test]
+    fn radius_direction_uses_post_update_samples_when_preupdate_state_is_stale() {
+        assert_eq!(
+            radius_motion_flags(3_000.0, Some(2_800.0), Some(3_000.0)),
+            (true, false)
+        );
+        assert_eq!(
+            radius_motion_flags(3_000.0, Some(3_200.0), Some(3_000.0)),
+            (false, true)
+        );
     }
 }
 
