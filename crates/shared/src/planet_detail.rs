@@ -46,7 +46,7 @@ pub fn regional_detail_distance(camera_altitude: f32) -> f32 {
 /// Shrink the local detail footprint as the camera leaves the surface. At a
 /// camera height beyond the local range, no small-scene detail is useful.
 pub fn local_detail_distance(camera_altitude: f32) -> f32 {
-    let altitude = camera_altitude.max(0.0).min(LOCAL_DETAIL_DISTANCE);
+    let altitude = camera_altitude.max(0.0).clamp(0.0, LOCAL_DETAIL_DISTANCE);
     (LOCAL_DETAIL_DISTANCE * LOCAL_DETAIL_DISTANCE - altitude * altitude)
         .max(0.0)
         .sqrt()
