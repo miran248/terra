@@ -181,7 +181,6 @@ impl LevelRegions {
         let Some(direction) = player_position.try_normalize() else {
             return Vec::new();
         };
-        let player_radius = player_position.length();
         let collider_radius = player_half_height();
         let minimum_clearance = collider_radius - BELOW_DECK_TOLERANCE;
         let maximum_clearance = collider_radius + ABOVE_DECK_TOLERANCE;
@@ -190,14 +189,18 @@ impl LevelRegions {
             .bridge_top_surfaces_by_name
             .iter()
             .filter_map(|(name, surface)| {
-                let deck_radius = surface
+                // Cast locally: a planet-centred ray loses precision at shared deck edges.
+                let clearance = surface
                     .iter()
                     .filter_map(|triangle| {
                         let triangle = triangle.map(Vec3::from_array);
-                        shared::planet::ray_triangle_radius(direction, &triangle)
+                        shared::planet::ray_triangle_intersection_distance(
+                            player_position,
+                            -direction,
+                            &triangle,
+                        )
                     })
-                    .max_by(f32::total_cmp)?;
-                let clearance = player_radius - deck_radius;
+                    .min_by(f32::total_cmp)?;
                 (minimum_clearance..=maximum_clearance)
                     .contains(&clearance)
                     .then(|| name.clone())

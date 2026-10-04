@@ -164,8 +164,8 @@ pub fn build_bridge_deck_geometry(
 
     let mut quad = |a: Vec3, b: Vec3, c: Vec3, d: Vec3| {
         let triangles = [
-            [a.to_array(), b.to_array(), c.to_array()],
-            [b.to_array(), d.to_array(), c.to_array()],
+            [a.to_array(), c.to_array(), b.to_array()],
+            [b.to_array(), c.to_array(), d.to_array()],
         ];
         deck.triangles.extend(triangles);
         triangles
@@ -190,6 +190,48 @@ pub fn build_bridge_deck_geometry(
 mod tests {
     use super::*;
     use crate::sphere::random_point;
+
+    #[test]
+    fn bridge_slab_faces_point_outward_in_both_endpoint_orders() {
+        let ground = crate::planet::PlanetMesh::new(crate::planet::unit_icosphere_tris(3));
+        let endpoints = [
+            SpherePos::new(Vec3::new(-0.01, 1.0, 0.0)),
+            SpherePos::new(Vec3::new(0.01, 1.0, 0.0)),
+        ];
+        for points in [endpoints, [endpoints[1], endpoints[0]]] {
+            let deck = build_bridge_deck_geometry(&points, &ground, 4.0);
+            let top_vertices: Vec<_> = deck.top_surface.iter().flatten().copied().collect();
+            let mut faces = [0; 6];
+            for tri in &deck.triangles {
+                let [a, b, c] = tri.map(Vec3::from_array);
+                let center = (a + b + c) / 3.0;
+                let normal = (b - a).cross(c - a).normalize();
+                let top_count = tri.iter().filter(|v| top_vertices.contains(v)).count();
+                let (face, outward) = if top_count == 3 {
+                    (0, center.normalize())
+                } else if top_count == 0 {
+                    (1, -center.normalize())
+                } else if tri.iter().all(|v| v[2] > 0.0) {
+                    (2, Vec3::Z)
+                } else if tri.iter().all(|v| v[2] < 0.0) {
+                    (3, Vec3::NEG_Z)
+                } else if center.x > 0.0 {
+                    (4, Vec3::X)
+                } else {
+                    (5, Vec3::NEG_X)
+                };
+                assert!(
+                    normal.dot(outward) > 0.9,
+                    "inward slab face {face}: {tri:?}"
+                );
+                faces[face] += 1;
+            }
+            assert!(
+                faces.iter().all(|count| *count > 0),
+                "all six faces covered"
+            );
+        }
+    }
 
     #[test]
     fn bridge_deck_builds_without_panicking() {

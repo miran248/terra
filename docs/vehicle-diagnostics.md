@@ -1,5 +1,40 @@
 # Wheel motion and bridge traversal evidence
 
+## Current regression coverage (#30)
+
+The wheel-sign and bridge-winding corrections are implemented. Run the ordinary
+regressions with:
+
+```sh
+cargo test -p main exploration::diagnostics
+cargo test -p shared bridge_slab_faces
+```
+
+The wheel test checks all four joints in forward/reverse with neutral, left and
+right steering. Bridge tests cover every baked seed-1337 bridge in both endpoint
+orders, starting at entry, mid-deck and exit, in forward/reverse gear, from rest
+and with initial speed (8 m/s forward, 3 m/s reverse). Each case must exit at least
+5 m beyond the span within 5000 updates without substantial deck embedding.
+The shared geometry test checks outward top, underside, side-wall and end-cap
+normals in both endpoint orders. The experimental winding override is removed.
+Bridge HUD clearance casts downward from the player using the existing intersection
+API, avoiding the planet-centred ray precision loss exposed at a shared deck edge
+by the winding correction. Existing on/above/below-deck and generated-surface HUD
+regressions cover this query.
+
+Bridge entrances retain their existing embedded arch geometry and terrain/deck
+colliders; no support-ray length, driving model or body-position correction is
+introduced. Imported visuals remain separate from gameplay collision. This changes
+runtime geometry winding only; baked world data and GLB assets need no regeneration.
+Rendered acceptance with the production GLB, scenery and lighting still needs a
+manual check of forward/reverse rolling and both bridge approaches and exits.
+
+## Historical diagnostic evidence (#29)
+
+The remainder records the original pre-fix captures and commands. The ignored-test
+commands and temporary winding control below describe that historical revision,
+not the current regression suite.
+
 Diagnostic prerequisite [#29](https://github.com/miran248/terra/issues/29) for
 [the correction decision #30](https://github.com/miran248/terra/issues/30).
 Measured on 2026-10-04 against `f444b871f8a55541584d35f31b9d632be9aa901c`.

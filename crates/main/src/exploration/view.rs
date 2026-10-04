@@ -288,7 +288,8 @@ pub(super) fn animate(
             }
             transform.rotation = part.rest * Quat::from_rotation_z(part.angle);
         } else {
-            part.angle += time.delta_secs() * velocity.dot(v.flight.heading) / 0.3;
+            // Forward is local -Z; rolling about +X would move the contact forward.
+            part.angle -= time.delta_secs() * velocity.dot(v.flight.heading) / 0.3;
             let desired =
                 if part.front && state.occupied == Some(part.owner) && !state.suppress_input {
                     (f32::from(keys.pressed(KeyCode::KeyA))

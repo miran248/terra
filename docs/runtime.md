@@ -62,9 +62,12 @@ the collision envelope so a gentle first contact can transition to ground handli
 
 Run the focused test first, then workspace `cargo check` and `cargo clippy`. If GLB catalogs or embedded `LevelData` are affected, follow the [GLB pipeline](glb-pipeline.md) or [level pipeline](level-pipeline.md) generation and deterministic comparison checks.
 
-Opt-in [vehicle diagnostics](vehicle-diagnostics.md) reproduce the known wheel
-rotation and bridge traversal failures from issue #29, with a test-only winding
-control for choosing the subsequent correction.
+[Vehicle regressions](vehicle-diagnostics.md) cover forward/reverse wheel rolling
+with steering, and baked bridge entry, deck travel and exit in both endpoint
+orders and gears, from rest and with initial speed. They run in the ordinary suite.
+Wheel spin uses local -Z forward and the X axle; bridge slab triangles face outward
+on every surface. Avian collision remains authoritative for support; support probes
+orient driving and attitude without repositioning the body.
 
 ## Showcase capture
 
