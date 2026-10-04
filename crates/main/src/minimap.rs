@@ -1,6 +1,9 @@
 // use crate::loot::{LootMaterial, LootWeapon};
-use crate::map::{LevelRegions, Player, Settlement};
 use crate::ui::UiFont;
+use crate::{
+    exploration::{Exploration, PlanetDestination, PlanetDestinationId, PlanetDestinationSurface},
+    map::{LevelRegions, MainCamera, Player, Settlement, WorldEpoch},
+};
 // use crate::zombie::Zombie;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
@@ -247,10 +250,11 @@ fn sync_minimap_visibility(
 
 /// Surface intersection data shared by Planet-view picking and its fixtures.
 #[derive(Clone, Copy)]
-struct MapSurfaceHit {
-    distance: f32,
-    position: Vec3,
-    normal: Vec3,
+pub(crate) struct MapSurfaceHit {
+    pub distance: f32,
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub surface: PlanetDestinationSurface,
 }
 
 fn map_click_surface_hit(
@@ -281,6 +285,7 @@ fn map_click_surface_hit(
                 distance,
                 position,
                 normal,
+                surface: PlanetDestinationSurface::BridgeDeck,
             })
         })
         .min_by(|left, right| left.distance.total_cmp(&right.distance));
@@ -290,6 +295,78 @@ fn map_click_surface_hit(
         (Some(terrain), _) => Some(terrain),
         (None, bridge) => bridge,
     }
+}
+
+pub(crate) fn consume_planet_view_destination_click(
+    mut state: ResMut<Exploration>,
+    world_epoch: Option<Res<WorldEpoch>>,
+    terrain: Option<Res<TerrainGen>>,
+    regions: Option<Res<LevelRegions>>,
+    cameras: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
+) {
+    let Some(cursor) = state.take_planet_view_selection() else {
+        return;
+    };
+    if !state.planet_view_ready() {
+        return;
+    }
+    let (Some(world_epoch), Some(terrain), Ok((camera, camera_transform))) =
+        (world_epoch, terrain, cameras.single())
+    else {
+        return;
+    };
+    let bridge_surfaces = regions
+        .as_deref()
+        .map(|regions| &regions.bridge_top_surfaces_by_name);
+    let Some(hit) =
+        map_camera_surface_hit(camera, camera_transform, cursor, &terrain, bridge_surfaces)
+    else {
+        // A sky or occluded-surface click leaves the previous selection intact.
+        return;
+    };
+
+    state.select_planet_destination(destination_from_surface_hit(*world_epoch, hit));
+}
+
+fn destination_from_surface_hit(world_epoch: WorldEpoch, hit: MapSurfaceHit) -> PlanetDestination {
+    let direction = hit.position.normalize_or(Vec3::Y);
+    let latitude = direction.y.clamp(-1.0, 1.0).asin().to_degrees();
+    let longitude = direction.z.atan2(direction.x).to_degrees();
+    let surface_name = match hit.surface {
+        PlanetDestinationSurface::Terrain => "Terrain",
+        PlanetDestinationSurface::BridgeDeck => "Bridge deck",
+    };
+    let display = format!(
+        "{surface_name} · {:.1}°{}, {:.1}°{}",
+        latitude.abs(),
+        if latitude >= 0.0 { 'N' } else { 'S' },
+        longitude.abs(),
+        if longitude >= 0.0 { 'E' } else { 'W' },
+    );
+    PlanetDestination {
+        id: PlanetDestinationId::surface(world_epoch, hit.position),
+        position: hit.position,
+        surface: hit.surface,
+        display,
+    }
+}
+
+pub(crate) fn map_camera_surface_hit(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    physical_cursor: Vec2,
+    terrain: &TerrainGen,
+    bridge_surfaces: Option<&std::collections::BTreeMap<String, Vec<[[f32; 3]; 3]>>>,
+) -> Option<MapSurfaceHit> {
+    let ray = camera
+        .viewport_to_world(camera_transform, physical_cursor)
+        .ok()?;
+    map_click_surface_hit(
+        ray.origin,
+        ray.direction.as_vec3(),
+        terrain,
+        bridge_surfaces,
+    )
 }
 
 fn terrain_surface_hit(
@@ -340,6 +417,7 @@ fn terrain_surface_hit(
         distance: inside,
         position: up * radius,
         normal: up,
+        surface: PlanetDestinationSurface::Terrain,
     })
 }
 
@@ -933,6 +1011,170 @@ mod tests {
             terrain,
             bridge_surfaces,
         }
+    }
+
+    #[test]
+    fn main_camera_center_ray_selects_the_visible_bridge_deck() {
+        let MapSurfaceFixture {
+            terrain,
+            bridge_surfaces,
+            ..
+        } = seed_1337_map_surface_fixture();
+        let deck = &bridge_surfaces["Bridge 4"];
+        let triangle = deck[deck.len() / 2].map(Vec3::from_array);
+        let deck_point = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+        let deck_up = (triangle[1] - triangle[0])
+            .cross(triangle[2] - triangle[0])
+            .normalize();
+        let deck_up = if deck_up.dot(deck_point) < 0.0 {
+            -deck_up
+        } else {
+            deck_up
+        };
+        let tangent = deck_up.cross(Vec3::Y).normalize_or(Vec3::X);
+        let camera_position = deck_point + deck_up * SURFACE_PICKING_ALTITUDE + tangent * 500.0;
+        let size = UVec2::new(1280, 720);
+        let viewport = bevy::camera::Viewport {
+            physical_size: size,
+            ..default()
+        };
+        let mut projection = Projection::Perspective(PerspectiveProjection::default());
+        let mut camera = Camera {
+            viewport: Some(viewport.clone()),
+            ..default()
+        };
+        camera.computed.target_info = Some(bevy::camera::RenderTargetInfo {
+            physical_size: size,
+            scale_factor: 1.0,
+        });
+        projection.update(size.x as f32, size.y as f32);
+        camera.computed.clip_from_view = projection.get_clip_from_view();
+        let camera_transform = GlobalTransform::from(
+            Transform::from_translation(camera_position).looking_at(deck_point, deck_up),
+        );
+
+        let selected = map_camera_surface_hit(
+            &camera,
+            &camera_transform,
+            size.as_vec2() * 0.5,
+            &terrain,
+            Some(&bridge_surfaces),
+        )
+        .expect("main-camera ray to the visible bridge hits a surface");
+
+        assert_eq!(selected.surface, PlanetDestinationSurface::BridgeDeck);
+        assert!(selected.position.distance(deck_point) < 0.02);
+    }
+
+    #[test]
+    fn ready_main_camera_click_becomes_a_persistent_world_destination() {
+        let MapSurfaceFixture {
+            level,
+            terrain,
+            bridge_surfaces,
+        } = seed_1337_map_surface_fixture();
+        let deck = &bridge_surfaces["Bridge 4"];
+        let triangle = deck[deck.len() / 2].map(Vec3::from_array);
+        let deck_point = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+        let deck_up = (triangle[1] - triangle[0])
+            .cross(triangle[2] - triangle[0])
+            .normalize();
+        let deck_up = if deck_up.dot(deck_point) < 0.0 {
+            -deck_up
+        } else {
+            deck_up
+        };
+        let tangent = deck_up.cross(Vec3::Y).normalize_or(Vec3::X);
+        let camera_position = deck_point + deck_up * SURFACE_PICKING_ALTITUDE + tangent * 500.0;
+        let size = UVec2::new(1280, 720);
+        let viewport = bevy::camera::Viewport {
+            physical_size: size,
+            ..default()
+        };
+        let mut projection = Projection::Perspective(PerspectiveProjection::default());
+        let mut camera = Camera {
+            viewport: Some(viewport.clone()),
+            ..default()
+        };
+        camera.computed.target_info = Some(bevy::camera::RenderTargetInfo {
+            physical_size: size,
+            scale_factor: 1.0,
+        });
+        projection.update(size.x as f32, size.y as f32);
+        camera.computed.clip_from_view = projection.get_clip_from_view();
+        let camera_transform =
+            Transform::from_translation(camera_position).looking_at(deck_point, deck_up);
+
+        let (mut app, _) = crate::exploration::tests::fixture();
+        app.world_mut().insert_resource(terrain);
+        app.world_mut().insert_resource(WorldEpoch::new(44));
+        app.world_mut().insert_resource(LevelRegions {
+            regions: level.regions.clone(),
+            face_regions: shared::level::RegionMemberships::from_memberships(vec![]),
+            settlements: level
+                .settlements
+                .iter()
+                .map(|settlement| (settlement.name.clone(), settlement.kind))
+                .collect(),
+            bridge_top_surfaces_by_name: bridge_surfaces,
+        });
+        let camera_entity = app
+            .world_mut()
+            .spawn((
+                camera,
+                MainCamera,
+                camera_transform,
+                GlobalTransform::from(camera_transform),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..24 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+
+        app.world_mut()
+            .entity_mut(camera_entity)
+            .insert((camera_transform, GlobalTransform::from(camera_transform)));
+        let cursor = size.as_vec2() * 0.5;
+        assert!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .request_planet_view_selection(cursor)
+        );
+        app.update();
+
+        let selection = app
+            .world()
+            .resource::<Exploration>()
+            .selected_planet_destination()
+            .expect("visible deck click stores a destination");
+        assert_eq!(selection.id.world_epoch().value(), 44);
+        assert_eq!(selection.surface, PlanetDestinationSurface::BridgeDeck);
+        assert!(selection.position.distance(deck_point) < 0.02);
+        let selected_id = selection.id;
+
+        let sky_transform = Transform::from_translation(camera_position)
+            .looking_at(camera_position + deck_up, Vec3::Y);
+        app.world_mut()
+            .entity_mut(camera_entity)
+            .insert((sky_transform, GlobalTransform::from(sky_transform)));
+        assert!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .request_planet_view_selection(cursor)
+        );
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .selected_planet_destination()
+                .map(|destination| destination.id),
+            Some(selected_id),
+            "a sky click keeps the selected destination"
+        );
     }
 
     #[test]
