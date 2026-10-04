@@ -80,6 +80,7 @@ pub(super) fn residency(
     mut commands: Commands,
     mut world: Option<ResMut<CollisionWorld>>,
     state: Res<Exploration>,
+    world_epoch: Option<Res<crate::map::WorldEpoch>>,
     bodies: Query<(&Position, &LinearVelocity), ExplorationBody>,
 ) {
     let Some(world) = world.as_mut() else {
@@ -87,6 +88,14 @@ pub(super) fn residency(
     };
     let request = state.actions.front().and_then(|action| match action {
         Action::Teleport(p) => Some(*p),
+        Action::PlanetTeleport(request_id) => state
+            .pending_planet_teleport
+            .as_ref()
+            .filter(|request| {
+                request.id == *request_id
+                    && world_epoch.is_some_and(|epoch| *epoch == request.world_epoch)
+            })
+            .map(|request| request.destination.position),
         Action::Recover => state.safe.or(state.start),
         _ => None,
     });
