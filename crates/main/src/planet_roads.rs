@@ -100,12 +100,7 @@ fn setup_road_highlight(
     let triangles = build_highlight_triangles(&paths.0, MIN_ROAD_WIDTH_METERS);
     if !triangles.is_empty() {
         let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; triangles.len()];
-        let highlight_material = materials.add(StandardMaterial {
-            base_color: Color::srgb(0.9, 0.64, 0.18),
-            emissive: LinearRgba::rgb(0.26, 0.13, 0.025),
-            perceptual_roughness: 0.9,
-            ..default()
-        });
+        let highlight_material = materials.add(road_highlight_material(1.0));
         commands.spawn((
             Mesh3d(meshes.add(build_visual_mesh(&triangles, &colors))),
             MeshMaterial3d(highlight_material),
@@ -178,7 +173,10 @@ fn handle_roads_toggle(
     mut layer: ResMut<RoadHighlightLayer>,
     toggles: Query<&Interaction, (With<RoadsLayerToggle>, Changed<Interaction>)>,
 ) {
-    if !state.is_planet_view_active() || state.planet_view_interface_opacity() <= 0.0 {
+    if !roads_layer_toggle_allowed(
+        state.is_planet_view_active(),
+        state.planet_view_interface_visible(),
+    ) {
         return;
     }
     if toggles
@@ -206,7 +204,8 @@ fn update_roads_layer_presentation(
 ) {
     let opacity = state.planet_view_interface_opacity().clamp(0.0, 1.0);
     let view_active = state.is_planet_view_active();
-    let show_controls = planet_roads_controls_display(view_active, opacity);
+    let show_controls =
+        planet_roads_controls_display(view_active, state.planet_view_interface_visible());
     let show_highlight = planet_roads_highlight_visible(view_active, layer.is_enabled(), opacity);
 
     for mut node in &mut panel {
@@ -236,21 +235,33 @@ fn update_roads_layer_presentation(
         let opacity_bits = opacity.to_bits();
         if applied_opacity.0 != opacity_bits {
             if let Some(mut material) = materials.get_mut(&material_handle.0) {
-                material.base_color = Color::srgb(0.9 * opacity, 0.64 * opacity, 0.18 * opacity);
-                material.emissive =
-                    LinearRgba::rgb(0.26 * opacity, 0.13 * opacity, 0.025 * opacity);
+                *material = road_highlight_material(opacity);
             }
             applied_opacity.0 = opacity_bits;
         }
     }
 }
 
-fn planet_roads_controls_display(view_active: bool, opacity: f32) -> Display {
-    if view_active && opacity > 0.0 {
+fn road_highlight_material(opacity: f32) -> StandardMaterial {
+    StandardMaterial {
+        base_color: Color::srgba(0.9, 0.64, 0.18, opacity.clamp(0.0, 1.0)),
+        emissive: LinearRgba::rgb(0.26, 0.13, 0.025),
+        perceptual_roughness: 0.9,
+        alpha_mode: AlphaMode::Blend,
+        ..default()
+    }
+}
+
+fn planet_roads_controls_display(view_active: bool, interface_visible: bool) -> Display {
+    if view_active && interface_visible {
         Display::Flex
     } else {
         Display::None
     }
+}
+
+fn roads_layer_toggle_allowed(view_active: bool, interface_visible: bool) -> bool {
+    view_active && interface_visible
 }
 
 fn planet_roads_highlight_visible(view_active: bool, layer_enabled: bool, opacity: f32) -> bool {
@@ -351,9 +362,9 @@ mod tests {
 
     #[test]
     fn roads_control_has_no_target_when_the_planet_interface_is_hidden() {
-        assert_eq!(planet_roads_controls_display(true, 0.0), Display::None);
-        assert_eq!(planet_roads_controls_display(true, 0.01), Display::Flex);
-        assert_eq!(planet_roads_controls_display(false, 1.0), Display::None);
+        assert_eq!(planet_roads_controls_display(true, false), Display::None);
+        assert_eq!(planet_roads_controls_display(true, true), Display::Flex);
+        assert_eq!(planet_roads_controls_display(false, true), Display::None);
     }
 
     #[test]
@@ -377,6 +388,28 @@ mod tests {
         assert!(!planet_roads_highlight_visible(true, false, 1.0));
         assert!(!planet_roads_highlight_visible(true, true, 0.0));
         assert!(planet_roads_highlight_visible(true, true, 0.5));
+    }
+
+    #[test]
+    fn road_highlight_fades_with_alpha_and_uses_standard_depth_testing() {
+        let material = road_highlight_material(0.4);
+        let color = material.base_color.to_srgba();
+
+        assert_eq!(material.alpha_mode, AlphaMode::Blend);
+        assert!(!material.unlit);
+        assert!((color.red - 0.9).abs() < 0.001);
+        assert!((color.green - 0.64).abs() < 0.001);
+        assert!((color.blue - 0.18).abs() < 0.001);
+        assert!((color.alpha - 0.4).abs() < 0.001);
+    }
+
+    #[test]
+    fn roads_control_is_hidden_and_cannot_toggle_while_the_selector_owns_interface() {
+        assert_eq!(planet_roads_controls_display(true, false), Display::None);
+        assert_eq!(planet_roads_controls_display(true, true), Display::Flex);
+        assert!(!roads_layer_toggle_allowed(true, false));
+        assert!(!roads_layer_toggle_allowed(false, true));
+        assert!(roads_layer_toggle_allowed(true, true));
     }
 
     #[test]

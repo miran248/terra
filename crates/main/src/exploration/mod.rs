@@ -466,6 +466,11 @@ impl Exploration {
         self.planet_presentation.interface_opacity()
     }
 
+    /// Whether non-modal Planet-view controls and overlays may be shown or used.
+    pub fn planet_view_interface_visible(&self) -> bool {
+        !self.selector && self.planet_presentation.interface_opacity() > 0.0
+    }
+
     pub fn planet_view_follows_body(&self) -> bool {
         self.planet_camera.follows_body()
     }
@@ -1259,6 +1264,17 @@ fn track_safe(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn planet_view_interface_visibility_excludes_the_selector_modal() {
+        let mut state = Exploration::default();
+        state.set_planet_view_open(true);
+        state.planet_presentation.advance(0.28);
+        assert!(state.planet_view_interface_visible());
+
+        state.selector = true;
+        assert!(!state.planet_view_interface_visible());
+    }
 
     #[test]
     fn destination_selection_and_teleport_share_public_readiness_intents() {
