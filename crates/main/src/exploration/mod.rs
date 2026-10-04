@@ -1028,26 +1028,96 @@ pub(crate) mod tests {
             surface: PlanetDestinationSurface::BridgeDeck,
             display: "Bridge deck · 12.4°N, 33.7°W".into(),
         };
-        let mut state = Exploration::default();
-        state.selected_destination = Some(selection.clone());
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Exploration {
+                selected_destination: Some(selection.clone()),
+                ..default()
+            })
+            .add_systems(Update, interface::update_presentation);
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.set_planet_view_open(true);
+            state.planet_camera.zoom_by(0.8);
+            state.toggle_planet_view_follow(Transform::from_translation(Vec3::new(
+                0.0, 2001.0, 20.0,
+            )));
+            state.occupied = Some(Entity::PLACEHOLDER);
+        }
 
-        state.set_planet_view_open(true);
-        state.planet_camera.zoom_by(0.8);
-        state.toggle_planet_view_follow(Vec3::new(0.0, 2001.0, 20.0));
-        let mut transient_ui = World::new();
-        let details_entity = transient_ui.spawn_empty().id();
-        transient_ui.despawn(details_entity);
-        state.occupied = Some(Entity::PLACEHOLDER);
+        let details_entity = app
+            .world_mut()
+            .spawn((
+                Node::default(),
+                interface::DestinationPanel,
+                shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("old UI"),
+                    interface::DestinationDetails,
+                    shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+                ));
+            })
+            .id();
+        app.update();
+        let old_details = app
+            .world_mut()
+            .query_filtered::<&Text, With<interface::DestinationDetails>>()
+            .single(app.world())
+            .expect("destination details are shown in the first UI");
+        assert!(old_details.0.contains("Bridge deck · 12.4°N, 33.7°W"));
+        assert!(old_details.0.contains("Exit your vehicle"));
 
-        assert_eq!(state.selected_destination.as_ref(), Some(&selection));
-        assert!(state.destination_requires_exit_from_vehicle());
+        app.world_mut().despawn(details_entity);
+        let rebuilt_panel = app
+            .world_mut()
+            .spawn((
+                Node::default(),
+                interface::DestinationPanel,
+                shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("fresh UI"),
+                    interface::DestinationDetails,
+                    shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+                ));
+            })
+            .id();
+        app.update();
+        let rebuilt_details = app
+            .world_mut()
+            .query_filtered::<&Text, With<interface::DestinationDetails>>()
+            .single(app.world())
+            .expect("destination details are reconstructed");
+        assert!(rebuilt_details.0.contains("Bridge deck · 12.4°N, 33.7°W"));
+        assert!(rebuilt_details.0.contains("Exit your vehicle"));
+        assert_ne!(details_entity, rebuilt_panel);
 
-        state.set_planet_view_open(false);
-        state.set_planet_view_open(true);
-        state.occupied = None;
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            assert_eq!(state.selected_destination.as_ref(), Some(&selection));
+            assert!(state.destination_requires_exit_from_vehicle());
+            state.set_planet_view_open(false);
+            state.set_planet_view_open(true);
+            state.occupied = None;
+        }
+        app.update();
 
+        let state = app.world().resource::<Exploration>();
         assert_eq!(state.selected_destination.as_ref(), Some(&selection));
         assert!(!state.destination_requires_exit_from_vehicle());
+        let rebuilt_details = app
+            .world_mut()
+            .query_filtered::<&Text, With<interface::DestinationDetails>>()
+            .single(app.world())
+            .expect("reopened destination details remain available");
+        assert!(
+            rebuilt_details
+                .0
+                .contains("Press T to check a safe on-foot landing")
+        );
     }
 
     #[test]
