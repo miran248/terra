@@ -7,13 +7,13 @@
 //! the level data, so terrain density can grow without touching this module.
 //!
 //! Every chunk is ALWAYS resident at LOD 1 (terrain/water/river/ice visuals,
-//! whole planet built on the first frames) so the minimap and fullscreen-map
+//! whole planet built on the first frames) so the gameplay and planet-view
 //! cameras — which render the same world, there are no RenderLayers — never
 //! see holes. Closer chunks add detail:
 //!
 //! - LOD 1: terrain slice, flat water, river, ice visual
-//! - LOD 2 (≤ 960 m to chunk edge): + structures (GLB + colliders), large scenery
-//! - LOD 3 (≤ 300 m to chunk edge): + small scenery, water swell subdivision
+//! - LOD 2 (≤ 960 m or the radial horizon to chunk edge): + structures, large scenery
+//! - LOD 3 (≤ 300 m, shrinking with camera altitude): + small scenery, water swell subdivision
 //!
 //! Transitions are INCREMENTAL: static meshes (terrain/river/ice/border) are
 //! built once and never respawned; the water mesh is rebuilt only when its
@@ -21,7 +21,9 @@
 //! removed by delta. Nothing already on screen is torn down and re-added, so
 //! a LOD bounce never blinks the world (or the minimap).
 //!
-//! Downgrades use 15% hysteresis; scenery spawning is budgeted per frame.
+//! Initial chunks start coarse; nearest upgrades use 8 transitions per frame.
+//! Downgrades use 15% hysteresis; regional scenery fills before local props,
+//! and both spawning and visibility refreshes use fixed per-update budgets.
 //! Colliders for terrain/ice/bridges stay whole-planet in `setup_map`
 //! (physics never streams — no fall-through at chunk borders, teleports just
 //! work); only scenery/structure colliders live in chunks.
@@ -32,8 +34,10 @@ use crate::map::{CullRange, Ground, MainCamera, scenery_cull};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
-use shared::level::{FloraKind, SceneryData, SceneryKind, StructureData, WaterPhase};
+use shared::level::{SceneryData, SceneryKind, StructureData, WaterPhase};
+use shared::planet_detail::{self, SceneryTier};
 use shared::sphere::PLANET_RADIUS;
+use shared::terrain::TerrainGen;
 
 /// Chunk count: the subdivision-2 icosphere faces (20 × 4²).
 pub const CHUNK_COUNT: usize = 320;
@@ -42,12 +46,6 @@ pub const CHUNK_COUNT: usize = 320;
 /// green = 3) so LOD rings are visually inspectable. Flip off to ship.
 const DEBUG_CHUNK_BORDERS: bool = false;
 
-/// Great-circle distances (m, camera → chunk edge) for LOD entry. Zombie ring
-/// (120 m) sits well inside LOD 3, so actors always stand on loaded chunks.
-const LOD3_DIST: f32 = 300.0;
-const LOD2_DIST: f32 = 960.0;
-/// Downgrade only past entry × this, so chunks don't thrash on the boundary.
-const HYSTERESIS: f32 = 1.15;
 /// LOD transitions applied per frame (water rebuilds + structure batches).
 const TRANSITIONS_PER_FRAME: usize = 8;
 /// Scenery entities spawned per frame across all chunks. A dense forest chunk
@@ -64,17 +62,6 @@ fn water_subdiv(lod: u8) -> u32 {
         3 => crate::water::WATER_SUBDIV,
         _ => 0,
     }
-}
-
-/// Large scenery visible from afar — resident from LOD 2; the rest joins at LOD 3.
-fn is_large_scenery(kind: SceneryKind) -> bool {
-    matches!(
-        kind,
-        SceneryKind::Flora(FloraKind::Tree)
-            | SceneryKind::DeadTree
-            | SceneryKind::Rock
-            | SceneryKind::Log
-    )
 }
 
 /// Baked per-chunk world data, sliced/binned once at setup from `LevelData`.
@@ -117,6 +104,8 @@ pub struct ChunkManager {
     pub centers: Vec<Vec3>,
     /// Surface distance (m) from each chunk's centroid to its farthest vertex.
     pub radii: Vec<f32>,
+    /// Round-robin view-culling worklist for currently resident scenery roots.
+    pub cull_order: Vec<Entity>,
     pub chunks: Vec<ChunkState>,
     pub terrain_mat: Handle<StandardMaterial>,
     pub water_mat: Handle<crate::water::WaterMaterial>,
@@ -182,7 +171,7 @@ impl ChunkManager {
         let mut scenery_small = vec![Vec::new(); CHUNK_COUNT];
         for f in scenery {
             let c = f.face as usize / faces_per_chunk;
-            if is_large_scenery(f.kind) {
+            if SceneryTier::for_kind(f.kind) == SceneryTier::Regional {
                 scenery_large[c].push(f);
             } else {
                 scenery_small[c].push(f);
@@ -206,6 +195,7 @@ impl ChunkManager {
             faces_per_chunk,
             centers,
             radii,
+            cull_order: Vec::new(),
             chunks: (0..CHUNK_COUNT).map(|_| ChunkState::default()).collect(),
             terrain_mat,
             water_mat,
@@ -220,64 +210,53 @@ impl ChunkManager {
     }
 }
 
-fn desired_lod(dist: f32) -> u8 {
-    if dist <= LOD3_DIST {
-        3
-    } else if dist <= LOD2_DIST {
-        2
-    } else {
-        1
-    }
-}
-
-/// Entry distance of a LOD level (used with hysteresis on downgrades).
-fn lod_entry(lod: u8) -> f32 {
-    match lod {
-        3 => LOD3_DIST,
-        2 => LOD2_DIST,
-        _ => f32::INFINITY,
-    }
-}
-
-/// Promote/demote chunk LODs around the main camera, budgeted per frame.
-/// All transitions are incremental — see the module docs.
+/// Build broad planet geography first, then promote nearest chunks within a
+/// fixed per-frame transition budget. Detail follows the camera's radial
+/// position and attained altitude; physics residency remains body-centered.
 pub fn update_chunk_lods(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     catalog: Res<AssetCatalog>,
     camera: Query<&Transform, With<MainCamera>>,
+    terrain: Option<Res<TerrainGen>>,
     mut mgr: ResMut<ChunkManager>,
 ) {
     let Some(cam) = camera.iter().next() else {
         return;
     };
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
+    let camera_altitude = crate::map::altitude_above_surface(cam.translation, terrain.as_deref());
 
-    let mut budget = TRANSITIONS_PER_FRAME;
+    // LOD 1 is the immediately visible globe. First-time chunks do not jump
+    // directly to local detail; later promotions are nearest-first and budgeted.
+    let initializing = mgr.chunks.iter().any(|state| state.lod == 0);
     for chunk in 0..CHUNK_COUNT {
+        if mgr.chunks[chunk].lod == 0 {
+            set_chunk_lod(&mut commands, &mut meshes, &catalog, &mut mgr, chunk, 1);
+        }
+    }
+    if initializing {
+        return;
+    }
+
+    let mut order: Vec<(usize, f32)> = (0..CHUNK_COUNT)
+        .map(|chunk| {
+            let center_dist =
+                mgr.centers[chunk].dot(eye_dir).clamp(-1.0, 1.0).acos() * PLANET_RADIUS;
+            (chunk, (center_dist - mgr.radii[chunk]).max(0.0))
+        })
+        .collect();
+    order.sort_by(|(a, da), (b, db)| da.total_cmp(db).then_with(|| a.cmp(b)));
+    let mut budget = TRANSITIONS_PER_FRAME;
+    for (chunk, dist) in order {
         if budget == 0 {
             return;
         }
-        // Distance to the chunk's nearest EDGE: 0 when standing inside it.
-        let center_dist = mgr.centers[chunk].dot(eye_dir).clamp(-1.0, 1.0).acos() * PLANET_RADIUS;
-        let dist = (center_dist - mgr.radii[chunk]).max(0.0);
         let cur = mgr.chunks[chunk].lod;
-        let want = desired_lod(dist);
-        let transition = if want > cur {
-            true
-        } else if want < cur {
-            // Hysteresis: drop out of `cur` only past its entry distance + 15%.
-            dist > lod_entry(cur) * HYSTERESIS
-        } else {
-            false
-        };
-        if transition {
+        let want = planet_detail::desired_chunk_lod(dist, camera_altitude, cur);
+        if want != cur {
             set_chunk_lod(&mut commands, &mut meshes, &catalog, &mut mgr, chunk, want);
-            // First-ever build (cur == 0) is free: the whole planet must appear
-            // immediately; only steady-state LOD churn is budgeted.
-            if cur != 0 {
-                budget -= 1;
-            }
+            budget -= 1;
         }
     }
 }
@@ -405,15 +384,28 @@ fn set_chunk_lod(
 
     // Scenery: only despawn here; spawning streams via `stream_scenery`.
     if lod < 2 && cur >= 2 {
+        let mut removed = Vec::new();
         for e in mgr.chunks[chunk].scenery_large.drain(..) {
             commands.entity(e).try_despawn();
+            removed.push(e);
         }
         mgr.chunks[chunk].large_cursor = 0;
-    }
-    if lod < 3 && cur >= 3 {
-        for e in mgr.chunks[chunk].scenery_small.drain(..) {
-            commands.entity(e).try_despawn();
+        if lod < 3 && cur >= 3 {
+            for e in mgr.chunks[chunk].scenery_small.drain(..) {
+                commands.entity(e).try_despawn();
+                removed.push(e);
+            }
+            mgr.chunks[chunk].small_cursor = 0;
         }
+        let removed: std::collections::HashSet<_> = removed.into_iter().collect();
+        mgr.cull_order.retain(|entity| !removed.contains(entity));
+    } else if lod < 3 && cur >= 3 {
+        let removed: std::collections::HashSet<_> =
+            mgr.chunks[chunk].scenery_small.drain(..).collect();
+        for &entity in &removed {
+            commands.entity(entity).try_despawn();
+        }
+        mgr.cull_order.retain(|entity| !removed.contains(entity));
         mgr.chunks[chunk].small_cursor = 0;
     }
 
@@ -427,6 +419,7 @@ pub fn stream_scenery(
     mut commands: Commands,
     catalog: Res<AssetCatalog>,
     camera: Query<&Transform, With<MainCamera>>,
+    terrain: Option<Res<TerrainGen>>,
     mut mgr: ResMut<ChunkManager>,
 ) {
     let Some(cam) = camera.iter().next() else {
@@ -449,26 +442,43 @@ pub fn stream_scenery(
     });
 
     let mut budget = SCENERY_PER_FRAME;
-    for chunk in order {
-        let lod = mgr.chunks[chunk].lod;
-        // Large scenery (LOD 2+), then small (LOD 3).
-        while budget > 0 && lod >= 2 {
+    // Regional forms fill before local ground cover, so distant navigation
+    // landmarks are not held behind thousands of small props.
+    for &chunk in &order {
+        while budget > 0 && mgr.chunks[chunk].lod >= 2 {
             let i = mgr.chunks[chunk].large_cursor;
             let Some(f) = mgr.data.scenery_large[chunk].get(i).copied() else {
                 break;
             };
-            let e = spawn_scenery(&mut commands, &catalog, &f);
+            let e = spawn_scenery(
+                &mut commands,
+                &catalog,
+                &f,
+                initial_scenery_visibility(f, cam.translation, terrain.as_deref()),
+            );
             mgr.chunks[chunk].scenery_large.push(e);
+            mgr.cull_order.push(e);
             mgr.chunks[chunk].large_cursor = i + 1;
             budget -= 1;
         }
-        while budget > 0 && lod >= 3 {
+        if budget == 0 {
+            return;
+        }
+    }
+    for chunk in order {
+        while budget > 0 && mgr.chunks[chunk].lod >= 3 {
             let i = mgr.chunks[chunk].small_cursor;
             let Some(f) = mgr.data.scenery_small[chunk].get(i).copied() else {
                 break;
             };
-            let e = spawn_scenery(&mut commands, &catalog, &f);
+            let e = spawn_scenery(
+                &mut commands,
+                &catalog,
+                &f,
+                initial_scenery_visibility(f, cam.translation, terrain.as_deref()),
+            );
             mgr.chunks[chunk].scenery_small.push(e);
+            mgr.cull_order.push(e);
             mgr.chunks[chunk].small_cursor = i + 1;
             budget -= 1;
         }
@@ -536,7 +546,34 @@ fn spawn_structure(commands: &mut Commands, catalog: &AssetCatalog, s: &Structur
     root.id()
 }
 
-fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryData) -> Entity {
+fn initial_scenery_visibility(
+    f: SceneryData,
+    camera_position: Vec3,
+    terrain: Option<&TerrainGen>,
+) -> Visibility {
+    let point = Vec3::from_array(f.pos);
+    let surface_distance = planet_detail::radial_surface_distance(camera_position, point);
+    let visible = planet_detail::scenery_visible(
+        SceneryTier::for_kind(f.kind),
+        point.distance(camera_position),
+        surface_distance,
+        crate::map::altitude_above_surface(camera_position, terrain),
+        scenery_cull(f.kind),
+        false,
+    );
+    if visible {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    }
+}
+
+fn spawn_scenery(
+    commands: &mut Commands,
+    catalog: &AssetCatalog,
+    f: &SceneryData,
+    visibility: Visibility,
+) -> Entity {
     let pos = Vec3::from_array(f.pos);
     let up = pos.normalize();
     let hash = f.pos[0].to_bits()
@@ -547,9 +584,12 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
     let rotation = Quat::from_rotation_arc(Vec3::Y, up) * Quat::from_rotation_y(yaw);
 
     let mut root = commands.spawn((
-        CullRange(scenery_cull(f.kind)),
+        CullRange {
+            meters: scenery_cull(f.kind),
+            tier: SceneryTier::for_kind(f.kind),
+        },
         Transform::from_translation(pos).with_rotation(rotation),
-        Visibility::default(),
+        visibility,
         bevy::light::NotShadowCaster,
         Ground,
     ));
@@ -563,7 +603,7 @@ fn spawn_scenery(commands: &mut Commands, catalog: &AssetCatalog, f: &SceneryDat
 
 #[cfg(test)]
 mod tests {
-    use shared::level::StructureKind;
+    use shared::level::{FloraKind, StructureKind};
     #[test]
     fn render_spawns_do_not_own_collision_residency() {
         use super::*;
@@ -592,6 +632,7 @@ mod tests {
                     kind: SceneryKind::Flora(FloraKind::Tree),
                     variant: 0,
                 },
+                Visibility::Inherited,
             );
             (house, tree)
         };
@@ -662,14 +703,26 @@ mod tests {
     }
 
     #[test]
-    fn lod_ladder_and_hysteresis() {
-        assert_eq!(desired_lod(0.0), 3);
-        assert_eq!(desired_lod(LOD3_DIST), 3);
-        assert_eq!(desired_lod(LOD3_DIST + 1.0), 2);
-        assert_eq!(desired_lod(LOD2_DIST), 2);
-        assert_eq!(desired_lod(LOD2_DIST + 1.0), 1);
-        // Inside the hysteresis band a LOD-3 chunk must not drop.
-        let d = LOD3_DIST * 1.10;
-        assert!(desired_lod(d) < 3 && d <= lod_entry(3) * HYSTERESIS);
+    fn planet_scale_keeps_regional_scenery_and_hides_small_props() {
+        let camera = Vec3::X * shared::sphere::PLANET_RADIUS * 3.0;
+        let tree = SceneryData {
+            pos: (Vec3::X * shared::sphere::PLANET_RADIUS).to_array(),
+            face: 0,
+            kind: SceneryKind::Flora(FloraKind::Tree),
+            variant: 0,
+        };
+        let grass = SceneryData {
+            kind: SceneryKind::Flora(FloraKind::Grass),
+            ..tree
+        };
+
+        assert_eq!(
+            initial_scenery_visibility(tree, camera, None),
+            Visibility::Inherited
+        );
+        assert_eq!(
+            initial_scenery_visibility(grass, camera, None),
+            Visibility::Hidden
+        );
     }
 }
