@@ -2330,14 +2330,21 @@ pub(crate) mod tests {
             keys.release(KeyCode::KeyV);
         }
 
-        for _ in 0..45 {
+        for _ in 0..100 {
             app.update();
         }
-        assert!(
-            app.world()
-                .resource::<Exploration>()
-                .is_planet_view_active()
-        );
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(!app.world().resource::<Exploration>().selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+        }
 
         // V is also rejected during the return transition. Holding it through
         // the rest of that transition must not open the selector afterwards.
