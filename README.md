@@ -171,3 +171,5 @@ A closing map timelapse advances through night to the opening morning.
 Decoded first and last video frames match exactly. See
 [the cinematic brief](docs/showcase.md).
 The normal game is unaffected when `TERRA_FLIGHT_CAPTURE` is unset.
+
+See [Releases](docs/releases.md) for version tags and the release-please workflow.

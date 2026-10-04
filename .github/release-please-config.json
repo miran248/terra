@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "go",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": false,
+  "bootstrap-sha": "f444b871f8a55541584d35f31b9d632be9aa901c",
+  "packages": {
+    ".": {
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "crates/*/Cargo.toml",
+          "glob": true,
+          "jsonpath": "$.package.version"
+        },
+        {
+          "type": "toml",
+          "path": "Cargo.lock",
+          "jsonpath": "$.package[?(!@.source && (@.name.value == 'main' || @.name.value == 'shared' || @.name.value == 'gen_assets' || @.name.value == 'gen_level'))].version"
+        }
+      ]
+    }
+  }
+}
