@@ -24,6 +24,12 @@ pub(super) struct FollowStatus;
 pub(super) struct VehicleSelectorPanel;
 
 #[derive(Component)]
+pub(super) struct DestinationPanel;
+
+#[derive(Component)]
+pub(super) struct DestinationDetails;
+
+#[derive(Component)]
 pub(super) struct VehicleSelectorChoice(Kind);
 
 pub(super) fn setup(mut commands: Commands, font: Res<crate::ui::UiFont>) {
@@ -117,6 +123,50 @@ pub(super) fn setup(mut commands: Commands, font: Res<crate::ui::UiFont>) {
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
+                left: Val::Px(16.0),
+                bottom: Val::Px(16.0),
+                width: Val::Px(360.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(6.0),
+                padding: UiRect::all(Val::Px(12.0)),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(shared::theme::PANEL_BG),
+            BorderColor::all(shared::theme::TEXT_WEAK),
+            GlobalZIndex(100),
+            FocusPolicy::Block,
+            PlanetViewInterfaceElement::default(),
+            DestinationPanel,
+        ))
+        .with_children(|panel| {
+            panel.spawn((
+                Text::new("DESTINATION"),
+                TextFont {
+                    font: font.0.clone().into(),
+                    font_size: 13.0.into(),
+                    ..default()
+                },
+                TextColor(shared::theme::ACCENT),
+                PlanetViewInterfaceElement::default(),
+            ));
+            panel.spawn((
+                Text::new("Click visible terrain or a bridge deck to inspect it."),
+                TextFont {
+                    font: font.0.clone().into(),
+                    font_size: 12.0.into(),
+                    ..default()
+                },
+                TextColor(shared::theme::INK),
+                PlanetViewInterfaceElement::default(),
+                DestinationDetails,
+            ));
+        });
+
+    commands
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
                 left: Val::Px(0.0),
                 right: Val::Px(0.0),
                 top: Val::Px(0.0),
@@ -197,15 +247,25 @@ pub(super) fn update_presentation(
     mut state: ResMut<Exploration>,
     mut panel: Query<&mut Node, (With<VehicleSelectorPanel>, Without<PlanetViewControls>)>,
     mut controls_panel: Query<&mut Node, (With<PlanetViewControls>, Without<VehicleSelectorPanel>)>,
-    mut follow_status: Query<&mut Text, With<FollowStatus>>,
+    mut destination_panel: Query<
+        &mut Node,
+        (
+            With<DestinationPanel>,
+            Without<VehicleSelectorPanel>,
+            Without<PlanetViewControls>,
+        ),
+    >,
     mut fade_elements: Query<
         (
             Option<&mut BackgroundColor>,
+            Option<&mut Text>,
             Option<&mut TextColor>,
             Option<&mut BorderColor>,
             Option<&mut ImageNode>,
             Option<&mut PlanetViewInterfaceElement>,
             Option<&mut GameplayHudElement>,
+            Option<&FollowStatus>,
+            Option<&DestinationDetails>,
         ),
         Or<(With<PlanetViewInterfaceElement>, With<GameplayHudElement>)>,
     >,
@@ -236,27 +296,58 @@ pub(super) fn update_presentation(
             node.display = display;
         }
     }
-    if let Ok(mut text) = follow_status.single_mut() {
-        let label = if state.planet_view_follows_body() {
-            "FOLLOW · ON"
+    for mut node in &mut destination_panel {
+        let display = if interface_opacity > 0.0 {
+            Display::Flex
         } else {
-            "FOLLOW · OFF"
+            Display::None
         };
-        if text.0 != label {
-            *text = Text::new(label);
+        if node.display != display {
+            node.display = display;
         }
     }
-
-    for (background, text, border, image, interface, gameplay) in &mut fade_elements {
+    for (
+        background,
+        label_text,
+        text_color,
+        border,
+        image,
+        interface,
+        gameplay,
+        follow_status,
+        destination_details,
+    ) in &mut fade_elements
+    {
         let mut background = background;
-        let mut text = text;
+        let mut label_text = label_text;
+        let mut text_color = text_color;
         let mut border = border;
         let mut image = image;
+        if follow_status.is_some()
+            && let Some(text) = label_text.as_deref_mut()
+        {
+            let label = if state.planet_view_follows_body() {
+                "FOLLOW · ON"
+            } else {
+                "FOLLOW · OFF"
+            };
+            if text.0 != label {
+                *text = Text::new(label);
+            }
+        }
+        if destination_details.is_some()
+            && let Some(text) = label_text.as_deref_mut()
+        {
+            let content = destination_readout(&state);
+            if text.0 != content {
+                *text = Text::new(content);
+            }
+        }
         if let Some(mut interface) = interface {
             interface.apply_opacity(
                 interface_opacity,
                 background.as_deref_mut(),
-                text.as_deref_mut(),
+                text_color.as_deref_mut(),
                 border.as_deref_mut(),
                 image.as_deref_mut(),
             );
@@ -265,12 +356,28 @@ pub(super) fn update_presentation(
             gameplay.apply_opacity(
                 gameplay_opacity,
                 background.as_deref_mut(),
-                text.as_deref_mut(),
+                text_color.as_deref_mut(),
                 border.as_deref_mut(),
                 image.as_deref_mut(),
             );
         }
     }
+}
+
+pub(super) fn destination_readout(state: &Exploration) -> String {
+    let Some(destination) = state.selected_planet_destination() else {
+        return "Click visible terrain or a bridge deck to inspect it.".into();
+    };
+
+    let eligibility = if state.destination_requires_exit_from_vehicle() {
+        "Exit your vehicle before pressing T."
+    } else {
+        "Press T to check a safe on-foot landing."
+    };
+    format!(
+        "{}\n{}\nA safe landing is checked after you press T.",
+        destination.display, eligibility
+    )
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

@@ -34,6 +34,25 @@ pub struct Sun;
 #[derive(Component)]
 pub struct MainCamera;
 
+/// Identifies one runtime load of the embedded world, including a reload of
+/// the same baked seed.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct WorldEpoch(u64);
+
+impl WorldEpoch {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    fn advance(&mut self) {
+        self.0 = self.0.checked_add(1).expect("world epoch exhausted");
+    }
+}
+
 #[derive(Component)]
 pub struct Settlement {
     pub name: String,
@@ -265,6 +284,7 @@ struct PlayerInput {
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerInput>()
+            .init_resource::<WorldEpoch>()
             // TimeOfDay is inserted manually in setup_map for accurate local noon.
             .init_resource::<SunLock>()
             .add_systems(OnEnter(AppState::Playing), setup_map)
@@ -298,6 +318,7 @@ impl Plugin for MapPlugin {
 use shared::state::AppState;
 
 pub(crate) fn setup_map(
+    mut world_epoch: ResMut<WorldEpoch>,
     motion: Res<crate::shader_motion::ShaderMotionBuffer>,
     mut commands: Commands,
     catalog: Res<crate::asset_catalog::AssetCatalog>,
@@ -305,6 +326,7 @@ pub(crate) fn setup_map(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
 ) {
+    world_epoch.advance();
     let level_bytes = include_bytes!("../assets/level_1337.bin");
     let level = LevelData::from_artifact_bytes(level_bytes)
         .expect("deserialize level artifact; regenerate it with `cargo run -p gen_level`");
