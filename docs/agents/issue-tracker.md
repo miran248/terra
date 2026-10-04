@@ -20,6 +20,11 @@ Use the `gh` CLI from the repository root; outside the clone, pass
 Write multiline bodies to a temporary file and pass it with `--body-file`.
 Use issue numbers or GitHub issue URLs in references.
 
+For ticketed work, reference the relevant issue in the Conventional Commit
+message, for example `fix(exploration): align wheel rotation (#29)`. Keep issue
+bodies and comments focused on the problem, decisions, and validation; do not
+mention commits or include commit references in tickets.
+
 ## Triage labels
 
 Use the mapping in `docs/agents/triage-labels.md`.
