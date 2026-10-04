@@ -85,6 +85,7 @@ pub(super) fn setup(mut commands: Commands, font: Res<crate::ui::UiFont>) {
             padding: UiRect::all(Val::Px(10.0)),
             ..default()
         },
+        GameplayHudElement::default(),
         Readout,
     ));
 }
