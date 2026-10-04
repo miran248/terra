@@ -1,0 +1,248 @@
+use bevy::prelude::{Rect, Vec2, Vec3};
+
+/// Screen-label categories ordered from the most useful navigation context to
+/// the least useful one when labels compete for space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanetMarkerLabelKind {
+    Explorer,
+    SelectedDestination,
+    Settlement,
+    Region,
+    Bridge,
+}
+
+/// Whether a marker's name should be shown at the current zoom and hover state.
+pub fn planet_marker_label_visible(
+    kind: PlanetMarkerLabelKind,
+    hovered: bool,
+    camera_radius: f32,
+    planet_radius: f32,
+) -> bool {
+    match kind {
+        PlanetMarkerLabelKind::Explorer | PlanetMarkerLabelKind::SelectedDestination => true,
+        PlanetMarkerLabelKind::Settlement => true,
+        PlanetMarkerLabelKind::Region => {
+            hovered
+                || (camera_radius.is_finite()
+                    && planet_radius.is_finite()
+                    && planet_radius > 0.0
+                    && camera_radius <= planet_radius * 2.0)
+        }
+        PlanetMarkerLabelKind::Bridge => hovered,
+    }
+}
+
+/// Label priority for reducing collisions. Hovered places rise above the
+/// settlement layer, while bridges remain unnamed until hovered.
+pub fn planet_marker_label_priority(
+    kind: PlanetMarkerLabelKind,
+    hovered: bool,
+) -> Option<u8> {
+    match kind {
+        PlanetMarkerLabelKind::Explorer => Some(0),
+        PlanetMarkerLabelKind::SelectedDestination => Some(1),
+        PlanetMarkerLabelKind::Settlement => Some(if hovered { 2 } else { 3 }),
+        PlanetMarkerLabelKind::Region => Some(if hovered { 2 } else { 4 }),
+        PlanetMarkerLabelKind::Bridge => hovered.then_some(2),
+    }
+}
+
+/// Return the surface-area-weighted center of triangle geometry such as a
+/// generated bridge deck. Degenerate and non-finite triangles do not move the
+/// anchor.
+pub fn triangle_area_weighted_centroid(triangles: &[[[f32; 3]; 3]]) -> Option<Vec3> {
+    let mut weighted_center = Vec3::ZERO;
+    let mut total_area = 0.0;
+    for triangle in triangles {
+        let [a, b, c] = triangle.map(Vec3::from_array);
+        if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+            continue;
+        }
+        let area = (b - a).cross(c - a).length() * 0.5;
+        if area.is_finite() && area > f32::EPSILON {
+            weighted_center += (a + b + c) / 3.0 * area;
+            total_area += area;
+        }
+    }
+    (total_area > f32::EPSILON).then_some(weighted_center / total_area)
+}
+
+/// Convert a camera NDC point into logical viewport coordinates, clipping
+/// markers outside the frustum before they can be drawn or selected.
+pub fn project_ndc_to_logical_viewport(ndc: Vec3, viewport: Rect) -> Option<Vec2> {
+    if !ndc.is_finite()
+        || ndc.x < -1.0
+        || ndc.x > 1.0
+        || ndc.y < -1.0
+        || ndc.y > 1.0
+        || !(0.0..=1.0).contains(&ndc.z)
+        || viewport.width() <= 0.0
+        || viewport.height() <= 0.0
+    {
+        return None;
+    }
+
+    let viewport_position = (Vec2::new(ndc.x, -ndc.y) + Vec2::ONE) * 0.5;
+    Some(viewport.min + viewport_position * viewport.size())
+}
+
+/// Returns whether the straight view from the camera to an anchor clears the
+/// planet's spherical limb. Surface anchors below the reference radius use
+/// their own radius; raised anchors still use the planet radius so a bridge
+/// deck can remain visible just beyond the terrain horizon.
+pub fn marker_clears_spherical_horizon(
+    camera_position: Vec3,
+    anchor_position: Vec3,
+    planet_radius: f32,
+) -> bool {
+    if !camera_position.is_finite()
+        || !anchor_position.is_finite()
+        || !planet_radius.is_finite()
+        || planet_radius <= 0.0
+    {
+        return false;
+    }
+
+    let anchor_radius = anchor_position.length();
+    let horizon_radius = planet_radius.min(anchor_radius);
+    if camera_position.length() <= horizon_radius || anchor_radius <= f32::EPSILON {
+        return false;
+    }
+
+    let segment = anchor_position - camera_position;
+    let segment_length_squared = segment.length_squared();
+    if segment_length_squared <= f32::EPSILON {
+        return true;
+    }
+
+    let closest = camera_position
+        + segment * (-camera_position.dot(segment) / segment_length_squared).clamp(0.0, 1.0);
+    closest.length_squared() + 0.01 >= horizon_radius * horizon_radius
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::prelude::{Rect, Vec2, Vec3};
+
+    use super::{
+        PlanetMarkerLabelKind, marker_clears_spherical_horizon,
+        planet_marker_label_priority, planet_marker_label_visible,
+        project_ndc_to_logical_viewport, triangle_area_weighted_centroid,
+    };
+
+    #[test]
+    fn raised_named_marker_can_be_seen_past_the_surface_horizon() {
+        let camera = Vec3::new(0.0, 0.0, 3_000.0);
+        let raised_far_side_anchor = Vec3::new(-1_992.0, 0.0, 1_150.0);
+
+        assert!(marker_clears_spherical_horizon(
+            camera,
+            raised_far_side_anchor,
+            2_000.0,
+        ));
+    }
+
+    #[test]
+    fn ordinary_far_side_surface_marker_is_hidden_by_the_sphere() {
+        assert!(!marker_clears_spherical_horizon(
+            Vec3::new(0.0, 0.0, 3_000.0),
+            Vec3::new(-1_732.0, 0.0, 1_000.0),
+            2_000.0,
+        ));
+    }
+
+    #[test]
+    fn a_near_side_marker_is_not_occluded_by_local_terrain() {
+        // The policy deliberately receives only the spherical radius; local
+        // terrain is not tested so named overlays remain readable through it.
+        assert!(marker_clears_spherical_horizon(
+            Vec3::new(0.0, 0.0, 3_000.0),
+            Vec3::new(1_800.0, 0.0, 1_000.0),
+            2_000.0,
+        ));
+    }
+
+    #[test]
+    fn projection_maps_ndc_into_the_camera_logical_viewport() {
+        let viewport = Rect::from_corners(Vec2::new(20.0, 10.0), Vec2::new(820.0, 610.0));
+
+        assert_eq!(
+            project_ndc_to_logical_viewport(Vec3::new(0.0, 0.0, 0.5), viewport),
+            Some(Vec2::new(420.0, 310.0)),
+        );
+        assert_eq!(
+            project_ndc_to_logical_viewport(Vec3::new(1.01, 0.0, 0.5), viewport),
+            None,
+        );
+        assert_eq!(
+            project_ndc_to_logical_viewport(Vec3::new(0.0, 0.0, -0.1), viewport),
+            None,
+        );
+    }
+
+    #[test]
+    fn marker_labels_follow_hover_zoom_and_priority_rules() {
+        assert!(planet_marker_label_visible(
+            PlanetMarkerLabelKind::Settlement,
+            false,
+            6_000.0,
+            2_000.0,
+        ));
+        assert!(!planet_marker_label_visible(
+            PlanetMarkerLabelKind::Region,
+            false,
+            6_000.0,
+            2_000.0,
+        ));
+        assert!(planet_marker_label_visible(
+            PlanetMarkerLabelKind::Region,
+            false,
+            4_000.0,
+            2_000.0,
+        ));
+        assert!(!planet_marker_label_visible(
+            PlanetMarkerLabelKind::Bridge,
+            false,
+            2_024.0,
+            2_000.0,
+        ));
+        assert!(planet_marker_label_visible(
+            PlanetMarkerLabelKind::Bridge,
+            true,
+            6_000.0,
+            2_000.0,
+        ));
+        assert_eq!(
+            planet_marker_label_priority(PlanetMarkerLabelKind::Explorer, false),
+            Some(0),
+        );
+        assert_eq!(
+            planet_marker_label_priority(PlanetMarkerLabelKind::SelectedDestination, false),
+            Some(1),
+        );
+        assert_eq!(
+            planet_marker_label_priority(PlanetMarkerLabelKind::Region, true),
+            Some(2),
+        );
+        assert_eq!(
+            planet_marker_label_priority(PlanetMarkerLabelKind::Settlement, false),
+            Some(3),
+        );
+        assert_eq!(
+            planet_marker_label_priority(PlanetMarkerLabelKind::Region, false),
+            Some(4),
+        );
+    }
+
+    #[test]
+    fn bridge_marker_uses_the_area_weighted_deck_center() {
+        let triangles = [
+            [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            [[10.0, 0.0, 0.0], [14.0, 0.0, 0.0], [10.0, 2.0, 0.0]],
+        ];
+
+        let center = triangle_area_weighted_centroid(&triangles).unwrap();
+
+        assert!(center.distance(Vec3::new(9.2, 0.6, 0.0)) < 0.001);
+    }
+}
