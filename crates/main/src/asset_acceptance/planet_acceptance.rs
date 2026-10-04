@@ -52,7 +52,6 @@ const ORBIT_RADIANS_PER_LOGICAL_PIXEL: f32 = 0.004;
 const SUN_TILT: f32 = 0.35;
 const MOVEMENT_TURN_SECONDS: f64 = 0.65;
 const MOVEMENT_CYCLE_SECONDS: f64 = 12.0;
-const DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL: f32 = 0.004;
 const DIAGNOSTIC_MINIMUM_COLLIDERS: usize = 100;
 const DIAGNOSTIC_STABLE_WORLD_FRAMES: u8 = 30;
 const DIAGNOSTIC_MAX_ENTRY_CAPTURE_LATE_SECONDS: f64 = 0.2;
@@ -620,14 +619,6 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
     );
 }
 
-fn opposite_side_drag(width: f32, height: f32) -> (Vec2, Vec2) {
-    let delta = (std::f32::consts::PI / DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL).ceil();
-    let start_x = (width - delta - 8.0).max(8.0);
-    let end_x = (start_x + delta).min(width - 8.0);
-    let y = height * 0.5;
-    (Vec2::new(start_x, y), Vec2::new(end_x, y))
-}
-
 fn drive_transition_diagnostic(world: &mut World) {
     if !acceptance_world_ready(world) {
         return;
@@ -791,15 +782,19 @@ fn drive_transition_diagnostic(world: &mut World) {
             .drag_started_at
             .expect("drag start time is set when drag begins");
         let drag_elapsed = elapsed - drag_started_at;
-        if let Some((start, end)) = diagnostic_cursor_path(world) {
+        if let Some(points) = diagnostic_cursor_path(world, diagnostic.drag_start_direction) {
             if drag_elapsed < DIAGNOSTIC_DRAG_DURATION_SECONDS {
                 let fraction =
                     (drag_elapsed / DIAGNOSTIC_DRAG_DURATION_SECONDS).clamp(0.0, 1.0) as f32;
-                set_primary_cursor(world, start.lerp(end, fraction));
+                if let Some(position) = sample_cursor_path(&points, fraction) {
+                    set_primary_cursor(world, position);
+                }
                 set_mouse_button(world, MouseButton::Left, true);
                 diagnostic.drag_input_frames = diagnostic.drag_input_frames.saturating_add(1);
             } else {
-                set_primary_cursor(world, end);
+                if let Some(end) = points.last().copied() {
+                    set_primary_cursor(world, end);
+                }
                 set_mouse_button(world, MouseButton::Left, false);
                 diagnostic.drag_finished = true;
                 diagnostic.drag_finished_at = Some(elapsed);
@@ -926,15 +921,19 @@ fn write_transition_diagnostic_configuration(
     });
     let drag = window
         .as_deref()
-        .and_then(|_| diagnostic_cursor_path(world))
-        .map(|(start, end)| {
+        .and_then(|_| diagnostic_cursor_path(world, diagnostic.drag_start_direction))
+        .map(|points| {
+            let start = points[0];
+            let end = points[points.len() - 1];
             format!(
-                "start=({:.2},{:.2}) end=({:.2},{:.2}) radians={:.5}",
+                "start=({:.2},{:.2}) end=({:.2},{:.2}) points={} net_cursor=({:.2},{:.2}) logical_pixels",
                 start.x,
                 start.y,
                 end.x,
                 end.y,
-                (end.x - start.x) * DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL
+                points.len(),
+                end.x - start.x,
+                end.y - start.y,
             )
         })
         .unwrap_or_else(|| "unavailable".into());
@@ -987,9 +986,20 @@ fn write_transition_diagnostic_configuration(
     }
 }
 
-fn diagnostic_cursor_path(world: &mut World) -> Option<(Vec2, Vec2)> {
+fn diagnostic_cursor_path(world: &mut World, start_direction: Vec3) -> Option<Vec<Vec2>> {
     let window = primary_window(world)?;
-    Some(opposite_side_drag(window.width(), window.height()))
+    super::diagnostic_drag::opposite_side_drag(start_direction, window.width(), window.height())
+}
+
+fn sample_cursor_path(points: &[Vec2], fraction: f32) -> Option<Vec2> {
+    let last = points.len().checked_sub(1)?;
+    if last == 0 {
+        return points.first().copied();
+    }
+    let position = fraction.clamp(0.0, 1.0) * last as f32;
+    let index = (position.floor() as usize).min(last);
+    let next = (index + 1).min(last);
+    Some(points[index].lerp(points[next], position.fract()))
 }
 
 fn set_primary_cursor(world: &mut World, position: Vec2) {
@@ -3268,19 +3278,165 @@ fn csv(value: &str) -> String {
 mod transition_diagnostic_tests {
     use super::{
         DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup,
-        opposite_side_drag, radius_motion_flags, transition_action_due,
+        radius_motion_flags, transition_action_due,
     };
+    use bevy::{
+        input::InputSystems,
+        prelude::*,
+        window::{PrimaryWindow, WindowResolution},
+    };
+    use shared::planet_view::PLANET_VIEW_FAR_RADIUS;
+
+    use crate::{exploration::Exploration, map::MainCamera};
+
+    #[derive(Resource)]
+    struct InjectedCursorPath {
+        points: Vec<Vec2>,
+        next: usize,
+    }
+
+    fn inject_cursor_path(
+        mut path: ResMut<InjectedCursorPath>,
+        mut windows: Query<&mut Window, With<PrimaryWindow>>,
+        mut mouse: ResMut<ButtonInput<MouseButton>>,
+    ) {
+        let Ok(mut window) = windows.single_mut() else {
+            return;
+        };
+        mouse.clear_just_pressed(MouseButton::Left);
+        if let Some(position) = path.points.get(path.next).copied() {
+            window.set_cursor_position(Some(position));
+            mouse.press(MouseButton::Left);
+            path.next += 1;
+        } else {
+            window.set_cursor_position(path.points.last().copied());
+            mouse.release(MouseButton::Left);
+        }
+    }
+
+    fn production_pointer_drag_dot(points: Vec<Vec2>, start_direction: Vec3) -> f32 {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        app.world_mut().spawn((
+            PrimaryWindow,
+            Window {
+                resolution: WindowResolution::new(2560, 1440).with_scale_factor_override(2.0),
+                ..default()
+            },
+        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, 2005.0, -5.0)
+                    .looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..180 {
+            app.update();
+        }
+
+        let start_direction = start_direction.normalize();
+        let start_pose = Transform::from_translation(start_direction * PLANET_VIEW_FAR_RADIUS)
+            .looking_at(Vec3::ZERO, Vec3::Y);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .toggle_planet_view_follow(start_pose);
+        *app.world_mut()
+            .entity_mut(camera)
+            .get_mut::<Transform>()
+            .expect("main camera transform") = start_pose;
+        for _ in 0..180 {
+            app.update();
+        }
+        let actual_start = app
+            .world()
+            .entity(camera)
+            .get::<Transform>()
+            .expect("main camera transform")
+            .translation
+            .normalize();
+        assert!(actual_start.dot(start_direction) > 0.999);
+
+        app.insert_resource(InjectedCursorPath { points, next: 0 });
+        app.add_systems(
+            PreUpdate,
+            inject_cursor_path
+                .after(InputSystems)
+                .before(crate::exploration::ExplorationInput),
+        );
+        let path_frames = app.world().resource::<InjectedCursorPath>().points.len() + 1;
+        for _ in 0..path_frames {
+            app.update();
+        }
+        for _ in 0..180 {
+            app.update();
+        }
+
+        let actual_end = app
+            .world()
+            .entity(camera)
+            .get::<Transform>()
+            .expect("main camera transform")
+            .translation
+            .normalize();
+        actual_start.dot(actual_end)
+    }
 
     #[test]
-    fn diagnostic_drag_crosses_to_the_opposite_hemisphere_inside_the_window() {
+    fn opposite_side_drag_reaches_antipode_through_scale_two_production_pointer_input() {
+        let start_direction = Vec3::new(-0.6714, -0.7367, 0.0806).normalize();
+        let points =
+            super::super::diagnostic_drag::opposite_side_drag(start_direction, 1280.0, 720.0)
+                .expect("scale-two logical viewport can contain the orbit path");
+        let dot = production_pointer_drag_dot(points, start_direction);
+
+        assert!(
+            dot < -0.995,
+            "production pointer path ended at dot {dot} instead of the antipode"
+        );
+    }
+
+    #[test]
+    fn opposite_side_drag_reaches_antipode_in_twenty_nine_production_pointer_frames() {
+        let start_direction = Vec3::new(-0.6714, -0.7367, 0.0806).normalize();
+        let path =
+            super::super::diagnostic_drag::opposite_side_drag(start_direction, 1280.0, 720.0)
+                .expect("scale-two logical viewport can contain the orbit path");
+        let points = (0..29)
+            .map(|frame| {
+                super::sample_cursor_path(&path, frame as f32 / 28.0)
+                    .expect("the complete path is available")
+            })
+            .collect();
+        let dot = production_pointer_drag_dot(points, start_direction);
+
+        assert!(
+            dot < -0.995,
+            "29-frame production pointer path ended at dot {dot} instead of the antipode"
+        );
+    }
+
+    #[test]
+    fn diagnostic_drag_plan_uses_incremental_points_inside_the_window() {
         let width = 1280.0;
         let height = 720.0;
-        let (start, end) = opposite_side_drag(width, height);
+        let points = super::super::diagnostic_drag::opposite_side_drag(
+            Vec3::new(-0.6714, -0.7367, 0.0806),
+            width,
+            height,
+        )
+        .expect("viewport can contain the planned orbit");
 
-        assert!(start.x > 0.0 && end.x < width);
-        assert!(start.y > 0.0 && start.y < height);
-        assert_eq!(start.y, end.y);
-        assert!((end.x - start.x) * 0.004 >= std::f32::consts::PI);
+        assert_eq!(points.len(), 257);
+        assert!(points.iter().all(|point| {
+            point.x >= 8.0 && point.x <= width - 8.0 && point.y >= 8.0 && point.y <= height - 8.0
+        }));
+        assert!(points[0].distance(points[1]) > 0.0);
+        assert!(points[points.len() - 1].distance(points[0]) > 700.0);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use bevy::{
 use shared::{level::LevelData, sphere::SpherePos, state::AppState, terrain::Terrain};
 use std::path::PathBuf;
 
+mod diagnostic_drag;
 mod planet_acceptance;
 
 pub struct AssetAcceptancePlugin;
