@@ -17,6 +17,12 @@ const CAMERA_CLEARANCE: f32 = 5.0;
 const TRANSIT_CLEARANCE: f32 = 350.0;
 const OPENING_SECONDS: f32 = 1.4;
 const RETURN_SECONDS: f32 = 1.8;
+const EXTRA_FAR_RETURN_SECONDS: f32 = 0.6;
+// Small course changes can close directly without waiting at the transit shell.
+const DIRECT_RETURN_MAX_ANGLE: f32 = 45.0_f32.to_radians();
+const MOTION_RESET_LINEAR_SPEED: f32 = 50_000.0;
+const MOTION_RESET_ANGULAR_SPEED: f32 = 30.0;
+const INTERRUPTION_RELEASE_SECONDS: f32 = 0.3;
 const VIEW_RESPONSE: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,10 +38,13 @@ enum Phase {
 struct Transition {
     from: Transform,
     from_direction: Vec3,
+    from_linear_velocity: Vec3,
+    from_angular_velocity: Vec3,
     elapsed: f32,
     duration: f32,
     opening: bool,
     transit_radius: f32,
+    direct_return: bool,
 }
 
 /// Requested and attained camera framing for Planet view.
@@ -55,6 +64,11 @@ pub struct PlanetViewCamera {
     attained_radius: f32,
     detached_direction: Vec3,
     detached_heading: Vec3,
+    // Previous runtime-accepted pose; the next update measures motion from it
+    // so interrupted transitions inherit actual, collision-constrained motion.
+    last_motion_pose: Option<Transform>,
+    last_linear_velocity: Vec3,
+    last_angular_velocity: Vec3,
     transition: Option<Transition>,
 }
 
@@ -70,6 +84,9 @@ impl Default for PlanetViewCamera {
             attained_radius: PLANET_RADIUS,
             detached_direction: Vec3::Y,
             detached_heading: Vec3::NEG_Z,
+            last_motion_pose: None,
+            last_linear_velocity: Vec3::ZERO,
+            last_angular_velocity: Vec3::ZERO,
             transition: None,
         }
     }
@@ -277,6 +294,26 @@ impl PlanetViewCamera {
         delta_seconds: f32,
         surface_radius: f32,
     ) -> Transform {
+        if delta_seconds > 1e-6
+            && let Some(previous) = self.last_motion_pose
+        {
+            let translation_delta = current.translation - previous.translation;
+            let delta_rotation = previous.rotation.inverse() * current.rotation;
+            let (axis, angle) = delta_rotation.to_axis_angle();
+            let position_speed = translation_delta.length() / delta_seconds;
+            let angular_speed = angle / delta_seconds;
+            if position_speed > MOTION_RESET_LINEAR_SPEED
+                || angular_speed > MOTION_RESET_ANGULAR_SPEED
+            {
+                self.last_linear_velocity = Vec3::ZERO;
+                self.last_angular_velocity = Vec3::ZERO;
+            } else {
+                self.last_linear_velocity = translation_delta / delta_seconds;
+                self.last_angular_velocity = axis * angular_speed;
+            }
+        }
+        self.last_motion_pose = Some(current);
+
         let transitioning_to_open = self.transition.map_or(
             self.phase == Phase::Opening || self.phase == Phase::Browsing,
             |t| t.opening,
@@ -298,23 +335,31 @@ impl PlanetViewCamera {
             let from_direction = current
                 .translation
                 .normalize_or(controlled_position.normalize_or(Vec3::Y));
+            let chase_direction = chase
+                .translation
+                .normalize_or(controlled_position.normalize_or(Vec3::Y));
+            let return_angle = from_direction.angle_between(chase_direction);
+            let direct_return = !opening && return_angle <= DIRECT_RETURN_MAX_ANGLE;
             if !retain_orbit_target {
                 self.detached_direction = from_direction;
             }
             self.transition = Some(Transition {
                 from: current,
                 from_direction,
+                from_linear_velocity: self.last_linear_velocity,
+                from_angular_velocity: self.last_angular_velocity,
                 elapsed: 0.0,
                 duration: if opening {
                     OPENING_SECONDS
                 } else {
-                    RETURN_SECONDS
+                    return_duration(return_angle)
                 },
                 opening,
                 transit_radius: current
                     .translation
                     .length()
                     .max(PLANET_RADIUS + TRANSIT_CLEARANCE),
+                direct_return,
             });
         }
 
@@ -343,29 +388,55 @@ impl PlanetViewCamera {
             };
             let transform = if transition.opening {
                 let target = planet_pose(direction, requested_radius, target_heading);
-                smooth_planet_pose(
-                    current,
+                let mut result = smooth_planet_pose(
+                    transition.from,
                     target,
                     eased,
                     surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE,
-                )
+                );
+                result.translation = carry_initial_linear_velocity(
+                    result.translation,
+                    transition.from_linear_velocity,
+                    transition.elapsed,
+                    surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE,
+                );
+                result.rotation = carry_initial_angular_velocity(
+                    result.rotation,
+                    transition.from_angular_velocity,
+                    transition.elapsed,
+                );
+                result
             } else {
                 let chase_direction = chase
                     .translation
                     .normalize_or(controlled_position.normalize_or(Vec3::Y));
-                let (radial, radius) = return_path(
+                let (radial, radius, frame_progress, chase_blend) = return_path(
                     transition.from_direction,
                     chase_direction,
                     transition.from.translation.length(),
                     transition.transit_radius.max(minimum_radius),
                     chase.translation.length(),
                     linear,
+                    transition.direct_return,
                 );
                 let path_position = radial * radius;
-                let final_approach = smoothstep(((linear - 0.94) / 0.06).clamp(0.0, 1.0));
+                let path_rotation =
+                    radial_rotation(transition.from_direction, chase_direction, frame_progress)
+                        * transition.from.rotation;
+                let minimum_radius = surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE;
+                let translation = carry_initial_linear_velocity(
+                    path_position.lerp(chase.translation, chase_blend),
+                    transition.from_linear_velocity,
+                    transition.elapsed,
+                    minimum_radius,
+                );
                 Transform {
-                    translation: path_position.lerp(chase.translation, final_approach),
-                    rotation: transition.from.rotation.slerp(chase.rotation, eased),
+                    translation,
+                    rotation: carry_initial_angular_velocity(
+                        path_rotation.slerp(chase.rotation, chase_blend),
+                        transition.from_angular_velocity,
+                        transition.elapsed,
+                    ),
                     ..default()
                 }
             };
@@ -388,7 +459,7 @@ impl PlanetViewCamera {
         } else {
             self.phase = Phase::Chase;
             self.attained_radius = chase.translation.length();
-            return chase;
+            chase
         };
 
         self.attained_radius = result.translation.length();
@@ -461,12 +532,17 @@ fn tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
 
 fn radial_slerp(from: Vec3, to: Vec3, amount: f32) -> Vec3 {
     let from = from.normalize_or(Vec3::Y);
+    (radial_rotation(from, to, amount) * from).normalize()
+}
+
+fn radial_rotation(from: Vec3, to: Vec3, amount: f32) -> Quat {
+    let from = from.normalize_or(Vec3::Y);
     let to = to.normalize_or(from);
     if from.dot(to) < -0.9999 {
         let axis = from.any_orthonormal_vector();
-        return (Quat::from_axis_angle(axis, std::f32::consts::PI * amount) * from).normalize();
+        return Quat::from_axis_angle(axis, std::f32::consts::PI * amount);
     }
-    (Quat::IDENTITY.slerp(Quat::from_rotation_arc(from, to), amount) * from).normalize()
+    Quat::IDENTITY.slerp(Quat::from_rotation_arc(from, to), amount)
 }
 
 fn return_path(
@@ -476,22 +552,87 @@ fn return_path(
     transit_radius: f32,
     to_radius: f32,
     progress: f32,
-) -> (Vec3, f32) {
-    const RISE_END: f32 = 0.2;
-    const SWING_END: f32 = 0.8;
+    direct: bool,
+) -> (Vec3, f32, f32, f32) {
+    if direct {
+        let amount = smoothstep(progress);
+        return (
+            radial_slerp(from_direction, to_direction, amount),
+            lerp(from_radius, to_radius, amount),
+            amount,
+            amount,
+        );
+    }
+
+    const RISE_END: f32 = 0.15;
+    const SWING_END: f32 = 0.75;
     if progress < RISE_END {
         let amount = smoothstep(progress / RISE_END);
-        (from_direction, lerp(from_radius, transit_radius, amount))
+        (
+            from_direction,
+            lerp(from_radius, transit_radius, amount),
+            0.0,
+            0.0,
+        )
     } else if progress < SWING_END {
         let amount = smoothstep((progress - RISE_END) / (SWING_END - RISE_END));
         (
             radial_slerp(from_direction, to_direction, amount),
             transit_radius,
+            amount,
+            0.0,
         )
     } else {
         let amount = smoothstep((progress - SWING_END) / (1.0 - SWING_END));
-        (to_direction, lerp(transit_radius, to_radius, amount))
+        (
+            to_direction,
+            lerp(transit_radius, to_radius, amount),
+            1.0,
+            amount,
+        )
     }
+}
+
+fn return_duration(angle: f32) -> f32 {
+    // Long radial swings earn extra time instead of accelerating the same
+    // half-globe route into the final chase alignment.
+    RETURN_SECONDS + (angle / std::f32::consts::PI).clamp(0.0, 1.0) * EXTRA_FAR_RETURN_SECONDS
+}
+
+fn carry_initial_angular_velocity(rotation: Quat, velocity: Vec3, elapsed: f32) -> Quat {
+    let correction_seconds = initial_velocity_correction_seconds(elapsed);
+    if velocity.length_squared() <= 1e-8 || correction_seconds <= 0.0 {
+        return rotation;
+    }
+    rotation * Quat::from_scaled_axis(velocity * correction_seconds)
+}
+
+fn carry_initial_linear_velocity(
+    position: Vec3,
+    velocity: Vec3,
+    elapsed: f32,
+    minimum_radius: f32,
+) -> Vec3 {
+    let correction_seconds = initial_velocity_correction_seconds(elapsed);
+    if velocity.length_squared() <= 1e-8 || correction_seconds <= 0.0 {
+        return position;
+    }
+    let carried = position + velocity * correction_seconds;
+    if carried.length() < minimum_radius {
+        carried.normalize_or(position.normalize_or(Vec3::Y)) * minimum_radius
+    } else {
+        carried
+    }
+}
+
+fn initial_velocity_correction_seconds(elapsed: f32) -> f32 {
+    if elapsed <= 0.0 || elapsed >= INTERRUPTION_RELEASE_SECONDS {
+        return 0.0;
+    }
+    let progress = elapsed / INTERRUPTION_RELEASE_SECONDS;
+    // This finite pulse matches the incoming velocity at the interruption,
+    // then rejoins the eased path with zero offset and zero slope.
+    elapsed * (1.0 - progress).powi(2)
 }
 
 fn smoothstep(value: f32) -> f32 {
