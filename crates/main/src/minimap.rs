@@ -302,6 +302,8 @@ pub(crate) fn consume_planet_view_destination_click(
     world_epoch: Option<Res<WorldEpoch>>,
     terrain: Option<Res<TerrainGen>>,
     regions: Option<Res<LevelRegions>>,
+    projection: Option<Res<crate::planet_markers::PlanetMarkerProjection>>,
+    marker_layers: Option<Res<crate::planet_markers::PlanetMarkerLayers>>,
     cameras: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
     let Some(cursor) = state.take_planet_view_selection() else {
@@ -315,6 +317,18 @@ pub(crate) fn consume_planet_view_destination_click(
     else {
         return;
     };
+    if let (Some(projection), Some(marker_layers)) =
+        (projection.as_deref(), marker_layers.as_deref())
+        && crate::planet_markers::select_named_marker_at(
+            &mut state,
+            *world_epoch,
+            Some(projection),
+            marker_layers,
+            cursor,
+        )
+    {
+        return;
+    }
     let bridge_surfaces = regions
         .as_deref()
         .map(|regions| &regions.bridge_top_surfaces_by_name);
@@ -358,8 +372,12 @@ pub(crate) fn map_camera_surface_hit(
     terrain: &TerrainGen,
     bridge_surfaces: Option<&std::collections::BTreeMap<String, Vec<[[f32; 3]; 3]>>>,
 ) -> Option<MapSurfaceHit> {
+    let scale_factor = camera
+        .target_scaling_factor()
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .unwrap_or(1.0);
     let ray = camera
-        .viewport_to_world(camera_transform, physical_cursor)
+        .viewport_to_world(camera_transform, physical_cursor / scale_factor)
         .ok()?;
     map_click_surface_hit(
         ray.origin,
@@ -1014,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn main_camera_center_ray_selects_the_visible_bridge_deck() {
+    fn main_camera_center_ray_selects_the_visible_bridge_deck_at_non_unit_scale() {
         let MapSurfaceFixture {
             terrain,
             bridge_surfaces,
@@ -1034,6 +1052,7 @@ mod tests {
         let tangent = deck_up.cross(Vec3::Y).normalize_or(Vec3::X);
         let camera_position = deck_point + deck_up * SURFACE_PICKING_ALTITUDE + tangent * 500.0;
         let size = UVec2::new(1280, 720);
+        let scale_factor = 2.0;
         let viewport = bevy::camera::Viewport {
             physical_size: size,
             ..default()
@@ -1045,9 +1064,9 @@ mod tests {
         };
         camera.computed.target_info = Some(bevy::camera::RenderTargetInfo {
             physical_size: size,
-            scale_factor: 1.0,
+            scale_factor,
         });
-        projection.update(size.x as f32, size.y as f32);
+        projection.update(size.x as f32 / scale_factor, size.y as f32 / scale_factor);
         camera.computed.clip_from_view = projection.get_clip_from_view();
         let camera_transform = GlobalTransform::from(
             Transform::from_translation(camera_position).looking_at(deck_point, deck_up),

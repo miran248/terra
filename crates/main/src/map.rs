@@ -370,6 +370,11 @@ pub(crate) fn setup_map(
     let level = LevelData::from_artifact_bytes(level_bytes)
         .expect("deserialize level artifact; regenerate it with `cargo run -p gen_level`");
     level.validate().expect("validate level binary");
+    let settlement_marker_anchors = level
+        .settlements
+        .iter()
+        .map(|settlement| Vec3::from_array(settlement.pos).normalize_or_zero())
+        .collect::<Vec<_>>();
 
     commands.insert_resource(PlayerHp(PLAYER_HP));
     // The level carries the SOLVED elevation field the mesh was baked from, so
@@ -479,7 +484,11 @@ pub(crate) fn setup_map(
 
     let bridge_color = Color::srgb(0.35, 0.25, 0.18).to_linear();
     let mut bridge_top_surfaces_by_name = std::collections::BTreeMap::new();
+    let mut bridge_marker_anchors = Vec::new();
+    let mut bridge_index = 0_u32;
     for road in level.roads.iter().filter(|r| r.kind == RoadKind::Bridge) {
+        let marker_index = bridge_index;
+        bridge_index = bridge_index.saturating_add(1);
         let span: Vec<shared::sphere::SpherePos> = road
             .points
             .iter()
@@ -488,6 +497,15 @@ pub(crate) fn setup_map(
         let deck = shared::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
         if deck.triangles.is_empty() {
             continue;
+        }
+        if let Some(position) =
+            shared::planet_markers::triangle_area_weighted_centroid(&deck.top_surface)
+        {
+            bridge_marker_anchors.push(crate::planet_markers::BridgeMarkerAnchor {
+                index: marker_index,
+                name: road.name.clone(),
+                position,
+            });
         }
         let samples = shared::roads::sample_surface_road_path(
             &span,
@@ -672,6 +690,10 @@ pub(crate) fn setup_map(
             .map(|settlement| (settlement.name.clone(), settlement.kind))
             .collect(),
         bridge_top_surfaces_by_name,
+    });
+    commands.insert_resource(crate::planet_markers::PlanetMarkerAnchors {
+        settlements: settlement_marker_anchors,
+        bridges: bridge_marker_anchors,
     });
     commands.insert_resource(LevelBlends(
         level
