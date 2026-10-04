@@ -131,7 +131,10 @@ pub(super) fn camera(
     let planet_view_active = state.planet_camera.is_active();
     let up = position.normalize();
     let desired = up * height - heading * back;
-    let snap = state.snap_camera || chase.target.is_none();
+    let snap = !planet_view_active && (state.snap_camera || chase.target.is_none());
+    if planet_view_active && state.snap_camera {
+        state.snap_camera = false;
+    }
     if snap {
         chase.offset = desired;
         chase.distance = desired.length();
@@ -183,10 +186,11 @@ pub(super) fn camera(
         rotation: chase.rotation,
         ..default()
     };
+    let view_direction = state.planet_camera.view_direction(position);
     let surface_radius = surface
         .as_deref()
         .map_or(shared::sphere::PLANET_RADIUS, |terrain| {
-            terrain.surface_radius(shared::sphere::SpherePos::new(up))
+            terrain.surface_radius(shared::sphere::SpherePos::new(view_direction))
         });
     let mut planet_pose = state.planet_camera.update(
         current_camera,

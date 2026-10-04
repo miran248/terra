@@ -17,6 +17,8 @@ const CAMERA_CLEARANCE: f32 = 5.0;
 const TRANSIT_CLEARANCE: f32 = 350.0;
 const OPENING_SECONDS: f32 = 1.4;
 const RETURN_SECONDS: f32 = 1.8;
+const OPENING_RESPONSE: f32 = 3.0;
+const VIEW_RESPONSE: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
@@ -47,10 +49,12 @@ struct Transition {
 pub struct PlanetViewCamera {
     phase: Phase,
     requested_open: bool,
+    resume_on_open: bool,
     follow: bool,
     requested_radius: f32,
     attained_radius: f32,
     detached_direction: Vec3,
+    detached_heading: Vec3,
     transition: Option<Transition>,
 }
 
@@ -59,10 +63,12 @@ impl Default for PlanetViewCamera {
         Self {
             phase: Phase::Chase,
             requested_open: false,
+            resume_on_open: false,
             follow: true,
             requested_radius: PLANET_VIEW_FAR_RADIUS,
             attained_radius: PLANET_RADIUS,
             detached_direction: Vec3::Y,
+            detached_heading: Vec3::NEG_Z,
             transition: None,
         }
     }
@@ -72,11 +78,13 @@ impl PlanetViewCamera {
     /// Toggle entry or return. Reversals begin at the current rendered pose.
     pub fn toggle(&mut self) {
         self.requested_open = !self.requested_open;
+        self.resume_on_open = false;
     }
 
     /// Request a return to the gameplay chase camera.
     pub fn close(&mut self) {
         self.requested_open = false;
+        self.resume_on_open = false;
     }
 
     /// Whether the view is open or transitioning toward open.
@@ -102,6 +110,24 @@ impl PlanetViewCamera {
     /// The radius currently attained by the camera policy.
     pub fn attained_radius(&self) -> f32 {
         self.attained_radius
+    }
+
+    /// The attained camera distance normalized between settlement and
+    /// whole-planet framing. Clearance constraints are reflected in this value.
+    pub fn normalized_attained_zoom(&self) -> f32 {
+        ((self.attained_radius - PLANET_VIEW_NEAR_RADIUS)
+            / (PLANET_VIEW_FAR_RADIUS - PLANET_VIEW_NEAR_RADIUS))
+            .clamp(0.0, 1.0)
+    }
+
+    /// The currently intended radial view direction for terrain clearance.
+    pub fn view_direction(&self, controlled_position: Vec3) -> Vec3 {
+        if self.follow {
+            controlled_position.normalize_or(Vec3::Y)
+        } else {
+            self.detached_direction
+                .normalize_or(controlled_position.normalize_or(Vec3::Y))
+        }
     }
 
     /// Keep a blocked transition at its last requested time step.
@@ -144,6 +170,10 @@ impl PlanetViewCamera {
     pub fn zoom_by(&mut self, multiplier: f32) {
         if multiplier.is_finite() && multiplier > 0.0 {
             self.request_radius(self.requested_radius * multiplier);
+            if self.is_active() && !self.requested_open {
+                self.requested_open = true;
+                self.resume_on_open = true;
+            }
         }
     }
 
@@ -157,6 +187,7 @@ impl PlanetViewCamera {
         self.follow = false;
         if current_direction.is_finite() && current_direction.length_squared() > 1e-8 {
             self.detached_direction = current_direction.normalize();
+            self.detached_heading = tangent_heading(self.detached_heading, self.detached_direction);
         }
     }
 
@@ -165,15 +196,51 @@ impl PlanetViewCamera {
         if !delta.is_finite() || delta == Vec2::ZERO {
             return;
         }
-        let direction = self.detached_direction.normalize_or(Vec3::Y);
-        let east = Vec3::Y
-            .cross(direction)
-            .normalize_or(direction.any_orthonormal_vector());
-        let north = direction.cross(east).normalize_or(Vec3::Z);
-        let yaw = Quat::from_axis_angle(north, -delta.x);
-        let yawed = yaw * direction;
-        let orbited = Quat::from_axis_angle(yaw * east, delta.y) * yawed;
-        self.detach(orbited);
+        let (direction, rotation) = orbit_transform(self.detached_direction, delta);
+        self.detached_direction = direction;
+        self.detached_heading = tangent_heading(rotation * self.detached_heading, direction);
+        self.follow = false;
+        if self.is_active() && !self.requested_open {
+            self.requested_open = true;
+            self.resume_on_open = true;
+        }
+    }
+
+    /// Apply an incremental orbit from the attained camera pose. The first
+    /// drag therefore starts from the current followed or returning direction,
+    /// while later deltas accumulate on the detached target.
+    pub fn orbit_from(&mut self, current: Transform, delta: Vec2) {
+        if !delta.is_finite() || delta == Vec2::ZERO {
+            return;
+        }
+        let current_direction = current
+            .translation
+            .normalize_or(self.detached_direction.normalize_or(Vec3::Y));
+        let returning = self.phase == Phase::Returning
+            || self
+                .transition
+                .is_some_and(|transition| !transition.opening);
+        let direction = if self.follow || returning {
+            current_direction
+        } else {
+            self.detached_direction.normalize_or(current_direction)
+        };
+        let heading = if self.follow || returning {
+            tangent_heading(current.rotation * Vec3::Y, direction)
+        } else {
+            tangent_heading(self.detached_heading, direction)
+        };
+        let (direction, rotation) = orbit_transform(direction, delta);
+        self.detached_direction = direction;
+        self.detached_heading = tangent_heading(rotation * heading, direction);
+        self.follow = false;
+        if self.phase == Phase::Chase {
+            self.requested_radius = PLANET_VIEW_FAR_RADIUS;
+        }
+        if !self.requested_open {
+            self.requested_open = true;
+            self.resume_on_open = true;
+        }
     }
 
     /// Update the main-camera pose from current gameplay and world inputs.
@@ -196,8 +263,11 @@ impl PlanetViewCamera {
         if self.requested_open != transitioning_to_open {
             let opening = self.requested_open;
             if opening {
-                self.follow = true;
-                self.requested_radius = PLANET_VIEW_FAR_RADIUS;
+                if !self.resume_on_open {
+                    self.follow = true;
+                    self.requested_radius = PLANET_VIEW_FAR_RADIUS;
+                }
+                self.resume_on_open = false;
                 self.phase = Phase::Opening;
             } else {
                 self.phase = Phase::Returning;
@@ -224,6 +294,10 @@ impl PlanetViewCamera {
         }
 
         let focus = controlled_position.normalize_or(Vec3::Y);
+        if self.follow {
+            self.detached_direction = focus;
+            self.detached_heading = tangent_heading(controlled_heading, focus);
+        }
         let direction = if self.follow {
             focus
         } else {
@@ -237,17 +311,19 @@ impl PlanetViewCamera {
                 (transition.elapsed + delta_seconds.max(0.0)).min(transition.duration);
             let linear = (transition.elapsed / transition.duration).clamp(0.0, 1.0);
             let eased = smoothstep(linear);
-            let target_heading = tangent_heading(controlled_heading, direction);
-            let target_rotation = planet_rotation(direction, target_heading);
+            let target_heading = if self.follow {
+                tangent_heading(controlled_heading, direction)
+            } else {
+                tangent_heading(self.detached_heading, direction)
+            };
             let transform = if transition.opening {
-                let radial = radial_slerp(transition.from_direction, direction, eased);
-                let start_radius = transition.from.translation.length();
-                let radius = lerp(start_radius, requested_radius, eased);
-                Transform {
-                    translation: radial * radius,
-                    rotation: transition.from.rotation.slerp(target_rotation, eased),
-                    ..default()
-                }
+                let target = planet_pose(direction, requested_radius, target_heading);
+                smooth_planet_pose(
+                    current,
+                    target,
+                    response(OPENING_RESPONSE, delta_seconds),
+                    surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE,
+                )
             } else {
                 let chase_direction = chase
                     .translation
@@ -272,9 +348,18 @@ impl PlanetViewCamera {
             transform
         } else if self.requested_open {
             self.phase = Phase::Browsing;
-            let radius = requested_radius;
-            let heading = tangent_heading(controlled_heading, direction);
-            planet_pose(direction, radius, heading)
+            let heading = if self.follow {
+                tangent_heading(controlled_heading, direction)
+            } else {
+                tangent_heading(self.detached_heading, direction)
+            };
+            let target = planet_pose(direction, requested_radius, heading);
+            smooth_planet_pose(
+                current,
+                target,
+                response(VIEW_RESPONSE, delta_seconds),
+                surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE,
+            )
         } else {
             self.phase = Phase::Chase;
             self.attained_radius = chase.translation.length();
@@ -298,6 +383,46 @@ fn planet_rotation(direction: Vec3, heading: Vec3) -> Quat {
     Transform::from_translation(direction * PLANET_VIEW_FAR_RADIUS)
         .looking_at(Vec3::ZERO, heading)
         .rotation
+}
+
+fn orbit_transform(direction: Vec3, delta: Vec2) -> (Vec3, Quat) {
+    let direction = direction.normalize_or(Vec3::Y);
+    let east = Vec3::Y
+        .cross(direction)
+        .normalize_or(direction.any_orthonormal_vector());
+    let north = direction.cross(east).normalize_or(Vec3::Z);
+    let yaw = Quat::from_axis_angle(north, -delta.x);
+    let orbit = Quat::from_axis_angle(yaw * east, delta.y) * yaw;
+    ((orbit * direction).normalize_or(direction), orbit)
+}
+
+fn smooth_planet_pose(from: Transform, to: Transform, amount: f32, inner_radius: f32) -> Transform {
+    let from_radius = from.translation.length();
+    let target_radius = to.translation.length();
+    let radius = lerp(from_radius, target_radius, amount);
+    let from_direction = from.translation.normalize_or(Vec3::Y);
+    let target_direction = to.translation.normalize_or(from_direction);
+    let angle = from_direction.angle_between(target_direction);
+    let safe_radius = from_radius.min(radius);
+    let maximum_chord_angle = if safe_radius > inner_radius {
+        2.0 * (inner_radius / safe_radius).clamp(0.0, 1.0).acos()
+    } else {
+        0.0
+    };
+    let angular_amount = if angle > 1e-6 {
+        (amount * angle).min(maximum_chord_angle) / angle
+    } else {
+        amount
+    };
+    Transform {
+        translation: radial_slerp(from_direction, target_direction, angular_amount) * radius,
+        rotation: from.rotation.slerp(to.rotation, amount),
+        ..default()
+    }
+}
+
+fn response(rate: f32, delta_seconds: f32) -> f32 {
+    (1.0 - (-rate * delta_seconds.max(0.0)).exp()).clamp(0.0, 1.0)
 }
 
 fn tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
@@ -351,4 +476,185 @@ fn smoothstep(value: f32) -> f32 {
 
 fn lerp(from: f32, to: f32, amount: f32) -> f32 {
     from + (to - from) * amount
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zooming_during_return_resumes_view_without_detaching_follow() {
+        let controlled_position = Vec3::Y * PLANET_RADIUS;
+        let chase = Transform::from_xyz(0.0, PLANET_RADIUS + 5.0, -5.0)
+            .looking_at(controlled_position, Vec3::Y);
+        let mut current = chase;
+        let mut camera = PlanetViewCamera::default();
+        camera.toggle();
+        for _ in 0..120 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+
+        camera.close();
+        for _ in 0..20 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+        }
+        let before_zoom = current;
+
+        let requested = camera.requested_radius() * 0.8;
+        camera.zoom_by(0.8);
+        assert!(camera.is_requested_open());
+        assert!(camera.follows_body());
+        assert_eq!(camera.requested_radius(), requested);
+        let after_zoom = camera.update(
+            before_zoom,
+            chase,
+            controlled_position,
+            Vec3::NEG_Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        assert!(after_zoom.translation.distance(before_zoom.translation) < 100.0);
+        assert_eq!(camera.requested_radius(), requested);
+    }
+
+    #[test]
+    fn first_orbit_uses_the_attained_follow_pose() {
+        let controlled_position = Vec3::Y * PLANET_RADIUS;
+        let chase = Transform::from_xyz(PLANET_RADIUS + 5.0, 0.0, 0.0)
+            .looking_at(controlled_position, Vec3::Y);
+        let mut current = chase;
+        let mut camera = PlanetViewCamera::default();
+        camera.toggle();
+        for _ in 0..120 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+        assert!(current.translation.normalize().dot(Vec3::Y) > 0.999);
+        assert!(camera.follows_body());
+
+        let before_orbit = current;
+        camera.orbit_from(before_orbit, Vec2::new(0.01, 0.0));
+        assert!(!camera.follows_body());
+        assert!(camera.is_requested_open());
+        let after_orbit = camera.update(
+            before_orbit,
+            chase,
+            controlled_position,
+            Vec3::NEG_Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+
+        assert!(after_orbit.translation.distance(before_orbit.translation) < 100.0);
+        assert!(after_orbit.translation.length() > PLANET_RADIUS * 2.0);
+    }
+
+    #[test]
+    fn requested_zoom_approaches_its_distance_smoothly() {
+        let controlled_position = Vec3::Y * PLANET_RADIUS;
+        let chase = Transform::from_xyz(0.0, PLANET_RADIUS + 5.0, -5.0)
+            .looking_at(controlled_position, Vec3::Y);
+        let mut current = chase;
+        let mut camera = PlanetViewCamera::default();
+        camera.toggle();
+        for _ in 0..120 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+        let before_zoom = current;
+        camera.zoom_by(0.5);
+
+        let first_zoom_step = camera.update(
+            before_zoom,
+            chase,
+            controlled_position,
+            Vec3::NEG_Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        assert!(
+            before_zoom
+                .translation
+                .distance(first_zoom_step.translation)
+                < 1000.0
+        );
+        assert!(camera.normalized_attained_zoom() > 0.7);
+        camera.record_attained_radius((PLANET_VIEW_NEAR_RADIUS + PLANET_VIEW_FAR_RADIUS) / 2.0);
+        assert!((camera.normalized_attained_zoom() - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn detached_view_keeps_its_heading_when_the_body_turns() {
+        let controlled_position = Vec3::Y * PLANET_RADIUS;
+        let chase = Transform::from_xyz(0.0, PLANET_RADIUS + 5.0, -5.0)
+            .looking_at(controlled_position, Vec3::Y);
+        let mut current = chase;
+        let mut camera = PlanetViewCamera::default();
+        camera.toggle();
+        for _ in 0..120 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+        camera.orbit_from(current, Vec2::new(0.04, -0.02));
+        for _ in 0..30 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+        }
+        let detached_rotation = current.rotation;
+
+        for _ in 0..30 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::X,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+        }
+
+        assert!(current.rotation.angle_between(detached_rotation) < 0.01);
+    }
 }
