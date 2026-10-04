@@ -181,6 +181,22 @@ impl PlanetViewCamera {
         self.follow = true;
     }
 
+    /// Toggle body tracking while preserving the attained camera pose when
+    /// detaching. Re-enabling follow lets the normal camera response recenter
+    /// the view on the current controlled body.
+    pub fn toggle_follow_from(&mut self, current: Transform) {
+        if self.follow {
+            let direction = current
+                .translation
+                .normalize_or(self.detached_direction.normalize_or(Vec3::Y));
+            self.follow = false;
+            self.detached_direction = direction;
+            self.detached_heading = tangent_heading(current.rotation * Vec3::Y, direction);
+        } else {
+            self.follow_body();
+        }
+    }
+
     /// Preserve the current view direction while the body moves.
     pub fn detach(&mut self, current_direction: Vec3) {
         self.follow = false;
@@ -568,6 +584,91 @@ mod tests {
 
         assert!(after_orbit.translation.distance(before_orbit.translation) < 100.0);
         assert!(after_orbit.translation.length() > PLANET_RADIUS * 2.0);
+    }
+
+    #[test]
+    fn toggling_follow_detaches_from_the_attained_pose_and_reenables_smoothly() {
+        let mut controlled_position = Vec3::Y * PLANET_RADIUS;
+        let chase = Transform::from_xyz(0.0, PLANET_RADIUS + 5.0, -5.0)
+            .looking_at(controlled_position, Vec3::Y);
+        let mut current = chase;
+        let mut camera = PlanetViewCamera::default();
+        camera.toggle();
+        for _ in 0..120 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::NEG_Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+
+        // Capture a camera pose that is still easing toward the body's new
+        // heading. Detaching should preserve what the player currently sees.
+        current = camera.update(
+            current,
+            chase,
+            controlled_position,
+            Vec3::X,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        let attained = current;
+        camera.toggle_follow_from(attained);
+        assert!(!camera.follows_body());
+
+        controlled_position = Vec3::X * PLANET_RADIUS;
+        let first_detached = camera.update(
+            attained,
+            chase,
+            controlled_position,
+            Vec3::Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        assert!(
+            first_detached
+                .translation
+                .normalize()
+                .dot(attained.translation.normalize())
+                > 0.9999
+        );
+        assert!(first_detached.rotation.angle_between(attained.rotation) < 0.01);
+
+        camera.toggle_follow_from(first_detached);
+        assert!(camera.follows_body());
+        let first_follow_step = camera.update(
+            first_detached,
+            chase,
+            controlled_position,
+            Vec3::Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        assert!(
+            first_follow_step
+                .translation
+                .normalize()
+                .angle_between(first_detached.translation.normalize())
+                < 0.5,
+            "follow should recenter over multiple frames"
+        );
+
+        for _ in 0..90 {
+            current = camera.update(
+                current,
+                chase,
+                controlled_position,
+                Vec3::Z,
+                1.0 / 60.0,
+                PLANET_RADIUS,
+            );
+            camera.finish_transition_if_ready();
+        }
+        assert!(current.translation.normalize().dot(Vec3::X) > 0.99);
     }
 
     #[test]
