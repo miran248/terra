@@ -131,3 +131,49 @@ pub(super) fn residency(
     world.ready = !changed && world.last_action == state.actions.front().copied();
     world.last_action = state.actions.front().copied();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn selecting_a_destination_does_not_prepare_its_collision_obstacles() {
+        let home = Vec3::new(0.0, 2001.0, 0.0);
+        let destination = Vec3::new(0.0, -2001.0, 0.0);
+        let mut state = Exploration::default();
+        state.select_planet_destination(PlanetDestination {
+            id: PlanetDestinationId::surface(crate::map::WorldEpoch::new(7), destination),
+            position: destination,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Terrain · 0°S, 0°W".into(),
+        });
+
+        let obstacle = |position| Obstacle {
+            position,
+            rotation: Quat::IDENTITY,
+            collider: Collider::sphere(2.0),
+            resident: None,
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(state)
+            .insert_resource(CollisionWorld {
+                obstacles: vec![obstacle(home), obstacle(destination)],
+                ready: false,
+                last_action: None,
+            })
+            .add_systems(Update, residency);
+        app.world_mut().spawn((
+            crate::map::player_physics_bundle(home, Vec3::NEG_Z),
+            Position(home),
+            LinearVelocity::ZERO,
+        ));
+
+        app.update();
+
+        let collision = app.world().resource::<CollisionWorld>();
+        assert!(collision.obstacles[0].resident.is_some());
+        assert!(collision.obstacles[1].resident.is_none());
+        assert!(app.world().resource::<Exploration>().actions.is_empty());
+    }
+}
