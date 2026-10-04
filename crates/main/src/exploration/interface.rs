@@ -369,15 +369,34 @@ pub(super) fn destination_readout(state: &Exploration) -> String {
         return "Click visible terrain or a bridge deck to inspect it.".into();
     };
 
-    let eligibility = if state.destination_requires_exit_from_vehicle() {
-        "Exit your vehicle before pressing T."
-    } else {
-        "Press T to check a safe on-foot landing."
+    let request_status = state
+        .planet_teleport_status()
+        .filter(|status| match status {
+            PlanetTeleportStatus::Checking { destination_id, .. }
+            | PlanetTeleportStatus::Rejected { destination_id, .. }
+            | PlanetTeleportStatus::Cancelled { destination_id, .. } => {
+                *destination_id == destination.id
+            }
+        });
+    let feedback = match request_status {
+        Some(PlanetTeleportStatus::Checking { .. }) => {
+            "Checking this exact landing spot. Nearby collision is being prepared.".to_owned()
+        }
+        Some(PlanetTeleportStatus::Rejected { reason, .. }) => format!(
+            "{} Select another spot or press T to try again.",
+            reason.message()
+        ),
+        Some(PlanetTeleportStatus::Cancelled { reason, .. }) => reason.message().to_owned(),
+        None => {
+            let eligibility = if state.destination_requires_exit_from_vehicle() {
+                "Exit your vehicle before pressing T."
+            } else {
+                "Press T to check a safe on-foot landing."
+            };
+            format!("{eligibility}\nA safe landing is checked after you press T.")
+        }
     };
-    format!(
-        "{}\n{}\nA safe landing is checked after you press T.",
-        destination.display, eligibility
-    )
+    format!("{}\n{}", destination.display, feedback)
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]

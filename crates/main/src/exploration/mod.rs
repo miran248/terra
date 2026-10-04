@@ -129,6 +129,91 @@ pub struct PlanetDestination {
     pub display: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlanetTeleportRequestId(u64);
+
+/// Immutable selection and world snapshot associated with one T confirmation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanetTeleportRequest {
+    pub id: PlanetTeleportRequestId,
+    pub world_epoch: crate::map::WorldEpoch,
+    pub destination: PlanetDestination,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanetTeleportRejection {
+    UnsafeLanding,
+    OccupiedVehicle,
+    VehicleSelectorOpen,
+    WorldUnavailable,
+}
+
+impl PlanetTeleportRejection {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::UnsafeLanding => "No safe on-foot landing is available at this exact spot.",
+            Self::OccupiedVehicle => "Exit your vehicle, then confirm again.",
+            Self::VehicleSelectorOpen => "Close the vehicle selector, then confirm again.",
+            Self::WorldUnavailable => "The world is not ready. Try confirming again shortly.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanetTeleportCancellation {
+    ViewClosed,
+    DestinationChanged,
+    WorldReloaded,
+    VehicleSelectorOpened,
+    StaleWorld,
+}
+
+impl PlanetTeleportCancellation {
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::ViewClosed => "Teleport request cancelled. Press T to check again.",
+            Self::DestinationChanged => "Destination changed. Confirm the new choice with T.",
+            Self::WorldReloaded => "World changed. Select a destination in the new world.",
+            Self::VehicleSelectorOpened => "Request cancelled while choosing a vehicle.",
+            Self::StaleWorld => "This destination belongs to an earlier world. Select it again.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlanetTeleportOutcomeKind {
+    Succeeded { position: Vec3 },
+    Rejected { reason: PlanetTeleportRejection },
+    Cancelled { reason: PlanetTeleportCancellation },
+}
+
+/// Typed result tied to the exact confirmation that produced it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanetTeleportOutcome {
+    pub request_id: PlanetTeleportRequestId,
+    pub world_epoch: crate::map::WorldEpoch,
+    pub destination_id: PlanetDestinationId,
+    pub result: PlanetTeleportOutcomeKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanetTeleportStatus {
+    Checking {
+        request_id: PlanetTeleportRequestId,
+        destination_id: PlanetDestinationId,
+    },
+    Rejected {
+        request_id: PlanetTeleportRequestId,
+        destination_id: PlanetDestinationId,
+        reason: PlanetTeleportRejection,
+    },
+    Cancelled {
+        request_id: PlanetTeleportRequestId,
+        destination_id: PlanetDestinationId,
+        reason: PlanetTeleportCancellation,
+    },
+}
+
 #[derive(Component)]
 struct Vehicle {
     kind: Kind,
@@ -177,6 +262,10 @@ pub struct Exploration {
     planet_selection_click: Option<Vec2>,
     planet_teleport_requested: bool,
     selected_destination: Option<PlanetDestination>,
+    next_planet_teleport_id: u64,
+    pending_planet_teleport: Option<PlanetTeleportRequest>,
+    planet_teleport_status: Option<PlanetTeleportStatus>,
+    planet_teleport_outcomes: std::collections::VecDeque<PlanetTeleportOutcome>,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Action {
@@ -184,6 +273,7 @@ pub enum Action {
     Interact,
     Recover,
     Teleport(Vec3),
+    PlanetTeleport(PlanetTeleportRequestId),
 }
 impl Exploration {
     pub fn request(&mut self, action: Action) {
@@ -199,7 +289,7 @@ impl Exploration {
             self.planet_pointer.cancel();
             self.pressed_planet_control = None;
             self.planet_selection_click = None;
-            self.planet_teleport_requested = false;
+            self.cancel_planet_teleport(PlanetTeleportCancellation::ViewClosed);
         }
     }
 
@@ -232,6 +322,8 @@ impl Exploration {
     }
 
     pub(crate) fn select_planet_destination(&mut self, destination: PlanetDestination) {
+        self.cancel_planet_teleport(PlanetTeleportCancellation::DestinationChanged);
+        self.planet_teleport_status = None;
         self.selected_destination = Some(destination);
     }
 
@@ -246,7 +338,11 @@ impl Exploration {
 
     /// Request the shared T/selection teleport action while Planet view is ready.
     pub fn request_planet_view_teleport(&mut self) -> bool {
-        if !self.planet_view_ready() {
+        if !self.planet_view_ready()
+            || self.selected_destination.is_none()
+            || self.planet_teleport_requested
+            || self.pending_planet_teleport.is_some()
+        {
             return false;
         }
         self.planet_teleport_requested = true;
@@ -256,6 +352,108 @@ impl Exploration {
     /// Take the pending T intent for the destination consumer.
     pub fn take_planet_view_teleport_request(&mut self) -> bool {
         std::mem::take(&mut self.planet_teleport_requested)
+    }
+
+    pub fn pending_planet_teleport_request(&self) -> Option<&PlanetTeleportRequest> {
+        self.pending_planet_teleport.as_ref()
+    }
+
+    pub fn planet_teleport_status(&self) -> Option<PlanetTeleportStatus> {
+        self.planet_teleport_status
+    }
+
+    pub fn take_planet_teleport_outcome(&mut self) -> Option<PlanetTeleportOutcome> {
+        self.planet_teleport_outcomes.pop_front()
+    }
+
+    fn submit_planet_teleport(&mut self, world_epoch: crate::map::WorldEpoch) {
+        if !self.take_planet_view_teleport_request() {
+            return;
+        }
+        let Some(destination) = self.selected_destination.clone() else {
+            return;
+        };
+        let id = PlanetTeleportRequestId(self.next_planet_teleport_id);
+        self.next_planet_teleport_id = self
+            .next_planet_teleport_id
+            .checked_add(1)
+            .expect("planet teleport request ID exhausted");
+        let request = PlanetTeleportRequest {
+            id,
+            world_epoch,
+            destination,
+        };
+        if request.world_epoch != request.destination.id.world_epoch() {
+            self.finish_planet_teleport(
+                request,
+                PlanetTeleportOutcomeKind::Cancelled {
+                    reason: PlanetTeleportCancellation::StaleWorld,
+                },
+            );
+            self.clear_planet_destination();
+            return;
+        }
+        self.pending_planet_teleport = Some(request.clone());
+        self.planet_teleport_status = Some(PlanetTeleportStatus::Checking {
+            request_id: request.id,
+            destination_id: request.destination.id,
+        });
+        self.actions.push_back(Action::PlanetTeleport(request.id));
+    }
+
+    fn cancel_planet_teleport(&mut self, reason: PlanetTeleportCancellation) {
+        self.planet_teleport_requested = false;
+        let Some(request) = self.pending_planet_teleport.take() else {
+            return;
+        };
+        self.actions
+            .retain(|action| *action != Action::PlanetTeleport(request.id));
+        self.planet_teleport_status = Some(PlanetTeleportStatus::Cancelled {
+            request_id: request.id,
+            destination_id: request.destination.id,
+            reason,
+        });
+        self.planet_teleport_outcomes
+            .push_back(PlanetTeleportOutcome {
+                request_id: request.id,
+                world_epoch: request.world_epoch,
+                destination_id: request.destination.id,
+                result: PlanetTeleportOutcomeKind::Cancelled { reason },
+            });
+    }
+
+    fn finish_planet_teleport(
+        &mut self,
+        request: PlanetTeleportRequest,
+        result: PlanetTeleportOutcomeKind,
+    ) {
+        self.pending_planet_teleport = None;
+        self.actions
+            .retain(|action| *action != Action::PlanetTeleport(request.id));
+        self.planet_teleport_status = match result {
+            PlanetTeleportOutcomeKind::Succeeded { .. } => None,
+            PlanetTeleportOutcomeKind::Rejected { reason } => {
+                Some(PlanetTeleportStatus::Rejected {
+                    request_id: request.id,
+                    destination_id: request.destination.id,
+                    reason,
+                })
+            }
+            PlanetTeleportOutcomeKind::Cancelled { reason } => {
+                Some(PlanetTeleportStatus::Cancelled {
+                    request_id: request.id,
+                    destination_id: request.destination.id,
+                    reason,
+                })
+            }
+        };
+        self.planet_teleport_outcomes
+            .push_back(PlanetTeleportOutcome {
+                request_id: request.id,
+                world_epoch: request.world_epoch,
+                destination_id: request.destination.id,
+                result,
+            });
     }
 
     /// Current opacity for gameplay HUD and minimap presentation.
@@ -301,6 +499,7 @@ impl Plugin for ExplorationPlugin {
                     input,
                     interface::pointer_input,
                     crate::minimap::consume_planet_view_destination_click,
+                    submit_planet_teleport,
                     world::residency,
                 )
                     .chain()
@@ -350,12 +549,22 @@ fn facing(heading: Vec3, up: Vec3) -> Quat {
     Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading))
 }
 fn initialize(mut state: ResMut<Exploration>, player: Query<&Position, With<Player>>) {
+    state.cancel_planet_teleport(PlanetTeleportCancellation::WorldReloaded);
+    state.planet_teleport_status = None;
     state.clear_planet_destination();
     if let Ok(p) = player.single() {
         state.start = Some(p.0);
         state.snap_camera = true;
     }
 }
+
+fn submit_planet_teleport(
+    mut state: ResMut<Exploration>,
+    world_epoch: Res<crate::map::WorldEpoch>,
+) {
+    state.submit_planet_teleport(*world_epoch);
+}
+
 fn input(
     keys: Res<ButtonInput<KeyCode>>,
     real: Res<Time<Real>>,
@@ -412,7 +621,7 @@ fn input(
         } else {
             state.selector = true;
             state.planet_selection_click = None;
-            state.planet_teleport_requested = false;
+            state.cancel_planet_teleport(PlanetTeleportCancellation::VehicleSelectorOpened);
             time.pause();
             state.recovery = 0.0;
             return;
@@ -686,6 +895,7 @@ fn actions(
     mut vehicles: Query<(Entity, &Position, &Rotation, &Collider, &mut Vehicle)>,
     catalog: Option<Res<crate::asset_catalog::AssetCatalog>>,
     world: Option<Res<world::CollisionWorld>>,
+    world_epoch: Option<Res<crate::map::WorldEpoch>>,
 ) {
     let Ok((explorer, position, mut player)) = player.single_mut() else {
         return;
@@ -882,6 +1092,98 @@ fn actions(
                     state.message = "Recovery failed: no clear dry standing location".into();
                 }
             }
+            Action::PlanetTeleport(request_id) => {
+                let Some(request) = state
+                    .pending_planet_teleport
+                    .as_ref()
+                    .filter(|request| request.id == request_id)
+                    .cloned()
+                else {
+                    continue;
+                };
+                let Some(current_epoch) = world_epoch.as_deref().copied() else {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Rejected {
+                            reason: PlanetTeleportRejection::WorldUnavailable,
+                        },
+                    );
+                    continue;
+                };
+                if current_epoch != request.world_epoch {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Cancelled {
+                            reason: PlanetTeleportCancellation::StaleWorld,
+                        },
+                    );
+                    state.clear_planet_destination();
+                    continue;
+                }
+                if state
+                    .selected_destination
+                    .as_ref()
+                    .is_none_or(|selected| selected.id != request.destination.id)
+                {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Cancelled {
+                            reason: PlanetTeleportCancellation::DestinationChanged,
+                        },
+                    );
+                    continue;
+                }
+                if !state.planet_camera.is_requested_open() {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Cancelled {
+                            reason: PlanetTeleportCancellation::ViewClosed,
+                        },
+                    );
+                    continue;
+                }
+                if state.occupied.is_some() {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Rejected {
+                            reason: PlanetTeleportRejection::OccupiedVehicle,
+                        },
+                    );
+                    continue;
+                }
+                if state.selector {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Rejected {
+                            reason: PlanetTeleportRejection::VehicleSelectorOpen,
+                        },
+                    );
+                    continue;
+                }
+                let Some(destination) =
+                    placement.at(request.destination.position, heading, None, &[explorer])
+                else {
+                    state.finish_planet_teleport(
+                        request,
+                        PlanetTeleportOutcomeKind::Rejected {
+                            reason: PlanetTeleportRejection::UnsafeLanding,
+                        },
+                    );
+                    continue;
+                };
+                let heading = tangent(heading, destination.normalize());
+                player.heading = heading;
+                release(&mut commands, explorer, destination, &mut state);
+                state.finish_planet_teleport(
+                    request,
+                    PlanetTeleportOutcomeKind::Succeeded {
+                        position: destination,
+                    },
+                );
+                state.clear_planet_destination();
+                state.snap_camera = false;
+                state.set_planet_view_open(false);
+            }
         }
     }
 }
@@ -981,9 +1283,17 @@ pub(crate) mod tests {
         assert!(!state.request_planet_view_teleport());
         state.selector = false;
         assert!(state.planet_view_ready());
+        let position = Vec3::new(12.0, 2001.0, 4.0);
+        state.select_planet_destination(PlanetDestination {
+            id: PlanetDestinationId::surface(crate::map::WorldEpoch::new(17), position),
+            position,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Terrain · 1°N, 2°E".into(),
+        });
         assert!(state.request_planet_view_selection(screen_position));
         assert_eq!(state.take_planet_view_selection(), Some(screen_position));
         assert!(state.request_planet_view_teleport());
+        assert!(!state.request_planet_view_teleport());
         assert!(state.take_planet_view_teleport_request());
         assert!(!state.take_planet_view_teleport_request());
 
@@ -1123,16 +1433,30 @@ pub(crate) mod tests {
     #[test]
     fn entering_a_new_world_clears_the_previous_selection() {
         let position = Vec3::new(30.0, 2001.0, -45.0);
+        let epoch = crate::map::WorldEpoch::new(2);
         let destination = PlanetDestination {
-            id: PlanetDestinationId::surface(crate::map::WorldEpoch::new(2), position),
+            id: PlanetDestinationId::surface(epoch, position),
             position,
             surface: PlanetDestinationSurface::Terrain,
             display: "Terrain · 12.4°N, 33.7°W".into(),
+        };
+        let request = PlanetTeleportRequest {
+            id: PlanetTeleportRequestId(7),
+            world_epoch: epoch,
+            destination: destination.clone(),
         };
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .insert_resource(Exploration {
                 selected_destination: Some(destination),
+                actions: [Action::PlanetTeleport(request.id), Action::Interact]
+                    .into_iter()
+                    .collect(),
+                pending_planet_teleport: Some(request.clone()),
+                planet_teleport_status: Some(PlanetTeleportStatus::Checking {
+                    request_id: request.id,
+                    destination_id: request.destination.id,
+                }),
                 ..default()
             })
             .add_systems(Update, initialize);
@@ -1149,6 +1473,20 @@ pub(crate) mod tests {
                 .selected_destination
                 .is_none()
         );
+        let state = app.world().resource::<Exploration>();
+        assert!(state.pending_planet_teleport_request().is_none());
+        assert_eq!(state.actions.len(), 1);
+        assert!(state.actions.contains(&Action::Interact));
+        assert!(matches!(
+            state.planet_teleport_outcomes.front(),
+            Some(PlanetTeleportOutcome {
+                request_id,
+                result: PlanetTeleportOutcomeKind::Cancelled {
+                    reason: PlanetTeleportCancellation::WorldReloaded
+                },
+                ..
+            }) if *request_id == request.id
+        ));
     }
 
     #[test]
@@ -1246,6 +1584,18 @@ pub(crate) mod tests {
     #[test]
     fn t_publishes_a_teleport_intent_only_while_planet_view_is_ready() {
         let (mut app, _) = fixture();
+        let epoch = crate::map::WorldEpoch::new(62);
+        let position = Vec3::new(40.0, 2000.0, 0.0);
+        let destination = PlanetDestination {
+            id: PlanetDestinationId::surface(epoch, position),
+            position,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Terrain · 0°N, 0°E".into(),
+        };
+        app.world_mut().insert_resource(epoch);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination.clone());
         app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(true);
@@ -1253,15 +1603,24 @@ pub(crate) mod tests {
             app.update();
         }
         assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
 
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyT);
         app.update();
+        let state = app.world().resource::<Exploration>();
+        let request = state
+            .pending_planet_teleport_request()
+            .expect("T snapshots one pending destination request");
+        assert_eq!(request.world_epoch, epoch);
+        assert_eq!(request.destination, destination);
+        assert!(state.actions.contains(&Action::PlanetTeleport(request.id)));
         assert!(
-            app.world_mut()
+            !app.world_mut()
                 .resource_mut::<Exploration>()
-                .take_planet_view_teleport_request()
+                .request_planet_view_teleport()
         );
 
         app.world_mut()
@@ -1273,6 +1632,23 @@ pub(crate) mod tests {
         app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(false);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none()
+        );
+        assert!(matches!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                result: PlanetTeleportOutcomeKind::Cancelled {
+                    reason: PlanetTeleportCancellation::ViewClosed
+                },
+                ..
+            })
+        ));
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
             .press(KeyCode::KeyT);
@@ -1282,6 +1658,371 @@ pub(crate) mod tests {
                 .resource_mut::<Exploration>()
                 .take_planet_view_teleport_request()
         );
+    }
+
+    fn selected_surface(epoch: crate::map::WorldEpoch, position: Vec3) -> PlanetDestination {
+        PlanetDestination {
+            id: PlanetDestinationId::surface(epoch, position),
+            position,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Terrain · 0°N, 0°E".into(),
+        }
+    }
+
+    fn press_t(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyT);
+        app.update();
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.clear_just_pressed(KeyCode::KeyT);
+        keys.release(KeyCode::KeyT);
+    }
+
+    #[test]
+    fn confirmed_destination_waits_for_collision_then_returns_after_relocation() {
+        let (mut app, explorer) = fixture();
+        let camera = spawn_planet_view_camera(&mut app);
+        open_planet_view(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let destination = selected_surface(epoch, Vec3::new(25.0, 2000.0, 0.0));
+        let original_position = app.world().get::<Position>(explorer).unwrap().0;
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination.clone());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+
+        press_t(&mut app);
+
+        let request = app
+            .world()
+            .resource::<Exploration>()
+            .pending_planet_teleport_request()
+            .expect("T starts an identified request");
+        let request_id = request.id;
+        assert_eq!(request.destination, destination);
+        assert_eq!(
+            app.world().get::<Position>(explorer).unwrap().0,
+            original_position,
+            "the first residency frame must not relocate the explorer"
+        );
+        assert!(matches!(
+            app.world().resource::<Exploration>().planet_teleport_status(),
+            Some(PlanetTeleportStatus::Checking { request_id: id, .. }) if id == request_id
+        ));
+        assert!(
+            interface::destination_readout(app.world().resource::<Exploration>())
+                .contains("Checking this exact landing spot")
+        );
+        assert!(
+            !app.world_mut()
+                .resource_mut::<Exploration>()
+                .request_planet_view_teleport(),
+            "repeated confirmation cannot duplicate a pending request"
+        );
+
+        // Browsing controls do not revoke a confirmed destination.
+        {
+            let camera_pose = *app.world().get::<Transform>(camera).unwrap();
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.planet_camera.zoom_by(0.9);
+            state
+                .planet_camera
+                .orbit_from(camera_pose, Vec2::new(0.02, -0.01));
+        }
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .map(|request| request.id),
+            Some(request_id)
+        );
+
+        app.update();
+
+        let arrived_position = app.world().get::<Position>(explorer).unwrap().0;
+        assert!(
+            arrived_position.x > 24.0,
+            "relocation committed: {arrived_position:?}"
+        );
+        assert_eq!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                request_id,
+                world_epoch: epoch,
+                destination_id: destination.id,
+                result: PlanetTeleportOutcomeKind::Succeeded {
+                    position: arrived_position,
+                },
+            })
+        );
+        let state = app.world().resource::<Exploration>();
+        assert!(state.pending_planet_teleport_request().is_none());
+        assert!(state.selected_planet_destination().is_none());
+        assert!(!state.planet_camera.is_requested_open());
+        assert!(
+            !state.snap_camera,
+            "success must not use the legacy snap path"
+        );
+        assert!(
+            app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .distance(arrived_position)
+                > 100.0,
+            "the first return frame remains on the animated flight path"
+        );
+
+        for _ in 0..130 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .distance(app.world().get::<Position>(explorer).unwrap().0)
+                < 20.0,
+            "the return flight should finish at the relocated explorer"
+        );
+    }
+
+    #[test]
+    fn unsafe_confirmed_destination_is_rejected_without_relocating_or_closing() {
+        let (mut app, explorer) = fixture();
+        let camera = spawn_planet_view_camera(&mut app);
+        let target = Vec3::new(40.0, 2000.0, 0.0);
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(4.0, 2.0, 4.0),
+            Transform::from_translation(target + Vec3::Y),
+            Ground,
+            crate::chunks::WorldObstacle,
+        ));
+        for _ in 0..3 {
+            app.update();
+        }
+        open_planet_view(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let destination = selected_surface(epoch, target);
+        let original_position = app.world().get::<Position>(explorer).unwrap().0;
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination.clone());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+
+        press_t(&mut app);
+        let request_id = app
+            .world()
+            .resource::<Exploration>()
+            .pending_planet_teleport_request()
+            .unwrap()
+            .id;
+        app.update();
+
+        assert_eq!(
+            app.world().get::<Position>(explorer).unwrap().0,
+            original_position
+        );
+        let state = app.world().resource::<Exploration>();
+        assert!(state.pending_planet_teleport_request().is_none());
+        assert_eq!(state.selected_planet_destination(), Some(&destination));
+        assert!(state.planet_camera.is_requested_open());
+        assert!(matches!(
+            state.planet_teleport_status(),
+            Some(PlanetTeleportStatus::Rejected {
+                request_id: id,
+                reason: PlanetTeleportRejection::UnsafeLanding,
+                ..
+            }) if id == request_id
+        ));
+        assert!(interface::destination_readout(state).contains("No safe on-foot landing"));
+        assert!(matches!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                result: PlanetTeleportOutcomeKind::Rejected {
+                    reason: PlanetTeleportRejection::UnsafeLanding,
+                },
+                ..
+            })
+        ));
+        assert!(app.world().get::<Transform>(camera).is_some());
+    }
+
+    #[test]
+    fn reselection_cancels_a_pending_request_and_preserves_other_actions() {
+        let (mut app, _) = fixture();
+        open_planet_view(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let first = selected_surface(epoch, Vec3::new(20.0, 2000.0, 0.0));
+        let second = selected_surface(epoch, Vec3::new(30.0, 2000.0, 0.0));
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(first.clone());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+        press_t(&mut app);
+        let first_request = app
+            .world()
+            .resource::<Exploration>()
+            .pending_planet_teleport_request()
+            .unwrap()
+            .clone();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(Action::Interact);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(second.clone());
+
+        {
+            let state = app.world().resource::<Exploration>();
+            assert!(state.pending_planet_teleport_request().is_none());
+            assert_eq!(state.selected_planet_destination(), Some(&second));
+            assert_eq!(state.actions.len(), 1);
+            assert!(state.actions.contains(&Action::Interact));
+        }
+        assert!(matches!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                request_id,
+                result: PlanetTeleportOutcomeKind::Cancelled {
+                    reason: PlanetTeleportCancellation::DestinationChanged,
+                },
+                ..
+            }) if request_id == first_request.id
+        ));
+
+        assert!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .request_planet_view_teleport()
+        );
+        app.update();
+        app.update();
+        let fresh_request = app
+            .world()
+            .resource::<Exploration>()
+            .pending_planet_teleport_request()
+            .expect("the new destination needs a fresh T request");
+        assert_ne!(fresh_request.id, first_request.id);
+        assert_eq!(fresh_request.destination, second);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .actions
+                .contains(&Action::PlanetTeleport(fresh_request.id))
+        );
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .message
+                .contains("No stopped vehicle within reach"),
+            "the unrelated interaction should execute before the fresh teleport"
+        );
+    }
+
+    #[test]
+    fn epoch_change_before_commit_cancels_without_moving_the_explorer() {
+        let (mut app, explorer) = fixture();
+        open_planet_view(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let destination = selected_surface(epoch, Vec3::new(35.0, 2000.0, 0.0));
+        let original_position = app.world().get::<Position>(explorer).unwrap().0;
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination);
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+        press_t(&mut app);
+        let request_id = app
+            .world()
+            .resource::<Exploration>()
+            .pending_planet_teleport_request()
+            .unwrap()
+            .id;
+        app.world_mut()
+            .insert_resource(crate::map::WorldEpoch::new(epoch.value() + 1));
+
+        app.update();
+
+        assert_eq!(
+            app.world().get::<Position>(explorer).unwrap().0,
+            original_position
+        );
+        let state = app.world().resource::<Exploration>();
+        assert!(state.pending_planet_teleport_request().is_none());
+        assert!(state.selected_planet_destination().is_none());
+        assert!(matches!(
+            state.planet_teleport_status(),
+            Some(PlanetTeleportStatus::Cancelled {
+                request_id: id,
+                reason: PlanetTeleportCancellation::StaleWorld,
+                ..
+            }) if id == request_id
+        ));
+        assert!(matches!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                request_id: id,
+                result: PlanetTeleportOutcomeKind::Cancelled {
+                    reason: PlanetTeleportCancellation::StaleWorld,
+                },
+                ..
+            }) if id == request_id
+        ));
+    }
+
+    #[test]
+    fn vehicle_eligibility_is_rechecked_after_collision_wait() {
+        let (mut app, explorer) = fixture();
+        open_planet_view(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let destination = selected_surface(epoch, Vec3::new(45.0, 2000.0, 0.0));
+        let original_position = app.world().get::<Position>(explorer).unwrap().0;
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination.clone());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+        press_t(&mut app);
+        let request_id = app
+            .world()
+            .resource::<Exploration>()
+            .pending_planet_teleport_request()
+            .unwrap()
+            .id;
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(Entity::PLACEHOLDER);
+
+        app.update();
+
+        let state = app.world().resource::<Exploration>();
+        assert_eq!(
+            app.world().get::<Position>(explorer).unwrap().0,
+            original_position
+        );
+        assert_eq!(state.selected_planet_destination(), Some(&destination));
+        assert!(state.planet_camera.is_requested_open());
+        assert!(matches!(
+            state.planet_teleport_status(),
+            Some(PlanetTeleportStatus::Rejected {
+                request_id: id,
+                reason: PlanetTeleportRejection::OccupiedVehicle,
+                ..
+            }) if id == request_id
+        ));
     }
 
     #[test]
@@ -1380,6 +2121,7 @@ pub(crate) mod tests {
         .init_asset::<Mesh>()
         .init_asset::<StandardMaterial>()
         .insert_resource(Gravity::ZERO)
+        .insert_resource(crate::map::WorldEpoch::new(1))
         .insert_resource(SubstepCount(12))
         .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_secs_f32(1.0 / 60.0),
