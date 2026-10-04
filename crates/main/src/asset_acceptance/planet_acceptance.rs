@@ -53,15 +53,18 @@ const SUN_TILT: f32 = 0.35;
 const MOVEMENT_TURN_SECONDS: f64 = 0.65;
 const MOVEMENT_CYCLE_SECONDS: f64 = 12.0;
 const DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL: f32 = 0.004;
+const DIAGNOSTIC_MINIMUM_COLLIDERS: usize = 100;
+const DIAGNOSTIC_STABLE_WORLD_FRAMES: u8 = 30;
+const DIAGNOSTIC_MAX_ENTRY_CAPTURE_LATE_SECONDS: f64 = 0.2;
 const DIAGNOSTIC_DRAG_START_SECONDS: f64 = 1.8;
 const DIAGNOSTIC_DRAG_END_SECONDS: f64 = 2.9;
 const DIAGNOSTIC_MOVEMENT_START_SECONDS: f64 = 3.2;
-const DIAGNOSTIC_MOVEMENT_END_SECONDS: f64 = 7.2;
-const DIAGNOSTIC_RETURN_SECONDS: f64 = 7.5;
+const DIAGNOSTIC_MOVEMENT_END_SECONDS: f64 = 10.2;
+const DIAGNOSTIC_RETURN_SECONDS: f64 = 10.5;
 const DIAGNOSTIC_RETURN_MIDPOINT_SECONDS: f64 = 1.2;
 const DIAGNOSTIC_RETURN_END_SECONDS: f64 = 2.6;
-const DIAGNOSTIC_STORM_OPEN_SECONDS: f64 = 11.0;
-const DIAGNOSTIC_STORM_CLOSE_SECONDS: f64 = 13.5;
+const DIAGNOSTIC_STORM_OPEN_SECONDS: f64 = 14.0;
+const DIAGNOSTIC_STORM_CLOSE_SECONDS: f64 = 16.5;
 const DIAGNOSTIC_FINISH_SECONDS: f64 = 19.0;
 const ORBIT_INPUTS: [(f64, f32, Vec2); 5] = [
     (3.0, 2.4, Vec2::ZERO),
@@ -158,7 +161,9 @@ struct PlanetAcceptance {
 #[derive(Resource)]
 struct PlanetTransitionDiagnostic {
     directory: PathBuf,
+    timing_only: bool,
     started_at: Option<f64>,
+    world_warmup: DiagnosticWorldWarmup,
     m_events_sent: [bool; 6],
     drag_started: bool,
     drag_finished: bool,
@@ -172,13 +177,40 @@ struct PlanetTransitionDiagnostic {
     entry_capture_requests: [bool; 3],
     restored_capture_requested: bool,
     samples: Vec<DiagnosticSample>,
+    road_stage_timings: Vec<crate::planet_roads::RoadStageTiming>,
+    capture_metadata: Vec<String>,
+    entry_capture_lateness_s: [f64; 3],
     errors: Vec<String>,
     finished: bool,
+}
+
+#[derive(Default)]
+struct DiagnosticWorldWarmup {
+    last_collision_count: Option<usize>,
+    stable_frames: u8,
+}
+
+impl DiagnosticWorldWarmup {
+    fn observe(&mut self, collision_count: usize) -> bool {
+        if collision_count < DIAGNOSTIC_MINIMUM_COLLIDERS {
+            self.last_collision_count = None;
+            self.stable_frames = 0;
+            return false;
+        }
+        if self.last_collision_count == Some(collision_count) {
+            self.stable_frames = self.stable_frames.saturating_add(1);
+        } else {
+            self.last_collision_count = Some(collision_count);
+            self.stable_frames = 1;
+        }
+        self.stable_frames >= DIAGNOSTIC_STABLE_WORLD_FRAMES
+    }
 }
 
 #[derive(Clone, Copy)]
 struct DiagnosticSample {
     elapsed: f64,
+    real_delta_ms: f64,
     fixed_time_elapsed: f64,
     planet_active: bool,
     planet_ready: bool,
@@ -203,8 +235,9 @@ struct DiagnosticSample {
 impl DiagnosticSample {
     fn csv_row(self) -> String {
         format!(
-            "{:.5},{:.6},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{:.4},{},{:.4},{},{},{},{},{:.4},{:.4},{:.4}\n",
+            "{:.5},{:.3},{:.6},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{:.4},{},{:.4},{},{},{},{},{:.4},{:.4},{:.4}\n",
             self.elapsed,
+            self.real_delta_ms,
             self.fixed_time_elapsed,
             self.planet_active,
             self.planet_ready,
@@ -468,6 +501,7 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
     assert!(
         !directory.join("captures").exists()
             && !directory.join("camera-transition-trace.csv").exists()
+            && !directory.join("capture-metadata.csv").exists()
             && !directory.join("events.csv").exists()
             && !directory.join("diagnostic-status.txt").exists()
             && !directory.join("diagnostic-configuration.txt").exists(),
@@ -477,15 +511,24 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         .expect("create Planet transition diagnostic captures directory");
     fs::write(
         directory.join("camera-transition-trace.csv"),
-        "elapsed_s,fixed_time_s,planet_active,planet_ready,follows,requested_radius_m,attained_radius_m,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_sleeping,physics_colliders,virtual_rate,virtual_paused,weather_precip,weather_kind,precipitation_active,precipitation_hidden,precipitation_visible,particle0_x,particle0_y,particle0_z\n",
+        "elapsed_s,real_delta_ms,fixed_time_s,planet_active,planet_ready,follows,requested_radius_m,attained_radius_m,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_sleeping,physics_colliders,virtual_rate,virtual_paused,weather_precip,weather_kind,precipitation_active,precipitation_hidden,precipitation_visible,particle0_x,particle0_y,particle0_z\n",
     )
     .expect("write Planet transition diagnostic trace header");
+    fs::write(
+        directory.join("capture-metadata.csv"),
+        "capture,nominal_elapsed_s,request_elapsed_s,late_by_s,camera_radius_m,camera_x,camera_y,camera_z\n",
+    )
+    .expect("write Planet transition capture metadata header");
     fs::write(directory.join("events.csv"), "elapsed_s,event,result\n")
         .expect("write Planet transition diagnostic event header");
+    let timing_only = std::env::var("TERRA_PLANET_TRANSITION_DIAGNOSTIC_TIMING_ONLY")
+        .is_ok_and(|value| value == "1");
 
     app.insert_resource(PlanetTransitionDiagnostic {
         directory,
+        timing_only,
         started_at: None,
+        world_warmup: DiagnosticWorldWarmup::default(),
         m_events_sent: [false; 6],
         drag_started: false,
         drag_finished: false,
@@ -499,6 +542,9 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         entry_capture_requests: [false; 3],
         restored_capture_requested: false,
         samples: Vec::with_capacity(1_300),
+        road_stage_timings: Vec::with_capacity(64),
+        capture_metadata: Vec::with_capacity(8),
+        entry_capture_lateness_s: [f64::NAN; 3],
         errors: Vec::new(),
         finished: false,
     })
@@ -529,7 +575,6 @@ fn drive_transition_diagnostic(world: &mut World) {
     if !acceptance_world_ready(world) {
         return;
     }
-    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
     let Some(mut diagnostic) = world.remove_resource::<PlanetTransitionDiagnostic>() else {
         return;
     };
@@ -537,6 +582,15 @@ fn drive_transition_diagnostic(world: &mut World) {
         world.insert_resource(diagnostic);
         return;
     }
+    if diagnostic.started_at.is_none()
+        && !diagnostic
+            .world_warmup
+            .observe(count_collision_colliders(world))
+    {
+        world.insert_resource(diagnostic);
+        return;
+    }
+    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
     if diagnostic.started_at.is_none() {
         let direction = player_pose(world)
             .map(|(position, _)| position.normalize_or(Vec3::Y))
@@ -566,6 +620,9 @@ fn drive_transition_diagnostic(world: &mut World) {
     ];
     let mut tapped_map = false;
     for (event_index, when) in map_taps.into_iter().enumerate() {
+        if diagnostic.timing_only && event_index >= 4 {
+            break;
+        }
         if elapsed >= when && !diagnostic.m_events_sent[event_index] {
             diagnostic.m_events_sent[event_index] = true;
             tapped_map = true;
@@ -666,7 +723,9 @@ fn drive_transition_diagnostic(world: &mut World) {
         }
     }
 
-    if (DIAGNOSTIC_STORM_OPEN_SECONDS..DIAGNOSTIC_FINISH_SECONDS).contains(&elapsed) {
+    if !diagnostic.timing_only
+        && (DIAGNOSTIC_STORM_OPEN_SECONDS..DIAGNOSTIC_FINISH_SECONDS).contains(&elapsed)
+    {
         let mut weather = world.resource_mut::<Weather>();
         // Hold an authored storm intensity while leaving production particle
         // movement, local rain/snow choice, and visibility systems in charge.
@@ -715,14 +774,48 @@ fn write_transition_diagnostic_configuration(
             )
         })
         .unwrap_or_else(|| "unavailable".into());
+    let (mode, map_taps, entry_captures, return_captures, weather_fixture, weather_captures) =
+        if diagnostic.timing_only {
+            (
+                "timing-only-planet-transitions",
+                format!("0.10,0.55,0.80,{DIAGNOSTIC_RETURN_SECONDS:.2}"),
+                "disabled".to_owned(),
+                "disabled".to_owned(),
+                "disabled".to_owned(),
+                "disabled".to_owned(),
+            )
+        } else {
+            (
+                "visual-transition-diagnostic",
+                format!(
+                    "0.10,0.55,0.80,{DIAGNOSTIC_RETURN_SECONDS:.2},{DIAGNOSTIC_STORM_OPEN_SECONDS:.2},{DIAGNOSTIC_STORM_CLOSE_SECONDS:.2}"
+                ),
+                "0.40,0.80,1.40".to_owned(),
+                format!(
+                    "{:.2},{:.2}",
+                    DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_MIDPOINT_SECONDS,
+                    DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_END_SECONDS,
+                ),
+                "precipitation intensity 0.85 with moving wind; production particle visibility"
+                    .to_owned(),
+                "storm-hidden.png,storm-restored.png".to_owned(),
+            )
+        };
     let text = format!(
-        "mode=short-planet-transition-diagnostic\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\nM_taps_seconds=0.10,0.55,0.80,7.50,11.00,13.50\nentry_screenshots_seconds=0.40,0.80,1.40\nreturn_screenshots_after_close_seconds={DIAGNOSTIC_RETURN_MIDPOINT_SECONDS:.2},{DIAGNOSTIC_RETURN_END_SECONDS:.2}\ncontinuous_left_drag_seconds={DIAGNOSTIC_DRAG_START_SECONDS:.2}-{DIAGNOSTIC_DRAG_END_SECONDS:.2}\ndrag_path={drag}\non_foot_movement_seconds={DIAGNOSTIC_MOVEMENT_START_SECONDS:.2}-{DIAGNOSTIC_MOVEMENT_END_SECONDS:.2}\nweather_fixture=precipitation_intensity_0.85_wind_1.5,0,-0.75; production_particles_temperature_and_visibility\nweather_screenshots=storm-hidden.png,storm-restored.png\n",
+        "mode={}\ntiming_only={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_taps_seconds={}\nentry_screenshots_nominal_seconds={}\nreturn_screenshots_nominal_seconds={}\ncontinuous_left_drag_seconds={DIAGNOSTIC_DRAG_START_SECONDS:.2}-{DIAGNOSTIC_DRAG_END_SECONDS:.2}\ndrag_path={drag}\non_foot_movement_seconds={DIAGNOSTIC_MOVEMENT_START_SECONDS:.2}-{DIAGNOSTIC_MOVEMENT_END_SECONDS:.2}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
+        mode,
+        diagnostic.timing_only,
         std::env::var("TERRA_SOURCE_REVISION").unwrap_or_else(|_| "unset".into()),
         std::env::var("TERRA_SOURCE_BRANCH").unwrap_or_else(|_| "unset".into()),
         std::env::var("BEVY_ASSET_ROOT").unwrap_or_else(|_| "default-asset-root".into()),
         std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "cargo-default".into()),
         env!("CARGO_PKG_VERSION"),
         window.unwrap_or_else(|| "unavailable".into()),
+        map_taps,
+        entry_captures,
+        return_captures,
+        weather_fixture,
+        weather_captures,
     );
     if let Err(error) = fs::write(
         diagnostic.directory.join("diagnostic-configuration.txt"),
@@ -793,67 +886,116 @@ fn capture_transition_diagnostic(world: &mut World) {
     let elapsed = now - started_at;
     let sample = diagnostic_sample(world, elapsed);
     diagnostic.samples.push(sample);
-    for (index, (at, name)) in [
-        (0.4, "entry-0400ms.png"),
-        (0.8, "entry-0800ms.png"),
-        (1.4, "entry-1400ms.png"),
-    ]
-    .into_iter()
-    .enumerate()
+    if diagnostic.timing_only
+        && let Some(timing) = world
+            .get_resource::<crate::planet_roads::RoadStageTimings>()
+            .and_then(|timings| timings.current)
     {
-        if elapsed >= at && !diagnostic.entry_capture_requests[index] {
-            diagnostic.entry_capture_requests[index] = true;
-            request_diagnostic_screenshot(world, &diagnostic, name);
-            write_diagnostic_event(&mut diagnostic, elapsed, "screenshot", name);
+        diagnostic.road_stage_timings.push(timing);
+    }
+    if !diagnostic.timing_only {
+        let mut screenshot_requested = false;
+        for (index, (at, name)) in [
+            (0.4, "entry-0400ms.png"),
+            (0.8, "entry-0800ms.png"),
+            (1.4, "entry-1400ms.png"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if elapsed >= at && !diagnostic.entry_capture_requests[index] {
+                diagnostic.entry_capture_requests[index] = true;
+                diagnostic.entry_capture_lateness_s[index] = (elapsed - at).max(0.0);
+                request_diagnostic_screenshot(world, &diagnostic, name);
+                record_capture_metadata(&mut diagnostic, name, at, sample);
+                write_diagnostic_event(&mut diagnostic, elapsed, "screenshot", name);
+                screenshot_requested = true;
+                break;
+            }
         }
-    }
-    for (index, (at, name)) in [
-        (
-            DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_MIDPOINT_SECONDS,
-            "return-midpoint.png",
-        ),
-        (
-            DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_END_SECONDS,
-            "return-end.png",
-        ),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        if elapsed >= at && !diagnostic.return_capture_requests[index] {
-            diagnostic.return_capture_requests[index] = true;
-            request_diagnostic_screenshot(world, &diagnostic, name);
-            write_diagnostic_event(&mut diagnostic, elapsed, "screenshot", name);
+        if !screenshot_requested {
+            for (index, (at, name)) in [
+                (
+                    DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_MIDPOINT_SECONDS,
+                    "return-midpoint.png",
+                ),
+                (
+                    DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_END_SECONDS,
+                    "return-end.png",
+                ),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                if elapsed >= at && !diagnostic.return_capture_requests[index] {
+                    diagnostic.return_capture_requests[index] = true;
+                    request_diagnostic_screenshot(world, &diagnostic, name);
+                    record_capture_metadata(&mut diagnostic, name, at, sample);
+                    write_diagnostic_event(&mut diagnostic, elapsed, "screenshot", name);
+                    screenshot_requested = true;
+                    break;
+                }
+            }
         }
-    }
-    if elapsed >= DIAGNOSTIC_DRAG_END_SECONDS && diagnostic.drag_finished {
-        capture_once(world, &mut diagnostic, "drag-opposite.png", |diag| {
-            diag.drag_end_direction_dot.is_finite()
-        });
-    }
-    if elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS + 0.8 && sample.planet_active {
-        capture_once(world, &mut diagnostic, "storm-hidden.png", |diag| {
-            diag.samples.iter().any(|row| {
-                row.elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS
-                    && row.planet_active
-                    && row.weather_intensity > 0.2
-                    && row.precipitation_active >= 100
-                    && row.precipitation_hidden == row.precipitation_active
-            })
-        });
-    }
-    if elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS + 0.8 && !sample.planet_active {
-        capture_once(world, &mut diagnostic, "storm-restored.png", |diag| {
-            diag.samples.iter().any(|row| {
-                row.elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS
-                    && !row.planet_active
-                    && row.weather_intensity > 0.2
-                    && row.precipitation_visible > 0
-            })
-        });
+        if !screenshot_requested
+            && elapsed >= DIAGNOSTIC_DRAG_END_SECONDS
+            && diagnostic.drag_finished
+        {
+            screenshot_requested = capture_once(
+                world,
+                &mut diagnostic,
+                "drag-opposite.png",
+                DIAGNOSTIC_DRAG_END_SECONDS,
+                |diag| diag.drag_end_direction_dot.is_finite(),
+            );
+        }
+        if !screenshot_requested
+            && elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS + 0.8
+            && sample.planet_active
+        {
+            screenshot_requested = capture_once(
+                world,
+                &mut diagnostic,
+                "storm-hidden.png",
+                DIAGNOSTIC_STORM_OPEN_SECONDS + 0.8,
+                |diag| {
+                    diag.samples.iter().any(|row| {
+                        row.elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS
+                            && row.planet_active
+                            && row.weather_intensity > 0.2
+                            && row.precipitation_active >= 100
+                            && row.precipitation_hidden == row.precipitation_active
+                    })
+                },
+            );
+        }
+        if !screenshot_requested
+            && elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS + 0.8
+            && !sample.planet_active
+        {
+            capture_once(
+                world,
+                &mut diagnostic,
+                "storm-restored.png",
+                DIAGNOSTIC_STORM_CLOSE_SECONDS + 0.8,
+                |diag| {
+                    diag.samples.iter().any(|row| {
+                        row.elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS
+                            && !row.planet_active
+                            && row.weather_intensity > 0.2
+                            && row.precipitation_visible > 0
+                    })
+                },
+            );
+        }
     }
 
-    if elapsed >= DIAGNOSTIC_FINISH_SECONDS + 3.0 {
+    let finish_at = if diagnostic.timing_only {
+        DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_END_SECONDS + 2.0
+    } else {
+        DIAGNOSTIC_FINISH_SECONDS + 3.0
+    };
+    if elapsed >= finish_at {
         finish_transition_diagnostic(&mut diagnostic);
         world.insert_resource(diagnostic);
         // Leave the detailed diagnostic pass/reject decision to the wrapper,
@@ -930,6 +1072,7 @@ fn diagnostic_sample(world: &mut World, elapsed: f64) -> DiagnosticSample {
         );
     DiagnosticSample {
         elapsed,
+        real_delta_ms: world.resource::<Time<Real>>().delta_secs_f64() * 1000.0,
         fixed_time_elapsed,
         planet_active,
         planet_ready,
@@ -956,35 +1099,47 @@ fn capture_once(
     world: &mut World,
     diagnostic: &mut PlanetTransitionDiagnostic,
     name: &str,
+    nominal_elapsed: f64,
     ready: impl FnOnce(&PlanetTransitionDiagnostic) -> bool,
-) {
+) -> bool {
     let already_requested = match name {
         "storm-hidden.png" => diagnostic.hidden_capture_requested,
         "storm-restored.png" => diagnostic.restored_capture_requested,
         _ => false,
     };
     if already_requested || !ready(diagnostic) {
-        return;
+        return false;
     }
     if name == "storm-hidden.png" {
         diagnostic.hidden_capture_requested = true;
     } else if name == "storm-restored.png" {
         diagnostic.restored_capture_requested = true;
     }
+    let Some(sample) = diagnostic.samples.last().copied() else {
+        return false;
+    };
     request_diagnostic_screenshot(world, diagnostic, name);
-    write_diagnostic_event(
-        diagnostic,
-        current_diagnostic_elapsed(diagnostic),
-        "screenshot",
-        name,
-    );
+    record_capture_metadata(diagnostic, name, nominal_elapsed, sample);
+    write_diagnostic_event(diagnostic, sample.elapsed, "screenshot", name);
+    true
 }
 
-fn current_diagnostic_elapsed(diagnostic: &PlanetTransitionDiagnostic) -> f64 {
-    diagnostic
-        .samples
-        .last()
-        .map_or(0.0, |sample| sample.elapsed)
+fn record_capture_metadata(
+    diagnostic: &mut PlanetTransitionDiagnostic,
+    name: &str,
+    nominal_elapsed: f64,
+    sample: DiagnosticSample,
+) {
+    let late_by = (sample.elapsed - nominal_elapsed).max(0.0);
+    diagnostic.capture_metadata.push(format!(
+        "{},{nominal_elapsed:.5},{:.5},{late_by:.5},{:.4},{:.4},{:.4},{:.4}\n",
+        csv(name),
+        sample.elapsed,
+        sample.attained_radius,
+        sample.camera.translation.x,
+        sample.camera.translation.y,
+        sample.camera.translation.z,
+    ));
 }
 
 fn request_diagnostic_screenshot(
@@ -1007,12 +1162,52 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     if let Err(error) = fs::write(
         diagnostic.directory.join("camera-transition-trace.csv"),
         format!(
-            "elapsed_s,fixed_time_s,planet_active,planet_ready,follows,requested_radius_m,attained_radius_m,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_sleeping,physics_colliders,virtual_rate,virtual_paused,weather_precip,weather_kind,precipitation_active,precipitation_hidden,precipitation_visible,particle0_x,particle0_y,particle0_z\n{trace}"
+            "elapsed_s,real_delta_ms,fixed_time_s,planet_active,planet_ready,follows,requested_radius_m,attained_radius_m,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_sleeping,physics_colliders,virtual_rate,virtual_paused,weather_precip,weather_kind,precipitation_active,precipitation_hidden,precipitation_visible,particle0_x,particle0_y,particle0_z\n{trace}"
         ),
     ) {
         diagnostic
             .errors
             .push(format!("write camera transition trace: {error}"));
+    }
+    let capture_metadata = format!(
+        "capture,nominal_elapsed_s,request_elapsed_s,late_by_s,camera_radius_m,camera_x,camera_y,camera_z\n{}",
+        diagnostic.capture_metadata.concat()
+    );
+    if let Err(error) = fs::write(
+        diagnostic.directory.join("capture-metadata.csv"),
+        capture_metadata,
+    ) {
+        diagnostic
+            .errors
+            .push(format!("write capture metadata: {error}"));
+    }
+    let timing_rows = diagnostic
+        .road_stage_timings
+        .iter()
+        .map(|timing| {
+            format!(
+                "{:.5},{:.5},{},{:.6},{:.6},{:.6},{:.6},{:.6}\n",
+                timing.real_elapsed_s - diagnostic.started_at.unwrap_or_default(),
+                timing.real_elapsed_s,
+                timing.update_index,
+                timing.widths_ms,
+                timing.geometry_ms,
+                timing.mesh_ms,
+                timing.replace_ms,
+                timing.total_ms,
+            )
+        })
+        .collect::<String>();
+    let timing_trace = format!(
+        "diagnostic_elapsed_s,real_elapsed_s,update_index,widths_ms,geometry_ms,build_visual_mesh_ms,mesh_asset_replace_ms,total_ms\n{timing_rows}"
+    );
+    if let Err(error) = fs::write(
+        diagnostic.directory.join("road-stage-timings.csv"),
+        timing_trace,
+    ) {
+        diagnostic
+            .errors
+            .push(format!("write road stage timing trace: {error}"));
     }
     let motion_samples = diagnostic
         .samples
@@ -1076,29 +1271,76 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
         "storm-hidden.png",
         "storm-restored.png",
     ];
-    let missing_captures = expected_captures
-        .into_iter()
-        .filter(|name| !file_is_nonempty(&diagnostic.directory.join("captures").join(name)))
-        .collect::<Vec<_>>();
+    let missing_captures = if diagnostic.timing_only {
+        Vec::new()
+    } else {
+        expected_captures
+            .into_iter()
+            .filter(|name| !file_is_nonempty(&diagnostic.directory.join("captures").join(name)))
+            .collect::<Vec<_>>()
+    };
     let drag_passed = diagnostic.drag_end_direction_dot <= -0.85;
-    let passed = missing_captures.is_empty()
+    let entry_captures_timely = diagnostic.timing_only
+        || diagnostic
+            .entry_capture_lateness_s
+            .iter()
+            .all(|late| late.is_finite() && *late <= DIAGNOSTIC_MAX_ENTRY_CAPTURE_LATE_SECONDS);
+    let road_timing_max_total_ms = diagnostic
+        .road_stage_timings
+        .iter()
+        .map(|timing| timing.total_ms)
+        .fold(0.0_f64, f64::max);
+    let road_timing_data_present =
+        !diagnostic.road_stage_timings.is_empty() && road_timing_max_total_ms > 0.0;
+    let route_complete = diagnostic.m_events_sent[..4].iter().all(|sent| *sent)
+        && diagnostic.drag_finished
         && drag_passed
         && movement_passed
-        && weather_hidden
-        && weather_restored;
-    let status = if passed {
-        "diagnostic-complete"
-    } else {
-        "diagnostic-rejected"
+        && diagnostic.samples.iter().any(|sample| sample.planet_active)
+        && diagnostic
+            .samples
+            .last()
+            .is_some_and(|sample| !sample.planet_active);
+    let timing_route_complete = route_complete && road_timing_data_present;
+    let passed = diagnostic.errors.is_empty()
+        && if diagnostic.timing_only {
+            timing_route_complete
+        } else {
+            missing_captures.is_empty()
+                && entry_captures_timely
+                && drag_passed
+                && movement_passed
+                && weather_hidden
+                && weather_restored
+        };
+    let status = match (diagnostic.timing_only, passed) {
+        (true, true) => "timing-diagnostic-complete",
+        (true, false) => "timing-diagnostic-rejected",
+        (false, true) => "diagnostic-complete",
+        (false, false) => "diagnostic-rejected",
     };
     let report = format!(
-        "status={status}\nentry_m_reversals=3\ndrag_opposite_dot={:.5}\nbody_path_m={:.4}\nmax_body_excursion_m={:.4}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nweather_kind_at_player={}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={}\nerrors={}\n",
+        "mode={}\nacceptance_claim=none\nstatus={status}\nm_events_sent={}\nroute_complete={route_complete}\ntiming_route_complete={timing_route_complete}\nroad_timing_rows={}\nroad_timing_max_total_ms={road_timing_max_total_ms:.6}\nroad_timing_data_present={road_timing_data_present}\ndrag_opposite_dot={:.5}\nbody_path_m={:.4}\nmax_body_excursion_m={:.4}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nentry_capture_lateness_s={:.5},{:.5},{:.5}\nentry_captures_timely={entry_captures_timely}\nweather_kind_at_player={}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={}\nerrors={}\n",
+        if diagnostic.timing_only {
+            "timing-only"
+        } else {
+            "visual-diagnostic"
+        },
+        diagnostic
+            .m_events_sent
+            .iter()
+            .filter(|sent| **sent)
+            .count(),
+        diagnostic.road_stage_timings.len(),
         diagnostic.drag_end_direction_dot,
         movement.traveled_m,
         movement.max_excursion_m,
         motion_samples
             .iter()
             .any(|sample| sample.collision_colliders > 0),
+        diagnostic.entry_capture_lateness_s[0],
+        diagnostic.entry_capture_lateness_s[1],
+        diagnostic.entry_capture_lateness_s[2],
         diagnostic
             .samples
             .iter()
@@ -1477,6 +1719,13 @@ fn acceptance_world_ready(world: &mut World) -> bool {
             .iter(world)
             .next()
             .is_some()
+}
+
+fn count_collision_colliders(world: &mut World) -> usize {
+    world
+        .query_filtered::<Entity, With<Collider>>()
+        .iter(world)
+        .count()
 }
 
 fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
@@ -2787,7 +3036,10 @@ fn csv(value: &str) -> String {
 
 #[cfg(test)]
 mod transition_diagnostic_tests {
-    use super::opposite_side_drag;
+    use super::{
+        DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup,
+        opposite_side_drag,
+    };
 
     #[test]
     fn diagnostic_drag_crosses_to_the_opposite_hemisphere_inside_the_window() {
@@ -2799,6 +3051,25 @@ mod transition_diagnostic_tests {
         assert!(start.y > 0.0 && start.y < height);
         assert_eq!(start.y, end.y);
         assert!((end.x - start.x) * 0.004 >= std::f32::consts::PI);
+    }
+
+    #[test]
+    fn diagnostic_waits_for_a_populated_stable_physics_world_before_starting_its_clock() {
+        let mut warmup = DiagnosticWorldWarmup::default();
+        assert!(!warmup.observe(0));
+        assert!(!warmup.observe(DIAGNOSTIC_MINIMUM_COLLIDERS - 1));
+
+        for _ in 0..DIAGNOSTIC_STABLE_WORLD_FRAMES - 1 {
+            assert!(!warmup.observe(DIAGNOSTIC_MINIMUM_COLLIDERS));
+        }
+        assert!(warmup.observe(DIAGNOSTIC_MINIMUM_COLLIDERS));
+
+        // Streaming that changes the collision world restarts the warmup.
+        assert!(!warmup.observe(DIAGNOSTIC_MINIMUM_COLLIDERS + 1));
+        for _ in 0..DIAGNOSTIC_STABLE_WORLD_FRAMES - 2 {
+            assert!(!warmup.observe(DIAGNOSTIC_MINIMUM_COLLIDERS + 1));
+        }
+        assert!(warmup.observe(DIAGNOSTIC_MINIMUM_COLLIDERS + 1));
     }
 }
 
