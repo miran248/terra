@@ -2,7 +2,7 @@
 
 Status: the complete expedition and physical return are recorded and validated.
 The edited film runs 3 minutes 35 seconds at 1280×720 and 30 fps. Four README screenshots show the
-house entrance, rainy driving, mountain flight, and planet map. The recorder
+house entrance, rainy driving, mountain flight, and Planet view. The recorder
 exports these PNGs directly from the same gameplay capture.
 
 ## Agreed requirements
@@ -12,7 +12,7 @@ exports these PNGs directly from the same gameplay capture.
 - Movement should look intentional and natural. In particular, the explorer turns toward a vehicle, approaches it directly, and enters within normal interaction range.
 - Give the explorer and car meaningful exploration routes. Include entering and exiting vehicles, boarding the plane, and taking off.
 - Show settlements and their current assets, greenery, forests, rivers or lakes, snowy mountains, and contrasting biomes.
-- Include rainy driving and flying through snowy mountains, alongside clear conditions. Show the world map and time of day.
+- Include rainy driving and flying through snowy mountains, alongside clear conditions. Show Planet view and time of day.
 - Include rolls and loops using the flight model. Leave room for normal travel after a feature or maneuver, rather than immediately cutting away.
 - The film can be longer than the original 40-second recording. Story pacing takes priority over a short checklist of features.
 - Make the finished video loopable, with matching opening/closing camera coordinates and orientation and pixel-identical decoded endpoint frames.
@@ -21,8 +21,8 @@ exports these PNGs directly from the same gameplay capture.
 ## Confirmed cinematic direction
 
 - One connected expedition, with selective cuts to compress uneventful travel.
-- Cinematic tracking shots with the normal gameplay UI, HUD, and minimap visible. The actual map appears as part of exploration rather than as a substitute for returning home.
-- The explorer physically returns to the starting place. The ending must not disguise a teleport or reset with a map transition.
+- Cinematic tracking shots with the normal gameplay UI, HUD, and minimap visible. Planet view appears as part of exploration rather than as a substitute for returning home.
+- The explorer physically returns to the starting place. The ending must not disguise a teleport or reset with a Planet view transition.
 - Space the roll and loop well apart, with substantial ordinary flight between them. Perform both over broad open areas, away from mountain peaks.
 
 ## Recorded story arc
@@ -42,7 +42,7 @@ Evening arrives only near the end of the drive home. The arrival car shot and
 walking shot share one viewing direction and camera offset, preventing an orbit
 when the explorer exits. Gentle road bends retain cruising speed; parking braking
 begins close to the destination.
-The stationary closing map holds the evening view, advances through night over
+The stationary closing Planet view holds the evening view, advances through night over
 ten seconds, and holds the next morning before the loop repeats.
 
 Ground-to-vehicle transitions stay together in continuous scenes. Selective cuts
@@ -59,8 +59,8 @@ parking turn is retained before braking and releasing the steering for exit.
 The recorder validates occupancy during travel, completion of both maneuvers,
 absence of crashes, and the explorer’s physical return. Full capture renders to
 an offscreen image so switching to an editor cannot blank the recording. The
-encoder rejects missing frames and black video and blends the closing map into
+encoder rejects missing frames and black video and blends the closing Planet view into
 the exact opening frame for repetition. The closing camera uses the saved opening
 pose; its orientation is already established during the final walk. The sun
-advances to the opening angle during the closing map timelapse. The encoder reuses the opening H.264 frame at the end and
+advances to the opening angle during the closing Planet view timelapse. The encoder reuses the opening H.264 frame at the end and
 compares decoded frame hashes to guarantee identical endpoint pixels.

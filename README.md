@@ -94,9 +94,10 @@ Both are placed contextually per biome and streamed at 3 LOD levels (960 m / 300
 
 Custom WGSL shaders: water with geometric swell, normal-perturbation chop, and analytic depth gradient; foliage with wind-driven vertex sway. TAA with depth + motion-vector prepasses. HDR tonemapping, bloom, and Rayleigh atmosphere.
 
-## Map
+## Planet view
 
-2D minimap (heading-up, compass labels) and 3D full-screen globe map (north-up, pan/drag, ray-cast terrain). Named region labels from baked centroids. Toggled with `M`.
+The heading-up 2D minimap shows nearby terrain and named regions. Press `M` to pull
+the live gameplay camera back to a whole-planet view; press `M` or `Esc` to return.
 
 ## Time & Weather
 
@@ -142,10 +143,10 @@ See the [asset pipeline](docs/glb-pipeline.md) for generation and validation.
 | V | Open vehicle selector while on foot; pauses the game |
 | C / P | In the selector: summon car / plane |
 | Esc | Close vehicle selector |
-| M | Toggle world map |
+| M | Toggle live planet view |
 | 1 | Toggle sun-lock: sun overhead, or normal day/night cycle |
 
-On the world map, drag to pan; click terrain to travel there while on foot.
+In Planet view, press M or Esc to return to exploration.
 Vehicle summoning and recovery validate clear, dry ground before moving anything.
 
 ## Exploration showcase

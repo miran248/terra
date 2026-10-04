@@ -8,6 +8,7 @@ pub(super) struct Chase {
     target: Option<Entity>,
     offset: Vec3,
     distance: f32,
+    rotation: Quat,
 }
 #[derive(Component)]
 pub(super) struct FadeMaterial {
@@ -90,12 +91,13 @@ pub(super) fn setup(mut commands: Commands, font: Res<crate::ui::UiFont>) {
 #[allow(clippy::too_many_arguments)]
 pub(super) fn camera(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<Time<Real>>,
     mut state: ResMut<Exploration>,
     spatial: SpatialQuery,
+    surface: Option<Res<shared::terrain::TerrainGen>>,
     player: Query<(Entity, &Position, &Player), Without<MainCamera>>,
     vehicles: Query<(&Position, &Vehicle), Without<MainCamera>>,
-    mut cameras: Query<&mut Transform, With<MainCamera>>,
+    mut cameras: Query<(&mut Transform, Option<&mut Projection>), With<MainCamera>>,
     mut visuals: Query<(
         Entity,
         &mut MeshMaterial3d<StandardMaterial>,
@@ -104,6 +106,7 @@ pub(super) fn camera(
     )>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut chase: Local<Chase>,
+    mut original_far_plane: Local<Option<f32>>,
 ) {
     let Ok((explorer, p, player)) = player.single() else {
         return;
@@ -121,9 +124,11 @@ pub(super) fn camera(
     } else {
         (p.0, player.heading, 2.0, 5.0, 10.0, 0.2)
     };
-    let Ok(mut camera) = cameras.single_mut() else {
+    let Ok((mut camera, mut projection)) = cameras.single_mut() else {
         return;
     };
+    let current_camera = *camera;
+    let planet_view_active = state.planet_camera.is_active();
     let up = position.normalize();
     let desired = up * height - heading * back;
     let snap = state.snap_camera || chase.target.is_none();
@@ -133,8 +138,13 @@ pub(super) fn camera(
         state.snap_camera = false;
     } else {
         if chase.target != Some(target) {
-            chase.offset = camera.translation - position;
-            chase.distance = chase.offset.length();
+            if planet_view_active {
+                chase.offset = desired;
+                chase.distance = desired.length();
+            } else {
+                chase.offset = current_camera.translation - position;
+                chase.distance = chase.offset.length();
+            }
         }
         chase.offset = chase
             .offset
@@ -157,17 +167,74 @@ pub(super) fn camera(
     } else {
         chase.distance + (max - chase.distance) * (1.0 - (-6.0 * time.delta_secs()).exp())
     };
-    camera.translation = position + direction * chase.distance;
-    let rotation = Transform::from_translation(camera.translation)
+    let chase_position = position + direction * chase.distance;
+    let rotation = Transform::from_translation(chase_position)
         .looking_at(position + heading * ahead, up)
         .rotation;
-    camera.rotation = if snap {
+    chase.rotation = if snap {
         rotation
     } else {
-        camera
+        chase
             .rotation
             .slerp(rotation, 1.0 - (-8.0 * time.delta_secs()).exp())
     };
+    let chase_pose = Transform {
+        translation: chase_position,
+        rotation: chase.rotation,
+        ..default()
+    };
+    let surface_radius = surface
+        .as_deref()
+        .map_or(shared::sphere::PLANET_RADIUS, |terrain| {
+            terrain.surface_radius(shared::sphere::SpherePos::new(up))
+        });
+    let mut planet_pose = state.planet_camera.update(
+        current_camera,
+        chase_pose,
+        position,
+        heading,
+        time.delta_secs(),
+        surface_radius,
+    );
+    if state.planet_camera.is_active() {
+        let displacement = planet_pose.translation - current_camera.translation;
+        let distance = displacement.length();
+        if distance > 1e-4
+            && let Ok(direction) = Dir3::new(displacement)
+            && let Some(hit) = spatial.cast_shape(
+                &Collider::sphere(radius),
+                current_camera.translation,
+                current_camera.rotation,
+                direction,
+                &ShapeCastConfig::from_max_distance(distance),
+                &SpatialQueryFilter::from_excluded_entities([target, explorer]),
+            )
+            && hit.distance < distance
+        {
+            let permitted = (hit.distance - 0.05).max(0.0);
+            let fraction = (permitted / distance).clamp(0.0, 1.0);
+            planet_pose.translation = current_camera.translation + *direction * permitted;
+            planet_pose.rotation = current_camera
+                .rotation
+                .slerp(planet_pose.rotation, fraction);
+            state.planet_camera.hold_transition_step(time.delta_secs());
+        } else {
+            state.planet_camera.finish_transition_if_ready();
+        }
+    }
+    state
+        .planet_camera
+        .record_attained_radius(planet_pose.translation.length());
+    *camera = planet_pose;
+    if let Some(Projection::Perspective(perspective)) = projection.as_deref_mut() {
+        if state.planet_camera.is_active() {
+            original_far_plane.get_or_insert(perspective.far);
+            perspective.far =
+                shared::planet_view::PLANET_VIEW_FAR_RADIUS + 2.0 * shared::sphere::PLANET_RADIUS;
+        } else if let Some(far) = original_far_plane.take() {
+            perspective.far = far;
+        }
+    }
     let alpha = ((chase.distance - 0.25) / 1.25).clamp(0.0, 1.0);
     for (e, mut handle, fade, owner) in &mut visuals {
         let controlled = owner.0 == target;
