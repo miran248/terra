@@ -8,6 +8,8 @@ mod asset_showcase_prototype;
 mod car_prototype;
 mod chunks;
 mod exploration;
+#[cfg(feature = "asset-review")]
+mod lighting_diagnostics;
 #[cfg(test)]
 mod plane_prototype;
 // mod combat;
@@ -96,6 +98,7 @@ fn main() {
     app.add_plugins((
         asset_showcase_prototype::AssetShowcasePlugin,
         asset_acceptance::AssetAcceptancePlugin,
+        lighting_diagnostics::LightingDiagnosticsPlugin,
         exploration::showcase::ShowcasePlugin,
     ));
     app.add_plugins(exploration::ExplorationPlugin);

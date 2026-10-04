@@ -16,6 +16,11 @@
 - `WATER_SUBDIV` controls sea/lake mesh subdivision. Sea/lake water starts from a rest-flat mesh. In `water.wgsl`, `swell_amp` controls geometric-swell amplitude (`0` disables it for rivers), while `swell_scale` controls spatial frequency; geometric swell is shaded with its analytic gradient so fragment lighting follows the displaced crests. Both swell and normal chop drift downwind from per-frame `Weather.wind`, uploaded by `ShaderMotionPlugin`; colliders remain undisplaced.
 - Per-face `WaterPhase` replaces frozen liquid sections with collider-backed ice without changing terrain identity or shore geometry. One body may mix frozen/liquid sections. Actors traversing frozen water use the same `0.4` movement multiplier as underwater movement. `SurfaceCondition` independently marks frozen ground. Ice and terrain use the same collision margin.
 
+Opt-in lighting diagnosis (`asset-review` plus `TERRA_LIGHTING_CAPTURE`) freezes
+five baked-level camera scenes for noon/sunset/night captures and isolated material
+or lighting overrides. See [the baseline evidence and reproduction commands](lighting-diagnostics.md).
+Normal gameplay does not include this fixture.
+
 ## Chunking, geometry, and collision
 
 - Subdivision-7 terrain (327,680 faces) splits into 320 subdivision-2 chunks using contiguous deterministic four-child slices.

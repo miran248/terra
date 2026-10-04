@@ -28,7 +28,7 @@ Status: consolidated direction confirmed by the user. Further decision work is t
 
 - Car wheels appear to rotate backward.
 - Cars get stuck in bridge geometry.
-- Sunlight produces washed-out colors, overly dark surfaces, missing shadows, and apparent illumination from the wrong direction. Water is the worst affected surface. Root causes remain unverified.
+- Sunlight produces washed-out colors, overly dark surfaces, missing shadows, and apparent illumination from the wrong direction. Water is the worst affected surface. The [#31 diagnostic baseline](lighting-diagnostics.md) records observed causes, isolated probes, and remaining uncertainties; production correction selection is separate.
 - Scenery is too sparse and lacks variety, especially at biome and landform transitions.
 - Bridges need more convincing detail, including railings.
 - Terrain needs surface texture detail. Splat blending, channel packing, projection, and repetition control remain design candidates, not accepted architecture.

@@ -1,0 +1,1 @@
+boundary_face=58000 scenery_on_face=52 shore_face=264699 bridge=Bridge 1 seed=1337 probe=no-fog

@@ -1,0 +1,1 @@
+terrain_faces=327680 inward_or_nonfinite=0 min_normal_dot_radial=0.27122882
