@@ -910,15 +910,12 @@ fn update_planet_marker_overlay(
             .flatten()
             .filter_map(|screen| {
                 let marker = &data.named[screen.index];
-                let was_hovered = hovered.0 == Some(marker.destination.id);
-                let label = (planet_marker_label_visible(
-                    marker.label_kind,
-                    was_hovered,
-                    camera_radius,
-                    PLANET_RADIUS,
-                ) && screen.label_bounds.is_some())
-                .then_some(screen.label_bounds)
-                .flatten();
+                let label = previously_visible_label_bounds(
+                    &projection,
+                    data.world_epoch,
+                    screen.index,
+                    marker.destination.id,
+                );
                 cursor_hits_planet_marker(cursor, Some(screen.center), MARKER_DOT_HIT_RADIUS, label)
                     .then_some((cursor.distance_squared(screen.center), screen.index))
             })
@@ -1211,6 +1208,27 @@ fn update_planet_marker_overlay(
     projection.accepted_bounds_by_cell = accepted_bounds_by_cell;
 }
 
+fn previously_visible_label_bounds(
+    projection: &PlanetMarkerProjection,
+    world_epoch: Option<WorldEpoch>,
+    index: usize,
+    destination_id: PlanetDestinationId,
+) -> Option<Rect> {
+    if projection.world_epoch != world_epoch {
+        return None;
+    }
+    // Hover resolves before this frame's UI prepare, so these cached bounds
+    // still match the last laid-out labels. The cache is index-ordered.
+    let projected_index = projection
+        .markers
+        .binary_search_by_key(&index, |marker| marker.index)
+        .ok()?;
+    let marker = projection.markers.get(projected_index)?;
+    (marker.destination.id == destination_id)
+        .then_some(marker.label_bounds)
+        .flatten()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn hide_all_marker_nodes(ui: &mut MarkerOverlayUi) {
     for (mut node, _, _) in ui.named_dots.iter_mut() {
@@ -1365,13 +1383,15 @@ mod tests {
     use bevy::camera::{CameraProjection, RenderTargetInfo, Viewport};
     use bevy::prelude::*;
     use bevy::state::app::{AppExtStates, StatesPlugin};
+    use bevy::window::PrimaryWindow;
     use shared::level::{RegionData, RegionKind, RegionMemberships, SettlementKind};
 
     use super::{
         BridgeMarkerAnchor, CameraUpdateSystems, HoveredPlanetMarker, NamedMarkerDot,
-        NamedPlaceMarker, PlanetMarkerAnchors, PlanetMarkerData, PlanetMarkerLayer,
-        PlanetMarkerLayers, PlanetMarkerProjection, ProjectedPlanetMarker, TransformSystems,
-        build_named_markers, select_named_marker_at, update_planet_marker_overlay,
+        NamedMarkerLabel, NamedPlaceMarker, PlanetMarkerAnchors, PlanetMarkerData,
+        PlanetMarkerLayer, PlanetMarkerLayers, PlanetMarkerProjection, ProjectedPlanetMarker,
+        TransformSystems, build_named_markers, select_named_marker_at,
+        update_planet_marker_overlay,
     };
     use crate::{
         exploration::{
@@ -1627,6 +1647,165 @@ mod tests {
                 .is_enabled(PlanetMarkerLayer::Regions)
         );
         assert!(app.world().contains_resource::<PlanetMarkerProjection>());
+    }
+
+    #[test]
+    fn hover_does_not_open_a_collision_suppressed_label() {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..24 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .insert_resource(State::new(shared::state::AppState::Loading));
+
+        let epoch = WorldEpoch::new(36);
+        let settlement = PlanetDestination {
+            id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 0),
+            position: Vec3::Z * shared::sphere::PLANET_RADIUS,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Settlement · S".into(),
+        };
+        let region = PlanetDestination {
+            id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Region, 0),
+            position: Vec3::Z * shared::sphere::PLANET_RADIUS,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Region · A faraway named region".into(),
+        };
+        app.world_mut()
+            .insert_resource(PlanetMarkerLayers::default());
+        app.world_mut().insert_resource(PlanetMarkerData {
+            world_epoch: Some(epoch),
+            named: vec![
+                NamedPlaceMarker {
+                    destination: settlement,
+                    layer: PlanetMarkerLayer::Settlements,
+                    label_kind: PlanetMarkerLabelKind::Settlement,
+                    label: "S".into(),
+                },
+                NamedPlaceMarker {
+                    destination: region,
+                    layer: PlanetMarkerLayer::Regions,
+                    label_kind: PlanetMarkerLabelKind::Region,
+                    label: "A faraway named region".into(),
+                },
+            ],
+        });
+        app.world_mut()
+            .insert_resource(PlanetMarkerProjection::default());
+        app.world_mut()
+            .insert_resource(HoveredPlanetMarker::default());
+
+        let mut window = Window::default();
+        // The labels share an anchor. This cursor point lies in only the long
+        // region label's theoretical bounds, beyond the visible short label.
+        window.set_cursor_position(None);
+        let window_entity = app.world_mut().spawn((PrimaryWindow, window)).id();
+
+        let size = UVec2::new(800, 600);
+        let mut perspective = PerspectiveProjection {
+            far: 20_000.0,
+            ..default()
+        };
+        perspective.update(size.x as f32, size.y as f32);
+        let mut camera = Camera {
+            viewport: Some(Viewport {
+                physical_size: size,
+                ..default()
+            }),
+            ..default()
+        };
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size: size,
+            scale_factor: 1.0,
+        });
+        camera.computed.clip_from_view = perspective.get_clip_from_view();
+        let camera_transform =
+            Transform::from_xyz(0.0, 0.0, 3_600.0).looking_at(Vec3::ZERO, Vec3::Y);
+        app.world_mut().spawn((
+            MainCamera,
+            camera,
+            Projection::Perspective(perspective),
+            camera_transform,
+            GlobalTransform::from(camera_transform),
+        ));
+
+        for (index, label) in ["S", "A faraway named region"].into_iter().enumerate() {
+            app.world_mut().spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(7.0),
+                    height: Val::Px(7.0),
+                    display: Display::None,
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+                NamedMarkerDot(index),
+            ));
+            app.world_mut().spawn((
+                Text::new(label),
+                Node {
+                    position_type: PositionType::Absolute,
+                    display: Display::None,
+                    ..default()
+                },
+                TextColor(Color::WHITE),
+                NamedMarkerLabel(index),
+            ));
+        }
+        app.add_systems(
+            PostUpdate,
+            update_planet_marker_overlay
+                .after(CameraUpdateSystems)
+                .before(bevy::ui::UiSystems::Prepare)
+                .before(TransformSystems::Propagate),
+        );
+
+        app.update();
+        let previous_projection = app.world().resource::<PlanetMarkerProjection>();
+        assert_eq!(previous_projection.markers.len(), 2);
+        assert!(previous_projection.markers[0].label_bounds.is_some());
+        assert_eq!(previous_projection.markers[1].label_bounds, None);
+
+        app.world_mut()
+            .get_mut::<Window>(window_entity)
+            .unwrap()
+            .set_cursor_position(Some(Vec2::new(500.0, 300.0)));
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<HoveredPlanetMarker>().0,
+            None,
+            "a suppressed label's invisible text area must not create a hover target"
+        );
+        let mut labels = app.world_mut().query::<(&NamedMarkerLabel, &Node)>();
+        assert_eq!(
+            labels
+                .iter(app.world())
+                .find(|(label, _)| label.0 == 1)
+                .unwrap()
+                .1
+                .display,
+            Display::None
+        );
+
+        let settlement_id = app.world().resource::<PlanetMarkerData>().named[0]
+            .destination
+            .id;
+        let settlement_dot = app.world().resource::<PlanetMarkerProjection>().markers[0].center;
+        app.world_mut()
+            .get_mut::<Window>(window_entity)
+            .unwrap()
+            .set_cursor_position(Some(settlement_dot));
+        app.update();
+        assert_eq!(
+            app.world().resource::<HoveredPlanetMarker>().0,
+            Some(settlement_id),
+            "dot hit targets stay interactive even when a label was suppressed"
+        );
     }
 
     #[test]
