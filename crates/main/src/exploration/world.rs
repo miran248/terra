@@ -144,6 +144,149 @@ pub(super) fn residency(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunks::WorldObstacle;
+    use crate::exploration::{Action, tests::fixture};
+    use crate::map::MainCamera;
+
+    #[test]
+    fn detached_planet_view_and_detail_changes_keep_moving_body_support_resident() {
+        let (mut app, explorer) = fixture();
+        app.world_mut().insert_resource(Gravity(Vec3::NEG_Y * 9.81));
+        let start = app.world().get::<Position>(explorer).unwrap().0;
+        let floor = {
+            let mut query = app
+                .world_mut()
+                .query_filtered::<Entity, (With<Ground>, With<Collider>, Without<WorldObstacle>)>();
+            query.single(app.world()).unwrap()
+        };
+        let regional = start + Vec3::X * 270.0;
+        let pending_target = start + Vec3::X * 600.0;
+        let obstacle = |position| Obstacle {
+            position,
+            rotation: Quat::IDENTITY,
+            collider: Collider::cuboid(2.0, 2.0, 2.0),
+            resident: None,
+        };
+        app.world_mut().insert_resource(CollisionWorld {
+            obstacles: vec![
+                obstacle(start - Vec3::X * 100.0),
+                obstacle(regional),
+                obstacle(pending_target + Vec3::X * 100.0),
+            ],
+            ready: false,
+            last_action: None,
+        });
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_translation(start + Vec3::Y * 5.0 - Vec3::Z * 5.0)
+                    .looking_at(start, Vec3::Y),
+            ))
+            .id();
+
+        app.update();
+        let start_obstacle = app.world().resource::<CollisionWorld>().obstacles[0]
+            .resident
+            .expect("body-centered obstacle should be resident");
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        app.update();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .detach(Vec3::X);
+        for _ in 0..120 {
+            app.update();
+        }
+
+        let camera_pose = *app.world().get::<Transform>(camera).unwrap();
+        let altitude = crate::map::altitude_above_surface(camera_pose.translation, None);
+        assert!(camera_pose.translation.normalize().dot(Vec3::X) > 0.999);
+        assert_eq!(shared::planet_detail::desired_chunk_lod(1_800.0, 0.0, 1), 1);
+        assert_eq!(
+            shared::planet_detail::desired_chunk_lod(1_800.0, altitude, 1),
+            2
+        );
+        assert!(app.world().get::<Collider>(start_obstacle).is_some());
+
+        let supported_y = app.world().get::<Position>(explorer).unwrap().0.y;
+        for step in 1..=5 {
+            let mut travel = start + Vec3::X * (step as f32 * 50.0);
+            travel.y = supported_y;
+            app.world_mut()
+                .entity_mut(explorer)
+                .insert(Position(travel));
+            app.update();
+        }
+        for _ in 0..2 {
+            app.update();
+        }
+        let regional_resident = {
+            let collision = app.world().resource::<CollisionWorld>();
+            assert!(collision.obstacles[0].resident.is_none());
+            collision.obstacles[1]
+                .resident
+                .expect("regional body obstacle should follow the moving body")
+        };
+        assert!(app.world().get::<Collider>(floor).is_some());
+        let contacts = app.world().get::<CollidingEntities>(explorer).unwrap();
+        assert!(
+            contacts.0.contains(&floor),
+            "the moving body lost terrain support: position={:?}, contacts={:?}, floor={floor:?}",
+            app.world().get::<Position>(explorer),
+            contacts.0
+        );
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .request_radius(shared::planet_view::PLANET_VIEW_NEAR_RADIUS);
+        for _ in 0..120 {
+            app.update();
+        }
+        let camera_altitude = crate::map::altitude_above_surface(
+            app.world().get::<Transform>(camera).unwrap().translation,
+            None,
+        );
+        assert!(camera_altitude < 100.0);
+        assert_eq!(
+            shared::planet_detail::desired_chunk_lod(1_800.0, camera_altitude, 1),
+            1
+        );
+        assert!(app.world().get::<Collider>(floor).is_some());
+        assert!(app.world().get::<Collider>(regional_resident).is_some());
+
+        let target_action = Action::Teleport(pending_target);
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.selector = true;
+            state.request(target_action);
+        }
+        app.update();
+        assert!(
+            !app.world().resource::<CollisionWorld>().ready,
+            "pending destination must wait while its obstacle colliders load"
+        );
+        assert!(
+            app.world().resource::<CollisionWorld>().obstacles[2]
+                .resident
+                .is_some()
+        );
+        app.update();
+        let collision = app.world().resource::<CollisionWorld>();
+        assert!(collision.ready);
+        assert!(collision.last_action == Some(target_action));
+        assert!(app.world().resource::<Exploration>().actions.is_empty());
+        assert!(
+            app.world()
+                .get::<Collider>(collision.obstacles[2].resident.unwrap())
+                .is_some()
+        );
+        assert!(app.world().get::<Collider>(floor).is_some());
+    }
 
     #[test]
     fn selecting_a_destination_does_not_prepare_its_collision_obstacles() {
