@@ -233,8 +233,7 @@ pub(super) fn camera(
     if let Some(Projection::Perspective(perspective)) = projection.as_deref_mut() {
         if state.planet_camera.is_active() {
             original_far_plane.get_or_insert(perspective.far);
-            perspective.far =
-                shared::planet_view::PLANET_VIEW_FAR_RADIUS + 2.0 * shared::sphere::PLANET_RADIUS;
+            perspective.far = shared::planet_atmosphere::PLANET_VIEW_FAR_CLIP_DISTANCE;
         } else if let Some(far) = original_far_plane.take() {
             perspective.far = far;
         }
