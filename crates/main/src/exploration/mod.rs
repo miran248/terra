@@ -2324,10 +2324,487 @@ pub(crate) mod tests {
         app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(true);
-        for _ in 0..140 {
+        for _ in 0..180 {
             app.update();
         }
     }
+
+    #[derive(Clone, Copy)]
+    struct CameraMotionSample {
+        time: f32,
+        pose: Transform,
+        body: Vec3,
+    }
+
+    fn m_open_trace(hz: usize, move_body: bool) -> Vec<CameraMotionSample> {
+        assert!(hz >= 30 && hz % 30 == 0);
+        let (mut app, explorer) = fixture();
+        let delta = 1.0 / hz as f32;
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(delta),
+        ));
+        let camera = spawn_planet_view_camera(&mut app);
+        let sample_stride = hz / 30;
+        let mut trace = Vec::with_capacity(30);
+
+        for frame in 0..hz {
+            let time = (frame + 1) as f32 * delta;
+            if move_body {
+                let body_rotation = Quat::from_rotation_z(time * 0.01);
+                app.world_mut().get_mut::<Position>(explorer).unwrap().0 =
+                    body_rotation * Vec3::Y * (shared::sphere::PLANET_RADIUS + 0.6);
+                app.world_mut().get_mut::<Player>(explorer).unwrap().heading =
+                    body_rotation * Vec3::NEG_Z;
+            }
+            if frame == 0 {
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(KeyCode::KeyM);
+            }
+            app.update();
+            if frame == 0 {
+                let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+                keys.clear_just_pressed(KeyCode::KeyM);
+                keys.release(KeyCode::KeyM);
+            }
+            if (frame + 1) % sample_stride == 0 {
+                trace.push(CameraMotionSample {
+                    time,
+                    pose: *app.world().get::<Transform>(camera).unwrap(),
+                    body: app.world().get::<Position>(explorer).unwrap().0,
+                });
+            }
+        }
+
+        for tick in [12, 24, 30] {
+            let sample = trace[tick - 1];
+            println!(
+                "M_OPEN hz={hz} moving={move_body} t={:.3} pos=({:.1},{:.1},{:.1}) r={:.1} body=({:.1},{:.1},{:.1})",
+                sample.time,
+                sample.pose.translation.x,
+                sample.pose.translation.y,
+                sample.pose.translation.z,
+                sample.pose.translation.length(),
+                sample.body.x,
+                sample.body.y,
+                sample.body.z,
+            );
+        }
+        trace
+    }
+
+    #[test]
+    fn m_open_transition_is_frame_rate_stable_with_a_moving_body() {
+        let stationary = [30, 60, 120].map(|hz| m_open_trace(hz, false));
+        let moving = [30, 60, 120].map(|hz| m_open_trace(hz, true));
+        for (label, traces) in [("stationary", &stationary), ("moving", &moving)] {
+            for (rate, trace) in [60, 120].into_iter().zip(traces.iter().skip(1)) {
+                let baseline = &traces[0];
+                let (max_position_delta, max_rotation_delta) = baseline
+                    .iter()
+                    .zip(trace)
+                    .map(|(a, b)| {
+                        (
+                            a.pose.translation.distance(b.pose.translation),
+                            a.pose.rotation.angle_between(b.pose.rotation),
+                        )
+                    })
+                    .fold((0.0_f32, 0.0_f32), |maxima, delta| {
+                        (maxima.0.max(delta.0), maxima.1.max(delta.1))
+                    });
+                println!(
+                    "M_OPEN_RATE_DELTA case={label} hz={rate} max_position={max_position_delta:.1}m max_rotation={:.1}deg",
+                    max_rotation_delta.to_degrees(),
+                );
+                assert!(
+                    max_position_delta < 10.0 && max_rotation_delta < 0.03,
+                    "M open framing depends on frame rate ({label} body): {rate} Hz differs from 30 Hz by {max_position_delta:.1} m and {:.1} degrees",
+                    max_rotation_delta.to_degrees(),
+                );
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    struct OppositeReturnMetrics {
+        hz: usize,
+        max_center_aim_degrees: f32,
+        max_roll_degrees: f32,
+        max_path_error_degrees: f32,
+        min_swing_radius: f32,
+        max_linear_speed: f32,
+        max_angular_speed: f32,
+        final_body_distance: f32,
+    }
+
+    const PLANET_VIEW_FAR_RETURN_SECONDS_FOR_TRACE: f32 = 2.4;
+
+    fn opposite_side_return_trace(hz: usize) -> OppositeReturnMetrics {
+        assert!(hz >= 30 && hz % 30 == 0);
+        let (mut app, explorer) = fixture();
+        let delta = 1.0 / hz as f32;
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(delta),
+        ));
+        let camera = spawn_planet_view_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+        for _ in 1..(hz * 3 / 2) {
+            app.update();
+        }
+
+        let start_direction = Vec3::NEG_Y;
+        let start_pose = Transform::from_translation(
+            start_direction * shared::planet_view::PLANET_VIEW_FAR_RADIUS,
+        )
+        .looking_at(Vec3::ZERO, Vec3::NEG_Z);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .detach(start_direction);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = start_pose;
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+
+        let antipodal_axis = start_direction.any_orthonormal_vector().normalize();
+        let initial_up = start_pose.rotation * Vec3::Y;
+        let mut metrics = OppositeReturnMetrics {
+            hz,
+            max_center_aim_degrees: 0.0,
+            max_roll_degrees: 0.0,
+            max_path_error_degrees: 0.0,
+            min_swing_radius: f32::INFINITY,
+            max_linear_speed: 0.0,
+            max_angular_speed: 0.0,
+            final_body_distance: f32::INFINITY,
+        };
+        let mut previous_pose = start_pose;
+        let frame_count = hz * 3;
+        for frame in 0..frame_count {
+            app.update();
+            let pose = *app.world().get::<Transform>(camera).unwrap();
+            let elapsed = (frame + 2) as f32 * delta;
+            let progress = (elapsed / PLANET_VIEW_FAR_RETURN_SECONDS_FOR_TRACE).clamp(0.0, 1.0);
+            let linear_speed = pose.translation.distance(previous_pose.translation) / delta;
+            let angular_speed = previous_pose.rotation.angle_between(pose.rotation) / delta;
+            metrics.max_linear_speed = metrics.max_linear_speed.max(linear_speed);
+            metrics.max_angular_speed = metrics.max_angular_speed.max(angular_speed);
+            previous_pose = pose;
+
+            if (0.15..=0.75).contains(&progress) {
+                let swing = ((progress - 0.15) / 0.6).clamp(0.0, 1.0);
+                let eased = swing * swing * (3.0 - 2.0 * swing);
+                let transport = Quat::from_axis_angle(antipodal_axis, std::f32::consts::PI * eased);
+                let expected_direction = (transport * start_direction).normalize();
+                let expected_forward = -expected_direction;
+                let expected_up = transport * initial_up;
+                let actual_forward = pose.rotation * Vec3::NEG_Z;
+                let actual_up = pose.rotation * Vec3::Y;
+                let aim_error = actual_forward.angle_between(expected_forward).to_degrees();
+                let actual_up = (actual_up - expected_forward * actual_up.dot(expected_forward))
+                    .normalize_or(expected_up);
+                let expected_up = (expected_up
+                    - expected_forward * expected_up.dot(expected_forward))
+                .normalize_or(Vec3::Z);
+                let roll_error = expected_forward
+                    .dot(expected_up.cross(actual_up))
+                    .atan2(expected_up.dot(actual_up))
+                    .abs()
+                    .to_degrees();
+                let path_error = pose
+                    .translation
+                    .normalize()
+                    .angle_between(expected_direction)
+                    .to_degrees();
+                metrics.max_center_aim_degrees = metrics.max_center_aim_degrees.max(aim_error);
+                metrics.max_roll_degrees = metrics.max_roll_degrees.max(roll_error);
+                metrics.max_path_error_degrees = metrics.max_path_error_degrees.max(path_error);
+                metrics.min_swing_radius = metrics.min_swing_radius.min(pose.translation.length());
+            }
+        }
+        let body = app.world().get::<Position>(explorer).unwrap().0;
+        metrics.final_body_distance = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .distance(body);
+        metrics
+    }
+
+    #[test]
+    fn opposite_side_m_return_keeps_the_planet_centered_and_tracks_its_path() {
+        let metrics = [30, 60, 120].map(opposite_side_return_trace);
+        for measurement in &metrics {
+            assert!(measurement.min_swing_radius > shared::sphere::PLANET_RADIUS + 300.0);
+            assert!(measurement.max_path_error_degrees < 2.0);
+            assert!(measurement.final_body_distance < 30.0);
+            assert!(
+                measurement.max_linear_speed < 22_000.0,
+                "{} Hz far-side return reaches {:.0} m/s",
+                measurement.hz,
+                measurement.max_linear_speed,
+            );
+            assert!(
+                measurement.max_angular_speed < 8.0,
+                "{} Hz far-side return reaches {:.1} rad/s",
+                measurement.hz,
+                measurement.max_angular_speed,
+            );
+            assert!(
+                measurement.max_center_aim_degrees < 20.0,
+                "{} Hz opposite-side return turns away from the planet by {:.1} degrees",
+                measurement.hz,
+                measurement.max_center_aim_degrees,
+            );
+            assert!(
+                measurement.max_roll_degrees < 20.0,
+                "{} Hz opposite-side return rolls {:.1} degrees off the transported frame",
+                measurement.hz,
+                measurement.max_roll_degrees,
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct SameSideReturnMetrics {
+        hz: usize,
+        max_radial_speed: f32,
+        max_angular_speed: f32,
+        max_radius_increase: f32,
+        final_body_distance: f32,
+    }
+
+    fn same_side_return_trace(hz: usize, orbit_radians: f32) -> SameSideReturnMetrics {
+        let (mut app, explorer) = fixture();
+        let delta = 1.0 / hz as f32;
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(delta),
+        ));
+        let camera = spawn_planet_view_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+        for _ in 1..(hz * 3 / 2) {
+            app.update();
+        }
+
+        if orbit_radians > 0.0 {
+            let current = *app.world().get::<Transform>(camera).unwrap();
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .planet_camera
+                .orbit_from(current, Vec2::new(orbit_radians, 0.0));
+            for _ in 0..hz {
+                app.update();
+            }
+        }
+
+        let start_pose = *app.world().get::<Transform>(camera).unwrap();
+        let start_radius = start_pose.translation.length();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+
+        let mut metrics = SameSideReturnMetrics {
+            hz,
+            max_radial_speed: 0.0,
+            max_angular_speed: 0.0,
+            max_radius_increase: 0.0,
+            final_body_distance: f32::INFINITY,
+        };
+        let mut previous = start_pose;
+        for _ in 0..(hz * 2) {
+            app.update();
+            let pose = *app.world().get::<Transform>(camera).unwrap();
+            let radial_speed =
+                (pose.translation.length() - previous.translation.length()).abs() / delta;
+            let angular_speed = previous.rotation.angle_between(pose.rotation) / delta;
+            metrics.max_radial_speed = metrics.max_radial_speed.max(radial_speed);
+            metrics.max_angular_speed = metrics.max_angular_speed.max(angular_speed);
+            metrics.max_radius_increase = metrics
+                .max_radius_increase
+                .max(pose.translation.length() - start_radius);
+            previous = pose;
+        }
+        let body = app.world().get::<Position>(explorer).unwrap().0;
+        metrics.final_body_distance = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .distance(body);
+        metrics
+    }
+
+    #[test]
+    fn same_side_m_return_has_no_radial_or_angular_speed_snap() {
+        for measurement in [30, 60, 120].map(|hz| same_side_return_trace(hz, 0.0)) {
+            assert!(measurement.max_radius_increase < 10.0);
+            assert!(measurement.final_body_distance < 30.0);
+            assert!(
+                measurement.max_radial_speed < 8_000.0,
+                "{} Hz same-side return has a {:.0} m/s radial snap",
+                measurement.hz,
+                measurement.max_radial_speed,
+            );
+            assert!(
+                measurement.max_angular_speed < 8.0,
+                "{} Hz same-side return has a {:.1} rad/s angular snap",
+                measurement.hz,
+                measurement.max_angular_speed,
+            );
+        }
+    }
+
+    #[test]
+    fn nearby_orbit_m_return_takes_a_direct_approach() {
+        let orbit_angle = 30.0_f32.to_radians();
+        for measurement in [30, 60, 120].map(|hz| same_side_return_trace(hz, orbit_angle)) {
+            assert!(measurement.max_radius_increase < 10.0);
+            assert!(measurement.final_body_distance < 30.0);
+            assert!(
+                measurement.max_radial_speed < 8_000.0,
+                "{} Hz nearby return holds the transit shell then descends at {:.0} m/s",
+                measurement.hz,
+                measurement.max_radial_speed,
+            );
+            assert!(measurement.max_angular_speed < 8.0);
+        }
+    }
+
+    fn reversal_motion_velocity(hz: usize) -> (Vec3, Vec3, Vec3, Vec3) {
+        let (mut app, _) = fixture();
+        let delta = 1.0 / hz as f32;
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(delta),
+        ));
+        let camera = spawn_planet_view_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+        for _ in 1..(hz * 3 / 2) {
+            app.update();
+        }
+
+        let start_direction = Vec3::NEG_Y;
+        let start_pose = Transform::from_translation(
+            start_direction * shared::planet_view::PLANET_VIEW_FAR_RADIUS,
+        )
+        .looking_at(Vec3::ZERO, Vec3::NEG_Z);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .detach(start_direction);
+        *app.world_mut().get_mut::<Transform>(camera).unwrap() = start_pose;
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+
+        let mut previous = *app.world().get::<Transform>(camera).unwrap();
+        let mut incoming_linear_velocity = Vec3::ZERO;
+        let mut incoming_angular_velocity = Vec3::ZERO;
+        for _ in 0..(hz * 6 / 5) {
+            app.update();
+            let pose = *app.world().get::<Transform>(camera).unwrap();
+            incoming_linear_velocity = (pose.translation - previous.translation) / delta;
+            let delta_rotation = previous.rotation.inverse() * pose.rotation;
+            let (axis, angle) = delta_rotation.to_axis_angle();
+            incoming_angular_velocity = axis * (angle / delta);
+            previous = pose;
+        }
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyM);
+            keys.release(KeyCode::KeyM);
+        }
+        let after_reversal = *app.world().get::<Transform>(camera).unwrap();
+        let outgoing_linear_velocity = (after_reversal.translation - previous.translation) / delta;
+        let delta_rotation = previous.rotation.inverse() * after_reversal.rotation;
+        let (axis, angle) = delta_rotation.to_axis_angle();
+        let outgoing_angular_velocity = axis * (angle / delta);
+        (
+            incoming_linear_velocity,
+            outgoing_linear_velocity,
+            incoming_angular_velocity,
+            outgoing_angular_velocity,
+        )
+    }
+
+    #[test]
+    fn m_reversal_preserves_transition_velocity() {
+        for hz in [30, 60, 120] {
+            let (incoming_linear, outgoing_linear, incoming_angular, outgoing_angular) =
+                reversal_motion_velocity(hz);
+            let linear_delta = incoming_linear.distance(outgoing_linear);
+            let angular_delta = incoming_angular.distance(outgoing_angular);
+            println!(
+                "REVERSAL_SPEED hz={hz} linear={:.0}->{:.0}m/s angular={:.3}->{:.3}rad/s",
+                incoming_linear.length(),
+                outgoing_linear.length(),
+                incoming_angular.length(),
+                outgoing_angular.length(),
+            );
+            assert!(
+                incoming_angular.length() > 1.0,
+                "{hz} Hz fixture did not reach an active turn"
+            );
+            assert!(
+                angular_delta < 1.5,
+                "{hz} Hz M reversal snaps angular velocity by {angular_delta:.2} rad/s"
+            );
+            assert!(
+                linear_delta < 5_500.0,
+                "{hz} Hz M reversal snaps linear velocity by {linear_delta:.0} m/s"
+            );
+        }
+    }
+
     fn summon_and_enter_vehicle(app: &mut App, explorer: Entity, kind: Kind) -> Entity {
         act(app, Action::Summon(kind));
         let vehicle = app.world().resource::<Exploration>().vehicles[kind.index()].unwrap();
@@ -3024,7 +3501,7 @@ pub(crate) mod tests {
             .resource_mut::<Exploration>()
             .planet_camera
             .close();
-        for _ in 0..140 {
+        for _ in 0..180 {
             app.update();
             let pose = app.world().get::<Transform>(camera).unwrap();
             assert!(pose.translation.length() > planet_radius + 0.1);
@@ -3036,7 +3513,17 @@ pub(crate) mod tests {
             !app.world()
                 .resource::<Exploration>()
                 .planet_camera
-                .is_active()
+                .is_active(),
+            "Planet view stayed active at camera radius {:.1} m, attained radius {:.1} m, requested open {}",
+            returned.translation.length(),
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .attained_radius(),
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
         );
     }
     #[test]
