@@ -443,6 +443,7 @@ pub(crate) fn setup_map(
         .collect();
     let ground = PlanetMesh::new(displaced);
     let mut road_highlight_paths = Vec::new();
+    let mut bridge_highlight_paths = Vec::new();
 
     for road in level
         .roads
@@ -515,7 +516,7 @@ pub(crate) fn setup_map(
             crate::planet_roads::ROAD_SURFACE_LIFT_METERS,
         );
         if samples.len() > 1 {
-            road_highlight_paths.push(samples);
+            bridge_highlight_paths.push(samples);
         }
         bridge_top_surfaces_by_name.insert(road.name.clone(), deck.top_surface);
         let colors = vec![[bridge_color.to_f32_array(); 3]; deck.triangles.len()];
@@ -678,9 +679,10 @@ pub(crate) fn setup_map(
     ));
     commands.insert_resource(LevelLandform(level.landform.clone()));
     commands.insert_resource(LevelRoadMaterial(level.road_material.clone()));
-    commands.insert_resource(crate::planet_roads::RoadHighlightPaths(
-        road_highlight_paths,
-    ));
+    commands.insert_resource(crate::planet_roads::RoadHighlightPaths {
+        terrain: road_highlight_paths,
+        bridges: bridge_highlight_paths,
+    });
     commands.insert_resource(LevelRegions {
         regions: level.regions.clone(),
         face_regions: level.face_regions.clone(),
