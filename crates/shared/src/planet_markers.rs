@@ -34,10 +34,7 @@ pub fn planet_marker_label_visible(
 
 /// Label priority for reducing collisions. Hovered places rise above the
 /// settlement layer, while bridges remain unnamed until hovered.
-pub fn planet_marker_label_priority(
-    kind: PlanetMarkerLabelKind,
-    hovered: bool,
-) -> Option<u8> {
+pub fn planet_marker_label_priority(kind: PlanetMarkerLabelKind, hovered: bool) -> Option<u8> {
     match kind {
         PlanetMarkerLabelKind::Explorer => Some(0),
         PlanetMarkerLabelKind::SelectedDestination => Some(1),
@@ -170,9 +167,8 @@ mod tests {
     use bevy::prelude::{Rect, Vec2, Vec3};
 
     use super::{
-        PlanetMarkerLabelKind, marker_clears_spherical_horizon,
-        planet_marker_label_priority, planet_marker_label_visible,
-        cursor_hits_planet_marker, project_ndc_to_logical_viewport,
+        PlanetMarkerLabelKind, cursor_hits_planet_marker, marker_clears_spherical_horizon,
+        planet_marker_label_priority, planet_marker_label_visible, project_ndc_to_logical_viewport,
         same_surface_location, triangle_area_weighted_centroid,
     };
 
