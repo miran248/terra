@@ -21,6 +21,12 @@ five baked-level camera scenes for noon/sunset/night captures and isolated mater
 or lighting overrides. See [the baseline evidence and reproduction commands](lighting-diagnostics.md).
 Normal gameplay does not include this fixture.
 
+## Simulation and presentation clocks
+
+- `PlanetSimulationClock` owns virtual-time rate writes. After the main camera has updated, it publishes the camera's attained radial distance; before Bevy's next `TimeSystems` advance, the arbiter applies `base_rate * (1 - 0.5 * (z*z*(3-2*z)))`, where `z` is the attained radial zoom clamped from settlement scale (`0`) to whole-planet scale (`1`). Requested framing does not affect the rate until the camera reaches it. Closing Planet view removes only that contribution; base-rate changes and the independent virtual-time pause remain intact.
+- World movement, Avian physics, day/night, weather, water and foliage shader time, and vehicle animation follow virtual time together. Do not scale their deltas separately. Bevy's fixed accumulator continues to consume virtual delta at its configured timestep and substep count. Render globals receive the restored generic virtual `Time`, so shader animation follows the same simulation progression.
+- Camera motion, camera gestures, interface fades and readiness, timed holds, and camera-dependent presentation refresh use `Time<Real>` so they remain responsive while virtual time is slowed or paused.
+
 ## Chunking, geometry, and collision
 
 - Subdivision-7 terrain (327,680 faces) splits into 320 subdivision-2 chunks using contiguous deterministic four-child slices.
