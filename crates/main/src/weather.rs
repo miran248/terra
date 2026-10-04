@@ -87,6 +87,7 @@ impl Plugin for WeatherPlugin {
                 Update,
                 (advance_weather, apply_precip)
                     .chain()
+                    .after(crate::exploration::ExplorationUpdate)
                     .run_if(in_state(AppState::Playing)),
             );
     }
@@ -110,6 +111,7 @@ fn setup_particles(
             MeshMaterial3d(mat.clone()),
             // Start collapsed (inactive) until weather activates it.
             Transform::from_scale(Vec3::ZERO),
+            Visibility::Inherited,
             Precip { idx },
         ));
     }
@@ -154,6 +156,17 @@ fn wrap(x: f32, half: f32) -> f32 {
     (x + half).rem_euclid(2.0 * half) - half
 }
 
+fn set_precip_visibility(visibility: &mut Visibility, hidden: bool) {
+    let target = if hidden {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    if *visibility != target {
+        *visibility = target;
+    }
+}
+
 /// Moves the particle pool: each active particle falls (plus wind), wrapping
 /// inside a cube centred on the camera. Rain streaks / snow flakes are chosen
 /// from the local temperature under the player.
@@ -164,19 +177,27 @@ fn wrap(x: f32, half: f32) -> f32 {
 fn apply_precip(
     time: Res<Time>,
     mut w: ResMut<Weather>,
+    exploration: Option<Res<crate::exploration::Exploration>>,
     terrain: Option<Res<shared::terrain::TerrainGen>>,
     cam_q: Query<&Transform, With<MainCamera>>,
     player_q: Query<&Transform, With<Player>>,
-    mut precip_q: Query<(&Precip, &mut Transform), (Without<MainCamera>, Without<Player>)>,
+    mut precip_q: Query<
+        (&Precip, &mut Transform, &mut Visibility),
+        (Without<MainCamera>, Without<Player>),
+    >,
 ) {
     let Ok(cam) = cam_q.single() else { return };
 
+    let hide_precipitation = exploration
+        .as_deref()
+        .is_some_and(crate::exploration::Exploration::is_planet_view_active);
     let intensity = w.precip;
     if intensity < 0.02 {
-        for (_, mut tf) in &mut precip_q {
+        for (_, mut tf, mut visibility) in &mut precip_q {
             if tf.scale != Vec3::ZERO {
                 tf.scale = Vec3::ZERO;
             }
+            set_precip_visibility(&mut visibility, hide_precipitation);
         }
         return;
     }
@@ -207,7 +228,9 @@ fn apply_precip(
     let dt = time.delta_secs();
     let step = vel * dt;
 
-    for (p, mut tf) in &mut precip_q {
+    for (p, mut tf, mut visibility) in &mut precip_q {
+        set_precip_visibility(&mut visibility, hide_precipitation);
+
         // Activate a deterministic fraction of the pool by index.
         let active = (p.idx as f32) < intensity * POOL as f32;
         if !active {
@@ -246,5 +269,259 @@ fn apply_precip(
         tf.translation = center + e1 * a + e2 * b + up * c;
         tf.rotation = rot;
         tf.scale = scale;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{exploration::ExplorationPlugin, map::Ground};
+    use avian3d::prelude::*;
+
+    fn fixture() -> (App, Entity) {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            bevy::state::app::StatesPlugin,
+            PhysicsPlugins::default(),
+        ))
+        .init_state::<AppState>()
+        .init_resource::<ButtonInput<KeyCode>>()
+        .init_resource::<ButtonInput<MouseButton>>()
+        .add_message::<bevy::input::mouse::MouseWheel>()
+        .init_asset::<Mesh>()
+        .init_asset::<StandardMaterial>()
+        .insert_resource(Gravity::ZERO)
+        .insert_resource(crate::map::WorldEpoch::new(1))
+        .insert_resource(SubstepCount(12))
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(1.0 / 60.0),
+        ))
+        .add_plugins((ExplorationPlugin, WeatherPlugin));
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(1000.0, 1.0, 1000.0),
+            Transform::from_xyz(0.0, 1999.5, 0.0),
+            Ground,
+        ));
+        let explorer = app
+            .world_mut()
+            .spawn(crate::map::player_physics_bundle(
+                Vec3::new(0.0, 2000.6, 0.0),
+                Vec3::NEG_Z,
+            ))
+            .id();
+        app.finish();
+        app.cleanup();
+        for _ in 0..3 {
+            app.update();
+        }
+        app.world_mut()
+            .insert_resource(State::new(AppState::Playing));
+        (app, explorer)
+    }
+
+    #[test]
+    fn weather_plugin_runs_without_exploration() {
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            TransformPlugin,
+            AssetPlugin::default(),
+            bevy::state::app::StatesPlugin,
+        ))
+        .init_state::<AppState>()
+        .init_asset::<Mesh>()
+        .init_asset::<StandardMaterial>()
+        .insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f32(1.0 / 60.0),
+        ))
+        .add_plugins(WeatherPlugin);
+        app.world_mut().spawn((
+            MainCamera,
+            Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+        ));
+        let particle = app
+            .world_mut()
+            .spawn((
+                Precip { idx: 0 },
+                Transform::from_xyz(1.0, 2003.0, 2.0),
+                Visibility::Inherited,
+            ))
+            .id();
+        app.finish();
+        app.cleanup();
+        app.world_mut()
+            .insert_resource(State::new(AppState::Playing));
+        {
+            let mut weather = app.world_mut().resource_mut::<Weather>();
+            weather.precip = 0.8;
+            weather.front_timer = 1000.0;
+        }
+
+        app.update();
+
+        assert_eq!(
+            *app.world().get::<Visibility>(particle).unwrap(),
+            Visibility::Inherited
+        );
+        assert_ne!(
+            app.world().get::<Transform>(particle).unwrap().scale,
+            Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn planet_view_hides_rain_and_snow_through_reversals_without_pausing_weather() {
+        let (mut app, player) = fixture();
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, 2005.0, -5.0)
+                    .looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+            ))
+            .id();
+        let particle = app
+            .world_mut()
+            .spawn((
+                Precip { idx: 0 },
+                Transform::from_xyz(1.0, 2003.0, 2.0),
+                Visibility::Inherited,
+            ))
+            .id();
+        {
+            let mut weather = app.world_mut().resource_mut::<Weather>();
+            weather.precip = 0.8;
+            weather.target_precip = 0.0;
+            weather.front_timer = 1000.0;
+        }
+        app.update();
+        assert_eq!(
+            *app.world().get::<Visibility>(particle).unwrap(),
+            Visibility::Inherited
+        );
+        assert_ne!(
+            app.world().get::<Transform>(particle).unwrap().scale,
+            Vec3::ZERO
+        );
+
+        let initial_precip = app.world().resource::<Weather>().precip;
+        let initial_particle_position = app.world().get::<Transform>(particle).unwrap().translation;
+        app.world_mut()
+            .resource_mut::<crate::exploration::Exploration>()
+            .set_planet_view_open(true);
+
+        for _ in 0..8 {
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<crate::exploration::Exploration>()
+                    .is_planet_view_active()
+            );
+            assert_eq!(
+                *app.world().get::<Visibility>(particle).unwrap(),
+                Visibility::Hidden,
+                "precipitation should be hidden while Planet view opens"
+            );
+        }
+        let hidden_position = app.world().get::<Transform>(particle).unwrap().translation;
+        assert_ne!(hidden_position, initial_particle_position);
+        assert!(app.world().resource::<Weather>().precip < initial_precip);
+
+        // Start without terrain so this is rain, then add a cold pole beneath
+        // the player while the view is open. The same pool now renders snow,
+        // which must remain hidden without pausing its movement.
+        assert_eq!(
+            app.world().get::<Transform>(particle).unwrap().scale,
+            Vec3::new(0.015, 0.5, 0.015)
+        );
+        let terrain = shared::terrain::TerrainGen::init(1337);
+        let player_position = app.world().get::<Transform>(player).unwrap().translation;
+        assert!(is_snow(terrain.temperature_at(
+            shared::sphere::SpherePos::new(player_position)
+        )));
+        app.insert_resource(terrain);
+        let before_snow_updates = app.world().get::<Transform>(particle).unwrap().translation;
+        for _ in 0..4 {
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(particle).unwrap(),
+                Visibility::Hidden,
+                "snow should be hidden while Planet view remains open"
+            );
+            assert_eq!(
+                app.world().get::<Transform>(particle).unwrap().scale,
+                Vec3::splat(0.06),
+                "the precipitation pool should continue using its snow path"
+            );
+        }
+        assert_ne!(
+            app.world().get::<Transform>(particle).unwrap().translation,
+            before_snow_updates,
+            "snow particles should keep moving while hidden"
+        );
+
+        app.world_mut()
+            .resource_mut::<crate::exploration::Exploration>()
+            .set_planet_view_open(false);
+        for _ in 0..8 {
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<crate::exploration::Exploration>()
+                    .is_planet_view_active()
+            );
+            assert_eq!(
+                *app.world().get::<Visibility>(particle).unwrap(),
+                Visibility::Hidden
+            );
+        }
+        app.world_mut()
+            .resource_mut::<crate::exploration::Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..8 {
+            app.update();
+            assert_eq!(
+                *app.world().get::<Visibility>(particle).unwrap(),
+                Visibility::Hidden
+            );
+        }
+        app.world_mut()
+            .resource_mut::<crate::exploration::Exploration>()
+            .set_planet_view_open(false);
+
+        let mut returned = false;
+        for _ in 0..160 {
+            app.update();
+            let active = app
+                .world()
+                .resource::<crate::exploration::Exploration>()
+                .is_planet_view_active();
+            if active {
+                assert_eq!(
+                    *app.world().get::<Visibility>(particle).unwrap(),
+                    Visibility::Hidden
+                );
+            } else {
+                assert_eq!(
+                    *app.world().get::<Visibility>(particle).unwrap(),
+                    Visibility::Inherited,
+                    "precipitation should render again after camera return"
+                );
+                assert_eq!(
+                    app.world().get::<Transform>(particle).unwrap().scale,
+                    Vec3::splat(0.06),
+                    "snow should render again after camera return"
+                );
+                returned = true;
+                break;
+            }
+        }
+
+        assert!(returned, "the camera return should eventually finish");
+        assert!(app.world().get::<Transform>(camera).is_some());
     }
 }
