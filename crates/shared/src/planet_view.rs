@@ -294,22 +294,22 @@ impl PlanetViewCamera {
         delta_seconds: f32,
         surface_radius: f32,
     ) -> Transform {
-        if delta_seconds > 1e-6 {
-            if let Some(previous) = self.last_motion_pose {
-                let translation_delta = current.translation - previous.translation;
-                let delta_rotation = previous.rotation.inverse() * current.rotation;
-                let (axis, angle) = delta_rotation.to_axis_angle();
-                let position_speed = translation_delta.length() / delta_seconds;
-                let angular_speed = angle / delta_seconds;
-                if position_speed > MOTION_RESET_LINEAR_SPEED
-                    || angular_speed > MOTION_RESET_ANGULAR_SPEED
-                {
-                    self.last_linear_velocity = Vec3::ZERO;
-                    self.last_angular_velocity = Vec3::ZERO;
-                } else {
-                    self.last_linear_velocity = translation_delta / delta_seconds;
-                    self.last_angular_velocity = axis * angular_speed;
-                }
+        if delta_seconds > 1e-6
+            && let Some(previous) = self.last_motion_pose
+        {
+            let translation_delta = current.translation - previous.translation;
+            let delta_rotation = previous.rotation.inverse() * current.rotation;
+            let (axis, angle) = delta_rotation.to_axis_angle();
+            let position_speed = translation_delta.length() / delta_seconds;
+            let angular_speed = angle / delta_seconds;
+            if position_speed > MOTION_RESET_LINEAR_SPEED
+                || angular_speed > MOTION_RESET_ANGULAR_SPEED
+            {
+                self.last_linear_velocity = Vec3::ZERO;
+                self.last_angular_velocity = Vec3::ZERO;
+            } else {
+                self.last_linear_velocity = translation_delta / delta_seconds;
+                self.last_angular_velocity = axis * angular_speed;
             }
         }
         self.last_motion_pose = Some(current);

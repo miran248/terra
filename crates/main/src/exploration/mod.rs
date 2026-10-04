@@ -2337,7 +2337,7 @@ pub(crate) mod tests {
     }
 
     fn m_open_trace(hz: usize, move_body: bool) -> Vec<CameraMotionSample> {
-        assert!(hz >= 30 && hz % 30 == 0);
+        assert!(hz >= 30 && hz.is_multiple_of(30));
         let (mut app, explorer) = fixture();
         let delta = 1.0 / hz as f32;
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
@@ -2440,7 +2440,7 @@ pub(crate) mod tests {
     const PLANET_VIEW_FAR_RETURN_SECONDS_FOR_TRACE: f32 = 2.4;
 
     fn opposite_side_return_trace(hz: usize) -> OppositeReturnMetrics {
-        assert!(hz >= 30 && hz % 30 == 0);
+        assert!(hz >= 30 && hz.is_multiple_of(30));
         let (mut app, explorer) = fixture();
         let delta = 1.0 / hz as f32;
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
