@@ -117,7 +117,6 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
     // dome barely taller than the terrain horizon (sky "cuts out" before the
     // skyline). A tall shell relative to the radius keeps blue down to the
     // horizon and up to the zenith.
-    const SHELL: f32 = 900.0;
     // A full 60_000/SHELL match oversaturates into gray/brown haze that swallows
     // the whole planet at the horizon; a low, flat multiplier keeps a blue sky
     // and lets distant land stay visible rather than washing out to sky.
@@ -132,7 +131,7 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
             // proper water material would otherwise hide itself (depth-limited
             // visibility); it can rise toward ~-32 once water shades correctly.
             inner_radius: PLANET_RADIUS - 24.0,
-            outer_radius: PLANET_RADIUS + SHELL,
+            outer_radius: shared::planet_atmosphere::ATMOSPHERE_OUTER_RADIUS,
             // Low albedo → less white multiscattered light bouncing back up, so
             // the sky reads as a deeper blue rather than a pale/gray blue.
             ground_albedo: Vec3::splat(0.1),
@@ -177,7 +176,7 @@ fn setup_camera(mut commands: Commands, mut media: ResMut<Assets<ScatteringMediu
             // range from Earth's 32 km so distance haze reads at this scale, but
             // keep it moderate: far enough to blend the near horizon, but not so
             // far that haze swallows the whole planet into sky.
-            aerial_view_lut_max_distance: 2500.0,
+            aerial_view_lut_max_distance: shared::planet_atmosphere::GROUND_AERIAL_VIEW_DISTANCE,
             // The aerial-perspective LUT is a coarse froxel volume recomputed each
             // frame, densest right in front of the camera (where the player sits),
             // so its in-scattering shimmers/flickers on near geometry. Raise both
