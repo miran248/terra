@@ -17,9 +17,9 @@ physics, and entry/exit controls.
 | --- | --- |
 | ![Explorer at an Oakford house entrance with HUD and minimap](docs/media/settlement.png) | ![Driving a car along a rural road in the rain](docs/media/driving.png) |
 
-| Mountain flight | Planet map |
+| Mountain flight | Planet view |
 | --- | --- |
-| ![Plane crossing mountains in rain with flight instruments and minimap](docs/media/mountain-flight.png) | ![Globe map showing named settlements, roads, mountains, forests, and lakes](docs/media/planet-map.png) |
+| ![Plane crossing mountains in rain with flight instruments and minimap](docs/media/mountain-flight.png) | ![Live Planet view with named settlements and road highlights](docs/media/planet-map.png) |
 
 ## Crates
 
@@ -97,7 +97,23 @@ Custom WGSL shaders: water with geometric swell, normal-perturbation chop, and a
 ## Planet view
 
 The heading-up 2D minimap shows nearby terrain and named regions. Press `M` to pull
-the live gameplay camera back to a whole-planet view; press `M` or `Esc` to return.
+the live gameplay camera back to a whole-planet view; press `M` or `Esc` to return
+to your current explorer or vehicle. Drag to orbit and disengage follow; scroll
+to zoom. Press `F` or use **Follow** to track the controlled body again. Camera
+travel is interruptible, including while opening or returning.
+
+Click a named marker, ground, or bridge deck to select a destination, then press
+`T` to request a safe on-foot teleport. Selection alone does not load collision
+or move you. Exit a vehicle before confirming. Closing the view or selecting a
+new destination cancels a pending request; successful teleport starts the return
+flight. Selection and confirmation become available when the interface is fully
+visible. Roads, settlements, regions, and named bridges have independent layer
+toggles that persist across reopening.
+
+Movement and physics stay live. World time slows smoothly from full speed nearby
+to half speed at whole-planet scale, while camera and interface controls remain
+responsive. Existing pause and base-speed settings are preserved. See the
+[rendered and performance acceptance record](docs/planet-view-acceptance.md).
 
 ## Time & Weather
 
