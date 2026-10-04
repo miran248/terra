@@ -1,4 +1,6 @@
 //! Default exploration lifecycle. The explorer and reusable vehicles keep distinct bodies.
+#[cfg(test)]
+mod diagnostics;
 mod placement;
 #[cfg(feature = "asset-review")]
 pub(crate) mod showcase;

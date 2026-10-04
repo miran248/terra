@@ -62,6 +62,10 @@ the collision envelope so a gentle first contact can transition to ground handli
 
 Run the focused test first, then workspace `cargo check` and `cargo clippy`. If GLB catalogs or embedded `LevelData` are affected, follow the [GLB pipeline](glb-pipeline.md) or [level pipeline](level-pipeline.md) generation and deterministic comparison checks.
 
+Opt-in [vehicle diagnostics](vehicle-diagnostics.md) reproduce the known wheel
+rotation and bridge traversal failures from issue #29, with a test-only winding
+control for choosing the subsequent correction.
+
 ## Showcase capture
 
 The `asset-review` development feature includes `exploration::showcase`. Setting
