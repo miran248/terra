@@ -853,7 +853,7 @@ mod tests {
         assert!(opening.rotation.angle_between(camera_start.rotation) < 0.05);
         assert!(matches!(
             app.world().get::<Projection>(camera).unwrap(),
-            Projection::Perspective(projection) if projection.far > 8000.0
+            Projection::Perspective(projection) if projection.far >= shared::planet_atmosphere::PLANET_VIEW_FAR_CLIP_DISTANCE
         ));
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()

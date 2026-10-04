@@ -10,6 +10,7 @@ pub mod level;
 pub mod on_foot_prototype;
 pub mod plane_prototype;
 pub mod planet;
+pub mod planet_atmosphere;
 pub mod planet_view;
 pub mod roads;
 pub mod sphere;

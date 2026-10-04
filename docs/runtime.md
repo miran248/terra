@@ -27,6 +27,12 @@ Normal gameplay does not include this fixture.
 - World movement, Avian physics, day/night, weather, water and foliage shader time, and vehicle animation follow virtual time together. Do not scale their deltas separately. Bevy's fixed accumulator continues to consume virtual delta at its configured timestep and substep count. Render globals receive the restored generic virtual `Time`, so shader animation follows the same simulation progression.
 - Camera motion, camera gestures, interface fades and readiness, timed holds, and camera-dependent presentation refresh use `Time<Real>` so they remain responsive while virtual time is slowed or paused.
 
+## Planet view atmosphere
+
+- Global ambient day/night fill follows the controlled body's position relative to the world sun. Distance-fog color follows the camera's hemisphere, so orbiting changes the viewed haze without relighting the whole world. Fog visibility and Bevy aerial-perspective reach blend smoothly from ground values to overview values using camera altitude above the nominal sphere.
+- The current profile starts at 1.7 km fog visibility and 2.5 km aerial reach, blending to 100 km and 5 km by the 4 km overview altitude. These are provisional implementation values; matched ascent/descent captures in the #57 rendering matrix must tune and visually accept the combined fog and atmosphere response.
+- The atmosphere shell outer radius is 2.9 km. Planet view uses a 10 km far clip, which covers the far-side atmosphere from the 6 km overview camera. The camera restores its prior far plane after return so ground depth precision stays at the normal projection range.
+
 ## Chunking, geometry, and collision
 
 - Subdivision-7 terrain (327,680 faces) splits into 320 subdivision-2 chunks using contiguous deterministic four-child slices.
