@@ -17,7 +17,6 @@ const CAMERA_CLEARANCE: f32 = 5.0;
 const TRANSIT_CLEARANCE: f32 = 350.0;
 const OPENING_SECONDS: f32 = 1.4;
 const RETURN_SECONDS: f32 = 1.8;
-const OPENING_RESPONSE: f32 = 3.0;
 const VIEW_RESPONSE: f32 = 12.0;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -321,7 +320,7 @@ impl PlanetViewCamera {
                 smooth_planet_pose(
                     current,
                     target,
-                    response(OPENING_RESPONSE, delta_seconds),
+                    eased,
                     surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE,
                 )
             } else {

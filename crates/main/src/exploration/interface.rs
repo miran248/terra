@@ -362,14 +362,10 @@ pub(super) fn pointer_input(
             && let Some(camera) = cameras.iter().next()
             && state.planet_pointer.capture() == Some(PointerCapture::World)
         {
-            if motion.began_dragging {
-                state
-                    .planet_camera
-                    .detach(camera.translation.normalize_or(Vec3::Y));
-            }
-            state
-                .planet_camera
-                .orbit(motion.orbit_delta * ORBIT_RADIANS_PER_LOGICAL_PIXEL);
+            state.planet_camera.orbit_from(
+                *camera,
+                motion.orbit_delta * ORBIT_RADIANS_PER_LOGICAL_PIXEL,
+            );
             state.set_planet_view_open(true);
         }
         if mouse.just_released(MouseButton::Left) {

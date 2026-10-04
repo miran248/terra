@@ -908,6 +908,59 @@ mod tests {
     }
 
     #[test]
+    fn planet_camera_transition_advances_while_simulation_time_is_paused() {
+        let (mut app, _) = fixture();
+        let planet_radius = shared::sphere::PLANET_RADIUS;
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, planet_radius + 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        let starting_radius = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .length();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+
+        for _ in 0..120 {
+            app.update();
+        }
+
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        let final_radius = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .length();
+        assert!(final_radius > starting_radius + 1000.0);
+    }
+
+    #[test]
+    fn recovery_hold_advances_while_simulation_time_is_paused() {
+        let (mut app, _) = fixture();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyR);
+
+        for _ in 0..30 {
+            app.update();
+        }
+
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        assert!(app.world().resource::<Exploration>().recovery > 0.4);
+    }
+
+    #[test]
     fn t_publishes_a_teleport_intent_only_while_planet_view_is_ready() {
         let (mut app, _) = fixture();
         app.world_mut()
