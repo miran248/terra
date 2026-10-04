@@ -34,6 +34,25 @@ pub struct Sun;
 #[derive(Component)]
 pub struct MainCamera;
 
+/// Identifies one runtime load of the embedded world, including a reload of
+/// the same baked seed.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct WorldEpoch(u64);
+
+impl WorldEpoch {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    fn advance(&mut self) {
+        self.0 = self.0.checked_add(1).expect("world epoch exhausted");
+    }
+}
+
 #[derive(Component)]
 pub struct Settlement {
     pub name: String,
@@ -265,6 +284,7 @@ struct PlayerInput {
 impl Plugin for MapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerInput>()
+            .init_resource::<WorldEpoch>()
             // TimeOfDay is inserted manually in setup_map for accurate local noon.
             .init_resource::<SunLock>()
             .add_systems(OnEnter(AppState::Playing), setup_map)
@@ -284,7 +304,9 @@ impl Plugin for MapPlugin {
                     orient_player,
                     diagnose_player_fall,
                     drive_daynight,
-                    drive_fog,
+                    drive_fog
+                        .after(drive_daynight)
+                        .after(crate::exploration::ExplorationUpdate),
                     toggle_sun_lock,
                     cull_props,
                     crate::chunks::update_chunk_lods,
@@ -298,6 +320,7 @@ impl Plugin for MapPlugin {
 use shared::state::AppState;
 
 pub(crate) fn setup_map(
+    mut world_epoch: ResMut<WorldEpoch>,
     motion: Res<crate::shader_motion::ShaderMotionBuffer>,
     mut commands: Commands,
     catalog: Res<crate::asset_catalog::AssetCatalog>,
@@ -305,6 +328,7 @@ pub(crate) fn setup_map(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut water_mats: ResMut<Assets<crate::water::WaterMaterial>>,
 ) {
+    world_epoch.advance();
     let level_bytes = include_bytes!("../assets/level_1337.bin");
     let level = LevelData::from_artifact_bytes(level_bytes)
         .expect("deserialize level artifact; regenerate it with `cargo run -p gen_level`");
@@ -1290,33 +1314,210 @@ fn drive_daynight(
     light.color = Color::WHITE;
 }
 
-/// Tint the distance fog by how sunlit the camera's location is. With a fixed
-/// bright fog colour, at night the distant terrain faded to bright blue while the
-/// near (unlit) terrain went dark — distant looked brighter than near. Scaling
-/// the fog colour with the local day factor keeps distance haze consistent with
-/// the sky's day/night state.
+/// Update camera-local haze and controlled-body global ambient from the current
+/// world pose. Fog color follows the camera's hemisphere, while ambient follows
+/// the controlled body so orbiting cannot relight the whole world.
 fn drive_fog(
     tod: Res<TimeOfDay>,
     mut ambient: ResMut<GlobalAmbientLight>,
-    mut fog_q: Query<(&Transform, &mut DistanceFog), With<MainCamera>>,
+    player: Query<&Position, With<Player>>,
+    mut fog_q: Query<
+        (
+            &Transform,
+            &mut DistanceFog,
+            Option<&mut bevy::pbr::AtmosphereSettings>,
+        ),
+        With<MainCamera>,
+    >,
 ) {
-    let Ok((tf, mut fog)) = fog_q.single_mut() else {
+    let Ok(player) = player.single() else {
         return;
     };
-    let day = tf.translation.normalize().dot(tod.sun_dir).clamp(0.0, 1.0);
-    let c = Color::srgb(0.7 * day + 0.02, 0.8 * day + 0.03, 0.92 * day + 0.07);
+    let Ok((tf, mut fog, mut atmosphere_settings)) = fog_q.single_mut() else {
+        return;
+    };
+    let profile = shared::planet_atmosphere::PlanetAtmosphereProfile::at_altitude(
+        shared::planet_atmosphere::camera_altitude(tf.translation),
+    );
+    let camera_day = shared::planet_atmosphere::daylight_factor(tf.translation, tod.sun_dir);
+    let body_day = shared::planet_atmosphere::daylight_factor(player.0, tod.sun_dir);
+    let c = Color::srgb(
+        0.7 * camera_day + 0.02,
+        0.8 * camera_day + 0.03,
+        0.92 * camera_day + 0.07,
+    );
     fog.color = c;
-    fog.falloff = FogFalloff::from_visibility_colors(1700.0, c, c);
+    fog.falloff = FogFalloff::from_visibility_colors(profile.distance_fog_visibility, c, c);
+    if let Some(settings) = atmosphere_settings.as_deref_mut()
+        && (settings.aerial_view_lut_max_distance - profile.aerial_view_distance).abs() > 0.5
+    {
+        settings.aerial_view_lut_max_distance = profile.aerial_view_distance;
+    }
 
-    // Ambient is global (can't track the day/night hemispheres on its own), so
-    // drive it by the camera's day factor: a dim moonlit floor at night rising to
-    // full fill by day. Fixed-bright ambient made objects glow at night.
-    ambient.brightness = 35.0 + 130.0 * day;
+    // Ambient is global, so use the controlled body's hemisphere rather than
+    // the orbiting camera's direction; otherwise inspecting the far side
+    // relights the entire world.
+    ambient.brightness = 35.0 + 130.0 * body_day;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn global_ambient_tracks_the_controlled_body_while_fog_tracks_the_camera() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeOfDay {
+                sun_dir: Vec3::Y,
+                ..default()
+            })
+            .insert_resource(GlobalAmbientLight {
+                brightness: 0.0,
+                ..default()
+            })
+            .add_systems(Update, drive_fog);
+
+        let player = app
+            .world_mut()
+            .spawn((
+                Player {
+                    fire_timer: Timer::from_seconds(1.0, TimerMode::Once),
+                    damage: 0.0,
+                    range: 0.0,
+                    heading: Vec3::Z,
+                },
+                Position(Vec3::Y * PLANET_RADIUS),
+                Transform::from_translation(Vec3::Y * PLANET_RADIUS),
+            ))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_translation(Vec3::NEG_Y * PLANET_RADIUS),
+                DistanceFog::default(),
+            ))
+            .id();
+
+        app.update();
+
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().brightness,
+            165.0
+        );
+        assert_eq!(
+            app.world().get::<DistanceFog>(camera).unwrap().color,
+            Color::srgb(0.02, 0.03, 0.07)
+        );
+        let night_fog = app.world().get::<DistanceFog>(camera).unwrap().color;
+
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = Vec3::Y * PLANET_RADIUS;
+        app.update();
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().brightness,
+            165.0
+        );
+        let camera_day_fog = app.world().get::<DistanceFog>(camera).unwrap().color;
+        assert_ne!(camera_day_fog, night_fog);
+
+        app.world_mut().get_mut::<Position>(player).unwrap().0 = Vec3::NEG_Y * PLANET_RADIUS;
+        app.update();
+        assert_eq!(
+            app.world().resource::<GlobalAmbientLight>().brightness,
+            35.0
+        );
+        assert_eq!(
+            app.world().get::<DistanceFog>(camera).unwrap().color,
+            camera_day_fog
+        );
+    }
+
+    #[test]
+    fn fog_and_aerial_perspective_adjust_smoothly_as_the_camera_ascends() {
+        fn extinction_x(app: &App, camera: Entity) -> f32 {
+            let fog = app.world().get::<DistanceFog>(camera).unwrap();
+            let FogFalloff::Atmospheric { extinction, .. } = &fog.falloff else {
+                panic!("distance fog should retain its atmospheric falloff");
+            };
+            extinction.x
+        }
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(TimeOfDay {
+                sun_dir: Vec3::Y,
+                ..default()
+            })
+            .insert_resource(GlobalAmbientLight::default())
+            .add_systems(Update, drive_fog);
+        app.world_mut().spawn((
+            Player {
+                fire_timer: Timer::from_seconds(1.0, TimerMode::Once),
+                damage: 0.0,
+                range: 0.0,
+                heading: Vec3::Z,
+            },
+            Position(Vec3::Y * PLANET_RADIUS),
+        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_translation(Vec3::Y * PLANET_RADIUS),
+                DistanceFog::default(),
+                bevy::pbr::AtmosphereSettings {
+                    aerial_view_lut_max_distance: 2500.0,
+                    ..default()
+                },
+            ))
+            .id();
+
+        let mut samples = Vec::new();
+        for altitude in (0..=4000).step_by(500) {
+            app.world_mut()
+                .get_mut::<Transform>(camera)
+                .unwrap()
+                .translation = Vec3::Y * (PLANET_RADIUS + altitude as f32);
+            app.update();
+            samples.push((
+                extinction_x(&app, camera),
+                app.world()
+                    .get::<bevy::pbr::AtmosphereSettings>(camera)
+                    .unwrap()
+                    .aerial_view_lut_max_distance,
+            ));
+        }
+
+        assert!(samples.iter().all(|(extinction, aerial_distance)| {
+            extinction.is_finite() && aerial_distance.is_finite()
+        }));
+        assert!(
+            samples
+                .windows(2)
+                .all(|pair| { pair[0].0 > pair[1].0 && pair[0].1 < pair[1].1 })
+        );
+        assert_eq!(samples.first().unwrap().1, 2500.0);
+        assert_eq!(samples.last().unwrap().1, 5000.0);
+
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = Vec3::Y * (PLANET_RADIUS + 2000.0);
+        app.update();
+        let returned = (
+            extinction_x(&app, camera),
+            app.world()
+                .get::<bevy::pbr::AtmosphereSettings>(camera)
+                .unwrap()
+                .aerial_view_lut_max_distance,
+        );
+        assert!((returned.0 - samples[4].0).abs() < 1e-7);
+        assert!((returned.1 - samples[4].1).abs() < 1e-4);
+    }
 
     #[test]
     fn road_ribbons_are_finite_complete_and_four_metres_wide() {

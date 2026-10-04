@@ -54,6 +54,81 @@ impl Kind {
         .expect("vehicle collision contract")
     }
 }
+
+/// The stable LevelData collection used by a named Planet-view destination.
+/// Indices distinguish separate places even if they share a display name or
+/// coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PlanetDestinationCollection {
+    Region,
+    Settlement,
+    Road,
+    Bridge,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum PlanetDestinationKey {
+    Surface([u32; 3]),
+    CollectionIndex {
+        collection: PlanetDestinationCollection,
+        index: u32,
+    },
+}
+
+/// World-local destination identity that does not depend on UI entities or names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct PlanetDestinationId {
+    world_epoch: crate::map::WorldEpoch,
+    key: PlanetDestinationKey,
+}
+
+impl PlanetDestinationId {
+    pub fn surface(world_epoch: crate::map::WorldEpoch, position: Vec3) -> Self {
+        Self {
+            world_epoch,
+            key: PlanetDestinationKey::Surface(position.to_array().map(f32::to_bits)),
+        }
+    }
+
+    pub fn region(world_epoch: crate::map::WorldEpoch, region_index: u32) -> Self {
+        Self::collection(
+            world_epoch,
+            PlanetDestinationCollection::Region,
+            region_index,
+        )
+    }
+
+    pub fn collection(
+        world_epoch: crate::map::WorldEpoch,
+        collection: PlanetDestinationCollection,
+        index: u32,
+    ) -> Self {
+        Self {
+            world_epoch,
+            key: PlanetDestinationKey::CollectionIndex { collection, index },
+        }
+    }
+
+    pub const fn world_epoch(self) -> crate::map::WorldEpoch {
+        self.world_epoch
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanetDestinationSurface {
+    Terrain,
+    BridgeDeck,
+}
+
+/// Selection data copied out of the picking and UI layers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlanetDestination {
+    pub id: PlanetDestinationId,
+    pub position: Vec3,
+    pub surface: PlanetDestinationSurface,
+    pub display: String,
+}
+
 #[derive(Component)]
 struct Vehicle {
     kind: Kind,
@@ -101,6 +176,7 @@ pub struct Exploration {
     pressed_planet_control: Option<Entity>,
     planet_selection_click: Option<Vec2>,
     planet_teleport_requested: bool,
+    selected_destination: Option<PlanetDestination>,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Action {
@@ -148,6 +224,24 @@ impl Exploration {
     /// Take the pending physical-pixel selection position for the destination consumer.
     pub fn take_planet_view_selection(&mut self) -> Option<Vec2> {
         self.planet_selection_click.take()
+    }
+
+    /// Destination snapshot selected in the current world load, if any.
+    pub fn selected_planet_destination(&self) -> Option<&PlanetDestination> {
+        self.selected_destination.as_ref()
+    }
+
+    pub(crate) fn select_planet_destination(&mut self, destination: PlanetDestination) {
+        self.selected_destination = Some(destination);
+    }
+
+    pub(crate) fn clear_planet_destination(&mut self) {
+        self.selected_destination = None;
+    }
+
+    /// Whether teleport needs the explorer to exit the currently occupied vehicle.
+    pub fn destination_requires_exit_from_vehicle(&self) -> bool {
+        self.selected_destination.is_some() && self.occupied.is_some()
     }
 
     /// Request the shared T/selection teleport action while Planet view is ready.
@@ -203,7 +297,12 @@ impl Plugin for ExplorationPlugin {
             )
             .add_systems(
                 PreUpdate,
-                (input, interface::pointer_input, world::residency)
+                (
+                    input,
+                    interface::pointer_input,
+                    crate::minimap::consume_planet_view_destination_click,
+                    world::residency,
+                )
                     .chain()
                     .run_if(in_state(AppState::Playing)),
             )
@@ -251,6 +350,7 @@ fn facing(heading: Vec3, up: Vec3) -> Quat {
     Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading))
 }
 fn initialize(mut state: ResMut<Exploration>, player: Query<&Position, With<Player>>) {
+    state.clear_planet_destination();
     if let Ok(p) = player.single() {
         state.start = Some(p.0);
         state.snap_camera = true;
@@ -855,7 +955,7 @@ fn track_safe(
     }
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -864,6 +964,7 @@ mod tests {
         let screen_position = Vec2::new(240.0, 180.0);
 
         assert!(!state.planet_view_ready());
+        assert_eq!(state.planet_view_interface_opacity(), 0.0);
         assert!(!state.request_planet_view_selection(screen_position));
         assert!(!state.request_planet_view_teleport());
 
@@ -873,6 +974,7 @@ mod tests {
         state.planet_presentation.advance(0.28);
 
         assert!(state.planet_view_ready());
+        assert_eq!(state.planet_view_interface_opacity(), 1.0);
         state.selector = true;
         assert!(!state.planet_view_ready());
         assert!(!state.request_planet_view_selection(screen_position));
@@ -889,6 +991,187 @@ mod tests {
         assert!(!state.planet_view_ready());
         assert!(!state.request_planet_view_selection(screen_position));
         assert!(!state.request_planet_view_teleport());
+    }
+
+    #[test]
+    fn destination_identity_is_world_scoped_and_supports_duplicate_named_places() {
+        let epoch = crate::map::WorldEpoch::new(17);
+        let point = Vec3::new(12.0, 2001.0, -9.0);
+
+        let surface = PlanetDestinationId::surface(epoch, point);
+        let same_surface = PlanetDestinationId::surface(epoch, point);
+        let next_world = PlanetDestinationId::surface(crate::map::WorldEpoch::new(18), point);
+        let first_region = PlanetDestinationId::region(epoch, 4);
+        let second_region = PlanetDestinationId::region(epoch, 5);
+        let first_settlement =
+            PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 4);
+        let second_settlement =
+            PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 5);
+        let road = PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Road, 4);
+        let bridge = PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Bridge, 4);
+
+        assert_eq!(surface, same_surface);
+        assert_ne!(surface, next_world);
+        assert_ne!(first_region, second_region);
+        assert_ne!(first_settlement, second_settlement);
+        assert_ne!(first_settlement, road);
+        assert_ne!(road, bridge);
+    }
+
+    #[test]
+    fn selected_destination_survives_view_ui_and_vehicle_changes() {
+        let epoch = crate::map::WorldEpoch::new(23);
+        let position = Vec3::new(30.0, 2001.0, -45.0);
+        let selection = PlanetDestination {
+            id: PlanetDestinationId::surface(epoch, position),
+            position,
+            surface: PlanetDestinationSurface::BridgeDeck,
+            display: "Bridge deck · 12.4°N, 33.7°W".into(),
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Exploration {
+                selected_destination: Some(selection.clone()),
+                ..default()
+            })
+            .add_systems(Update, interface::update_presentation);
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.set_planet_view_open(true);
+            state.planet_camera.zoom_by(0.8);
+            state.toggle_planet_view_follow(Transform::from_translation(Vec3::new(
+                0.0, 2001.0, 20.0,
+            )));
+            state.occupied = Some(Entity::PLACEHOLDER);
+        }
+
+        let details_entity = app
+            .world_mut()
+            .spawn((
+                Node::default(),
+                interface::DestinationPanel,
+                shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("old UI"),
+                    interface::DestinationDetails,
+                    shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+                ));
+            })
+            .id();
+        app.update();
+        let old_details = app
+            .world_mut()
+            .query_filtered::<&Text, With<interface::DestinationDetails>>()
+            .single(app.world())
+            .expect("destination details are shown in the first UI");
+        assert!(old_details.0.contains("Bridge deck · 12.4°N, 33.7°W"));
+        assert!(old_details.0.contains("Exit your vehicle"));
+
+        app.world_mut().despawn(details_entity);
+        let rebuilt_panel = app
+            .world_mut()
+            .spawn((
+                Node::default(),
+                interface::DestinationPanel,
+                shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+            ))
+            .with_children(|panel| {
+                panel.spawn((
+                    Text::new("fresh UI"),
+                    interface::DestinationDetails,
+                    shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+                ));
+            })
+            .id();
+        app.update();
+        let rebuilt_details = app
+            .world_mut()
+            .query_filtered::<&Text, With<interface::DestinationDetails>>()
+            .single(app.world())
+            .expect("destination details are reconstructed");
+        assert!(rebuilt_details.0.contains("Bridge deck · 12.4°N, 33.7°W"));
+        assert!(rebuilt_details.0.contains("Exit your vehicle"));
+        assert_ne!(details_entity, rebuilt_panel);
+
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            assert_eq!(state.selected_destination.as_ref(), Some(&selection));
+            assert!(state.destination_requires_exit_from_vehicle());
+            state.set_planet_view_open(false);
+            state.set_planet_view_open(true);
+            state.occupied = None;
+        }
+        app.update();
+
+        let state = app.world().resource::<Exploration>();
+        assert_eq!(state.selected_destination.as_ref(), Some(&selection));
+        assert!(!state.destination_requires_exit_from_vehicle());
+        let rebuilt_details = app
+            .world_mut()
+            .query_filtered::<&Text, With<interface::DestinationDetails>>()
+            .single(app.world())
+            .expect("reopened destination details remain available");
+        assert!(
+            rebuilt_details
+                .0
+                .contains("Press T to check a safe on-foot landing")
+        );
+    }
+
+    #[test]
+    fn entering_a_new_world_clears_the_previous_selection() {
+        let position = Vec3::new(30.0, 2001.0, -45.0);
+        let destination = PlanetDestination {
+            id: PlanetDestinationId::surface(crate::map::WorldEpoch::new(2), position),
+            position,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Terrain · 12.4°N, 33.7°W".into(),
+        };
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .insert_resource(Exploration {
+                selected_destination: Some(destination),
+                ..default()
+            })
+            .add_systems(Update, initialize);
+        app.world_mut().spawn((
+            crate::map::player_physics_bundle(position, Vec3::Z),
+            Position(position),
+        ));
+
+        app.update();
+
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .selected_destination
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn destination_details_show_the_location_and_current_on_foot_requirement() {
+        let epoch = crate::map::WorldEpoch::new(31);
+        let position = Vec3::new(-40.0, 1999.0, 60.0);
+        let mut state = Exploration::default();
+        state.select_planet_destination(PlanetDestination {
+            id: PlanetDestinationId::surface(epoch, position),
+            position,
+            surface: PlanetDestinationSurface::BridgeDeck,
+            display: "Bridge deck · 27.5°S, 56.3°E".into(),
+        });
+        state.occupied = Some(Entity::PLACEHOLDER);
+
+        let details = interface::destination_readout(&state);
+        assert!(details.contains("Bridge deck · 27.5°S, 56.3°E"));
+        assert!(details.contains("Exit your vehicle"));
+        assert!(details.contains("checked after you press T"));
+
+        state.occupied = None;
+        let details = interface::destination_readout(&state);
+        assert!(details.contains("Press T to check a safe on-foot landing"));
     }
 
     #[test]
@@ -1081,7 +1364,7 @@ mod tests {
         assert!(state.planet_view_follows_body());
     }
 
-    pub(super) fn fixture() -> (App, Entity) {
+    pub(crate) fn fixture() -> (App, Entity) {
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -1195,7 +1478,7 @@ mod tests {
         assert!(opening.rotation.angle_between(camera_start.rotation) < 0.05);
         assert!(matches!(
             app.world().get::<Projection>(camera).unwrap(),
-            Projection::Perspective(projection) if projection.far > 8000.0
+            Projection::Perspective(projection) if projection.far >= shared::planet_atmosphere::PLANET_VIEW_FAR_CLIP_DISTANCE
         ));
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
