@@ -34,6 +34,8 @@ use crate::map::{CullRange, Ground, MainCamera, scenery_cull};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
+#[cfg(test)]
+use shared::level::SceneryKind;
 use shared::level::{SceneryData, StructureData, WaterPhase};
 use shared::planet_detail::{self, SceneryTier};
 use shared::sphere::PLANET_RADIUS;
