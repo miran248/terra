@@ -18,10 +18,7 @@ use bevy::{
     window::PrimaryWindow,
 };
 use shared::{
-    level::LevelData,
-    planet_view::{PLANET_VIEW_FAR_RADIUS, PLANET_VIEW_NEAR_RADIUS},
-    sphere::PLANET_RADIUS,
-    state::AppState,
+    level::LevelData, planet_view::PLANET_VIEW_FAR_RADIUS, sphere::PLANET_RADIUS, state::AppState,
 };
 use std::{
     fs::{self, OpenOptions},
@@ -48,6 +45,7 @@ const MEASURE_SECONDS: f64 = 60.0;
 const REPEATS: u8 = 3;
 const STALL_LIMIT_MS: f64 = 1000.0 / 30.0;
 const ORBIT_RADIANS_PER_LOGICAL_PIXEL: f32 = 0.004;
+const SUN_TILT: f32 = 0.35;
 const ORBIT_INPUTS: [(f64, f32, Vec2); 5] = [
     (3.0, 2.4, Vec2::ZERO),
     (9.0, -2.1, Vec2::new(90.0, 16.0)),
@@ -77,7 +75,7 @@ impl CaptureView {
     fn radius(self) -> f32 {
         match self {
             Self::Ground => 0.0,
-            Self::Settlement => PLANET_VIEW_NEAR_RADIUS,
+            Self::Settlement => 2_250.0,
             Self::Globe | Self::Opposite => PLANET_VIEW_FAR_RADIUS,
         }
     }
@@ -99,9 +97,9 @@ impl SolarPhase {
         }
     }
 
-    fn elevation_degrees(self) -> f32 {
+    fn elevation_degrees(self, anchor: Vec3) -> f32 {
         match self {
-            Self::Noon => 60.0,
+            Self::Noon => maximum_sun_elevation_degrees(anchor),
             Self::Sunset => 0.0,
             Self::Night => -18.0,
         }
@@ -147,8 +145,10 @@ struct CrossFeatureCoverage {
     teleport_request_submitted: bool,
     teleport_outcome_observed: bool,
     selector_opened: bool,
-    selector_priority_preserved_view: bool,
+    selector_priority_when_open: bool,
     selector_closed_unpaused: bool,
+    selector_blocked_during_planet_view: bool,
+    selector_no_deferred_open_after_close: bool,
     base_rate_changed_and_restored: bool,
     vehicle_entered: bool,
     vehicle_recovered: bool,
@@ -192,14 +192,17 @@ struct RouteActions {
     selection_event_recorded: bool,
     teleport_submission_observed: bool,
     confirmation_outcome_recorded: bool,
-    selector_opened: bool,
-    selector_probe_sent: bool,
-    selector_closed: bool,
-    selector_open_observed: bool,
-    selector_priority_observed: bool,
-    selector_close_observed: bool,
+    selector_view_probe_sent: bool,
+    selector_view_block_observed: bool,
+    selector_view_close_observed: bool,
     base_rate_changed: bool,
     base_rate_restored: bool,
+    vehicle_selector_open_requested: bool,
+    vehicle_selector_open_observed: bool,
+    vehicle_selector_probe_sent: bool,
+    vehicle_selector_priority_observed: bool,
+    vehicle_selector_closed_observed: bool,
+    vehicle_summon_requested: bool,
     vehicle_summoned: bool,
     vehicle_interaction_requested: bool,
     vehicle_recovery_requested: bool,
@@ -623,8 +626,11 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
             window.present_mode
         )
     });
+    let noon_elevation = player_pose(world)
+        .map(|(position, _)| maximum_sun_elevation_degrees(position))
+        .unwrap_or(f32::NAN);
     let configuration = format!(
-        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(60deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\nfeatures=asset-review\nshadows=normal-production-settings\n",
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\nfeatures=asset-review\nshadows=normal-production-settings\n",
         window.unwrap_or_else(|| "not-yet-available".into())
     );
     if let Err(error) = fs::write(run.directory.join("run-configuration.txt"), configuration) {
@@ -672,7 +678,7 @@ fn hold_capture_sun(world: &mut World, index: usize) {
     let phase = capture_spec(index).phase;
     let virtual_delta = world.resource::<Time<Virtual>>().delta_secs();
     let mut tod = world.resource_mut::<TimeOfDay>();
-    let desired = sun_angle_for_elevation(body_position, phase.elevation_degrees());
+    let desired = sun_angle_for_elevation(body_position, phase.elevation_degrees(body_position));
     tod.angle = (desired - virtual_delta * std::f32::consts::TAU / tod.day_length)
         .rem_euclid(std::f32::consts::TAU);
     world.resource_mut::<SunLock>().0 = false;
@@ -726,7 +732,6 @@ fn capture_file(index: usize) -> String {
 }
 
 fn sun_angle_for_elevation(anchor: Vec3, elevation_degrees: f32) -> f32 {
-    const SUN_TILT: f32 = 0.35;
     let up = anchor.normalize_or(Vec3::Y);
     let horizontal = Vec2::new(up.x, up.z).length();
     let sun_norm = (1.0 + SUN_TILT * SUN_TILT).sqrt();
@@ -739,6 +744,14 @@ fn sun_angle_for_elevation(anchor: Vec3, elevation_degrees: f32) -> f32 {
         1.0
     };
     up.z.atan2(up.x) + cos_delta.acos()
+}
+
+fn maximum_sun_elevation_degrees(anchor: Vec3) -> f32 {
+    let up = anchor.normalize_or(Vec3::Y);
+    let horizontal = Vec2::new(up.x, up.z).length();
+    let sun_norm = (1.0 + SUN_TILT * SUN_TILT).sqrt();
+    let max_dot = (up.y * SUN_TILT + horizontal) / sun_norm;
+    max_dot.clamp(-1.0, 1.0).asin().to_degrees()
 }
 
 fn drive_route(
@@ -765,7 +778,7 @@ fn drive_entry_route(
     actions: &mut RouteActions,
     run: &mut PlanetAcceptance,
 ) {
-    let open = elapsed < 6.0 || (9.0..=16.0).contains(&elapsed) || elapsed >= 22.0;
+    let open = elapsed < 6.0 || (9.0..=16.0).contains(&elapsed) || (22.0..=29.9).contains(&elapsed);
     world
         .resource_mut::<Exploration>()
         .set_planet_view_open(open);
@@ -777,7 +790,7 @@ fn drive_entry_route(
 
     if warmup {
         drive_live_selection_and_teleport(world, elapsed, actions, run);
-        drive_selector_priority(world, elapsed, actions, run);
+        drive_selector_access_guard(world, elapsed, actions, run);
         if (37.0..39.0).contains(&elapsed) {
             set_key(world, KeyCode::KeyW, false);
         }
@@ -936,62 +949,54 @@ fn request_center_selection(world: &mut World) -> bool {
         .request_planet_view_selection(center)
 }
 
-fn drive_selector_priority(
+fn drive_selector_access_guard(
     world: &mut World,
     elapsed: f64,
     actions: &mut RouteActions,
     run: &mut PlanetAcceptance,
 ) {
-    let press_v = elapsed >= 35.0 && !actions.selector_opened;
-    let press_m = elapsed >= 36.0 && !actions.selector_probe_sent;
-    let press_escape = elapsed >= 37.0 && !actions.selector_closed;
-    set_key(world, KeyCode::KeyV, press_v);
-    set_key(world, KeyCode::KeyM, press_m);
-    set_key(world, KeyCode::Escape, press_escape);
+    let press_v = elapsed >= 26.0 && !actions.selector_view_probe_sent;
+    let hold_v = actions.selector_view_probe_sent && elapsed < 34.5;
+    set_key(world, KeyCode::KeyV, press_v || hold_v);
+    set_key(world, KeyCode::KeyM, false);
+    set_key(world, KeyCode::Escape, false);
     if press_v {
-        actions.selector_opened = true;
+        actions.selector_view_probe_sent = true;
         record_event(
             run,
             elapsed,
-            "selector-priority",
-            "pressed-V-over-planet-view",
+            "selector-guard",
+            "pressed-V-while-Planet-view-active",
         );
     }
-    if press_m {
-        actions.selector_probe_sent = true;
-        record_event(
-            run,
-            elapsed,
-            "selector-priority",
-            "map-toggle-while-selector-open",
-        );
-    }
-    if press_escape {
-        actions.selector_closed = true;
-        record_event(run, elapsed, "selector-priority", "pressed-Escape-to-close");
-    }
-
+    let state = world.resource::<Exploration>();
     let paused = world.resource::<Time<Virtual>>().is_paused();
-    let view_active = world.resource::<Exploration>().is_planet_view_active();
-    if actions.selector_opened && paused && !actions.selector_open_observed {
-        actions.selector_open_observed = true;
-        run.coverage.selector_opened = true;
-        record_event(run, elapsed, "selector-priority", "opened-and-paused");
+    let view_active = state.is_planet_view_active();
+    if actions.selector_view_probe_sent
+        && view_active
+        && !state.is_vehicle_selector_open()
+        && !paused
+        && !actions.selector_view_block_observed
+    {
+        actions.selector_view_block_observed = true;
+        run.coverage.selector_blocked_during_planet_view = true;
+        record_event(run, elapsed, "selector-guard", "V-ignored-without-pausing");
     }
-    if actions.selector_probe_sent && paused && view_active && !actions.selector_priority_observed {
-        actions.selector_priority_observed = true;
-        run.coverage.selector_priority_preserved_view = true;
+    if actions.selector_view_probe_sent
+        && elapsed >= 34.5
+        && !view_active
+        && !state.is_vehicle_selector_open()
+        && !paused
+        && !actions.selector_view_close_observed
+    {
+        actions.selector_view_close_observed = true;
+        run.coverage.selector_no_deferred_open_after_close = true;
         record_event(
             run,
             elapsed,
-            "selector-priority",
-            "M-ignored-while-selector-open-view-preserved",
+            "selector-guard",
+            "no-deferred-selector-after-Planet-view-return",
         );
-    }
-    if actions.selector_closed && !paused && !actions.selector_close_observed {
-        actions.selector_close_observed = true;
-        run.coverage.selector_closed_unpaused = true;
-        record_event(run, elapsed, "selector-priority", "closed-and-unpaused");
     }
 }
 
@@ -1045,9 +1050,93 @@ fn drive_vehicle_route(
     actions: &mut RouteActions,
     run: &mut PlanetAcceptance,
 ) {
+    let paused = world.resource::<Time<Virtual>>().is_paused();
+    let view_active = world.resource::<Exploration>().is_planet_view_active();
     world
         .resource_mut::<Exploration>()
-        .set_planet_view_open(true);
+        .set_planet_view_open(actions.vehicle_summon_requested && !paused);
+
+    let request_selector =
+        elapsed >= 2.0 && !actions.vehicle_selector_open_requested && !paused && !view_active;
+    set_key(world, KeyCode::KeyV, request_selector);
+    if request_selector {
+        actions.vehicle_selector_open_requested = true;
+        record_event(
+            run,
+            elapsed,
+            "vehicle-handoff",
+            "opened-normal-vehicle-selector-with-V",
+        );
+    }
+
+    let selector_open = world.resource::<Exploration>().is_vehicle_selector_open();
+    let paused = world.resource::<Time<Virtual>>().is_paused();
+    if selector_open && !actions.vehicle_selector_open_observed {
+        actions.vehicle_selector_open_observed = true;
+        run.coverage.selector_opened = true;
+        record_event(
+            run,
+            elapsed,
+            "vehicle-handoff",
+            "selector-opened-and-paused",
+        );
+    }
+
+    let probe_map = selector_open && paused && !actions.vehicle_selector_probe_sent;
+    set_key(world, KeyCode::KeyM, probe_map);
+    if probe_map {
+        actions.vehicle_selector_probe_sent = true;
+        record_event(
+            run,
+            elapsed,
+            "vehicle-handoff",
+            "probed-M-while-selector-open",
+        );
+    }
+    if actions.vehicle_selector_probe_sent
+        && selector_open
+        && paused
+        && !world.resource::<Exploration>().is_planet_view_active()
+        && !actions.vehicle_selector_priority_observed
+    {
+        actions.vehicle_selector_priority_observed = true;
+        run.coverage.selector_priority_when_open = true;
+        record_event(
+            run,
+            elapsed,
+            "vehicle-handoff",
+            "M-ignored-while-selector-open",
+        );
+    }
+
+    let choose_car = selector_open && paused && elapsed >= 2.8 && !actions.vehicle_summon_requested;
+    set_key(world, KeyCode::KeyC, choose_car);
+    if choose_car {
+        actions.vehicle_summon_requested = true;
+        record_event(
+            run,
+            elapsed,
+            "vehicle-handoff",
+            "selected-car-through-normal-selector",
+        );
+    }
+    let selector_open = world.resource::<Exploration>().is_vehicle_selector_open();
+    let paused = world.resource::<Time<Virtual>>().is_paused();
+    if actions.vehicle_summon_requested
+        && !selector_open
+        && !paused
+        && !actions.vehicle_selector_closed_observed
+    {
+        run.coverage.selector_closed_unpaused = true;
+        actions.vehicle_selector_closed_observed = true;
+        record_event(
+            run,
+            elapsed,
+            "vehicle-handoff",
+            "selector-closed-and-unpaused",
+        );
+    }
+
     let occupied = world.resource::<Exploration>().is_in_vehicle();
     let car_entity = world.resource::<Exploration>().vehicle_entity(Kind::Car);
     let player = player_pose(world);
@@ -1064,15 +1153,18 @@ fn drive_vehicle_route(
         record_event(run, elapsed, "vehicle-handoff", "entered-car");
     }
 
-    if elapsed >= 1.0 && !actions.vehicle_summoned {
-        world
-            .resource_mut::<Exploration>()
-            .request(Action::Summon(Kind::Car));
+    if actions.vehicle_summon_requested && car_entity.is_some() && !actions.vehicle_summoned {
         actions.vehicle_summoned = true;
-        record_event(run, elapsed, "vehicle-handoff", "summoned-car");
+        record_event(run, elapsed, "vehicle-handoff", "car-summoned-by-selector");
     }
 
-    if !occupied {
+    if !actions.vehicle_summoned || selector_open || paused {
+        set_key(world, KeyCode::KeyW, false);
+        set_key(world, KeyCode::KeyS, false);
+        set_key(world, KeyCode::KeyA, false);
+        set_key(world, KeyCode::KeyD, false);
+        set_key(world, KeyCode::KeyR, false);
+    } else if !occupied {
         let (forward, turn) = if let (Some((position, heading)), Some(vehicle)) = (player, vehicle)
         {
             let up = position.normalize_or(Vec3::Y);
@@ -1151,8 +1243,6 @@ fn drive_vehicle_route(
             }
         }
     }
-    set_key(world, KeyCode::KeyV, false);
-    set_key(world, KeyCode::KeyM, false);
     set_key(world, KeyCode::Escape, false);
 
     if actions.vehicle_exit_requested && !occupied && !actions.vehicle_exit_observed {
@@ -1703,14 +1793,25 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
             run.coverage.teleport_request_submitted,
         ),
         ("T request outcome", run.coverage.teleport_outcome_observed),
-        ("selector open/pause", run.coverage.selector_opened),
         (
-            "selector M priority preserves Planet view",
-            run.coverage.selector_priority_preserved_view,
+            "normal vehicle selector opens and pauses time",
+            run.coverage.selector_opened,
         ),
         (
-            "selector close/unpause",
+            "selector owns M while already open",
+            run.coverage.selector_priority_when_open,
+        ),
+        (
+            "vehicle selection closes selector and unpauses",
             run.coverage.selector_closed_unpaused,
+        ),
+        (
+            "V is blocked while Planet view is active without pausing",
+            run.coverage.selector_blocked_during_planet_view,
+        ),
+        (
+            "blocked V is not deferred until Planet view closes",
+            run.coverage.selector_no_deferred_open_after_close,
         ),
         (
             "simulation base-rate change and restore",
@@ -1741,7 +1842,7 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
         "incomplete-or-rejected"
     };
     let report = format!(
-        "status={status}\nrequested_captures={}\nrequested_raw_runs={}\nrecurring_stall_threshold=at-least-two-repeats-with-one-or-more-intervals-above-{STALL_LIMIT_MS:.2}ms\ncoverage_destination_selected={}\ncoverage_queued_teleport_cancelled_on_close={}\ncoverage_teleport_request_submitted={}\ncoverage_teleport_outcome_observed={}\ncoverage_selector_opened={}\ncoverage_selector_priority_preserved_view={}\ncoverage_selector_closed_unpaused={}\ncoverage_base_rate_changed_and_restored={}\ncoverage_vehicle_entered={}\ncoverage_vehicle_recovered={}\ncoverage_vehicle_exited={}\ncoverage_body_moved_during_planet_view={}\ncoverage_collision_world_live_during_planet_movement={}\nerrors={}\n{}",
+        "status={status}\nrequested_captures={}\nrequested_raw_runs={}\nrecurring_stall_threshold=at-least-two-repeats-with-one-or-more-intervals-above-{STALL_LIMIT_MS:.2}ms\ncoverage_destination_selected={}\ncoverage_queued_teleport_cancelled_on_close={}\ncoverage_teleport_request_submitted={}\ncoverage_teleport_outcome_observed={}\ncoverage_selector_opened={}\ncoverage_selector_priority_when_open={}\ncoverage_selector_closed_unpaused={}\ncoverage_selector_blocked_during_planet_view={}\ncoverage_selector_no_deferred_open_after_close={}\ncoverage_base_rate_changed_and_restored={}\ncoverage_vehicle_entered={}\ncoverage_vehicle_recovered={}\ncoverage_vehicle_exited={}\ncoverage_body_moved_during_planet_view={}\ncoverage_collision_world_live_during_planet_movement={}\nerrors={}\n{}",
         CAPTURE_VIEWS.len() * SOLAR_PHASES.len(),
         ROUTES.len() * usize::from(REPEATS),
         run.coverage.destination_selected,
@@ -1749,8 +1850,10 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
         run.coverage.teleport_request_submitted,
         run.coverage.teleport_outcome_observed,
         run.coverage.selector_opened,
-        run.coverage.selector_priority_preserved_view,
+        run.coverage.selector_priority_when_open,
         run.coverage.selector_closed_unpaused,
+        run.coverage.selector_blocked_during_planet_view,
+        run.coverage.selector_no_deferred_open_after_close,
         run.coverage.base_rate_changed_and_restored,
         run.coverage.vehicle_entered,
         run.coverage.vehicle_recovered,
@@ -1778,7 +1881,22 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
 
 #[cfg(test)]
 mod tests {
-    use super::due_orbit_inputs;
+    use super::{
+        CaptureView, SUN_TILT, SolarPhase, due_orbit_inputs, maximum_sun_elevation_degrees,
+        sun_angle_for_elevation,
+    };
+    use bevy::prelude::Vec3;
+
+    fn solar_elevation_degrees(anchor: Vec3, angle: f32) -> f32 {
+        let up = anchor.normalize_or(Vec3::Y);
+        let sun_norm = (1.0 + SUN_TILT * SUN_TILT).sqrt();
+        let sun = Vec3::new(
+            angle.cos() / sun_norm,
+            SUN_TILT / sun_norm,
+            angle.sin() / sun_norm,
+        );
+        up.dot(sun).clamp(-1.0, 1.0).asin().to_degrees()
+    }
 
     #[test]
     fn orbit_inputs_fire_once_even_when_frame_cadence_skips_the_threshold() {
@@ -1798,5 +1916,25 @@ mod tests {
             *was_sent |= is_due;
         }
         assert_eq!(due_orbit_inputs(60.0, sent), [false; 5]);
+    }
+
+    #[test]
+    fn noon_capture_targets_the_anchor_local_solar_maximum() {
+        let anchor = Vec3::new(6_000.0, 8_000.0, 0.0);
+        let maximum = maximum_sun_elevation_degrees(anchor);
+        let angle = sun_angle_for_elevation(anchor, SolarPhase::Noon.elevation_degrees(anchor));
+
+        assert!(
+            maximum < 60.0,
+            "test anchor should expose impossible 60-degree noon"
+        );
+        assert!((solar_elevation_degrees(anchor, angle) - maximum).abs() < 0.01);
+    }
+
+    #[test]
+    fn settlement_capture_keeps_a_building_scale_camera_standoff() {
+        let radius = CaptureView::Settlement.radius();
+
+        assert!((2_200.0..=2_300.0).contains(&radius));
     }
 }

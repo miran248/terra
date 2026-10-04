@@ -299,6 +299,10 @@ impl Exploration {
         self.planet_camera.is_active()
     }
 
+    pub(crate) fn is_vehicle_selector_open(&self) -> bool {
+        self.selector
+    }
+
     /// Selection and teleport are enabled only after the interface fully opens.
     pub fn planet_view_ready(&self) -> bool {
         !self.selector && self.planet_presentation.selection_ready()
@@ -671,7 +675,10 @@ fn input(
         return;
     }
     if keys.just_pressed(KeyCode::KeyV) {
-        if state.occupied.is_some() {
+        if state.planet_camera.is_active() {
+            // Vehicle selection is reserved for ordinary exploration. Ignore
+            // the press for this frame so closing Planet view cannot defer it.
+        } else if state.occupied.is_some() {
             state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
         } else {
             state.selector = true;
@@ -2162,6 +2169,56 @@ pub(crate) mod tests {
         assert!(!state.planet_camera.is_requested_open());
         assert!(!state.planet_view_ready());
         assert!(state.planet_view_follows_body());
+    }
+
+    #[test]
+    fn vehicle_selector_cannot_open_during_planet_view_or_be_deferred_until_close() {
+        let (mut app, _) = fixture();
+        spawn_planet_view_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+
+        // V is rejected while the camera is entering Planet view.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(!app.world().resource::<Exploration>().selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+        }
+
+        for _ in 0..45 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .is_planet_view_active()
+        );
+
+        // V is also rejected during the return transition. Holding it through
+        // the rest of that transition must not open the selector afterwards.
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(!app.world().resource::<Exploration>().selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        for _ in 0..150 {
+            app.update();
+        }
+        let state = app.world().resource::<Exploration>();
+        assert!(!state.is_planet_view_active());
+        assert!(!state.selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
     }
 
     fn inject_selector_priority_keys(mut frame: Local<u8>, mut keys: ResMut<ButtonInput<KeyCode>>) {

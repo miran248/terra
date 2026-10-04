@@ -112,7 +112,9 @@ toggles that persist across reopening.
 
 Movement and physics stay live. World time slows smoothly from full speed nearby
 to half speed at whole-planet scale, while camera and interface controls remain
-responsive. Existing pause and base-speed settings are preserved. See the
+responsive. Rain and snow are hidden in Planet view, and vehicle selection is
+unavailable until you return to gameplay. Existing pause and base-speed settings
+are preserved. See the
 [rendered and performance acceptance record](docs/planet-view-acceptance.md).
 
 ## Time & Weather
@@ -156,7 +158,7 @@ See the [asset pipeline](docs/glb-pipeline.md) for generation and validation.
 
 | Key | Shared action |
 |-----|---------------|
-| V | Open vehicle selector while on foot; pauses the game |
+| V | Open vehicle selector while on foot and outside Planet view; pauses the game |
 | C / P | In the selector: summon car / plane |
 | Esc | Close vehicle selector |
 | M | Toggle live planet view |

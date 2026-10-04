@@ -34,6 +34,15 @@ the normal primary window on the normal display without resizing it during a
 run. The recorded physical/logical viewport, scale factor, and present mode are
 the authority for the measured configuration.
 
+## Refinements during acceptance
+
+The user [refined the behavior](https://github.com/miran248/terra/issues/45#issuecomment-5983545954):
+rain/snow presentation is hidden throughout Planet view, and vehicle selection
+cannot be opened from it. The driver must verify that `V` neither opens a selector
+nor pauses the live simulation while opening, browsing or returning. Vehicle
+setup occurs outside the view; existing vehicle entry, movement, follow and
+recovery remain part of the live routes.
+
 ## Evidence contract
 
 - Source revision, dirty patch/status, SHA-256 source and generated-asset hashes,
@@ -60,7 +69,22 @@ camera clearance, fades, and displaced-material prepass parity.
 
 ## Recorded outcome
 
-Pending the actual rendered and performance run. No screenshots or frame-time
-results are claimed by this placeholder. Replace this section with the measured
-configuration, evidence directory, results, inspection findings, and any remaining
-failures before closing #57.
+Acceptance remains pending. The first actual renderer pass is preserved at
+`/tmp/terra-spec-45/acceptance-57-run1`; it is rejected and contains no accepted
+performance measurements.
+
+That pass produced all twelve Metal-rendered primary-window PNGs on an Apple
+M4 Pro (20-core GPU). The application viewport was 2560×1440 physical pixels,
+1280×720 logical pixels, scale factor 2, with FIFO presentation on the normal
+3024×1964 Retina display. Inspection found that the gameplay readout remained
+opaque over the destination panel, and the settlement capture used a near-ground
+radius that could not show the settlement. The capture configuration also called
+noon 60° even though the fixed solar orbit reaches only 23.4° at this anchor.
+These require correction before acceptance; the actual vectors and elevations
+remain recorded in the manifest.
+
+The inspected globe/night and opposite captures retain a dark night side and
+readable settlement labels and roads. Ambient brightness matches exactly between
+globe and opposite views for each fixed body/sun phase (86.6294 at local noon,
+35 at sunset/night). These are limited observations from the rejected matrix,
+not a completed visual or performance acceptance claim.
