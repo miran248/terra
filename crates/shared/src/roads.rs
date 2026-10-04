@@ -277,7 +277,7 @@ fn project_road_point_to_terrain(
     if direction.length_squared() < 0.5 {
         return point;
     }
-    let radius = ground.facet_radius(direction, PLANET_RADIUS);
+    let radius = ground.facet_radius_for_road_projection(direction, PLANET_RADIUS);
     direction * (radius + surface_lift_m)
 }
 

@@ -14,41 +14,62 @@ pub struct PlanetMesh {
     /// grid[lat_bucket * LON_BUCKETS + lon_bucket] -> triangle indices whose centroid
     /// falls in that cell (plus neighbours, so edge-straddling tris are found).
     grid: Vec<Vec<u32>>,
+    /// Finer buckets keep the high-volume surface-projection queries bounded while
+    /// `grid` retains the historical candidate ordering used by `face_at`.
+    facet_grid: Vec<Vec<u32>>,
 }
 
 const LAT_BUCKETS: usize = 64;
 const LON_BUCKETS: usize = 128;
+const FACET_LAT_BUCKETS: usize = 256;
+const FACET_LON_BUCKETS: usize = 512;
+const ROAD_PROJECTION_BARYCENTRIC_EPSILON: f32 = 1e-5;
 
 fn bucket(dir: Vec3) -> (usize, usize) {
+    bucket_with_resolution(dir, LAT_BUCKETS, LON_BUCKETS)
+}
+
+fn bucket_with_resolution(dir: Vec3, lat_buckets: usize, lon_buckets: usize) -> (usize, usize) {
     let d = dir.normalize();
     // lat in [0, pi] from +Y, lon in [0, 2pi).
     let lat = d.y.clamp(-1.0, 1.0).acos(); // 0 at +Y pole .. pi at -Y
     let lon = d.z.atan2(d.x) + std::f32::consts::PI; // 0..2pi
-    let li = ((lat / std::f32::consts::PI) * LAT_BUCKETS as f32) as usize;
-    let oi = ((lon / std::f32::consts::TAU) * LON_BUCKETS as f32) as usize;
-    (li.min(LAT_BUCKETS - 1), oi.min(LON_BUCKETS - 1))
+    let li = ((lat / std::f32::consts::PI) * lat_buckets as f32) as usize;
+    let oi = ((lon / std::f32::consts::TAU) * lon_buckets as f32) as usize;
+    (li.min(lat_buckets - 1), oi.min(lon_buckets - 1))
+}
+
+fn build_grid(tris: &[[Vec3; 3]], lat_buckets: usize, lon_buckets: usize) -> Vec<Vec<u32>> {
+    let mut grid = vec![Vec::new(); lat_buckets * lon_buckets];
+    for (idx, triangle) in tris.iter().enumerate() {
+        let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+        let (lat, lon) = bucket_with_resolution(centroid, lat_buckets, lon_buckets);
+        // Insert into the cell and its 8 neighbours (wrap longitude, clamp latitude)
+        // so a query near a cell edge still finds triangles from the adjacent cell.
+        for dlat in [-1i32, 0, 1] {
+            for dlon in [-1i32, 0, 1] {
+                let candidate_lat = lat as i32 + dlat;
+                if candidate_lat < 0 || candidate_lat >= lat_buckets as i32 {
+                    continue;
+                }
+                let candidate_lon = (lon as i32 + dlon).rem_euclid(lon_buckets as i32);
+                grid[candidate_lat as usize * lon_buckets + candidate_lon as usize]
+                    .push(idx as u32);
+            }
+        }
+    }
+    grid
 }
 
 impl PlanetMesh {
     pub fn new(tris: Vec<[Vec3; 3]>) -> Self {
-        let mut grid = vec![Vec::new(); LAT_BUCKETS * LON_BUCKETS];
-        for (idx, t) in tris.iter().enumerate() {
-            let centroid = (t[0] + t[1] + t[2]) / 3.0;
-            let (li, oi) = bucket(centroid);
-            // Insert into the cell and its 8 neighbours (wrap longitude, clamp latitude)
-            // so a query near a cell edge still finds triangles from the adjacent cell.
-            for dl in [-1i32, 0, 1] {
-                for doo in [-1i32, 0, 1] {
-                    let l = li as i32 + dl;
-                    if l < 0 || l >= LAT_BUCKETS as i32 {
-                        continue;
-                    }
-                    let o = (oi as i32 + doo).rem_euclid(LON_BUCKETS as i32);
-                    grid[l as usize * LON_BUCKETS + o as usize].push(idx as u32);
-                }
-            }
+        let grid = build_grid(&tris, LAT_BUCKETS, LON_BUCKETS);
+        let facet_grid = build_grid(&tris, FACET_LAT_BUCKETS, FACET_LON_BUCKETS);
+        Self {
+            tris,
+            grid,
+            facet_grid,
         }
-        Self { tris, grid }
     }
 
     pub fn triangle(&self, face: usize) -> Option<&[Vec3; 3]> {
@@ -95,15 +116,46 @@ impl PlanetMesh {
     /// the ray `t*dir` with the triangle whose spherical cell contains `dir`. Uses the
     /// grid bucket so only a handful of candidate triangles are tested.
     pub fn facet_radius(&self, dir: Vec3, fallback: f32) -> f32 {
-        let (li, oi) = bucket(dir);
-        for &idx in &self.grid[li * LON_BUCKETS + oi] {
-            if let Some(r) = ray_triangle_radius(dir, &self.tris[idx as usize]) {
+        self.facet_radius_from_grid(dir, fallback, &self.grid, LAT_BUCKETS, LON_BUCKETS, 0.0)
+    }
+
+    /// Radius query used when projecting wide road ribbons onto terrain. It keeps the
+    /// general terrain lookup above unchanged and narrows the candidate set for the
+    /// many lateral samples a ribbon needs.
+    pub fn facet_radius_for_road_projection(&self, dir: Vec3, fallback: f32) -> f32 {
+        self.facet_radius_from_grid(
+            dir,
+            fallback,
+            &self.facet_grid,
+            FACET_LAT_BUCKETS,
+            FACET_LON_BUCKETS,
+            ROAD_PROJECTION_BARYCENTRIC_EPSILON,
+        )
+    }
+
+    fn facet_radius_from_grid(
+        &self,
+        dir: Vec3,
+        fallback: f32,
+        grid: &[Vec<u32>],
+        lat_buckets: usize,
+        lon_buckets: usize,
+        barycentric_epsilon: f32,
+    ) -> f32 {
+        let (li, oi) = bucket_with_resolution(dir, lat_buckets, lon_buckets);
+        for &idx in &grid[li * lon_buckets + oi] {
+            if let Some(r) = ray_triangle_radius_with_tolerance(
+                dir,
+                &self.tris[idx as usize],
+                barycentric_epsilon,
+            ) {
                 return r;
             }
         }
-        // Rare miss (grid gap): fall back to a full scan so we never place an actor wrong.
+        // Keep the exact-surface fallback for large or boundary-crossing facets that
+        // extend beyond their centroid's neighbouring buckets.
         for t in &self.tris {
-            if let Some(r) = ray_triangle_radius(dir, t) {
+            if let Some(r) = ray_triangle_radius_with_tolerance(dir, t, barycentric_epsilon) {
                 return r;
             }
         }
@@ -127,10 +179,32 @@ pub fn ray_triangle_radius(dir: Vec3, t: &[Vec3; 3]) -> Option<f32> {
     ray_triangle_distance_from_offset(dir, -t[0], t)
 }
 
+fn ray_triangle_radius_with_tolerance(
+    dir: Vec3,
+    triangle: &[Vec3; 3],
+    barycentric_epsilon: f32,
+) -> Option<f32> {
+    ray_triangle_distance_from_offset_with_tolerance(
+        dir,
+        -triangle[0],
+        triangle,
+        barycentric_epsilon,
+    )
+}
+
 fn ray_triangle_distance_from_offset(
     direction: Vec3,
     origin_to_triangle: Vec3,
     triangle: &[Vec3; 3],
+) -> Option<f32> {
+    ray_triangle_distance_from_offset_with_tolerance(direction, origin_to_triangle, triangle, 0.0)
+}
+
+fn ray_triangle_distance_from_offset_with_tolerance(
+    direction: Vec3,
+    origin_to_triangle: Vec3,
+    triangle: &[Vec3; 3],
+    barycentric_epsilon: f32,
 ) -> Option<f32> {
     let e1 = triangle[1] - triangle[0];
     let e2 = triangle[2] - triangle[0];
@@ -141,12 +215,12 @@ fn ray_triangle_distance_from_offset(
     }
     let inv = 1.0 / det;
     let u = origin_to_triangle.dot(p) * inv;
-    if !(0.0..=1.0).contains(&u) {
+    if u < -barycentric_epsilon || u > 1.0 + barycentric_epsilon {
         return None;
     }
     let q = origin_to_triangle.cross(e1);
     let v = direction.dot(q) * inv;
-    if v < 0.0 || u + v > 1.0 {
+    if v < -barycentric_epsilon || u + v > 1.0 + barycentric_epsilon {
         return None;
     }
     let dist = e2.dot(q) * inv;
@@ -286,6 +360,44 @@ mod tests {
     }
 
     #[test]
+    fn road_projection_index_matches_full_scan_with_fewer_candidates() {
+        let tris = unit_icosphere_tris(5);
+        let mesh = PlanetMesh::new(tris.clone());
+        let mut coarse_candidate_total = 0usize;
+        let mut road_candidate_total = 0usize;
+
+        for i in 0..512 {
+            let u = (i as f32 * 0.6180339) % 1.0;
+            let v = (i as f32 * 0.7548776) % 1.0;
+            let theta = u * std::f32::consts::TAU;
+            let y = v * 2.0 - 1.0;
+            let radial = (1.0 - y * y).max(0.0).sqrt();
+            let direction = Vec3::new(radial * theta.cos(), y, radial * theta.sin());
+
+            let (coarse_lat, coarse_lon) = bucket(direction);
+            coarse_candidate_total += mesh.grid[coarse_lat * LON_BUCKETS + coarse_lon].len();
+            let (road_lat, road_lon) =
+                bucket_with_resolution(direction, FACET_LAT_BUCKETS, FACET_LON_BUCKETS);
+            road_candidate_total += mesh.facet_grid[road_lat * FACET_LON_BUCKETS + road_lon].len();
+
+            let expected = tris
+                .iter()
+                .find_map(|triangle| ray_triangle_radius(direction, triangle))
+                .expect("the closed test sphere intersects every direction");
+            let actual = mesh.facet_radius_for_road_projection(direction, -1.0);
+            assert!(
+                (actual - expected).abs() < 1e-2,
+                "road index radius {actual} != full-scan radius {expected}"
+            );
+        }
+
+        assert!(
+            road_candidate_total * 4 < coarse_candidate_total,
+            "road index candidates {road_candidate_total} should be far below coarse candidates {coarse_candidate_total}"
+        );
+    }
+
+    #[test]
     fn ray_triangle_intersection_distance_handles_oblique_rays_and_misses() {
         let triangle = [
             Vec3::new(-10.0, -10.0, 10.0),
@@ -301,6 +413,60 @@ mod tests {
         assert_eq!(
             ray_triangle_intersection_distance(Vec3::new(0.0, 20.0, 0.0), Vec3::Z, &triangle),
             None
+        );
+    }
+
+    #[test]
+    fn offset_ray_collision_predicate_keeps_its_strict_triangle_bounds() {
+        let triangle = [
+            Vec3::new(-10.0, -10.0, 10.0),
+            Vec3::new(10.0, -10.0, 10.0),
+            Vec3::new(0.0, 10.0, 10.0),
+        ];
+        let origin = Vec3::new(1.5, -3.0, 2.0);
+        let near_vertex = Vec3::new(0.0, 10.00001, 10.0);
+        let direction = (near_vertex - origin).normalize();
+
+        assert_eq!(
+            ray_triangle_intersection_distance(origin, direction, &triangle),
+            None,
+            "road-only edge tolerance must not change offset rays used by collision queries"
+        );
+    }
+
+    #[test]
+    fn road_projection_tolerance_recovers_both_sides_of_a_shared_edge() {
+        let shared_a = Vec3::new(-10.0, -10.0, 10.0);
+        let shared_b = Vec3::new(10.0, 10.0, 10.0);
+        let first = [shared_a, Vec3::new(10.0, -10.0, 10.0), shared_b];
+        let second = [shared_a, shared_b, Vec3::new(-10.0, 10.0, 10.0)];
+        let direction = Vec3::new(0.0, 0.00001, 10.0).normalize();
+        let mesh = PlanetMesh::new(vec![first, second]);
+
+        let road_distance = mesh.facet_radius_for_road_projection(direction, -1.0);
+        let expected = 10.0 / direction.z;
+
+        assert!((road_distance - expected).abs() < 0.001);
+    }
+
+    #[test]
+    fn ray_triangle_intersection_rejects_points_outside_barycentric_tolerance() {
+        let triangle = [
+            Vec3::new(-10.0, -10.0, 10.0),
+            Vec3::new(10.0, -10.0, 10.0),
+            Vec3::new(0.0, 10.0, 10.0),
+        ];
+        let origin = Vec3::ZERO;
+        let outside = Vec3::new(0.0, 10.01, 10.0);
+        let direction = outside.normalize();
+
+        assert_eq!(
+            ray_triangle_intersection_distance(origin, direction, &triangle),
+            None
+        );
+        assert_eq!(
+            PlanetMesh::new(vec![triangle]).facet_radius_for_road_projection(direction, -1.0),
+            -1.0
         );
     }
 }
