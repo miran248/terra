@@ -94,6 +94,7 @@ pub(super) fn camera(
     time: Res<Time<Real>>,
     mut state: ResMut<Exploration>,
     spatial: SpatialQuery,
+    collision_world: Option<Res<world::CollisionWorld>>,
     surface: Option<Res<shared::terrain::TerrainGen>>,
     player: Query<(Entity, &Position, &Player), Without<MainCamera>>,
     vehicles: Query<(&Position, &Vehicle), Without<MainCamera>>,
@@ -203,21 +204,31 @@ pub(super) fn camera(
     if state.planet_camera.is_active() {
         let displacement = planet_pose.translation - current_camera.translation;
         let distance = displacement.length();
+        let mut nearest_hit = None;
         if distance > 1e-4
             && let Ok(direction) = Dir3::new(displacement)
-            && let Some(hit) = spatial.cast_shape(
-                &Collider::sphere(radius),
-                current_camera.translation,
-                current_camera.rotation,
-                direction,
-                &ShapeCastConfig::from_max_distance(distance),
-                &SpatialQueryFilter::from_excluded_entities([target, explorer]),
-            )
-            && hit.distance < distance
         {
-            let permitted = (hit.distance - 0.05).max(0.0);
+            nearest_hit = spatial
+                .cast_shape(
+                    &Collider::sphere(radius),
+                    current_camera.translation,
+                    current_camera.rotation,
+                    direction,
+                    &ShapeCastConfig::from_max_distance(distance),
+                    &SpatialQueryFilter::from_excluded_entities([target, explorer]),
+                )
+                .map(|hit| hit.distance);
+            if let Some(hit) = collision_world.as_deref().and_then(|world| {
+                world.camera_sweep_hit(current_camera.translation, planet_pose.translation, radius)
+            }) {
+                nearest_hit = Some(nearest_hit.map_or(hit, |nearest: f32| nearest.min(hit)));
+            }
+        }
+        if let Some(hit_distance) = nearest_hit.filter(|hit| *hit <= distance) {
+            let permitted = (hit_distance - 0.05).max(0.0);
             let fraction = (permitted / distance).clamp(0.0, 1.0);
-            planet_pose.translation = current_camera.translation + *direction * permitted;
+            planet_pose.translation =
+                current_camera.translation + displacement.normalize_or_zero() * permitted;
             planet_pose.rotation = current_camera
                 .rotation
                 .slerp(planet_pose.rotation, fraction);
