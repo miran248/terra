@@ -437,6 +437,29 @@ pub(crate) fn setup_map(
         })
         .collect();
     let ground = PlanetMesh::new(displaced);
+    let mut road_highlight_paths = Vec::new();
+
+    for road in level
+        .roads
+        .iter()
+        .filter(|road| road.kind == RoadKind::Road)
+    {
+        let path: Vec<shared::sphere::SpherePos> = road
+            .points
+            .iter()
+            .map(|point| shared::sphere::SpherePos::new(Vec3::from_array(*point)))
+            .collect();
+        let samples = shared::roads::sample_surface_road_path(
+            &path,
+            &ground,
+            None,
+            crate::planet_roads::ROAD_SAMPLE_SPACING_METERS,
+            crate::planet_roads::ROAD_SURFACE_LIFT_METERS,
+        );
+        if samples.len() > 1 {
+            road_highlight_paths.push(samples);
+        }
+    }
 
     // Roads are visual ribbons over the authoritative terrain collider. Their
     // narrow width reads as a path without changing traversal or level data.
@@ -465,6 +488,16 @@ pub(crate) fn setup_map(
         let deck = shared::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
         if deck.triangles.is_empty() {
             continue;
+        }
+        let samples = shared::roads::sample_surface_road_path(
+            &span,
+            &ground,
+            Some(&deck.top_surface),
+            crate::planet_roads::ROAD_SAMPLE_SPACING_METERS,
+            crate::planet_roads::ROAD_SURFACE_LIFT_METERS,
+        );
+        if samples.len() > 1 {
+            road_highlight_paths.push(samples);
         }
         bridge_top_surfaces_by_name.insert(road.name.clone(), deck.top_surface);
         let colors = vec![[bridge_color.to_f32_array(); 3]; deck.triangles.len()];
@@ -627,6 +660,9 @@ pub(crate) fn setup_map(
     ));
     commands.insert_resource(LevelLandform(level.landform.clone()));
     commands.insert_resource(LevelRoadMaterial(level.road_material.clone()));
+    commands.insert_resource(crate::planet_roads::RoadHighlightPaths(
+        road_highlight_paths,
+    ));
     commands.insert_resource(LevelRegions {
         regions: level.regions.clone(),
         face_regions: level.face_regions.clone(),
