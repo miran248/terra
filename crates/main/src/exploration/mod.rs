@@ -19,7 +19,7 @@ use shared::{
     plane_prototype::{FlightInput, PlaneFlight, gentle_landing},
     planet::PlanetMesh,
     planet_view::PlanetViewCamera,
-    planet_view_interface::{PlanetViewPointer, PlanetViewPresentation},
+    planet_view_interface::{GameplayHudElement, PlanetViewPointer, PlanetViewPresentation},
     state::AppState,
 };
 
@@ -1321,6 +1321,7 @@ fn track_safe(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use bevy::{color::Alpha, ecs::system::RunSystemOnce};
 
     #[test]
     fn planet_view_interface_visibility_excludes_the_selector_modal() {
@@ -1652,6 +1653,143 @@ pub(crate) mod tests {
 
         assert!(app.world().resource::<Time<Virtual>>().is_paused());
         assert!(app.world().resource::<Exploration>().recovery > 0.4);
+    }
+
+    #[test]
+    fn exploration_readout_fades_and_restores_through_the_live_presentation() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .insert_resource(crate::ui::UiFont(Handle::default()));
+        app.world_mut().run_system_once(view::setup).unwrap();
+        app.update();
+
+        let readout = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<view::Readout>>();
+            query.single(world).unwrap()
+        };
+        let first_text = app.world().get::<Text>(readout).unwrap().0.clone();
+        assert!(first_text.starts_with("On foot · WASD move"));
+        let original_text_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
+        let original_background_alpha = app
+            .world()
+            .get::<BackgroundColor>(readout)
+            .unwrap()
+            .0
+            .alpha();
+        assert!(original_text_alpha > 0.9);
+        assert!(original_background_alpha > 0.0);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        assert!(app.world().get::<TextColor>(readout).unwrap().0.alpha() < 0.01);
+        assert!(
+            app.world()
+                .get::<BackgroundColor>(readout)
+                .unwrap()
+                .0
+                .alpha()
+                < 0.01
+        );
+        assert_eq!(app.world().get::<Text>(readout).unwrap().0, first_text);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        for _ in 0..5 {
+            app.update();
+        }
+        let partially_restored_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
+        assert!(partially_restored_alpha > 0.0 && partially_restored_alpha < original_text_alpha);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        app.update();
+        let reversed_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
+        assert!(reversed_alpha < partially_restored_alpha);
+
+        for _ in 0..20 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        assert!(app.world().get::<TextColor>(readout).unwrap().0.alpha() < 0.01);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        for _ in 0..20 {
+            app.update();
+        }
+        let restored_text_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
+        let restored_background_alpha = app
+            .world()
+            .get::<BackgroundColor>(readout)
+            .unwrap()
+            .0
+            .alpha();
+        assert!((restored_text_alpha - original_text_alpha).abs() < 0.01);
+        assert!((restored_background_alpha - original_background_alpha).abs() < 0.01);
+        assert!(
+            app.world()
+                .get::<Text>(readout)
+                .unwrap()
+                .0
+                .starts_with("On foot · WASD move")
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        let state = app.world().resource::<Exploration>();
+        assert!(state.selector);
+        assert!(!state.planet_camera.is_requested_open());
+        assert!(!state.planet_view_ready());
+        assert!(
+            app.world()
+                .get::<Text>(readout)
+                .unwrap()
+                .0
+                .starts_with("SUMMON VEHICLE")
+        );
+        assert!(
+            (app.world().get::<TextColor>(readout).unwrap().0.alpha() - original_text_alpha).abs()
+                < 0.01
+        );
+
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+            keys.press(KeyCode::Escape);
+        }
+        app.update();
+        let state = app.world().resource::<Exploration>();
+        assert!(!state.selector);
+        assert!(!state.planet_camera.is_requested_open());
+        assert!(!state.planet_view_ready());
+        let post_selector_text_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
+        let post_selector_background_alpha = app
+            .world()
+            .get::<BackgroundColor>(readout)
+            .unwrap()
+            .0
+            .alpha();
+        assert!((post_selector_text_alpha - original_text_alpha).abs() < 0.01);
+        assert!((post_selector_background_alpha - original_background_alpha).abs() < 0.01);
+        assert!(
+            app.world()
+                .get::<Text>(readout)
+                .unwrap()
+                .0
+                .starts_with("On foot · WASD move")
+        );
     }
 
     #[test]
