@@ -17,6 +17,7 @@ use shared::{
     car_prototype::CarMotion,
     plane_prototype::{FlightInput, PlaneFlight, gentle_landing},
     planet::PlanetMesh,
+    planet_view::PlanetViewCamera,
     state::AppState,
 };
 
@@ -92,6 +93,7 @@ pub struct Exploration {
     message: String,
     actions: std::collections::VecDeque<Action>,
     snap_camera: bool,
+    planet_camera: PlanetViewCamera,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Action {
@@ -103,6 +105,16 @@ pub enum Action {
 impl Exploration {
     pub fn request(&mut self, action: Action) {
         self.actions.push_back(action);
+    }
+
+    pub fn set_planet_view_open(&mut self, open: bool) {
+        if self.planet_camera.is_requested_open() != open {
+            self.planet_camera.toggle();
+        }
+    }
+
+    pub fn is_planet_view_active(&self) -> bool {
+        self.planet_camera.is_active()
     }
 }
 #[derive(Resource)]
@@ -235,6 +247,13 @@ fn input(
         }
         state.recovery = 0.0;
         return;
+    }
+    if keys.just_pressed(KeyCode::KeyM) {
+        let open = !state.planet_camera.is_requested_open();
+        state.set_planet_view_open(open);
+    }
+    if keys.just_pressed(KeyCode::Escape) && state.planet_camera.is_requested_open() {
+        state.planet_camera.close();
     }
     if keys.just_pressed(KeyCode::KeyE) {
         state.request(Action::Interact);
@@ -807,6 +826,125 @@ mod tests {
             .resource_mut::<Exploration>()
             .request(action);
         app.update();
+    }
+    #[test]
+    fn planet_view_opens_without_a_camera_snap_and_returns_to_exploration() {
+        let (mut app, explorer) = fixture();
+        let camera_start =
+            Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y);
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                camera_start,
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        let default_far = PerspectiveProjection::default().far;
+        let body_start = app.world().get::<Position>(explorer).unwrap().0;
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+
+        app.update();
+
+        let opening = *app.world().get::<Transform>(camera).unwrap();
+        assert!(opening.translation.distance(camera_start.translation) < 10.0);
+        assert!(opening.rotation.angle_between(camera_start.rotation) < 0.05);
+        assert!(matches!(
+            app.world().get::<Projection>(camera).unwrap(),
+            Projection::Perspective(projection) if projection.far > 8000.0
+        ));
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear_just_pressed(KeyCode::KeyM);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyM);
+        for _ in 0..120 {
+            app.update();
+            assert!(app.world().get::<Transform>(camera).unwrap().translation.y > 2000.2);
+        }
+        let planet_view = app.world().get::<Transform>(camera).unwrap();
+        assert!(planet_view.translation.length() > shared::sphere::PLANET_RADIUS * 2.0);
+        assert!(planet_view.translation.length() < shared::sphere::PLANET_RADIUS * 4.0);
+        assert!(
+            app.world()
+                .get::<Position>(explorer)
+                .unwrap()
+                .0
+                .distance(body_start)
+                < 0.05
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::Escape);
+        app.update();
+        let returning = app.world().get::<Transform>(camera).unwrap();
+        assert!(returning.translation.length() > shared::sphere::PLANET_RADIUS * 2.0);
+        assert!(returning.translation.y > 2000.2);
+
+        for _ in 0..120 {
+            app.update();
+            assert!(app.world().get::<Transform>(camera).unwrap().translation.y > 2000.2);
+        }
+        let returned = app.world().get::<Transform>(camera).unwrap();
+        let body = app.world().get::<Position>(explorer).unwrap().0;
+        assert!(returned.translation.distance(body) < 30.0);
+        assert!(returned.translation.length() > body.length());
+        assert!(matches!(
+            app.world().get::<Projection>(camera).unwrap(),
+            Projection::Perspective(projection) if projection.far == default_far
+        ));
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear_just_pressed(KeyCode::Escape);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::Escape);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear_just_pressed(KeyCode::KeyM);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyM);
+        for _ in 0..120 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyM);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear_just_pressed(KeyCode::KeyM);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .release(KeyCode::KeyM);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open()
+        );
+        for _ in 0..120 {
+            app.update();
+            assert!(app.world().get::<Transform>(camera).unwrap().translation.y > 2000.2);
+        }
+        assert!(
+            app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .distance(body)
+                < 30.0
+        );
     }
     #[test]
     fn car_carries_speed_from_the_captured_downhill_onto_flat_ground() {
