@@ -12,7 +12,7 @@ parent exists:
 ```sh
 CARGO_TARGET_DIR=/tmp/terra-spec-45/target-57 \
 TERRA_PLANET_ASSET_ROOT=/Users/miran/projects/miran248/terra/crates/main \
-  scripts/capture_planet.sh /tmp/terra-spec-45/acceptance-57-final
+  scripts/capture_planet.sh /tmp/terra-spec-45/acceptance-57-run3
 ```
 
 The asset-root override is only needed when using a worktree without its own
@@ -21,10 +21,12 @@ The runner uses the pinned toolchain and builds the `asset-review` feature in th
 repository's development profile. It honors `CARGO_TARGET_DIR`, retains build and
 application logs, and never replaces an existing evidence directory. It validates
 all required files and independently recalculates the raw timing statistics in
-`independent-performance-summary.csv`. Recheck saved evidence without launching:
+`independent-performance-summary.csv`. It also rejects stationary or handoff-only
+traces and requires observed movement while the physics clock advances, the body
+is awake, and collision support is present. Recheck saved evidence without launching:
 
 ```sh
-python3 scripts/validate_planet_capture.py /tmp/terra-spec-45/acceptance-57-final
+python3 scripts/validate_planet_capture.py /tmp/terra-spec-45/acceptance-57-run3
 ```
 
 The opt-in driver uses `TERRA_PLANET_ACCEPTANCE_CAPTURE`. It runs the production
@@ -33,6 +35,18 @@ must not be combined with it. The runner clears those other capture flags. Keep
 the normal primary window on the normal display without resizing it during a
 run. The recorded physical/logical viewport, scale factor, and present mode are
 the authority for the measured configuration.
+
+A short transition and precipitation diagnostic uses the same provenance runner:
+
+```sh
+CARGO_TARGET_DIR=/tmp/terra-spec-45/target-57 \
+TERRA_PLANET_ASSET_ROOT=/Users/miran/projects/miran248/terra/crates/main \
+  scripts/capture_planet.sh --diagnostic /tmp/terra-spec-45/transition-diagnostic-1
+```
+
+This writes a camera trace, transition/storm captures, and `diagnostic-status.txt`.
+It checks continuous body motion with live physics and precipitation visibility,
+but does not replace the full capture matrix or warmed performance repeats.
 
 ## Refinements during acceptance
 
@@ -88,3 +102,19 @@ readable settlement labels and roads. Ambient brightness matches exactly between
 globe and opposite views for each fixed body/sun phase (86.6294 at local noon,
 35 at sunset/night). These are limited observations from the rejected matrix,
 not a completed visual or performance acceptance claim.
+
+
+A second partial pass is preserved at
+`/tmp/terra-spec-45/acceptance-57-final` (the directory name does not imply
+acceptance). It contains twelve corrected captures and one measured 60-second
+entry/reversal repeat after warmup. The readout overlap and settlement framing
+were corrected. Inspection found discontinuities in the road highlights, and the
+user reported uneven speed, unwanted rotation and unsatisfactory paths during
+entry/exit. These remain under investigation.
+
+The partial repeat recorded 3,500 intervals: median 16.677 ms, p95 18.808 ms,
+p99 28.197 ms, maximum 268.487 ms, and nine intervals above 33.33 ms. Recorded
+controlled-body positions did not move, so this repeat does not meet the live
+route contract. The run was stopped before repeat two. Its missing completion
+status correctly causes independent validation to reject it. Normal settings
+recorded shadows disabled; no active-shadow performance claim is made.

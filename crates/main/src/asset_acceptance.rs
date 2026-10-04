@@ -13,6 +13,21 @@ mod planet_acceptance;
 pub struct AssetAcceptancePlugin;
 impl Plugin for AssetAcceptancePlugin {
     fn build(&self, app: &mut App) {
+        if let Some(directory) = std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC") {
+            assert!(
+                [
+                    "TERRA_PLANET_ACCEPTANCE_CAPTURE",
+                    "TERRA_PRODUCTION_CAPTURE",
+                    "TERRA_LIGHTING_CAPTURE",
+                    "TERRA_FLIGHT_CAPTURE",
+                ]
+                .into_iter()
+                .all(|name| std::env::var_os(name).is_none()),
+                "TERRA_PLANET_TRANSITION_DIAGNOSTIC cannot run beside another capture mode"
+            );
+            planet_acceptance::register_transition_diagnostic(app, PathBuf::from(directory));
+            return;
+        }
         if let Some(directory) = std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE") {
             assert!(
                 [

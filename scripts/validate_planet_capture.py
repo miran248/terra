@@ -62,9 +62,24 @@ def validate(output):
             if duration < 59.9 or elapsed[-1] < 59.9 or elapsed[0] > 1:
                 raise ValueError(f'Measured repeat is shorter than 60 seconds: {path}')
             positions = [tuple(finite(row[f'controlled_{axis}']) for axis in 'xyz') for row in rows]
-            traveled = math.fsum(math.dist(a, b) for a, b in zip(positions, positions[1:]))
-            if traveled <= .001:
-                failures.append(f'No observed controlled-body motion: {path}')
+            fixed = [finite(row['fixed_time_elapsed_s']) for row in rows]
+            traveled = 0.0
+            live_steps = 0
+            for index in range(1, len(rows)):
+                before, after = rows[index - 1], rows[index]
+                step = math.dist(positions[index - 1], positions[index])
+                # Exclude body handoffs and discontinuous relocations from travel.
+                if before['controlled_kind'] != after['controlled_kind'] or step > 12:
+                    continue
+                traveled += step
+                if (step > 1e-5 and fixed[index] > fixed[index - 1]
+                        and after['controlled_sleeping'] == 'false'
+                        and finite(after['resident_colliders']) > 0):
+                    live_steps += 1
+            if traveled < 10:
+                failures.append(f'Insufficient continuous controlled-body motion: {path}')
+            if not live_steps:
+                failures.append(f'No observed live physics motion: {path}')
             sun_angles = [finite(row['sun_angle_rad']) for row in rows]
             if max(sun_angles) - min(sun_angles) <= 1e-6:
                 failures.append(f'No observed day/night progression: {path}')
@@ -77,7 +92,8 @@ def validate(output):
             summaries.append(dict(route=route, repeat=repeat, sample_count=len(rows),
                                   duration_s=duration, p50_ms=statistics.median(intervals),
                                   p95_ms=p95, p99_ms=p99, max_ms=max(intervals),
-                                  over_33_33ms=over, controlled_travel_m=traveled))
+                                  over_33_33ms=over, controlled_travel_m=traveled,
+                                  live_physics_steps=live_steps))
         if slow_repeats >= 2:
             failures.append(f'Recurring intervals above 33.33 ms: {route} ({slow_repeats}/3 repeats)')
     with (output / 'independent-performance-summary.csv').open('w', newline='') as result:

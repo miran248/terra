@@ -31,9 +31,12 @@ class EvidenceTests(unittest.TestCase):
                 with path.open('w', newline='') as file:
                     writer = csv.writer(file)
                     writer.writerow(('real_elapsed_s', 'wall_interval_ms', 'route',
-                                     'controlled_x', 'controlled_y', 'controlled_z', 'sun_angle_rad'))
+                                     'controlled_x', 'controlled_y', 'controlled_z', 'sun_angle_rad',
+                                     'controlled_kind', 'controlled_sleeping', 'fixed_time_elapsed_s',
+                                     'resident_colliders'))
                     for i in range(3000):
-                        writer.writerow(((i+1)*.02, 20, route, i*.001, 2000, 0, i*.00001))
+                        writer.writerow(((i+1)*.02, 20, route, i*.01, 2000, 0, i*.00001,
+                                         'on-foot', 'false', (i+1)*.02, 100))
 
     def validate(self):
         return subprocess.run(['python3', str(Path(__file__).with_name('validate_planet_capture.py')),
@@ -48,6 +51,37 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(float(rows[0]['p50_ms']), 20)
         self.assertEqual(float(rows[0]['p95_ms']), 20)
         self.assertEqual(float(rows[0]['duration_s']), 60)
+
+    def alter_first_repeat(self, change):
+        path = self.output / 'performance/entry-reversal/repeat-1-raw.csv'
+        with path.open() as source:
+            rows = list(csv.DictReader(source))
+        for index, row in enumerate(rows):
+            change(index, row)
+        with path.open('w', newline='') as output:
+            writer = csv.DictWriter(output, fieldnames=rows[0].keys())
+            writer.writeheader()
+            writer.writerows(rows)
+
+    def test_rejects_frozen_physics_clock_despite_moving_positions(self):
+        self.alter_first_repeat(lambda i, row: row.update(fixed_time_elapsed_s='0'))
+        result = self.validate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No observed live physics motion', result.stderr)
+
+    def test_rejects_sleeping_motion(self):
+        self.alter_first_repeat(lambda i, row: row.update(controlled_sleeping='true'))
+        result = self.validate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No observed live physics motion', result.stderr)
+
+    def test_rejects_teleport_and_handoff_only_motion(self):
+        self.alter_first_repeat(lambda i, row: row.update(
+            controlled_x=str(1000 if i >= 1500 else 0),
+            controlled_kind='car' if i >= 1500 else 'on-foot'))
+        result = self.validate()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Insufficient continuous controlled-body motion', result.stderr)
 
     def test_rejects_missing_capture_even_if_driver_says_complete(self):
         (self.output / 'captures/opposite-night.png').unlink()

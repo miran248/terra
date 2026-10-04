@@ -8,8 +8,9 @@ use crate::{
     exploration::{Action, Exploration, Kind, PlanetTeleportOutcomeKind},
     map::{CollisionTerrain, MainCamera, Player, Sun, SunLock, TimeOfDay},
     planet_time::PlanetSimulationClock,
+    weather::{Precip, Weather},
 };
-use avian3d::prelude::{Collider, LinearVelocity, Position};
+use avian3d::prelude::{Collider, LinearVelocity, Position, Sleeping};
 use bevy::{
     camera::CameraUpdateSystems,
     input::InputSystems,
@@ -44,8 +45,24 @@ const WARMUP_SECONDS: f64 = 60.0;
 const MEASURE_SECONDS: f64 = 60.0;
 const REPEATS: u8 = 3;
 const STALL_LIMIT_MS: f64 = 1000.0 / 30.0;
+const MIN_MEASURED_BODY_PATH_M: f64 = 10.0;
+const MIN_MEASURED_BODY_EXCURSION_M: f64 = 5.0;
+const MAX_CONTINUOUS_BODY_STEP_M: f32 = 12.0;
 const ORBIT_RADIANS_PER_LOGICAL_PIXEL: f32 = 0.004;
 const SUN_TILT: f32 = 0.35;
+const MOVEMENT_TURN_SECONDS: f64 = 0.65;
+const MOVEMENT_CYCLE_SECONDS: f64 = 12.0;
+const DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL: f32 = 0.004;
+const DIAGNOSTIC_DRAG_START_SECONDS: f64 = 1.8;
+const DIAGNOSTIC_DRAG_END_SECONDS: f64 = 2.9;
+const DIAGNOSTIC_MOVEMENT_START_SECONDS: f64 = 3.2;
+const DIAGNOSTIC_MOVEMENT_END_SECONDS: f64 = 7.2;
+const DIAGNOSTIC_RETURN_SECONDS: f64 = 7.5;
+const DIAGNOSTIC_RETURN_MIDPOINT_SECONDS: f64 = 1.2;
+const DIAGNOSTIC_RETURN_END_SECONDS: f64 = 2.6;
+const DIAGNOSTIC_STORM_OPEN_SECONDS: f64 = 11.0;
+const DIAGNOSTIC_STORM_CLOSE_SECONDS: f64 = 13.5;
+const DIAGNOSTIC_FINISH_SECONDS: f64 = 19.0;
 const ORBIT_INPUTS: [(f64, f32, Vec2); 5] = [
     (3.0, 2.4, Vec2::ZERO),
     (9.0, -2.1, Vec2::new(90.0, 16.0)),
@@ -136,6 +153,91 @@ struct PlanetAcceptance {
     event_log: Vec<String>,
     current_route: Option<Route>,
     coverage: CrossFeatureCoverage,
+}
+
+#[derive(Resource)]
+struct PlanetTransitionDiagnostic {
+    directory: PathBuf,
+    started_at: Option<f64>,
+    m_events_sent: [bool; 6],
+    drag_started: bool,
+    drag_finished: bool,
+    drag_start_direction: Vec3,
+    drag_end_direction_dot: f32,
+    movement_started: bool,
+    movement_finished: bool,
+    storm_started: bool,
+    hidden_capture_requested: bool,
+    return_capture_requests: [bool; 2],
+    entry_capture_requests: [bool; 3],
+    restored_capture_requested: bool,
+    samples: Vec<DiagnosticSample>,
+    errors: Vec<String>,
+    finished: bool,
+}
+
+#[derive(Clone, Copy)]
+struct DiagnosticSample {
+    elapsed: f64,
+    fixed_time_elapsed: f64,
+    planet_active: bool,
+    planet_ready: bool,
+    follows: bool,
+    requested_radius: f32,
+    attained_radius: f32,
+    camera: Transform,
+    player_position: Vec3,
+    player_velocity: Vec3,
+    player_sleeping: bool,
+    collision_colliders: usize,
+    virtual_rate: f32,
+    virtual_paused: bool,
+    weather_intensity: f32,
+    weather_kind: &'static str,
+    precipitation_active: usize,
+    precipitation_hidden: usize,
+    precipitation_visible: usize,
+    first_particle: Vec3,
+}
+
+impl DiagnosticSample {
+    fn csv_row(self) -> String {
+        format!(
+            "{:.5},{:.6},{},{},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{:.6},{:.6},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{},{:.4},{},{:.4},{},{},{},{},{:.4},{:.4},{:.4}\n",
+            self.elapsed,
+            self.fixed_time_elapsed,
+            self.planet_active,
+            self.planet_ready,
+            self.follows,
+            self.requested_radius,
+            self.attained_radius,
+            self.camera.translation.x,
+            self.camera.translation.y,
+            self.camera.translation.z,
+            self.camera.rotation.x,
+            self.camera.rotation.y,
+            self.camera.rotation.z,
+            self.camera.rotation.w,
+            self.player_position.x,
+            self.player_position.y,
+            self.player_position.z,
+            self.player_velocity.x,
+            self.player_velocity.y,
+            self.player_velocity.z,
+            self.player_sleeping,
+            self.collision_colliders,
+            self.virtual_rate,
+            self.virtual_paused,
+            self.weather_intensity,
+            self.weather_kind,
+            self.precipitation_active,
+            self.precipitation_hidden,
+            self.precipitation_visible,
+            self.first_particle.x,
+            self.first_particle.y,
+            self.first_particle.z,
+        )
+    }
 }
 
 #[derive(Default)]
@@ -254,12 +356,801 @@ struct FrameSample {
     plane: Motion,
     controlled: Motion,
     controlled_kind: &'static str,
+    controlled_sleeping: bool,
+    fixed_time_elapsed: f64,
     body_clearance: f32,
     virtual_rate: f32,
     virtual_paused: bool,
     sun_angle: f32,
     counts: ResidentCounts,
     counts_age: f64,
+}
+
+#[derive(Default)]
+struct BodyPathSummary {
+    traveled_m: f64,
+    max_excursion_m: f64,
+}
+
+fn continuous_body_path<'a>(
+    points: impl IntoIterator<Item = Option<(&'a str, Vec3)>>,
+) -> BodyPathSummary {
+    let mut summary = BodyPathSummary::default();
+    let mut segment_kind: Option<&str> = None;
+    let mut segment_start = None;
+    let mut previous = None;
+
+    for point in points {
+        let Some((kind, position)) = point else {
+            segment_kind = None;
+            segment_start = None;
+            previous = None;
+            continue;
+        };
+        if !position.is_finite() {
+            segment_kind = None;
+            segment_start = None;
+            previous = None;
+            continue;
+        }
+        if segment_kind != Some(kind) {
+            segment_kind = Some(kind);
+            segment_start = Some(position);
+            previous = Some(position);
+            continue;
+        }
+
+        let step = previous.map_or(f32::INFINITY, |last: Vec3| last.distance(position));
+        if step > MAX_CONTINUOUS_BODY_STEP_M {
+            // Teleports and vehicle handoffs remain present in raw samples but
+            // cannot satisfy the continuous-motion requirement.
+            segment_start = Some(position);
+            previous = Some(position);
+            continue;
+        }
+
+        summary.traveled_m += f64::from(step);
+        if let Some(start) = segment_start {
+            summary.max_excursion_m = summary
+                .max_excursion_m
+                .max(f64::from(start.distance(position)));
+        }
+        previous = Some(position);
+    }
+    summary
+}
+
+fn path_from_samples(samples: &[FrameSample], only_while_view_active: bool) -> BodyPathSummary {
+    continuous_body_path(samples.iter().map(|sample| {
+        if only_while_view_active && !sample.view_active {
+            None
+        } else {
+            Some((sample.controlled_kind, sample.controlled.position))
+        }
+    }))
+}
+
+fn physics_advanced_while_moving(samples: &[FrameSample], only_while_view_active: bool) -> bool {
+    samples.windows(2).any(|pair| {
+        let [before, after] = pair else {
+            unreachable!("a two-sample window has exactly two entries")
+        };
+        let displacement = before
+            .controlled
+            .position
+            .distance(after.controlled.position);
+        before.controlled_kind == after.controlled_kind
+            && displacement > 0.001
+            && displacement <= MAX_CONTINUOUS_BODY_STEP_M
+            && after.fixed_time_elapsed > before.fixed_time_elapsed
+            && after.body_clearance.is_finite()
+            && after.counts.colliders > 0
+            && !after.controlled_sleeping
+            && (!only_while_view_active || before.view_active && after.view_active)
+    })
+}
+
+pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .nth(2)
+        .expect("main crate lives below the workspace root")
+        .canonicalize()
+        .expect("canonicalize workspace root");
+    fs::create_dir_all(&directory).expect("create Planet transition diagnostic directory");
+    let directory = directory
+        .canonicalize()
+        .expect("canonicalize Planet transition diagnostic directory");
+    assert!(
+        !directory.starts_with(root),
+        "Planet transition diagnostic output must be outside the checkout"
+    );
+    assert!(
+        !directory.join("captures").exists()
+            && !directory.join("camera-transition-trace.csv").exists()
+            && !directory.join("events.csv").exists()
+            && !directory.join("diagnostic-status.txt").exists()
+            && !directory.join("diagnostic-configuration.txt").exists(),
+        "Planet transition diagnostic outputs must not be reused"
+    );
+    fs::create_dir_all(directory.join("captures"))
+        .expect("create Planet transition diagnostic captures directory");
+    fs::write(
+        directory.join("camera-transition-trace.csv"),
+        "elapsed_s,fixed_time_s,planet_active,planet_ready,follows,requested_radius_m,attained_radius_m,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_sleeping,physics_colliders,virtual_rate,virtual_paused,weather_precip,weather_kind,precipitation_active,precipitation_hidden,precipitation_visible,particle0_x,particle0_y,particle0_z\n",
+    )
+    .expect("write Planet transition diagnostic trace header");
+    fs::write(directory.join("events.csv"), "elapsed_s,event,result\n")
+        .expect("write Planet transition diagnostic event header");
+
+    app.insert_resource(PlanetTransitionDiagnostic {
+        directory,
+        started_at: None,
+        m_events_sent: [false; 6],
+        drag_started: false,
+        drag_finished: false,
+        drag_start_direction: Vec3::Y,
+        drag_end_direction_dot: f32::NAN,
+        movement_started: false,
+        movement_finished: false,
+        storm_started: false,
+        hidden_capture_requested: false,
+        return_capture_requests: [false; 2],
+        entry_capture_requests: [false; 3],
+        restored_capture_requested: false,
+        samples: Vec::with_capacity(1_300),
+        errors: Vec::new(),
+        finished: false,
+    })
+    .add_systems(
+        PreUpdate,
+        drive_transition_diagnostic
+            .after(InputSystems)
+            .before(crate::exploration::ExplorationInput)
+            .run_if(in_state(AppState::Playing)),
+    )
+    .add_systems(
+        PostUpdate,
+        capture_transition_diagnostic
+            .after(CameraUpdateSystems)
+            .run_if(in_state(AppState::Playing)),
+    );
+}
+
+fn opposite_side_drag(width: f32, height: f32) -> (Vec2, Vec2) {
+    let delta = (std::f32::consts::PI / DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL).ceil();
+    let start_x = (width - delta - 8.0).max(8.0);
+    let end_x = (start_x + delta).min(width - 8.0);
+    let y = height * 0.5;
+    (Vec2::new(start_x, y), Vec2::new(end_x, y))
+}
+
+fn drive_transition_diagnostic(world: &mut World) {
+    if !acceptance_world_ready(world) {
+        return;
+    }
+    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
+    let Some(mut diagnostic) = world.remove_resource::<PlanetTransitionDiagnostic>() else {
+        return;
+    };
+    if diagnostic.finished {
+        world.insert_resource(diagnostic);
+        return;
+    }
+    if diagnostic.started_at.is_none() {
+        let direction = player_pose(world)
+            .map(|(position, _)| position.normalize_or(Vec3::Y))
+            .unwrap_or(Vec3::Y);
+        diagnostic.drag_start_direction = direction;
+        write_transition_diagnostic_configuration(world, &diagnostic);
+        write_diagnostic_event(
+            &mut diagnostic,
+            0.0,
+            "fixture-start",
+            "ordinary M input, continuous production drag, movement, and storm check",
+        );
+        diagnostic.started_at = Some(now);
+    }
+    let started_at = diagnostic
+        .started_at
+        .expect("diagnostic start time was initialized");
+    let elapsed = now - started_at;
+
+    let map_taps = [
+        0.1,
+        0.55,
+        0.8,
+        DIAGNOSTIC_RETURN_SECONDS,
+        DIAGNOSTIC_STORM_OPEN_SECONDS,
+        DIAGNOSTIC_STORM_CLOSE_SECONDS,
+    ];
+    let mut tapped_map = false;
+    for (event_index, when) in map_taps.into_iter().enumerate() {
+        if elapsed >= when && !diagnostic.m_events_sent[event_index] {
+            diagnostic.m_events_sent[event_index] = true;
+            tapped_map = true;
+            set_key(world, KeyCode::KeyM, true);
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "production-key",
+                match event_index {
+                    0 => "pressed M to open Planet view",
+                    1 => "pressed M to reverse opening into return",
+                    2 => "pressed M to reverse return into opening",
+                    3 => "pressed M to return after orbit and movement",
+                    4 => "pressed M to reopen for storm suppression check",
+                    _ => "pressed M to return after storm suppression check",
+                },
+            );
+            break;
+        }
+    }
+    if !tapped_map {
+        set_key(world, KeyCode::KeyM, false);
+    }
+
+    set_key(world, KeyCode::Escape, false);
+    set_key(world, KeyCode::KeyV, false);
+    set_key(world, KeyCode::KeyT, false);
+    let drag_duration = DIAGNOSTIC_DRAG_END_SECONDS - DIAGNOSTIC_DRAG_START_SECONDS;
+    if (DIAGNOSTIC_DRAG_START_SECONDS..DIAGNOSTIC_DRAG_END_SECONDS).contains(&elapsed) {
+        if !diagnostic.drag_started {
+            diagnostic.drag_started = true;
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "production-pointer",
+                "began one continuous left-button world drag",
+            );
+        }
+        if let Some((start, end)) = diagnostic_cursor_path(world) {
+            let fraction =
+                ((elapsed - DIAGNOSTIC_DRAG_START_SECONDS) / drag_duration).clamp(0.0, 1.0) as f32;
+            set_primary_cursor(world, start.lerp(end, fraction));
+            set_mouse_button(world, MouseButton::Left, true);
+        }
+    } else {
+        set_mouse_button(world, MouseButton::Left, false);
+        if elapsed >= DIAGNOSTIC_DRAG_END_SECONDS
+            && diagnostic.drag_started
+            && !diagnostic.drag_finished
+        {
+            diagnostic.drag_finished = true;
+            diagnostic.drag_end_direction_dot =
+                main_camera_pose(world).map_or(f32::NAN, |camera| {
+                    camera
+                        .translation
+                        .normalize_or(Vec3::Y)
+                        .dot(diagnostic.drag_start_direction)
+                });
+            let direction_dot = diagnostic.drag_end_direction_dot;
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "production-pointer",
+                format!(
+                    "released drag; camera radial dot with starting body={:.5}",
+                    direction_dot
+                ),
+            );
+        }
+    }
+
+    if (DIAGNOSTIC_MOVEMENT_START_SECONDS..DIAGNOSTIC_MOVEMENT_END_SECONDS).contains(&elapsed) {
+        drive_diagnostic_movement(world, elapsed - DIAGNOSTIC_MOVEMENT_START_SECONDS);
+        if !diagnostic.movement_started {
+            diagnostic.movement_started = true;
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "physics-probe",
+                "began ordinary on-foot W with short steering input while Planet view is active",
+            );
+        }
+    } else {
+        set_key(world, KeyCode::KeyW, false);
+        set_key(world, KeyCode::KeyA, false);
+        set_key(world, KeyCode::KeyD, false);
+        if elapsed >= DIAGNOSTIC_MOVEMENT_END_SECONDS
+            && diagnostic.movement_started
+            && !diagnostic.movement_finished
+        {
+            diagnostic.movement_finished = true;
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "physics-probe",
+                "released movement keys",
+            );
+        }
+    }
+
+    if (DIAGNOSTIC_STORM_OPEN_SECONDS..DIAGNOSTIC_FINISH_SECONDS).contains(&elapsed) {
+        let mut weather = world.resource_mut::<Weather>();
+        // Hold an authored storm intensity while leaving production particle
+        // movement, local rain/snow choice, and visibility systems in charge.
+        weather.precip = 0.85;
+        weather.wind = Vec3::new(1.5, 0.0, -0.75);
+        if !diagnostic.storm_started {
+            diagnostic.storm_started = true;
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "weather-probe",
+                "held production precipitation intensity at 0.85 with moving wind",
+            );
+        }
+    }
+
+    world.insert_resource(diagnostic);
+}
+
+fn write_transition_diagnostic_configuration(
+    world: &mut World,
+    diagnostic: &PlanetTransitionDiagnostic,
+) {
+    let window = primary_window(world).map(|window| {
+        format!(
+            "physical={}x{} logical={}x{} scale_factor={} present_mode={:?}",
+            window.physical_width(),
+            window.physical_height(),
+            window.width(),
+            window.height(),
+            window.scale_factor(),
+            window.present_mode
+        )
+    });
+    let drag = window
+        .as_deref()
+        .and_then(|_| diagnostic_cursor_path(world))
+        .map(|(start, end)| {
+            format!(
+                "start=({:.2},{:.2}) end=({:.2},{:.2}) radians={:.5}",
+                start.x,
+                start.y,
+                end.x,
+                end.y,
+                (end.x - start.x) * DIAGNOSTIC_ORBIT_RADIANS_PER_PIXEL
+            )
+        })
+        .unwrap_or_else(|| "unavailable".into());
+    let text = format!(
+        "mode=short-planet-transition-diagnostic\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\nM_taps_seconds=0.10,0.55,0.80,7.50,11.00,13.50\nentry_screenshots_seconds=0.40,0.80,1.40\nreturn_screenshots_after_close_seconds={DIAGNOSTIC_RETURN_MIDPOINT_SECONDS:.2},{DIAGNOSTIC_RETURN_END_SECONDS:.2}\ncontinuous_left_drag_seconds={DIAGNOSTIC_DRAG_START_SECONDS:.2}-{DIAGNOSTIC_DRAG_END_SECONDS:.2}\ndrag_path={drag}\non_foot_movement_seconds={DIAGNOSTIC_MOVEMENT_START_SECONDS:.2}-{DIAGNOSTIC_MOVEMENT_END_SECONDS:.2}\nweather_fixture=precipitation_intensity_0.85_wind_1.5,0,-0.75; production_particles_temperature_and_visibility\nweather_screenshots=storm-hidden.png,storm-restored.png\n",
+        std::env::var("TERRA_SOURCE_REVISION").unwrap_or_else(|_| "unset".into()),
+        std::env::var("TERRA_SOURCE_BRANCH").unwrap_or_else(|_| "unset".into()),
+        std::env::var("BEVY_ASSET_ROOT").unwrap_or_else(|_| "default-asset-root".into()),
+        std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "cargo-default".into()),
+        env!("CARGO_PKG_VERSION"),
+        window.unwrap_or_else(|| "unavailable".into()),
+    );
+    if let Err(error) = fs::write(
+        diagnostic.directory.join("diagnostic-configuration.txt"),
+        text,
+    ) {
+        error!("Planet transition diagnostic configuration: {error}");
+    }
+}
+
+fn diagnostic_cursor_path(world: &mut World) -> Option<(Vec2, Vec2)> {
+    let window = primary_window(world)?;
+    Some(opposite_side_drag(window.width(), window.height()))
+}
+
+fn set_primary_cursor(world: &mut World, position: Vec2) {
+    let mut query = world.query_filtered::<&mut Window, With<PrimaryWindow>>();
+    if let Ok(mut window) = query.single_mut(world) {
+        window.set_cursor_position(Some(position));
+    }
+}
+
+fn set_mouse_button(world: &mut World, button: MouseButton, pressed: bool) {
+    if let Some(mut mouse) = world.get_resource_mut::<ButtonInput<MouseButton>>() {
+        if pressed {
+            mouse.press(button);
+        } else {
+            mouse.release(button);
+        }
+    }
+}
+
+fn drive_diagnostic_movement(world: &mut World, elapsed: f64) {
+    if elapsed < 0.1 {
+        for key in [
+            KeyCode::KeyW,
+            KeyCode::KeyS,
+            KeyCode::KeyA,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+        ] {
+            set_key(world, key, false);
+        }
+        return;
+    }
+    let cycle = elapsed.rem_euclid(2.5);
+    set_key(world, KeyCode::KeyW, true);
+    set_key(world, KeyCode::KeyA, cycle < 0.35);
+    set_key(world, KeyCode::KeyD, (1.25..1.60).contains(&cycle));
+}
+
+fn capture_transition_diagnostic(world: &mut World) {
+    let now = world.resource::<Time<Real>>().elapsed_secs_f64();
+    let Some(mut diagnostic) = world.remove_resource::<PlanetTransitionDiagnostic>() else {
+        return;
+    };
+    let Some(started_at) = diagnostic.started_at else {
+        world.insert_resource(diagnostic);
+        return;
+    };
+    if diagnostic.finished {
+        world.insert_resource(diagnostic);
+        return;
+    }
+    let elapsed = now - started_at;
+    let sample = diagnostic_sample(world, elapsed);
+    diagnostic.samples.push(sample);
+    for (index, (at, name)) in [
+        (0.4, "entry-0400ms.png"),
+        (0.8, "entry-0800ms.png"),
+        (1.4, "entry-1400ms.png"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if elapsed >= at && !diagnostic.entry_capture_requests[index] {
+            diagnostic.entry_capture_requests[index] = true;
+            request_diagnostic_screenshot(world, &diagnostic, name);
+            write_diagnostic_event(&mut diagnostic, elapsed, "screenshot", name);
+        }
+    }
+    for (index, (at, name)) in [
+        (
+            DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_MIDPOINT_SECONDS,
+            "return-midpoint.png",
+        ),
+        (
+            DIAGNOSTIC_RETURN_SECONDS + DIAGNOSTIC_RETURN_END_SECONDS,
+            "return-end.png",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if elapsed >= at && !diagnostic.return_capture_requests[index] {
+            diagnostic.return_capture_requests[index] = true;
+            request_diagnostic_screenshot(world, &diagnostic, name);
+            write_diagnostic_event(&mut diagnostic, elapsed, "screenshot", name);
+        }
+    }
+    if elapsed >= DIAGNOSTIC_DRAG_END_SECONDS && diagnostic.drag_finished {
+        capture_once(world, &mut diagnostic, "drag-opposite.png", |diag| {
+            diag.drag_end_direction_dot.is_finite()
+        });
+    }
+    if elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS + 0.8 && sample.planet_active {
+        capture_once(world, &mut diagnostic, "storm-hidden.png", |diag| {
+            diag.samples.iter().any(|row| {
+                row.elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS
+                    && row.planet_active
+                    && row.weather_intensity > 0.2
+                    && row.precipitation_active >= 100
+                    && row.precipitation_hidden == row.precipitation_active
+            })
+        });
+    }
+    if elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS + 0.8 && !sample.planet_active {
+        capture_once(world, &mut diagnostic, "storm-restored.png", |diag| {
+            diag.samples.iter().any(|row| {
+                row.elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS
+                    && !row.planet_active
+                    && row.weather_intensity > 0.2
+                    && row.precipitation_visible > 0
+            })
+        });
+    }
+
+    if elapsed >= DIAGNOSTIC_FINISH_SECONDS + 3.0 {
+        finish_transition_diagnostic(&mut diagnostic);
+        world.insert_resource(diagnostic);
+        // Leave the detailed diagnostic pass/reject decision to the wrapper,
+        // which can report the saved metrics even when this probe is rejected.
+        world.write_message(AppExit::Success);
+        return;
+    }
+    world.insert_resource(diagnostic);
+}
+
+fn diagnostic_sample(world: &mut World, elapsed: f64) -> DiagnosticSample {
+    let (player, velocity, sleeping) = player_motion(world)
+        .map(|(entity, motion)| {
+            (
+                motion.position,
+                motion.velocity,
+                world.get::<Sleeping>(entity).is_some(),
+            )
+        })
+        .unwrap_or((Vec3::splat(f32::NAN), Vec3::splat(f32::NAN), false));
+    let collision_colliders =
+        if (DIAGNOSTIC_MOVEMENT_START_SECONDS..=DIAGNOSTIC_MOVEMENT_END_SECONDS).contains(&elapsed)
+        {
+            world
+                .query_filtered::<Entity, With<Collider>>()
+                .iter(world)
+                .count()
+        } else {
+            0
+        };
+    let state = world.resource::<Exploration>();
+    let (requested_radius, attained_radius) = state.planet_view_camera_radii();
+    let planet_active = state.is_planet_view_active();
+    let planet_ready = state.planet_view_ready();
+    let follows = state.planet_view_follows_body();
+    let camera = main_camera_pose(world).unwrap_or_default();
+    let virtual_time = world.resource::<Time<Virtual>>();
+    let weather = world.resource::<Weather>();
+    let weather_intensity = weather.precip;
+    let weather_kind = world
+        .get_resource::<shared::terrain::TerrainGen>()
+        .map(|terrain| {
+            if crate::weather::is_snow(
+                terrain.temperature_at(shared::sphere::SpherePos::new(player)),
+            ) {
+                "snow"
+            } else {
+                "rain"
+            }
+        })
+        .unwrap_or("unknown");
+    let fixed_time_elapsed = world.resource::<Time<Fixed>>().elapsed_secs_f64();
+    let virtual_rate = virtual_time.relative_speed();
+    let virtual_paused = virtual_time.is_paused();
+    let mut particles = world.query::<(&Precip, &Transform, &Visibility)>();
+    let (precipitation_active, precipitation_hidden, precipitation_visible, first_particle) =
+        particles.iter(world).fold(
+            (0, 0, 0, Vec3::splat(f32::NAN)),
+            |(active, hidden, visible, first), (particle, transform, visibility)| {
+                if transform.scale == Vec3::ZERO {
+                    return (active, hidden, visible, first);
+                }
+                let first = if particle.idx == 0 {
+                    transform.translation
+                } else {
+                    first
+                };
+                if *visibility == Visibility::Hidden {
+                    (active + 1, hidden + 1, visible, first)
+                } else {
+                    (active + 1, hidden, visible + 1, first)
+                }
+            },
+        );
+    DiagnosticSample {
+        elapsed,
+        fixed_time_elapsed,
+        planet_active,
+        planet_ready,
+        follows,
+        requested_radius,
+        attained_radius,
+        camera,
+        player_position: player,
+        player_velocity: velocity,
+        player_sleeping: sleeping,
+        collision_colliders,
+        virtual_rate,
+        virtual_paused,
+        weather_intensity,
+        weather_kind,
+        precipitation_active,
+        precipitation_hidden,
+        precipitation_visible,
+        first_particle,
+    }
+}
+
+fn capture_once(
+    world: &mut World,
+    diagnostic: &mut PlanetTransitionDiagnostic,
+    name: &str,
+    ready: impl FnOnce(&PlanetTransitionDiagnostic) -> bool,
+) {
+    let already_requested = match name {
+        "storm-hidden.png" => diagnostic.hidden_capture_requested,
+        "storm-restored.png" => diagnostic.restored_capture_requested,
+        _ => false,
+    };
+    if already_requested || !ready(diagnostic) {
+        return;
+    }
+    if name == "storm-hidden.png" {
+        diagnostic.hidden_capture_requested = true;
+    } else if name == "storm-restored.png" {
+        diagnostic.restored_capture_requested = true;
+    }
+    request_diagnostic_screenshot(world, diagnostic, name);
+    write_diagnostic_event(
+        diagnostic,
+        current_diagnostic_elapsed(diagnostic),
+        "screenshot",
+        name,
+    );
+}
+
+fn current_diagnostic_elapsed(diagnostic: &PlanetTransitionDiagnostic) -> f64 {
+    diagnostic
+        .samples
+        .last()
+        .map_or(0.0, |sample| sample.elapsed)
+}
+
+fn request_diagnostic_screenshot(
+    world: &mut World,
+    diagnostic: &PlanetTransitionDiagnostic,
+    name: &str,
+) {
+    let path = diagnostic.directory.join("captures").join(name);
+    world
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path.clone()));
+    info!(path = %path.display(), "Planet transition diagnostic screenshot requested");
+}
+
+fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
+    let mut trace = String::new();
+    for sample in &diagnostic.samples {
+        trace.push_str(&sample.csv_row());
+    }
+    if let Err(error) = fs::write(
+        diagnostic.directory.join("camera-transition-trace.csv"),
+        format!(
+            "elapsed_s,fixed_time_s,planet_active,planet_ready,follows,requested_radius_m,attained_radius_m,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,player_x,player_y,player_z,player_vx,player_vy,player_vz,player_sleeping,physics_colliders,virtual_rate,virtual_paused,weather_precip,weather_kind,precipitation_active,precipitation_hidden,precipitation_visible,particle0_x,particle0_y,particle0_z\n{trace}"
+        ),
+    ) {
+        diagnostic
+            .errors
+            .push(format!("write camera transition trace: {error}"));
+    }
+    let motion_samples = diagnostic
+        .samples
+        .iter()
+        .filter(|sample| {
+            (DIAGNOSTIC_MOVEMENT_START_SECONDS..=DIAGNOSTIC_MOVEMENT_END_SECONDS)
+                .contains(&sample.elapsed)
+                && sample.planet_active
+        })
+        .collect::<Vec<_>>();
+    let movement = continuous_body_path(
+        motion_samples
+            .iter()
+            .map(|sample| Some(("on-foot", sample.player_position))),
+    );
+    let fixed_advanced = motion_samples
+        .first()
+        .zip(motion_samples.last())
+        .is_some_and(|(first, last)| last.fixed_time_elapsed > first.fixed_time_elapsed + 0.5);
+    let physics_live = motion_samples
+        .iter()
+        .any(|sample| sample.collision_colliders > 0 && !sample.player_sleeping);
+    let physics_advanced_while_moving = motion_samples.windows(2).any(|pair| {
+        let [before, after] = pair else {
+            unreachable!("a two-sample window has exactly two entries")
+        };
+        let displacement = before.player_position.distance(after.player_position);
+        displacement > 0.001
+            && displacement <= MAX_CONTINUOUS_BODY_STEP_M
+            && after.fixed_time_elapsed > before.fixed_time_elapsed
+            && !after.player_sleeping
+            && after.collision_colliders > 0
+            && before.planet_active
+            && after.planet_active
+    });
+    let movement_passed = movement.traveled_m >= MIN_MEASURED_BODY_PATH_M
+        && movement.max_excursion_m >= MIN_MEASURED_BODY_EXCURSION_M
+        && fixed_advanced
+        && physics_live
+        && physics_advanced_while_moving;
+    let weather_hidden = diagnostic.samples.iter().any(|sample| {
+        sample.elapsed >= DIAGNOSTIC_STORM_OPEN_SECONDS
+            && sample.planet_active
+            && sample.weather_intensity > 0.2
+            && sample.precipitation_active >= 100
+            && sample.precipitation_hidden == sample.precipitation_active
+    });
+    let weather_restored = diagnostic.samples.iter().any(|sample| {
+        sample.elapsed >= DIAGNOSTIC_STORM_CLOSE_SECONDS
+            && !sample.planet_active
+            && sample.weather_intensity > 0.2
+            && sample.precipitation_visible > 0
+    });
+    let expected_captures = [
+        "entry-0400ms.png",
+        "entry-0800ms.png",
+        "entry-1400ms.png",
+        "drag-opposite.png",
+        "return-midpoint.png",
+        "return-end.png",
+        "storm-hidden.png",
+        "storm-restored.png",
+    ];
+    let missing_captures = expected_captures
+        .into_iter()
+        .filter(|name| !file_is_nonempty(&diagnostic.directory.join("captures").join(name)))
+        .collect::<Vec<_>>();
+    let drag_passed = diagnostic.drag_end_direction_dot <= -0.85;
+    let passed = missing_captures.is_empty()
+        && drag_passed
+        && movement_passed
+        && weather_hidden
+        && weather_restored;
+    let status = if passed {
+        "diagnostic-complete"
+    } else {
+        "diagnostic-rejected"
+    };
+    let report = format!(
+        "status={status}\nentry_m_reversals=3\ndrag_opposite_dot={:.5}\nbody_path_m={:.4}\nmax_body_excursion_m={:.4}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nweather_kind_at_player={}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={}\nerrors={}\n",
+        diagnostic.drag_end_direction_dot,
+        movement.traveled_m,
+        movement.max_excursion_m,
+        motion_samples
+            .iter()
+            .any(|sample| sample.collision_colliders > 0),
+        diagnostic
+            .samples
+            .iter()
+            .find(|sample| sample.weather_intensity > 0.2)
+            .map_or("unknown", |sample| sample.weather_kind),
+        missing_captures.join(";"),
+        diagnostic.errors.join(";"),
+    );
+    if let Err(error) = fs::write(diagnostic.directory.join("diagnostic-status.txt"), report) {
+        diagnostic
+            .errors
+            .push(format!("write diagnostic status: {error}"));
+    }
+    diagnostic.finished = true;
+    info!(
+        status,
+        body_path_m = movement.traveled_m,
+        drag_dot = diagnostic.drag_end_direction_dot,
+        "Planet transition diagnostic finished"
+    );
+}
+
+fn write_diagnostic_event(
+    diagnostic: &mut PlanetTransitionDiagnostic,
+    elapsed: f64,
+    event: &str,
+    result: impl AsRef<str>,
+) {
+    let row = format!("{elapsed:.5},{},{}\n", csv(event), csv(result.as_ref()));
+    append_diagnostic_line(
+        &diagnostic.directory,
+        "events.csv",
+        row,
+        &mut diagnostic.errors,
+    );
+}
+
+fn append_diagnostic_line(
+    directory: &Path,
+    file_name: &str,
+    row: String,
+    errors: &mut Vec<String>,
+) {
+    let path = directory.join(file_name);
+    match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(row.as_bytes()) {
+                errors.push(format!("write {}: {error}", path.display()));
+            }
+        }
+        Err(error) => errors.push(format!("open {}: {error}", path.display())),
+    }
 }
 
 pub(super) fn register(app: &mut App, directory: PathBuf) {
@@ -601,7 +1492,7 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
         ),
         (
             "performance-summary.csv",
-            "route,repeat,sample_count,p50_ms,p95_ms,p99_ms,max_ms,over_33_33ms,body_displacement_m,body_speed_mean_mps,minimum_clearance_m,mesh_min,mesh_max,visible_mesh_min,visible_mesh_max,collider_min,collider_max,sun_angle_start_rad,sun_angle_end_rad\n",
+            "route,repeat,sample_count,p50_ms,p95_ms,p99_ms,max_ms,over_33_33ms,body_displacement_m,body_path_m,max_body_excursion_m,body_speed_mean_mps,physics_live_samples,physics_sleeping_samples,fixed_time_span_s,simulation_advancing_samples,sun_angle_span_rad,minimum_clearance_m,mesh_min,mesh_max,visible_mesh_min,visible_mesh_max,collider_min,collider_max,sun_angle_start_rad,sun_angle_end_rad\n",
         ),
         (
             "cross-feature-events.csv",
@@ -630,8 +1521,9 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
         .map(|(position, _)| maximum_sun_elevation_degrees(position))
         .unwrap_or(f32::NAN);
     let configuration = format!(
-        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\nfeatures=asset-review\nshadows=normal-production-settings\n",
-        window.unwrap_or_else(|| "not-yet-available".into())
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures=asset-review\nshadows=normal-production-settings\n",
+        window.unwrap_or_else(|| "not-yet-available".into()),
+        MEASURE_SECONDS * 0.5,
     );
     if let Err(error) = fs::write(run.directory.join("run-configuration.txt"), configuration) {
         record_error(run, format!("write run configuration: {error}"));
@@ -782,11 +1674,7 @@ fn drive_entry_route(
     world
         .resource_mut::<Exploration>()
         .set_planet_view_open(open);
-    set_key(world, KeyCode::KeyW, true);
-    set_key(world, KeyCode::KeyS, false);
-    set_key(world, KeyCode::KeyA, false);
-    set_key(world, KeyCode::KeyD, false);
-    set_key(world, KeyCode::KeyR, false);
+    drive_on_foot_route_keys(world, elapsed);
 
     if warmup {
         drive_live_selection_and_teleport(world, elapsed, actions, run);
@@ -1004,11 +1892,7 @@ fn drive_orbit_route(world: &mut World, elapsed: f64, actions: &mut RouteActions
     world
         .resource_mut::<Exploration>()
         .set_planet_view_open(true);
-    set_key(world, KeyCode::KeyW, true);
-    set_key(world, KeyCode::KeyS, false);
-    set_key(world, KeyCode::KeyR, false);
-    set_key(world, KeyCode::KeyA, false);
-    set_key(world, KeyCode::KeyD, false);
+    drive_on_foot_route_keys(world, elapsed);
     set_key(world, KeyCode::KeyV, false);
     set_key(world, KeyCode::KeyM, false);
     set_key(world, KeyCode::Escape, false);
@@ -1267,14 +2151,44 @@ fn drive_return_route(world: &mut World, elapsed: f64) {
     world
         .resource_mut::<Exploration>()
         .set_planet_view_open(open);
-    set_key(world, KeyCode::KeyW, true);
-    set_key(world, KeyCode::KeyS, false);
-    set_key(world, KeyCode::KeyA, false);
-    set_key(world, KeyCode::KeyD, false);
-    set_key(world, KeyCode::KeyR, false);
+    drive_on_foot_route_keys(world, elapsed);
     set_key(world, KeyCode::KeyV, false);
     set_key(world, KeyCode::KeyM, false);
     set_key(world, KeyCode::Escape, false);
+}
+
+fn drive_on_foot_route_keys(world: &mut World, elapsed: f64) {
+    if elapsed < 0.1 {
+        // Let live exploration input clear any suppression left by a selector
+        // or vehicle handoff before this route starts driving.
+        for key in [
+            KeyCode::KeyW,
+            KeyCode::KeyS,
+            KeyCode::KeyA,
+            KeyCode::KeyD,
+            KeyCode::Space,
+            KeyCode::ShiftLeft,
+            KeyCode::ShiftRight,
+            KeyCode::ControlLeft,
+            KeyCode::ControlRight,
+        ] {
+            set_key(world, key, false);
+        }
+        set_key(world, KeyCode::KeyR, false);
+        return;
+    }
+
+    let cycle = elapsed.rem_euclid(MOVEMENT_CYCLE_SECONDS);
+    set_key(world, KeyCode::KeyS, false);
+    set_key(world, KeyCode::KeyR, false);
+    set_key(world, KeyCode::KeyW, true);
+    set_key(world, KeyCode::KeyA, cycle < MOVEMENT_TURN_SECONDS);
+    set_key(
+        world,
+        KeyCode::KeyD,
+        (MOVEMENT_CYCLE_SECONDS / 2.0..MOVEMENT_CYCLE_SECONDS / 2.0 + MOVEMENT_TURN_SECONDS)
+            .contains(&cycle),
+    );
 }
 
 fn set_key(world: &mut World, key: KeyCode, pressed: bool) {
@@ -1324,20 +2238,25 @@ fn sample_frame(
     let in_vehicle = view.is_in_vehicle();
     let car_entity = view.vehicle_entity(Kind::Car);
     let plane_entity = view.vehicle_entity(Kind::Plane);
-    let player_motion = player_motion(world).unwrap_or_else(Motion::missing);
+    let player_body = player_motion(world);
+    let player_entity = player_body.map(|(entity, _)| entity);
+    let player_motion = player_body.map_or_else(Motion::missing, |(_, motion)| motion);
     let car_motion = entity_motion(world, car_entity).unwrap_or_else(Motion::missing);
     let plane_motion = entity_motion(world, plane_entity).unwrap_or_else(Motion::missing);
-    let (controlled, controlled_kind) = if in_vehicle {
+    let (controlled, controlled_kind, controlled_entity) = if in_vehicle {
         if car_motion.position.distance(player_motion.position) < 1.0 {
-            (car_motion, "car")
+            (car_motion, "car", car_entity)
         } else if plane_motion.position.distance(player_motion.position) < 1.0 {
-            (plane_motion, "plane")
+            (plane_motion, "plane", plane_entity)
         } else {
-            (player_motion, "vehicle-unresolved")
+            (player_motion, "vehicle-unresolved", player_entity)
         }
     } else {
-        (player_motion, "on-foot")
+        (player_motion, "on-foot", player_entity)
     };
+    let controlled_sleeping =
+        controlled_entity.is_some_and(|entity| world.get::<Sleeping>(entity).is_some());
+    let fixed_time_elapsed = world.resource::<Time<Fixed>>().elapsed_secs_f64();
     let camera_radius =
         main_camera_pose(world).map_or(f32::NAN, |camera| camera.translation.length());
     let body_clearance = world
@@ -1367,6 +2286,8 @@ fn sample_frame(
         plane: plane_motion,
         controlled,
         controlled_kind,
+        controlled_sleeping,
+        fixed_time_elapsed,
         body_clearance,
         virtual_rate,
         virtual_paused,
@@ -1384,12 +2305,20 @@ fn player_pose(world: &mut World) -> Option<(Vec3, Vec3)> {
         .map(|(position, player)| (position.0, player.heading))
 }
 
-fn player_motion(world: &mut World) -> Option<Motion> {
-    let mut query = world.query_filtered::<(&Position, &LinearVelocity), With<Player>>();
-    query.iter(world).next().map(|(position, velocity)| Motion {
-        position: position.0,
-        velocity: velocity.0,
-    })
+fn player_motion(world: &mut World) -> Option<(Entity, Motion)> {
+    let mut query = world.query_filtered::<(Entity, &Position, &LinearVelocity), With<Player>>();
+    query
+        .iter(world)
+        .next()
+        .map(|(entity, position, velocity)| {
+            (
+                entity,
+                Motion {
+                    position: position.0,
+                    velocity: velocity.0,
+                },
+            )
+        })
 }
 
 fn entity_motion(world: &World, entity: Option<Entity>) -> Option<Motion> {
@@ -1503,7 +2432,7 @@ fn finish_repeat(
     }
     let path = directory.join(format!("repeat-{repeat}-raw.csv"));
     let mut raw = String::from(
-        "real_elapsed_s,wall_interval_ms,route,view_active,view_ready,follow,requested_radius_m,attained_radius_m,camera_radius_m,controlled_kind,player_x,player_y,player_z,player_vx,player_vy,player_vz,car_x,car_y,car_z,car_vx,car_vy,car_vz,plane_x,plane_y,plane_z,plane_vx,plane_vy,plane_vz,controlled_x,controlled_y,controlled_z,controlled_vx,controlled_vy,controlled_vz,body_clearance_m,virtual_rate,virtual_paused,sun_angle_rad,resident_meshes,visible_meshes,resident_colliders,counts_age_s\n",
+        "real_elapsed_s,wall_interval_ms,route,view_active,view_ready,follow,requested_radius_m,attained_radius_m,camera_radius_m,controlled_kind,controlled_sleeping,fixed_time_elapsed_s,player_x,player_y,player_z,player_vx,player_vy,player_vz,car_x,car_y,car_z,car_vx,car_vy,car_vz,plane_x,plane_y,plane_z,plane_vx,plane_vy,plane_vz,controlled_x,controlled_y,controlled_z,controlled_vx,controlled_vy,controlled_vz,body_clearance_m,virtual_rate,virtual_paused,sun_angle_rad,resident_meshes,visible_meshes,resident_colliders,counts_age_s\n",
     );
     for sample in samples {
         raw.push_str(&sample.csv_row(route));
@@ -1513,24 +2442,18 @@ fn finish_repeat(
     }
 
     let stats = summarize(samples);
-    if samples
-        .iter()
-        .any(|sample| sample.view_active && sample.controlled.velocity.length_squared() > 0.01)
-    {
+    let active_path = path_from_samples(samples, true);
+    if active_path.traveled_m > 0.1 {
         run.coverage.body_moved_during_planet_view = true;
     }
-    if samples.iter().any(|sample| {
-        sample.view_active
-            && sample.controlled.velocity.length_squared() > 0.01
-            && sample.body_clearance.is_finite()
-            && sample.counts.colliders > 0
-    }) {
+    let physics_movement = physics_advanced_while_moving(samples, false);
+    if physics_advanced_while_moving(samples, true) {
         run.coverage.collision_world_live_during_planet_movement = true;
     }
     run.measured_stalls
         .push((route, repeat, stats.over_33_33ms));
     let row = format!(
-        "{},{repeat},{},{:.4},{:.4},{:.4},{:.4},{},{:.4},{:.4},{:.4},{},{},{},{},{},{},{:.6},{:.6}\n",
+        "{},{repeat},{},{:.4},{:.4},{:.4},{:.4},{},{:.4},{:.4},{:.4},{:.4},{},{},{:.4},{},{:.6},{:.4},{},{},{},{},{},{},{:.6},{:.6}\n",
         route.name(),
         samples.len(),
         stats.p50,
@@ -1539,7 +2462,14 @@ fn finish_repeat(
         stats.max,
         stats.over_33_33ms,
         stats.body_displacement,
+        stats.body_path.traveled_m,
+        stats.body_path.max_excursion_m,
         stats.mean_body_speed,
+        stats.physics_live_samples,
+        stats.physics_sleeping_samples,
+        stats.fixed_time_span,
+        stats.simulation_advancing_samples,
+        stats.sun_angle_span,
         stats.minimum_clearance,
         stats.mesh_min,
         stats.mesh_max,
@@ -1561,12 +2491,86 @@ fn finish_repeat(
         max_ms = stats.max,
         over_33_33ms = stats.over_33_33ms,
         body_displacement_m = stats.body_displacement,
+        body_path_m = stats.body_path.traveled_m,
+        max_body_excursion_m = stats.body_path.max_excursion_m,
+        physics_sleeping_samples = stats.physics_sleeping_samples,
+        fixed_time_span_s = stats.fixed_time_span,
+        sun_angle_span_rad = stats.sun_angle_span,
+        physics_advanced_while_moving = physics_movement,
         "PLANET_ACCEPTANCE_REPEAT"
     );
     if samples.is_empty() {
         record_error(
             run,
             format!("{} repeat {repeat} produced no timing rows", route.name()),
+        );
+    }
+    if stats.body_path.traveled_m < MIN_MEASURED_BODY_PATH_M
+        || stats.body_path.max_excursion_m < MIN_MEASURED_BODY_EXCURSION_M
+    {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} did not show sustained controlled-body motion (path {:.2} m, excursion {:.2} m)",
+                route.name(),
+                stats.body_path.traveled_m,
+                stats.body_path.max_excursion_m
+            ),
+        );
+    }
+    if stats.physics_live_samples < samples.len() / 2 {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} did not observe live colliders and finite body clearance for enough samples",
+                route.name()
+            ),
+        );
+    }
+    if stats.physics_sleeping_samples > samples.len() / 2 {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} controlled body was sleeping for more than half of its samples",
+                route.name()
+            ),
+        );
+    }
+    if stats.fixed_time_span < MEASURE_SECONDS * 0.5 {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} advanced fixed physics time by only {:.2} seconds",
+                route.name(),
+                stats.fixed_time_span
+            ),
+        );
+    }
+    if !physics_movement {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} did not observe a non-sleeping controlled body translate while fixed physics time advanced and terrain colliders were live",
+                route.name()
+            ),
+        );
+    }
+    if stats.simulation_advancing_samples < samples.len() * 19 / 20 {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} spent too much time paused or with a stopped simulation clock",
+                route.name()
+            ),
+        );
+    }
+    if stats.sun_angle_span < 0.01 {
+        record_error(
+            run,
+            format!(
+                "{} repeat {repeat} did not advance the world day/night animation",
+                route.name()
+            ),
         );
     }
     let _ = world;
@@ -1580,7 +2584,13 @@ struct Summary {
     max: f64,
     over_33_33ms: usize,
     body_displacement: f64,
+    body_path: BodyPathSummary,
     mean_body_speed: f64,
+    physics_live_samples: usize,
+    physics_sleeping_samples: usize,
+    fixed_time_span: f64,
+    simulation_advancing_samples: usize,
+    sun_angle_span: f64,
     minimum_clearance: f64,
     mesh_min: usize,
     mesh_max: usize,
@@ -1613,6 +2623,17 @@ fn summarize(samples: &[FrameSample]) -> Summary {
     };
     let first = samples[0].controlled.position;
     let last = samples[samples.len() - 1].controlled.position;
+    let body_path = path_from_samples(samples, false);
+    let sun_min = samples
+        .iter()
+        .map(|sample| f64::from(sample.sun_angle))
+        .fold(f64::INFINITY, f64::min);
+    let sun_max = samples
+        .iter()
+        .map(|sample| f64::from(sample.sun_angle))
+        .fold(f64::NEG_INFINITY, f64::max);
+    let fixed_time_span =
+        samples[samples.len() - 1].fixed_time_elapsed - samples[0].fixed_time_elapsed;
     let mean_body_speed = samples
         .iter()
         .map(|sample| sample.controlled.velocity.length() as f64)
@@ -1628,7 +2649,22 @@ fn summarize(samples: &[FrameSample]) -> Summary {
             .filter(|sample| sample.interval_ms > STALL_LIMIT_MS)
             .count(),
         body_displacement: first.distance(last) as f64,
+        body_path,
         mean_body_speed,
+        physics_live_samples: samples
+            .iter()
+            .filter(|sample| sample.body_clearance.is_finite() && sample.counts.colliders > 0)
+            .count(),
+        physics_sleeping_samples: samples
+            .iter()
+            .filter(|sample| sample.controlled_sleeping)
+            .count(),
+        fixed_time_span,
+        simulation_advancing_samples: samples
+            .iter()
+            .filter(|sample| !sample.virtual_paused && sample.virtual_rate > 0.0)
+            .count(),
+        sun_angle_span: sun_max - sun_min,
         minimum_clearance: samples
             .iter()
             .map(|sample| sample.body_clearance as f64)
@@ -1655,7 +2691,7 @@ fn summarize(samples: &[FrameSample]) -> Summary {
 impl FrameSample {
     fn csv_row(self, route: Route) -> String {
         format!(
-            "{:.5},{:.6},{},{},{},{},{:.4},{:.4},{:.4},{},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.6},{},{},{},{:.4}\n",
+            "{:.5},{:.6},{},{},{},{},{:.4},{:.4},{:.4},{},{},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{},{:.6},{},{},{},{:.4}\n",
             self.real_elapsed,
             self.interval_ms,
             route.name(),
@@ -1666,6 +2702,8 @@ impl FrameSample {
             self.attained_radius,
             self.camera_radius,
             self.controlled_kind,
+            self.controlled_sleeping,
+            self.fixed_time_elapsed,
             self.player.position.x,
             self.player.position.y,
             self.player.position.z,
@@ -1738,6 +2776,23 @@ fn file_is_nonempty(path: &Path) -> bool {
 
 fn csv(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod transition_diagnostic_tests {
+    use super::opposite_side_drag;
+
+    #[test]
+    fn diagnostic_drag_crosses_to_the_opposite_hemisphere_inside_the_window() {
+        let width = 1280.0;
+        let height = 720.0;
+        let (start, end) = opposite_side_drag(width, height);
+
+        assert!(start.x > 0.0 && end.x < width);
+        assert!(start.y > 0.0 && start.y < height);
+        assert_eq!(start.y, end.y);
+        assert!((end.x - start.x) * 0.004 >= std::f32::consts::PI);
+    }
 }
 
 fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
@@ -1882,8 +2937,9 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaptureView, SUN_TILT, SolarPhase, due_orbit_inputs, maximum_sun_elevation_degrees,
-        sun_angle_for_elevation,
+        CaptureView, FrameSample, Motion, ResidentCounts, Route, SUN_TILT, SolarPhase,
+        continuous_body_path, due_orbit_inputs, maximum_sun_elevation_degrees,
+        physics_advanced_while_moving, sun_angle_for_elevation,
     };
     use bevy::prelude::Vec3;
 
@@ -1936,5 +2992,101 @@ mod tests {
         let radius = CaptureView::Settlement.radius();
 
         assert!((2_200.0..=2_300.0).contains(&radius));
+    }
+
+    #[test]
+    fn continuous_body_path_does_not_count_velocity_or_vehicle_handoff_as_motion() {
+        let stationary = [
+            ("on-foot", Vec3::new(1.0, 2.0, 3.0)),
+            ("on-foot", Vec3::new(1.0, 2.0, 3.0)),
+            ("on-foot", Vec3::new(1.0, 2.0, 3.0)),
+        ];
+        let moving_with_handoff = [
+            ("on-foot", Vec3::ZERO),
+            ("car", Vec3::new(1_000.0, 0.0, 0.0)),
+            ("car", Vec3::new(1_001.0, 0.0, 0.0)),
+            ("car", Vec3::new(1_003.0, 0.0, 0.0)),
+        ];
+        let loop_path = [
+            ("on-foot", Vec3::ZERO),
+            ("on-foot", Vec3::new(4.0, 0.0, 0.0)),
+            ("on-foot", Vec3::new(8.0, 0.0, 0.0)),
+            ("on-foot", Vec3::ZERO),
+        ];
+
+        assert_eq!(
+            continuous_body_path(stationary.iter().copied().map(Some)).traveled_m,
+            0.0
+        );
+        assert_eq!(
+            continuous_body_path(moving_with_handoff.iter().copied().map(Some)).traveled_m,
+            3.0
+        );
+        let loop_summary = continuous_body_path(loop_path.iter().copied().map(Some));
+        assert_eq!(loop_summary.traveled_m, 16.0);
+        assert_eq!(loop_summary.max_excursion_m, 8.0);
+    }
+
+    fn physics_sample(position: Vec3, fixed_time_elapsed: f64, sleeping: bool) -> FrameSample {
+        let motion = Motion {
+            position,
+            velocity: Vec3::new(3.5, 0.0, 0.0),
+        };
+        FrameSample {
+            real_elapsed: fixed_time_elapsed,
+            interval_ms: 16.7,
+            view_active: true,
+            view_ready: true,
+            follows: false,
+            requested_radius: 2_250.0,
+            attained_radius: 2_250.0,
+            camera_radius: 2_250.0,
+            player: motion,
+            car: Motion::missing(),
+            plane: Motion::missing(),
+            controlled: motion,
+            controlled_kind: "on-foot",
+            controlled_sleeping: sleeping,
+            fixed_time_elapsed,
+            body_clearance: 0.5,
+            virtual_rate: 1.0,
+            virtual_paused: false,
+            sun_angle: fixed_time_elapsed as f32,
+            counts: ResidentCounts {
+                meshes: 1,
+                visible_meshes: 1,
+                colliders: 1,
+            },
+            counts_age: 0.0,
+        }
+    }
+
+    #[test]
+    fn physics_probe_requires_non_sleeping_translation_during_a_physics_step() {
+        let stationary = [
+            physics_sample(Vec3::ZERO, 1.0, false),
+            physics_sample(Vec3::ZERO, 2.0, false),
+        ];
+        let moved = [
+            physics_sample(Vec3::ZERO, 1.0, false),
+            physics_sample(Vec3::X * 0.1, 2.0, false),
+        ];
+        let sleeping = [
+            physics_sample(Vec3::ZERO, 1.0, false),
+            physics_sample(Vec3::X * 0.1, 2.0, true),
+        ];
+        let no_physics_step = [
+            physics_sample(Vec3::ZERO, 1.0, false),
+            physics_sample(Vec3::X * 0.1, 1.0, false),
+        ];
+
+        assert!(!physics_advanced_while_moving(&stationary, true));
+        assert!(physics_advanced_while_moving(&moved, true));
+        assert!(!physics_advanced_while_moving(&sleeping, true));
+        assert!(!physics_advanced_while_moving(&no_physics_step, true));
+        assert_eq!(
+            moved[0].csv_row(Route::EntryReversal).split(',').count(),
+            44
+        );
     }
 }

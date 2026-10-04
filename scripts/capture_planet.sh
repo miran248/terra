@@ -2,6 +2,11 @@
 # Live production Planet view acceptance for issue #57. Never reuse evidence.
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+mode=acceptance
+if [ "${1:-}" = --diagnostic ]; then
+    mode=diagnostic
+    shift
+fi
 output=${1:-/tmp/terra-planet-57}
 case "$output" in /*) ;; *) output="$PWD/$output" ;; esac
 if [ -e "$output" ] || [ -L "$output" ]; then
@@ -22,7 +27,15 @@ cd "$root"
 unset TERRA_PRODUCTION_CAPTURE TERRA_ASSET_SHOWCASE TERRA_ASSET_CAPTURE TERRA_FLIGHT_CAPTURE
 unset TERRA_LIGHTING_CAPTURE TERRA_LIGHTING_SCENE TERRA_LIGHTING_PHASE TERRA_LIGHTING_PROBE
 export BEVY_ASSET_ROOT="$assets"
-export TERRA_PLANET_ACCEPTANCE_CAPTURE="$output"
+unset TERRA_PLANET_ACCEPTANCE_CAPTURE TERRA_PLANET_TRANSITION_DIAGNOSTIC
+if [ "$mode" = diagnostic ]; then
+    export TERRA_PLANET_TRANSITION_DIAGNOSTIC="$output"
+else
+    export TERRA_PLANET_ACCEPTANCE_CAPTURE="$output"
+fi
+TERRA_SOURCE_REVISION=$(git rev-parse HEAD)
+TERRA_SOURCE_BRANCH=$(git branch --show-current)
+export TERRA_SOURCE_REVISION TERRA_SOURCE_BRANCH
 git rev-parse HEAD > "$output/revision.txt"
 git status --porcelain=v1 > "$output/worktree-status.txt"
 git diff HEAD --binary > "$output/source.patch"
@@ -69,4 +82,16 @@ cargo metadata --locked --no-deps --format-version 1 > "$output/cargo-metadata.j
 target=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_directory"])' "$output/cargo-metadata.json")
 printf '%s\n' 'cargo build --locked -p main --features asset-review' > "$output/build-command.txt"
 "$target/debug/main" > "$output/app.log" 2>&1
-python3 "$root/scripts/validate_planet_capture.py" "$output"
+if [ "$mode" = diagnostic ]; then
+    python3 - "$output" <<'PYTHON'
+from pathlib import Path
+import sys
+output = Path(sys.argv[1])
+status = output / 'diagnostic-status.txt'
+if not status.is_file() or 'status=diagnostic-complete' not in status.read_text().splitlines():
+    sys.exit(f'Diagnostic incomplete or rejected; inspect {output}')
+print(f'Diagnostic complete in {output}; rendered inspection is still required.')
+PYTHON
+else
+    python3 "$root/scripts/validate_planet_capture.py" "$output"
+fi
