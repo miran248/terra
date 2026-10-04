@@ -1184,6 +1184,263 @@ mod tests {
                 < 30.0
         );
     }
+
+    #[test]
+    fn clearance_limited_zoom_resumes_smoothly_after_a_structure_is_removed() {
+        let (mut app, _) = fixture();
+        let planet_radius = shared::sphere::PLANET_RADIUS;
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::sphere(planet_radius),
+            Transform::default(),
+            Ground,
+        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, planet_radius + 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .toggle();
+        for _ in 0..140 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .length()
+                > planet_radius * 2.0
+        );
+
+        let structure = app
+            .world_mut()
+            .spawn((
+                RigidBody::Static,
+                Collider::cuboid(20.0, 30.0, 20.0),
+                Transform::from_xyz(0.0, planet_radius + 80.0, 0.0),
+            ))
+            .id();
+        app.update();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .request_radius(shared::planet_view::PLANET_VIEW_NEAR_RADIUS);
+
+        for _ in 0..120 {
+            app.update();
+            let pose = app.world().get::<Transform>(camera).unwrap();
+            assert!(
+                pose.translation.length() > shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 50.0,
+                "camera radius was {} while zoom was obstructed",
+                pose.translation.length()
+            );
+        }
+        let blocked_radius = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .length();
+        let requested_radius = app
+            .world()
+            .resource::<Exploration>()
+            .planet_camera
+            .requested_radius();
+        assert_eq!(
+            requested_radius,
+            shared::planet_view::PLANET_VIEW_NEAR_RADIUS
+        );
+        assert!(blocked_radius > requested_radius + 50.0);
+        let blocked_zoom = app
+            .world()
+            .resource::<Exploration>()
+            .planet_camera
+            .normalized_attained_zoom();
+        assert!(blocked_zoom > 0.01 && blocked_zoom < 0.1);
+
+        app.world_mut().despawn(structure);
+        app.update();
+        let first_release_radius = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .length();
+        assert!(blocked_radius - first_release_radius < 60.0);
+        assert!(first_release_radius > requested_radius);
+        for _ in 0..90 {
+            app.update();
+            let pose = app.world().get::<Transform>(camera).unwrap();
+            assert!(pose.translation.length() > planet_radius + 0.1);
+        }
+        let released_radius = app
+            .world()
+            .get::<Transform>(camera)
+            .unwrap()
+            .translation
+            .length();
+        assert!((released_radius - requested_radius).abs() < 5.0);
+        let normalized = app
+            .world()
+            .resource::<Exploration>()
+            .planet_camera
+            .normalized_attained_zoom();
+        assert!(normalized < 0.01);
+    }
+
+    #[test]
+    fn antipodal_orbit_and_interrupted_return_stay_outside_the_planet() {
+        let (mut app, explorer) = fixture();
+        let planet_radius = shared::sphere::PLANET_RADIUS;
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::sphere(planet_radius),
+            Transform::default(),
+        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, planet_radius + 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .toggle();
+        for _ in 0..20 {
+            app.update();
+        }
+        let before_opening_reversal = *app.world().get::<Transform>(camera).unwrap();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .close();
+        app.update();
+        let closing_reversal = *app.world().get::<Transform>(camera).unwrap();
+        assert!(
+            closing_reversal
+                .translation
+                .distance(before_opening_reversal.translation)
+                < 300.0
+        );
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .toggle();
+        app.update();
+        let opening_reversal = *app.world().get::<Transform>(camera).unwrap();
+        assert!(
+            opening_reversal
+                .translation
+                .distance(closing_reversal.translation)
+                < 300.0
+        );
+        for _ in 0..140 {
+            app.update();
+        }
+
+        let opposite = Vec3::new(0.001, -1.0, 0.0).normalize();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .detach(opposite);
+        for _ in 0..180 {
+            app.update();
+            let pose = app.world().get::<Transform>(camera).unwrap();
+            assert!(pose.translation.length() > planet_radius + 0.1);
+        }
+        let opposite_view = app.world().get::<Transform>(camera).unwrap();
+        assert!(opposite_view.translation.normalize().dot(opposite) > 0.99);
+
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(20.0, 30.0, 20.0),
+            Transform::from_translation(opposite * (planet_radius + 80.0)),
+        ));
+        app.update();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .request_radius(shared::planet_view::PLANET_VIEW_NEAR_RADIUS);
+        for _ in 0..120 {
+            app.update();
+        }
+        let clearance_limited_view = *app.world().get::<Transform>(camera).unwrap();
+        assert!(
+            clearance_limited_view.translation.length()
+                > shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 50.0
+        );
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .close();
+        for _ in 0..12 {
+            app.update();
+            let pose = app.world().get::<Transform>(camera).unwrap();
+            assert!(pose.translation.length() > planet_radius + 0.1);
+        }
+        let before_snap = *app.world().get::<Transform>(camera).unwrap();
+        act(
+            &mut app,
+            Action::Teleport(Vec3::new(20.0, planet_radius, 0.0)),
+        );
+        let after_snap = *app.world().get::<Transform>(camera).unwrap();
+        let relocated_body = app.world().get::<Position>(explorer).unwrap().0;
+        assert!(relocated_body.x > 10.0);
+        assert!(after_snap.translation.distance(before_snap.translation) < 500.0);
+        assert!(after_snap.translation.length() > planet_radius + 0.1);
+        assert!(!app.world().resource::<Exploration>().snap_camera);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .zoom_by(0.8);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open()
+        );
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .follows_body()
+        );
+        let before_resume = after_snap;
+        app.update();
+        let resumed = *app.world().get::<Transform>(camera).unwrap();
+        assert!(resumed.translation.distance(before_resume.translation) < 100.0);
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .planet_camera
+            .close();
+        for _ in 0..140 {
+            app.update();
+            let pose = app.world().get::<Transform>(camera).unwrap();
+            assert!(pose.translation.length() > planet_radius + 0.1);
+        }
+        let body = app.world().get::<Position>(explorer).unwrap().0;
+        let returned = app.world().get::<Transform>(camera).unwrap();
+        assert!(returned.translation.distance(body) < 30.0);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_active()
+        );
+    }
     #[test]
     fn car_carries_speed_from_the_captured_downhill_onto_flat_ground() {
         let (mut app, explorer) = fixture();
