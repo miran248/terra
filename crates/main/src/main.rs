@@ -18,6 +18,7 @@ mod constants;
 mod map;
 mod minimap;
 mod physics;
+mod planet_time;
 // mod prestige;
 // mod turret;
 mod foliage;
@@ -102,6 +103,7 @@ fn main() {
         exploration::showcase::ShowcasePlugin,
     ));
     app.add_plugins(exploration::ExplorationPlugin);
+    app.add_plugins(planet_time::PlanetTimePlugin);
     app.run();
 }
 
