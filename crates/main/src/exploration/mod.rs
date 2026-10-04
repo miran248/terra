@@ -173,13 +173,8 @@ impl Exploration {
         self.planet_camera.follows_body()
     }
 
-    pub fn toggle_planet_view_follow(&mut self, camera_direction: Vec3) {
-        if self.planet_camera.follows_body() {
-            self.planet_camera
-                .detach(camera_direction.normalize_or(Vec3::Y));
-        } else {
-            self.planet_camera.follow_body();
-        }
+    pub fn toggle_planet_view_follow(&mut self, camera_pose: Transform) {
+        self.planet_camera.toggle_follow_from(camera_pose);
     }
 }
 #[derive(Resource)]
@@ -327,7 +322,7 @@ fn input(
     }
     if keys.just_pressed(KeyCode::KeyF) && state.planet_camera.is_requested_open() {
         if let Ok(camera) = cameras.single() {
-            state.toggle_planet_view_follow(camera.translation);
+            state.toggle_planet_view_follow(*camera);
         }
     }
     if keys.just_pressed(KeyCode::KeyT) {
@@ -1004,24 +999,37 @@ mod tests {
     #[test]
     fn f_toggles_follow_outside_the_vehicle_selector() {
         let (mut app, _) = fixture();
-        app.world_mut()
-            .spawn((MainCamera, Transform::from_xyz(0.0, 2005.0, -5.0)));
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2005.0, -5.0)))
+            .id();
         app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(true);
         app.update();
 
         for expected_follow in [false, true] {
+            let before = *app.world().get::<Transform>(camera).unwrap();
             app.world_mut()
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .press(KeyCode::KeyF);
             app.update();
+            let after = app.world().get::<Transform>(camera).unwrap();
             assert_eq!(
                 app.world()
                     .resource::<Exploration>()
                     .planet_view_follows_body(),
                 expected_follow
             );
+            assert!(
+                after
+                    .translation
+                    .normalize()
+                    .dot(before.translation.normalize())
+                    > 0.999,
+                "F should preserve the attained radial view while toggling follow"
+            );
+            assert!(after.rotation.angle_between(before.rotation) < 0.03);
             app.world_mut()
                 .resource_mut::<ButtonInput<KeyCode>>()
                 .clear_just_pressed(KeyCode::KeyF);
@@ -1118,6 +1126,44 @@ mod tests {
             .request(action);
         app.update();
     }
+    fn spawn_planet_view_camera(app: &mut App) -> Entity {
+        app.world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, 2005.0, -5.0)
+                    .looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id()
+    }
+    fn open_planet_view(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..140 {
+            app.update();
+        }
+    }
+    fn summon_and_enter_vehicle(app: &mut App, explorer: Entity, kind: Kind) -> Entity {
+        act(app, Action::Summon(kind));
+        let vehicle = app.world().resource::<Exploration>().vehicles[kind.index()].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let position = app.world().get::<Position>(vehicle).unwrap().0;
+        let side = app.world().get::<Rotation>(vehicle).unwrap().0 * Vec3::X;
+        let width = if kind == Kind::Car { 2.0 } else { 4.8 };
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(position + side * width));
+        act(app, Action::Interact);
+        assert_eq!(
+            app.world().resource::<Exploration>().occupied,
+            Some(vehicle)
+        );
+        vehicle
+    }
+
     #[test]
     fn planet_view_opens_without_a_camera_snap_and_returns_to_exploration() {
         let (mut app, explorer) = fixture();
@@ -1236,6 +1282,321 @@ mod tests {
                 .distance(body)
                 < 30.0
         );
+    }
+
+    #[test]
+    fn follow_tracks_the_moving_explorer_heading_and_closes_to_its_latest_pose() {
+        let (mut app, explorer) = fixture();
+        let camera = spawn_planet_view_camera(&mut app);
+        open_planet_view(&mut app);
+        let starting_position = app.world().get::<Position>(explorer).unwrap().0;
+
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(LinearVelocity(Vec3::X * 4.0));
+        for _ in 0..60 {
+            app.update();
+        }
+        let moving_position = app.world().get::<Position>(explorer).unwrap().0;
+        assert!(moving_position.distance(starting_position) > 1.0);
+        let following_pose = app.world().get::<Transform>(camera).unwrap();
+        assert!(
+            following_pose
+                .translation
+                .normalize()
+                .dot(moving_position.normalize())
+                > 0.9999,
+            "follow should track the physics-synchronized explorer position"
+        );
+
+        let heading = tangent(Vec3::Z, moving_position.normalize());
+        app.world_mut().get_mut::<Player>(explorer).unwrap().heading = heading;
+        for _ in 0..40 {
+            app.update();
+        }
+        let following_pose = app.world().get::<Transform>(camera).unwrap();
+        assert!(
+            (following_pose.rotation * Vec3::Y).dot(heading) > 0.99,
+            "follow should align camera up with the controlled heading tangent"
+        );
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        let closing_position = app.world().get::<Position>(explorer).unwrap().0;
+        for _ in 0..120 {
+            app.update();
+        }
+        let latest_position = app.world().get::<Position>(explorer).unwrap().0;
+        assert!(latest_position.distance(closing_position) > 1.0);
+        assert!(
+            app.world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .distance(latest_position)
+                < 30.0,
+            "closing should return toward the explorer's latest moving position"
+        );
+    }
+
+    #[test]
+    fn following_a_piloting_plane_tracks_heading_without_pitch_or_bank() {
+        let (mut app, explorer) = fixture();
+        let camera = spawn_planet_view_camera(&mut app);
+        open_planet_view(&mut app);
+        let plane = summon_and_enter_vehicle(&mut app, explorer, Kind::Plane);
+
+        let start = app.world().get::<Position>(plane).unwrap().0;
+        let airborne = start + start.normalize() * 16.0;
+        {
+            let mut vehicle = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+            vehicle.parked = false;
+            vehicle.flight.airborne = true;
+            vehicle.flight.pitch = 0.2;
+            vehicle.flight.bank = 0.4;
+        }
+        let heading = app.world().get::<Vehicle>(plane).unwrap().flight.heading;
+        let rotation = app
+            .world()
+            .get::<Vehicle>(plane)
+            .unwrap()
+            .flight
+            .rotation(airborne.normalize());
+        app.world_mut().entity_mut(plane).insert((
+            Position(airborne),
+            Rotation(rotation),
+            LinearVelocity(heading * 30.0),
+        ));
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyS);
+            keys.press(KeyCode::KeyA);
+            keys.press(KeyCode::ShiftLeft);
+        }
+        for _ in 0..60 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+
+        let body_position = app.world().get::<Position>(plane).unwrap().0;
+        let vehicle = app.world().get::<Vehicle>(plane).unwrap();
+        let body_rotation = app.world().get::<Rotation>(plane).unwrap().0;
+        let expected_heading = tangent(vehicle.flight.heading, body_position.normalize());
+        assert!(body_position.distance(airborne) > 1.0);
+        assert!(vehicle.flight.pitch.abs() > 0.2);
+        assert!(vehicle.flight.bank.abs() > 0.2);
+
+        let camera_pose = app.world().get::<Transform>(camera).unwrap();
+        assert!(
+            camera_pose
+                .translation
+                .normalize()
+                .dot(body_position.normalize())
+                > 0.9999,
+            "follow should track the occupied plane's physics position"
+        );
+        let camera_up = camera_pose.rotation * Vec3::Y;
+        assert!(camera_up.dot(expected_heading) > 0.99);
+        assert!(
+            camera_up.dot(body_rotation * Vec3::Y) < 0.95,
+            "camera heading should not inherit the plane's pitch or bank"
+        );
+    }
+
+    #[test]
+    fn vehicle_entry_exit_transfers_follow_and_keeps_detached_framing() {
+        for detached in [false, true] {
+            let (mut app, explorer) = fixture();
+            let camera = spawn_planet_view_camera(&mut app);
+            open_planet_view(&mut app);
+            act(&mut app, Action::Summon(Kind::Car));
+            let car = app.world().resource::<Exploration>().vehicles[Kind::Car.index()].unwrap();
+            for _ in 0..30 {
+                app.update();
+            }
+            let car_position = app.world().get::<Position>(car).unwrap().0;
+            let side = app.world().get::<Rotation>(car).unwrap().0 * Vec3::X;
+            app.world_mut()
+                .entity_mut(explorer)
+                .insert(Position(car_position + side * 2.0));
+            let before_entry = *app.world().get::<Transform>(camera).unwrap();
+            act(&mut app, Action::Interact);
+            let after_entry = *app.world().get::<Transform>(camera).unwrap();
+            assert!(
+                after_entry
+                    .translation
+                    .normalize()
+                    .angle_between(before_entry.translation.normalize())
+                    < 0.03,
+                "vehicle entry should transfer follow without a camera snap"
+            );
+
+            if detached {
+                app.world_mut()
+                    .resource_mut::<Exploration>()
+                    .toggle_planet_view_follow(after_entry);
+            }
+            let detached_direction = app
+                .world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .normalize();
+            let starting_car_position = app.world().get::<Position>(car).unwrap().0;
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .press(KeyCode::KeyW);
+            for _ in 0..45 {
+                app.update();
+            }
+            app.world_mut()
+                .resource_mut::<ButtonInput<KeyCode>>()
+                .clear();
+            let moving_car_position = app.world().get::<Position>(car).unwrap().0;
+            assert!(moving_car_position.distance(starting_car_position) > 0.5);
+
+            if detached {
+                let view = app.world().get::<Transform>(camera).unwrap();
+                assert!(view.translation.normalize().dot(detached_direction) > 0.9999);
+            } else {
+                for _ in 0..30 {
+                    app.update();
+                }
+                let view = app.world().get::<Transform>(camera).unwrap();
+                assert!(
+                    view.translation
+                        .normalize()
+                        .dot(moving_car_position.normalize())
+                        > 0.9999
+                );
+            }
+
+            app.world_mut().entity_mut(car).insert(LinearVelocity::ZERO);
+            app.world_mut().get_mut::<Vehicle>(car).unwrap().stable = 0.5;
+            act(&mut app, Action::Interact);
+            assert!(
+                app.world().resource::<Exploration>().occupied.is_none(),
+                "detached={detached}, stable={}, message={}",
+                app.world().get::<Vehicle>(car).unwrap().stable,
+                app.world().resource::<Exploration>().message
+            );
+            for _ in 0..45 {
+                app.update();
+            }
+            let explorer_position = app.world().get::<Position>(explorer).unwrap().0;
+            let view = app.world().get::<Transform>(camera).unwrap();
+            assert!(
+                app.world()
+                    .resource::<Exploration>()
+                    .planet_camera
+                    .is_requested_open()
+            );
+            if detached {
+                assert!(view.translation.normalize().dot(detached_direction) > 0.9999);
+            } else {
+                assert!(
+                    view.translation
+                        .normalize()
+                        .dot(explorer_position.normalize())
+                        > 0.9999
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explorer_and_vehicle_recovery_keep_planet_view_and_respect_follow_mode() {
+        for detached in [false, true] {
+            let (mut app, explorer) = fixture();
+            let camera = spawn_planet_view_camera(&mut app);
+            open_planet_view(&mut app);
+            if detached {
+                let pose = *app.world().get::<Transform>(camera).unwrap();
+                app.world_mut()
+                    .resource_mut::<Exploration>()
+                    .toggle_planet_view_follow(pose);
+            }
+            let detached_direction = app
+                .world()
+                .get::<Transform>(camera)
+                .unwrap()
+                .translation
+                .normalize();
+
+            let safe = app.world().get::<Position>(explorer).unwrap().0;
+            app.world_mut().resource_mut::<Exploration>().safe = Some(safe);
+            app.world_mut().entity_mut(explorer).insert((
+                Position(Vec3::new(800.0, 2000.6, 0.0)),
+                LinearVelocity::ZERO,
+            ));
+            act(&mut app, Action::Recover);
+            let recovered_explorer = app.world().get::<Position>(explorer).unwrap().0;
+            assert!(recovered_explorer.x.abs() < 100.0);
+            assert!(
+                app.world()
+                    .resource::<Exploration>()
+                    .planet_camera
+                    .is_requested_open()
+            );
+            for _ in 0..100 {
+                app.update();
+            }
+            let view = app.world().get::<Transform>(camera).unwrap();
+            if detached {
+                assert!(view.translation.normalize().dot(detached_direction) > 0.9999);
+            } else {
+                assert!(
+                    view.translation
+                        .normalize()
+                        .dot(recovered_explorer.normalize())
+                        > 0.9999
+                );
+            }
+
+            let car = summon_and_enter_vehicle(&mut app, explorer, Kind::Car);
+            for _ in 0..35 {
+                app.update();
+            }
+            let safe_vehicle_position = app.world().get::<Position>(car).unwrap().0;
+            assert!(app.world().resource::<Exploration>().safe.is_some());
+            app.world_mut().get_mut::<Vehicle>(car).unwrap().crashed = true;
+            let invalid_vehicle_position = Vec3::new(800.0, 2000.6, 0.0);
+            app.world_mut().entity_mut(car).insert((
+                RigidBody::Static,
+                Position(invalid_vehicle_position),
+                Rotation(Quat::from_rotation_x(1.2)),
+                LinearVelocity::ZERO,
+            ));
+            act(&mut app, Action::Recover);
+            let recovered_vehicle = app.world().get::<Position>(car).unwrap().0;
+            assert!(recovered_vehicle.distance(invalid_vehicle_position) > 100.0);
+            assert!(recovered_vehicle.distance(safe_vehicle_position) < 10.0);
+            assert_eq!(app.world().resource::<Exploration>().occupied, Some(car));
+            assert!(!app.world().get::<Vehicle>(car).unwrap().crashed);
+            assert!(
+                app.world()
+                    .resource::<Exploration>()
+                    .planet_camera
+                    .is_requested_open()
+            );
+            for _ in 0..100 {
+                app.update();
+            }
+            let view = app.world().get::<Transform>(camera).unwrap();
+            if detached {
+                assert!(view.translation.normalize().dot(detached_direction) > 0.9999);
+            } else {
+                assert!(
+                    view.translation
+                        .normalize()
+                        .dot(recovered_vehicle.normalize())
+                        > 0.9999
+                );
+            }
+        }
     }
 
     #[test]
