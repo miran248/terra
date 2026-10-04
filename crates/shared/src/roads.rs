@@ -2,6 +2,8 @@ use bevy::prelude::Vec3;
 
 use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
 
+const MAX_RIBBON_SURFACE_SAMPLE_SPACING_M: f32 = 2.0;
+
 /// Spacing between sampled points along a road, meters.
 pub const SAMPLE_SPACING: f32 = 40.0;
 
@@ -175,6 +177,180 @@ pub fn build_surface_road_ribbon(
         ]);
     }
     triangles
+}
+
+/// Build a surface ribbon with rounded end caps for a path that owns its endpoints.
+/// Use [`build_surface_road_ribbon`] when the ribbon must stop exactly on a deck edge.
+pub fn build_surface_road_ribbon_with_caps(
+    samples: &[SurfaceRoadSample],
+    widths_m: &[f32],
+) -> Vec<[[f32; 3]; 3]> {
+    let mut triangles = build_surface_road_ribbon(samples, widths_m);
+    if !triangles.is_empty() {
+        append_road_end_caps(&mut triangles, samples, widths_m, |point| point);
+    }
+    triangles
+}
+
+/// Build a terrain-following road ribbon by projecting its lateral vertices
+/// onto the displaced ground surface. Bridge ribbons should use
+/// [`build_surface_road_ribbon`] so they remain on their sampled deck.
+pub fn build_terrain_following_road_ribbon(
+    samples: &[SurfaceRoadSample],
+    widths_m: &[f32],
+    ground: &crate::planet::PlanetMesh,
+    surface_lift_m: f32,
+) -> Vec<[[f32; 3]; 3]> {
+    if samples.len() < 2
+        || widths_m.len() != samples.len()
+        || samples.iter().any(|sample| {
+            !sample.center.is_finite()
+                || !sample.normal.is_finite()
+                || sample.normal.length_squared() < 1e-8
+        })
+        || widths_m
+            .iter()
+            .any(|width| !width.is_finite() || *width <= 0.0)
+        || !surface_lift_m.is_finite()
+        || surface_lift_m < 0.0
+    {
+        return Vec::new();
+    }
+
+    let max_width = widths_m.iter().copied().fold(0.0, f32::max);
+    let lateral_segments = (max_width / MAX_RIBBON_SURFACE_SAMPLE_SPACING_M).ceil() as usize;
+    let mut cross_sections = Vec::with_capacity(samples.len());
+    for (index, sample) in samples.iter().enumerate() {
+        let normal = sample.normal.normalize();
+        let previous = samples[index.saturating_sub(1)].center;
+        let next = samples[(index + 1).min(samples.len() - 1)].center;
+        let tangent = (next - previous).reject_from(normal).normalize_or_zero();
+        if tangent.length_squared() < 1e-8 {
+            return Vec::new();
+        }
+        let side = normal.cross(tangent).normalize_or_zero();
+        if side.length_squared() < 1e-8 {
+            return Vec::new();
+        }
+
+        let width = widths_m[index];
+        let mut section = Vec::with_capacity(lateral_segments + 1);
+        for segment in 0..=lateral_segments {
+            let across = segment as f32 / lateral_segments as f32;
+            let offset = (0.5 - across) * width;
+            let point = sample.center + side * offset;
+            section.push(project_road_point_to_terrain(point, ground, surface_lift_m));
+        }
+        cross_sections.push(section);
+    }
+
+    let mut triangles = Vec::with_capacity((samples.len() - 1) * lateral_segments * 2);
+    for sections in cross_sections.windows(2) {
+        let [current, next] = sections else {
+            unreachable!("a pair of cross-sections contains two rows")
+        };
+        for segment in 0..lateral_segments {
+            let left = current[segment];
+            let right = current[segment + 1];
+            let next_left = next[segment];
+            let next_right = next[segment + 1];
+            triangles.push([left.to_array(), right.to_array(), next_left.to_array()]);
+            triangles.push([
+                right.to_array(),
+                next_right.to_array(),
+                next_left.to_array(),
+            ]);
+        }
+    }
+    append_road_end_caps(&mut triangles, samples, widths_m, |point| {
+        project_road_point_to_terrain(point, ground, surface_lift_m)
+    });
+    triangles
+}
+
+fn project_road_point_to_terrain(
+    point: Vec3,
+    ground: &crate::planet::PlanetMesh,
+    surface_lift_m: f32,
+) -> Vec3 {
+    let direction = point.normalize_or_zero();
+    if direction.length_squared() < 0.5 {
+        return point;
+    }
+    let radius = ground.facet_radius(direction, PLANET_RADIUS);
+    direction * (radius + surface_lift_m)
+}
+
+fn append_road_end_caps(
+    triangles: &mut Vec<[[f32; 3]; 3]>,
+    samples: &[SurfaceRoadSample],
+    widths_m: &[f32],
+    mut project_to_surface: impl FnMut(Vec3) -> Vec3,
+) {
+    use std::f32::consts::PI;
+
+    for (index, outward_direction) in [(0, -1.0), (samples.len() - 1, 1.0)] {
+        let sample = samples[index];
+        let normal = sample.normal.normalize();
+        let previous = samples[index.saturating_sub(1)].center;
+        let next = samples[(index + 1).min(samples.len() - 1)].center;
+        let tangent = (next - previous).reject_from(normal).normalize_or_zero();
+        if tangent.length_squared() < 1e-8 {
+            continue;
+        }
+        let side = normal.cross(tangent).normalize_or_zero();
+        if side.length_squared() < 1e-8 {
+            continue;
+        }
+
+        let radius = widths_m[index] * 0.5;
+        let radial_segments = (radius / MAX_RIBBON_SURFACE_SAMPLE_SPACING_M)
+            .ceil()
+            .max(1.0) as usize;
+        let angular_segments =
+            ((PI * radius / MAX_RIBBON_SURFACE_SAMPLE_SPACING_M).ceil() as usize).max(8);
+        let rings = (0..=radial_segments)
+            .map(|radial| {
+                let ring_radius = radius * radial as f32 / radial_segments as f32;
+                (0..=angular_segments)
+                    .map(|angular| {
+                        let angle = -PI * 0.5 + PI * angular as f32 / angular_segments as f32;
+                        project_to_surface(
+                            sample.center
+                                + side * (angle.sin() * ring_radius)
+                                + tangent * (outward_direction * angle.cos() * ring_radius),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+
+        for ring_pair in rings.windows(2) {
+            let [inner, outer] = ring_pair else {
+                unreachable!("a pair of cap rings contains two rows")
+            };
+            for angular in 0..angular_segments {
+                let mut first = [inner[angular], outer[angular], outer[angular + 1]];
+                let mut second = [inner[angular], outer[angular + 1], inner[angular + 1]];
+                for triangle in [&mut first, &mut second] {
+                    if (triangle[1] - triangle[0])
+                        .cross(triangle[2] - triangle[0])
+                        .dot(normal)
+                        < 0.0
+                    {
+                        triangle.swap(1, 2);
+                    }
+                    if (triangle[1] - triangle[0])
+                        .cross(triangle[2] - triangle[0])
+                        .length_squared()
+                        > 1e-8
+                    {
+                        triangles.push(triangle.map(|point| point.to_array()));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Deterministic settlement name: a fixed syllable table indexed by settlement number,
@@ -548,5 +724,169 @@ mod tests {
                 .dot(Vec3::Y)
                 > 0.99
         );
+    }
+
+    #[test]
+    fn surface_road_ribbon_caps_extend_beyond_both_road_ends() {
+        let samples = [
+            SurfaceRoadSample {
+                center: Vec3::new(0.0, PLANET_RADIUS + 0.2, 0.0),
+                normal: Vec3::Y,
+            },
+            SurfaceRoadSample {
+                center: Vec3::new(0.0, PLANET_RADIUS + 0.2, 20.0),
+                normal: Vec3::Y,
+            },
+        ];
+        let triangles = build_surface_road_ribbon_with_caps(&samples, &[6.0, 6.0]);
+        for triangle in &triangles {
+            let [a, b, c] = triangle.map(Vec3::from_array);
+            let normal = (b - a).cross(c - a).normalize();
+            assert!(normal.dot(Vec3::Y) > 0.99, "road cap must face outward");
+        }
+        let min_z = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let max_z = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        assert!(min_z < -2.9, "start cap should cover its road end: {min_z}");
+        assert!(max_z > 22.9, "end cap should cover its road end: {max_z}");
+    }
+
+    #[test]
+    fn surface_road_ribbons_cover_a_three_way_endpoint_junction() {
+        let junction = Vec3::new(0.0, PLANET_RADIUS + 0.2, 0.0);
+        let mut triangles = Vec::new();
+        for index in 0..3 {
+            let angle = index as f32 * std::f32::consts::TAU / 3.0;
+            let outward = Vec3::new(angle.sin(), 0.0, angle.cos());
+            let samples = [
+                SurfaceRoadSample {
+                    center: junction + outward * 10.0,
+                    normal: Vec3::Y,
+                },
+                SurfaceRoadSample {
+                    center: junction,
+                    normal: Vec3::Y,
+                },
+            ];
+            triangles.extend(build_surface_road_ribbon_with_caps(&samples, &[4.0, 4.0]));
+        }
+
+        let point_is_covered = |point: Vec3| {
+            triangles.iter().any(|triangle| {
+                let [a, b, c] = triangle.map(Vec3::from_array);
+                let v0 = [b.x - a.x, b.z - a.z];
+                let v1 = [c.x - a.x, c.z - a.z];
+                let v2 = [point.x - a.x, point.z - a.z];
+                let denominator = v0[0] * v1[1] - v0[1] * v1[0];
+                if denominator.abs() < 1e-6 {
+                    return false;
+                }
+                let u = (v2[0] * v1[1] - v2[1] * v1[0]) / denominator;
+                let v = (v0[0] * v2[1] - v0[1] * v2[0]) / denominator;
+                u >= -1e-4 && v >= -1e-4 && u + v <= 1.0001
+            })
+        };
+
+        for index in 0..24 {
+            let angle = index as f32 * std::f32::consts::TAU / 24.0;
+            let point = junction + Vec3::new(angle.cos() * 1.5, 0.0, angle.sin() * 1.5);
+            assert!(
+                point_is_covered(point),
+                "junction highlight has a hole at {point:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wide_terrain_road_ribbon_stays_above_a_shallow_cross_ridge() {
+        let radius = PLANET_RADIUS;
+        let profile = [
+            (-16.0, radius),
+            (-8.0, radius),
+            (-4.0, radius),
+            (0.0, radius),
+            (3.35, radius + 0.48),
+            (8.0, radius),
+            (16.0, radius),
+        ];
+        let mut triangles = Vec::new();
+        for pair in profile.windows(2) {
+            let (left_x, left_y) = pair[0];
+            let (right_x, right_y) = pair[1];
+            let left_back = Vec3::new(left_x, left_y, -20.0);
+            let right_back = Vec3::new(right_x, right_y, -20.0);
+            let right_front = Vec3::new(right_x, right_y, 20.0);
+            let left_front = Vec3::new(left_x, left_y, 20.0);
+            triangles.push([left_back, right_back, right_front]);
+            triangles.push([left_back, right_front, left_front]);
+        }
+        let ground = crate::planet::PlanetMesh::new(triangles);
+        let samples = [-8.0, 0.0, 8.0].map(|z| SurfaceRoadSample {
+            center: Vec3::new(0.0, radius + 0.22, z),
+            normal: Vec3::Y,
+        });
+        let triangles =
+            build_terrain_following_road_ribbon(&samples, &[16.0, 16.0, 16.0], &ground, 0.22);
+
+        assert!(!triangles.is_empty());
+        for triangle in &triangles {
+            let [a, b, c] = triangle.map(Vec3::from_array);
+            let centroid = (a + b + c) / 3.0;
+            let normal = (b - a).cross(c - a).normalize();
+            assert!(
+                normal.dot(centroid.normalize()) > 0.9,
+                "ribbon triangle must face away from the planet"
+            );
+        }
+        let (worst_clearance, worst_point) = triangles
+            .iter()
+            .flat_map(|triangle| {
+                let points = triangle.map(Vec3::from_array);
+                [
+                    points[0],
+                    points[1],
+                    points[2],
+                    (points[0] + points[1]) * 0.5,
+                    (points[1] + points[2]) * 0.5,
+                    (points[2] + points[0]) * 0.5,
+                    (points[0] + points[1] + points[2]) / 3.0,
+                    (points[0] * 2.0 + points[1] + points[2]) * 0.25,
+                    (points[0] + points[1] * 2.0 + points[2]) * 0.25,
+                    (points[0] + points[1] + points[2] * 2.0) * 0.25,
+                ]
+                .map(|point| {
+                    (
+                        point.length() - ground.facet_radius(point.normalize(), radius),
+                        point,
+                    )
+                })
+            })
+            .min_by(|left, right| left.0.total_cmp(&right.0))
+            .unwrap();
+        assert!(
+            worst_clearance >= 0.05,
+            "wide highlight triangle sample at {worst_point:?} crossed terrain by {:.3} m",
+            -worst_clearance,
+        );
+
+        let min_x = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| vertex[0])
+            .fold(f32::INFINITY, f32::min);
+        let max_x = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| vertex[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((max_x - min_x - 16.0).abs() < 0.1);
     }
 }

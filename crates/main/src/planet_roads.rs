@@ -1,7 +1,11 @@
 use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
+use shared::planet::PlanetMesh;
 use shared::planet_view_interface::PlanetViewInterfaceElement;
-use shared::roads::{SurfaceRoadSample, build_surface_road_ribbon, projected_surface_ribbon_width};
+use shared::roads::{
+    SurfaceRoadSample, build_surface_road_ribbon, build_terrain_following_road_ribbon,
+    projected_surface_ribbon_width,
+};
 
 use crate::{
     exploration::{Exploration, ExplorationUpdate},
@@ -17,7 +21,16 @@ const WIDTH_REFRESH_SECONDS: f32 = 0.2;
 const WIDTH_REFRESH_POSITION_METERS: f32 = 24.0;
 
 #[derive(Resource, Default)]
-pub(crate) struct RoadHighlightPaths(pub Vec<Vec<SurfaceRoadSample>>);
+pub(crate) struct RoadHighlightPaths {
+    pub(crate) terrain: Vec<Vec<SurfaceRoadSample>>,
+    pub(crate) bridges: Vec<Vec<SurfaceRoadSample>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RoadHighlightWidths {
+    terrain: Vec<Vec<f32>>,
+    bridges: Vec<Vec<f32>>,
+}
 
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RoadHighlightLayer {
@@ -61,6 +74,18 @@ struct RoadMeshRefresh {
     last_camera_position: Option<Vec3>,
     last_viewport_height: Option<f32>,
     last_vertical_fov: Option<f32>,
+    last_widths: Option<RoadHighlightWidths>,
+    last_world_epoch: Option<crate::map::WorldEpoch>,
+}
+
+impl RoadMeshRefresh {
+    fn geometry_is_current(
+        &self,
+        world_epoch: crate::map::WorldEpoch,
+        widths: &RoadHighlightWidths,
+    ) -> bool {
+        self.last_world_epoch == Some(world_epoch) && self.last_widths.as_ref() == Some(widths)
+    }
 }
 
 pub(crate) struct PlanetRoadsPlugin;
@@ -93,11 +118,13 @@ impl Plugin for PlanetRoadsPlugin {
 fn setup_road_highlight(
     mut commands: Commands,
     paths: Res<RoadHighlightPaths>,
+    ground: Res<crate::map::CollisionTerrain>,
     font: Res<UiFont>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let triangles = build_highlight_triangles(&paths.0, MIN_ROAD_WIDTH_METERS);
+    let widths = road_highlight_widths(&paths, |_| MIN_ROAD_WIDTH_METERS);
+    let triangles = build_highlight_triangles(&paths, &ground.0, &widths);
     if !triangles.is_empty() {
         let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; triangles.len()];
         let highlight_material = materials.add(road_highlight_material(1.0));
@@ -268,13 +295,45 @@ fn planet_roads_highlight_visible(view_active: bool, layer_enabled: bool, opacit
     view_active && layer_enabled && opacity > 0.0
 }
 
-fn build_highlight_triangles(paths: &[Vec<SurfaceRoadSample>], width_m: f32) -> Vec<[[f32; 3]; 3]> {
+fn build_highlight_triangles(
+    paths: &RoadHighlightPaths,
+    ground: &PlanetMesh,
+    widths: &RoadHighlightWidths,
+) -> Vec<[[f32; 3]; 3]> {
+    let mut triangles = Vec::new();
+    debug_assert_eq!(paths.terrain.len(), widths.terrain.len());
+    debug_assert_eq!(paths.bridges.len(), widths.bridges.len());
+    for (samples, path_widths) in paths.terrain.iter().zip(&widths.terrain) {
+        triangles.extend(build_terrain_following_road_ribbon(
+            samples,
+            path_widths,
+            ground,
+            ROAD_SURFACE_LIFT_METERS,
+        ));
+    }
+    for (samples, path_widths) in paths.bridges.iter().zip(&widths.bridges) {
+        triangles.extend(build_surface_road_ribbon(samples, path_widths));
+    }
+    triangles
+}
+
+fn road_highlight_widths(
+    paths: &RoadHighlightPaths,
+    mut width_at: impl FnMut(&SurfaceRoadSample) -> f32,
+) -> RoadHighlightWidths {
+    RoadHighlightWidths {
+        terrain: widths_for_path_collection(&paths.terrain, &mut width_at),
+        bridges: widths_for_path_collection(&paths.bridges, &mut width_at),
+    }
+}
+
+fn widths_for_path_collection(
+    paths: &[Vec<SurfaceRoadSample>],
+    width_at: &mut impl FnMut(&SurfaceRoadSample) -> f32,
+) -> Vec<Vec<f32>> {
     paths
         .iter()
-        .flat_map(|samples| {
-            let widths = vec![width_m; samples.len()];
-            build_surface_road_ribbon(samples, &widths)
-        })
+        .map(|samples| samples.iter().map(&mut *width_at).collect())
         .collect()
 }
 
@@ -283,6 +342,8 @@ fn update_road_highlight_widths(
     state: Res<Exploration>,
     layer: Res<RoadHighlightLayer>,
     paths: Res<RoadHighlightPaths>,
+    ground: Res<crate::map::CollisionTerrain>,
+    world_epoch: Res<crate::map::WorldEpoch>,
     cameras: Query<(&Camera, &Projection, &Transform), With<MainCamera>>,
     highlight_mesh: Query<&Mesh3d, With<RoadHighlightMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -305,6 +366,7 @@ fn update_road_highlight_widths(
     }
 
     refresh.elapsed += time.delta_secs();
+    let epoch_changed = refresh.last_world_epoch != Some(*world_epoch);
     let moved = refresh.last_camera_position.is_none_or(|last| {
         last.distance(camera_transform.translation) >= WIDTH_REFRESH_POSITION_METERS
     });
@@ -314,37 +376,39 @@ fn update_road_highlight_widths(
     let changed_fov = refresh
         .last_vertical_fov
         .is_none_or(|fov| (fov - perspective.fov).abs() > 0.001);
-    if !moved && !resized && !changed_fov {
+    if !epoch_changed && !moved && !resized && !changed_fov {
         return;
     }
-    if refresh.elapsed < WIDTH_REFRESH_SECONDS {
+    if !epoch_changed && refresh.elapsed < WIDTH_REFRESH_SECONDS {
         return;
     }
 
-    let mut triangles = Vec::new();
-    for samples in &paths.0 {
-        let widths: Vec<f32> = samples
-            .iter()
-            .map(|sample| {
-                let depth = perspective_camera_depth(*camera_transform, sample.center);
-                projected_surface_ribbon_width(
-                    depth.max(f32::EPSILON),
-                    perspective.fov,
-                    viewport_size.y,
-                    MIN_SCREEN_WIDTH_PX,
-                    MIN_ROAD_WIDTH_METERS,
-                )
-                .unwrap_or(MIN_ROAD_WIDTH_METERS)
-            })
-            .collect();
-        triangles.extend(build_surface_road_ribbon(samples, &widths));
+    let widths = road_highlight_widths(&paths, |sample| {
+        let depth = perspective_camera_depth(*camera_transform, sample.center);
+        projected_surface_ribbon_width(
+            depth.max(f32::EPSILON),
+            perspective.fov,
+            viewport_size.y,
+            MIN_SCREEN_WIDTH_PX,
+            MIN_ROAD_WIDTH_METERS,
+        )
+        .unwrap_or(MIN_ROAD_WIDTH_METERS)
+    });
+
+    if epoch_changed {
+        refresh.last_world_epoch = Some(*world_epoch);
+        refresh.last_widths = Some(road_highlight_widths(&paths, |_| MIN_ROAD_WIDTH_METERS));
     }
-    let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; triangles.len()];
-    let mesh = build_visual_mesh(&triangles, &colors);
-    if let Ok(handle) = highlight_mesh.single()
-        && let Some(mut existing) = meshes.get_mut(&handle.0)
-    {
-        *existing = mesh;
+    if !refresh.geometry_is_current(*world_epoch, &widths) {
+        let triangles = build_highlight_triangles(&paths, &ground.0, &widths);
+        let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; triangles.len()];
+        let mesh = build_visual_mesh(&triangles, &colors);
+        if let Ok(handle) = highlight_mesh.single()
+            && let Some(mut existing) = meshes.get_mut(&handle.0)
+        {
+            *existing = mesh;
+        }
+        refresh.last_widths = Some(widths);
     }
     refresh.elapsed = 0.0;
     refresh.last_camera_position = Some(camera_transform.translation);
@@ -418,5 +482,70 @@ mod tests {
         let point = Vec3::new(100.0, 0.0, 0.0);
 
         assert!((perspective_camera_depth(camera, point) - 10.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn bridge_highlight_stays_at_its_sampled_deck_height() {
+        let ground = shared::planet::PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let terrain_radius = ground.facet_radius(Vec3::Y, shared::sphere::PLANET_RADIUS);
+        let deck_radius = terrain_radius + ROAD_SURFACE_LIFT_METERS + 5.0;
+        let samples = [-10.0, 10.0].map(|z| SurfaceRoadSample {
+            center: Vec3::Y * deck_radius + Vec3::Z * z,
+            normal: Vec3::Y,
+        });
+        let paths = RoadHighlightPaths {
+            terrain: Vec::new(),
+            bridges: vec![samples.to_vec()],
+        };
+        let widths = road_highlight_widths(&paths, |_| 4.0);
+        let triangles = build_highlight_triangles(&paths, &ground, &widths);
+
+        assert!(!triangles.is_empty());
+        let minimum_z = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| vertex[2])
+            .fold(f32::INFINITY, f32::min);
+        let maximum_z = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| vertex[2])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!((minimum_z + 10.0).abs() < 0.01);
+        assert!((maximum_z - 10.0).abs() < 0.01);
+        let minimum_deck_clearance = triangles
+            .iter()
+            .flatten()
+            .map(|vertex| {
+                let point = Vec3::from_array(*vertex);
+                point.length()
+                    - ground.facet_radius(point.normalize(), shared::sphere::PLANET_RADIUS)
+            })
+            .fold(f32::INFINITY, f32::min);
+        assert!(minimum_deck_clearance > 4.0);
+    }
+
+    #[test]
+    fn highlight_geometry_cache_requires_same_world_and_projected_widths() {
+        let epoch = crate::map::WorldEpoch::new(3);
+        let widths = RoadHighlightWidths {
+            terrain: vec![vec![4.0, 7.0]],
+            bridges: vec![vec![5.0, 6.0]],
+        };
+        let mut refresh = RoadMeshRefresh {
+            last_widths: Some(widths.clone()),
+            last_world_epoch: Some(epoch),
+            ..default()
+        };
+
+        assert!(refresh.geometry_is_current(epoch, &widths));
+
+        let changed_widths = RoadHighlightWidths {
+            terrain: vec![vec![4.0, 7.1]],
+            bridges: vec![vec![5.0, 6.0]],
+        };
+        assert!(!refresh.geometry_is_current(epoch, &changed_widths));
+        refresh.last_widths = Some(changed_widths.clone());
+        assert!(!refresh.geometry_is_current(crate::map::WorldEpoch::new(4), &changed_widths));
     }
 }
