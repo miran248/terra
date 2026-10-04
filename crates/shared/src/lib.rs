@@ -11,6 +11,7 @@ pub mod on_foot_prototype;
 pub mod plane_prototype;
 pub mod planet;
 pub mod planet_view;
+pub mod planet_view_interface;
 pub mod roads;
 pub mod sphere;
 pub mod state;
