@@ -485,6 +485,38 @@ mod tests {
     }
 
     #[test]
+    fn captured_road_projection_direction_resolves_its_shared_facet_edge() {
+        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+            "../assets/level_1337.bin"
+        ))
+        .expect("decode canonical level artifact");
+        let ground = PlanetMesh::new(
+            level
+                .terrain_tris
+                .iter()
+                .map(|triangle| triangle.map(Vec3::from_array))
+                .collect(),
+        );
+        let direction = Vec3::new(
+            f32::from_bits(0xbeba_40e7),
+            f32::from_bits(0x3f4c_cd4c),
+            f32::from_bits(0x3ef4_4a98),
+        );
+        let triangle = ground
+            .triangle(2091)
+            .expect("captured edge triangle remains in canonical terrain");
+
+        let edge_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
+        let expected = edge_normal.dot(triangle[0]) / edge_normal.dot(direction);
+        let actual = ground.facet_radius(direction, shared::sphere::PLANET_RADIUS);
+        let road_projection =
+            ground.facet_radius_for_road_projection(direction, shared::sphere::PLANET_RADIUS);
+
+        assert_eq!(actual, shared::sphere::PLANET_RADIUS);
+        assert!((road_projection - expected).abs() < 0.01);
+    }
+
+    #[test]
     fn bridge_highlight_stays_at_its_sampled_deck_height() {
         let ground = shared::planet::PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
         let terrain_radius = ground.facet_radius(Vec3::Y, shared::sphere::PLANET_RADIUS);
