@@ -252,6 +252,14 @@ impl Vehicle {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum CameraFollowMode {
+    #[default]
+    Facing,
+    Orientation,
+}
+
 #[derive(Resource, Default)]
 pub struct Exploration {
     occupied: Option<Entity>,
@@ -259,6 +267,9 @@ pub struct Exploration {
     start: Option<Vec3>,
     safe: Option<Vec3>,
     selector: bool,
+    camera_selector: bool,
+    camera_selector_was_paused: bool,
+    camera_follow_mode: CameraFollowMode,
     suppress_input: bool,
     recovery: f32,
     recover_latched: bool,
@@ -357,9 +368,13 @@ impl Exploration {
         self.selector
     }
 
+    pub(crate) fn is_camera_selector_open(&self) -> bool {
+        self.camera_selector
+    }
+
     /// Selection and teleport are enabled only after the interface fully opens.
     pub fn planet_view_ready(&self) -> bool {
-        !self.selector && self.planet_presentation.selection_ready()
+        !self.selector && !self.camera_selector && self.planet_presentation.selection_ready()
     }
 
     /// Request selection at a physical screen position while Planet view is ready.
@@ -528,7 +543,9 @@ impl Exploration {
 
     /// Whether non-modal Planet-view controls and overlays may be shown or used.
     pub fn planet_view_interface_visible(&self) -> bool {
-        !self.selector && self.planet_presentation.interface_opacity() > 0.0
+        !self.selector
+            && !self.camera_selector
+            && self.planet_presentation.interface_opacity() > 0.0
     }
 
     pub fn planet_view_follows_body(&self) -> bool {
@@ -538,6 +555,7 @@ impl Exploration {
     /// Queue a planet-view orbit using the same logical-pixel delta as a drag.
     pub fn request_planet_view_orbit(&mut self, logical_delta: Vec2) -> bool {
         if self.selector
+            || self.camera_selector
             || !self.planet_camera.is_active()
             || !logical_delta.is_finite()
             || logical_delta == Vec2::ZERO
@@ -551,6 +569,7 @@ impl Exploration {
     /// Queue normalized wheel input after line/pixel unit conversion; positive values zoom in.
     pub fn request_planet_view_zoom(&mut self, wheel_delta: f32) -> bool {
         if self.selector
+            || self.camera_selector
             || !self.planet_camera.is_active()
             || !wheel_delta.is_finite()
             || wheel_delta == 0.0
@@ -664,7 +683,9 @@ impl Plugin for ExplorationPlugin {
     }
 }
 pub fn on_foot(state: Option<Res<Exploration>>) -> bool {
-    state.is_none_or(|s| s.occupied.is_none() && !s.selector && !s.suppress_input)
+    state.is_none_or(|s| {
+        s.occupied.is_none() && !s.selector && !s.camera_selector && !s.suppress_input
+    })
 }
 fn facing(heading: Vec3, up: Vec3) -> Quat {
     Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading))
@@ -680,7 +701,7 @@ fn initialize(mut state: ResMut<Exploration>, player: Query<&Position, With<Play
 }
 
 pub(super) fn open_vehicle_selector(state: &mut Exploration, time: &mut Time<Virtual>) -> bool {
-    if state.planet_camera.is_active() {
+    if state.planet_camera.is_active() || state.camera_selector {
         return false;
     }
     if state.occupied.is_some() {
@@ -721,6 +742,49 @@ pub(super) fn choose_vehicle(kind: Kind, state: &mut Exploration, time: &mut Tim
     state.recovery = 0.0;
     state.recover_latched = false;
     state.mouse_recovery_held = false;
+}
+
+pub(super) fn open_camera_selector(state: &mut Exploration, time: &mut Time<Virtual>) -> bool {
+    if state.selector || state.camera_selector || state.planet_camera.is_active() {
+        return false;
+    }
+
+    state.camera_selector_was_paused = time.is_paused();
+    state.camera_selector = true;
+    state.planet_selection_click = None;
+    state.recovery = 0.0;
+    state.recover_latched = false;
+    state.mouse_recovery_held = false;
+    time.pause();
+    true
+}
+
+pub(super) fn cancel_camera_selector(state: &mut Exploration, time: &mut Time<Virtual>) {
+    if !state.camera_selector {
+        return;
+    }
+    state.camera_selector = false;
+    if state.camera_selector_was_paused {
+        time.pause();
+    } else {
+        time.unpause();
+    }
+    state.suppress_input = true;
+    state.recovery = 0.0;
+    state.recover_latched = false;
+    state.mouse_recovery_held = false;
+}
+
+pub(super) fn choose_camera_follow_mode(
+    mode: CameraFollowMode,
+    state: &mut Exploration,
+    time: &mut Time<Virtual>,
+) {
+    if !state.camera_selector {
+        return;
+    }
+    state.camera_follow_mode = mode;
+    cancel_camera_selector(state, time);
 }
 
 fn submit_planet_teleport(
@@ -774,8 +838,34 @@ fn input(
         state.recovery = 0.0;
         return;
     }
+    if state.camera_selector {
+        state.planet_selection_click = None;
+        state.planet_teleport_requested = false;
+        if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyC) {
+            cancel_camera_selector(&mut state, &mut time);
+            return;
+        }
+        let mode = if keys.just_pressed(KeyCode::Digit1) {
+            Some(CameraFollowMode::Facing)
+        } else if keys.just_pressed(KeyCode::Digit3) {
+            Some(CameraFollowMode::Orientation)
+        } else {
+            None
+        };
+        if let Some(mode) = mode {
+            choose_camera_follow_mode(mode, &mut state, &mut time);
+            return;
+        }
+        state.recovery = 0.0;
+        return;
+    }
     if keys.just_pressed(KeyCode::KeyV) {
         if open_vehicle_selector(&mut state, &mut time) {
+            return;
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyC) {
+        if open_camera_selector(&mut state, &mut time) {
             return;
         }
     }
@@ -803,7 +893,7 @@ fn update_recovery_hold(
     real: Res<Time<Real>>,
     mut state: ResMut<Exploration>,
 ) {
-    if state.selector {
+    if state.selector || state.camera_selector {
         state.recovery = 0.0;
         state.recover_latched = false;
         state.mouse_recovery_held = false;
@@ -844,7 +934,10 @@ fn drive(
         if vehicle.parked {
             continue;
         }
-        let controlled = state.occupied == Some(entity) && !state.selector && !state.suppress_input;
+        let controlled = state.occupied == Some(entity)
+            && !state.selector
+            && !state.camera_selector
+            && !state.suppress_input;
         let support = placement.support(entity, pos.0, vehicle.flight.heading, vehicle.kind);
         let axis = |a, b| {
             if controlled {
@@ -2407,6 +2500,290 @@ pub(crate) mod tests {
         let state = app.world().resource::<Exploration>();
         assert!(state.selector, "the sidebar summon action opens selection");
         assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    #[test]
+    fn c_opens_paused_camera_choices_with_facing_selected() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+
+        tap_key(&mut app, KeyCode::KeyC);
+
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        let sidebar = rendered_sidebar_text(&mut app);
+        assert!(sidebar.contains("1 · Facing · SELECTED"), "{sidebar}");
+        assert!(sidebar.contains("3 · Orientation"), "{sidebar}");
+        assert!(sidebar.contains("Cancel · Esc / C"), "{sidebar}");
+    }
+
+    #[test]
+    fn camera_chooser_is_available_on_foot_and_in_each_vehicle_kind() {
+        for kind in [None, Some(Kind::Car), Some(Kind::Plane)] {
+            let (mut app, _) = fixture();
+            if let Some(kind) = kind {
+                let vehicle = app
+                    .world_mut()
+                    .spawn((
+                        Position(Vec3::new(0.0, 2000.6, 0.0)),
+                        Vehicle::new(kind, Vec3::NEG_Z),
+                    ))
+                    .id();
+                app.world_mut().resource_mut::<Exploration>().occupied = Some(vehicle);
+            }
+
+            tap_key(&mut app, KeyCode::KeyC);
+
+            assert!(
+                app.world()
+                    .resource::<Exploration>()
+                    .is_camera_selector_open()
+            );
+            assert!(app.world().resource::<Time<Virtual>>().is_paused());
+        }
+    }
+
+    #[test]
+    fn camera_chooser_restores_the_prior_pause_state_on_cancel_and_selection() {
+        for was_paused in [false, true] {
+            for select in [false, true] {
+                let (mut app, _) = fixture();
+                if was_paused {
+                    app.world_mut().resource_mut::<Time<Virtual>>().pause();
+                }
+
+                tap_key(&mut app, KeyCode::KeyC);
+                assert!(app.world().resource::<Time<Virtual>>().is_paused());
+                tap_key(
+                    &mut app,
+                    if select {
+                        KeyCode::Digit3
+                    } else {
+                        KeyCode::Escape
+                    },
+                );
+
+                assert!(
+                    !app.world()
+                        .resource::<Exploration>()
+                        .is_camera_selector_open(),
+                    "the chooser closes on selection or cancellation"
+                );
+                assert_eq!(
+                    app.world().resource::<Time<Virtual>>().is_paused(),
+                    was_paused
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn camera_choice_click_and_numbered_key_select_the_same_mode() {
+        let (mut keyboard, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut keyboard);
+        tap_key(&mut keyboard, KeyCode::KeyC);
+        tap_key(&mut keyboard, KeyCode::Digit3);
+        tap_key(&mut keyboard, KeyCode::KeyC);
+        let keyboard_sidebar = rendered_sidebar_text(&mut keyboard);
+        assert!(
+            keyboard_sidebar.contains("3 · Orientation · SELECTED"),
+            "{keyboard_sidebar}"
+        );
+
+        let (mut mouse, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut mouse);
+        set_sidebar_action_hitbox(
+            &mut mouse,
+            crate::ui::SidebarAction::ToggleCameraSelector,
+            Vec2::new(100.0, 180.0),
+        );
+        click_sidebar_action(&mut mouse);
+        assert!(mouse.world().resource::<Time<Virtual>>().is_paused());
+        set_sidebar_action_hitbox(
+            &mut mouse,
+            crate::ui::SidebarAction::SelectCameraFollow(CameraFollowMode::Orientation),
+            Vec2::new(100.0, 500.0),
+        );
+        click_sidebar_action(&mut mouse);
+        assert!(!mouse.world().resource::<Time<Virtual>>().is_paused());
+        tap_key(&mut mouse, KeyCode::KeyC);
+        let mouse_sidebar = rendered_sidebar_text(&mut mouse);
+        assert!(
+            mouse_sidebar.contains("3 · Orientation · SELECTED"),
+            "{mouse_sidebar}"
+        );
+    }
+
+    #[test]
+    fn camera_cancel_shortcut_preserves_the_selected_mode() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        tap_key(&mut app, KeyCode::KeyC);
+        tap_key(&mut app, KeyCode::Digit3);
+        tap_key(&mut app, KeyCode::KeyC);
+        tap_key(&mut app, KeyCode::KeyC);
+        tap_key(&mut app, KeyCode::KeyC);
+
+        let sidebar = rendered_sidebar_text(&mut app);
+        assert!(sidebar.contains("3 · Orientation · SELECTED"), "{sidebar}");
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    #[test]
+    fn camera_chooser_owns_contextual_keys_without_stacking_or_leaking() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        tap_key(&mut app, KeyCode::KeyC);
+        for key in [
+            KeyCode::KeyV,
+            KeyCode::KeyM,
+            KeyCode::KeyE,
+            KeyCode::KeyP,
+            KeyCode::KeyT,
+        ] {
+            tap_key(&mut app, key);
+        }
+
+        let state = app.world().resource::<Exploration>();
+        assert!(state.is_camera_selector_open());
+        assert!(!state.is_vehicle_selector_open());
+        assert!(!state.is_planet_view_active());
+        assert_eq!(state.camera_follow_mode, CameraFollowMode::Facing);
+    }
+
+    #[test]
+    fn facing_tracks_plane_pitch_without_roll_while_orientation_tracks_bank() {
+        fn camera_pose(mode: CameraFollowMode, pitch: f32, bank: f32) -> Transform {
+            let (mut app, _) = fixture();
+            let plane = app
+                .world_mut()
+                .spawn((
+                    Position(Vec3::new(0.0, 2000.6, 0.0)),
+                    Vehicle::new(Kind::Plane, Vec3::NEG_Z),
+                ))
+                .id();
+            {
+                let mut vehicle = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+                vehicle.flight.pitch = pitch;
+                vehicle.flight.bank = bank;
+            }
+            {
+                let mut state = app.world_mut().resource_mut::<Exploration>();
+                state.occupied = Some(plane);
+                state.camera_follow_mode = mode;
+            }
+            let camera = app
+                .world_mut()
+                .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+                .id();
+            for _ in 0..4 {
+                app.update();
+            }
+            *app.world().get::<Transform>(camera).unwrap()
+        }
+
+        let facing_level = camera_pose(CameraFollowMode::Facing, 0.0, 0.0);
+        let facing_climb = camera_pose(CameraFollowMode::Facing, 0.45, 0.0);
+        let facing_banked = camera_pose(CameraFollowMode::Facing, 0.45, 0.7);
+        let oriented_level = camera_pose(CameraFollowMode::Orientation, 0.45, 0.0);
+        let oriented_banked = camera_pose(CameraFollowMode::Orientation, 0.45, 0.7);
+
+        assert!(
+            (facing_level.rotation * Vec3::NEG_Z)
+                .angle_between(facing_climb.rotation * Vec3::NEG_Z)
+                > 0.2,
+            "Facing follows aircraft pitch"
+        );
+        assert!(
+            facing_climb.rotation.angle_between(facing_banked.rotation) < 0.01,
+            "Facing holds a steady horizon during a bank"
+        );
+        assert!(
+            oriented_level
+                .rotation
+                .angle_between(oriented_banked.rotation)
+                > 0.5,
+            "Orientation follows aircraft bank"
+        );
+    }
+
+    #[test]
+    fn degenerate_plane_orientation_keeps_the_camera_finite() {
+        let (mut app, _) = fixture();
+        let plane = app
+            .world_mut()
+            .spawn((
+                Position(Vec3::new(0.0, 2000.6, 0.0)),
+                Vehicle::new(Kind::Plane, Vec3::Y),
+            ))
+            .id();
+        {
+            let mut vehicle = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+            vehicle.flight.heading = Vec3::Y;
+            vehicle.flight.pitch = f32::NAN;
+            vehicle.flight.bank = f32::NAN;
+        }
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.occupied = Some(plane);
+            state.camera_follow_mode = CameraFollowMode::Orientation;
+        }
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+            .id();
+
+        for _ in 0..4 {
+            app.update();
+        }
+
+        let pose = app.world().get::<Transform>(camera).unwrap();
+        assert!(pose.translation.is_finite());
+        assert!(pose.rotation.is_finite());
+    }
+
+    #[test]
+    fn camera_follow_mode_switch_blends_rotation_without_moving_the_boom() {
+        let (mut app, _) = fixture();
+        let plane = app
+            .world_mut()
+            .spawn((
+                Position(Vec3::new(0.0, 2000.6, 0.0)),
+                Vehicle::new(Kind::Plane, Vec3::NEG_Z),
+            ))
+            .id();
+        app.world_mut()
+            .get_mut::<Vehicle>(plane)
+            .unwrap()
+            .flight
+            .bank = 0.7;
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(plane);
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+            .id();
+        for _ in 0..30 {
+            app.update();
+        }
+        let before = *app.world().get::<Transform>(camera).unwrap();
+
+        tap_key(&mut app, KeyCode::KeyC);
+        tap_key(&mut app, KeyCode::Digit3);
+        let first_step = *app.world().get::<Transform>(camera).unwrap();
+        for _ in 0..60 {
+            app.update();
+        }
+        let settled = *app.world().get::<Transform>(camera).unwrap();
+
+        let first_rotation = before.rotation.angle_between(first_step.rotation);
+        let total_rotation = before.rotation.angle_between(settled.rotation);
+        assert!(first_rotation > 0.01, "the selected mode starts blending");
+        assert!(first_rotation < total_rotation, "the camera does not snap");
+        assert!(
+            before.translation.distance(settled.translation) < 0.01,
+            "the follow-mode change keeps the collision-protected boom in place"
+        );
     }
 
     #[test]
@@ -6186,6 +6563,10 @@ pub(crate) mod tests {
         {
             let state = app.world().resource::<Exploration>();
             assert!(!state.selector);
+            assert!(
+                !state.camera_selector,
+                "C keeps its vehicle-selector priority"
+            );
             assert!(matches!(
                 state.actions.front(),
                 Some(Action::Summon(Kind::Car))

@@ -59,6 +59,7 @@ pub(crate) enum SidebarReadoutSlot {
     Follow,
     VehicleAction,
     SummonVehicleAction,
+    CameraFollowAction,
     TeleportAction,
     RecoveryContext,
     RecoveryAction,
@@ -72,8 +73,11 @@ pub(crate) enum SidebarAction {
     Interact,
     Teleport,
     ToggleVehicleSelector,
+    ToggleCameraSelector,
     SelectVehicle(crate::exploration::Kind),
+    SelectCameraFollow(crate::exploration::CameraFollowMode),
     CancelVehicleSelector,
+    CancelCameraSelector,
     HoldRecovery,
 }
 
@@ -306,6 +310,12 @@ pub(crate) fn spawn_sidebar(commands: &mut Commands, font: &UiFont) {
                                 "Summon vehicle · V",
                                 SidebarReadoutSlot::SummonVehicleAction,
                                 SidebarAction::ToggleVehicleSelector,
+                                font,
+                            ));
+                            section.spawn(sidebar_action_row(
+                                "Choose camera · C",
+                                SidebarReadoutSlot::CameraFollowAction,
+                                SidebarAction::ToggleCameraSelector,
                                 font,
                             ));
                             section.spawn(sidebar_action_row(
