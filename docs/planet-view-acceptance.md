@@ -57,6 +57,11 @@ nor pauses the live simulation while opening, browsing or returning. Vehicle
 setup occurs outside the view; existing vehicle entry, movement, follow and
 recovery remain part of the live routes.
 
+The camera refinement covers uneven speed or snaps, unwanted rotation or roll,
+and travel path or framing. Check ordinary entry and return as well as interrupted
+transitions. The short diagnostic records requested and actual capture times so
+an image taken during a reversal cannot be mistaken for uninterrupted opening.
+
 ## Evidence contract
 
 - Source revision, dirty patch/status, SHA-256 source and generated-asset hashes,

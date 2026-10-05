@@ -88,31 +88,10 @@ impl RoadMeshRefresh {
     }
 }
 
-// [DEBUG-road-cost] Temporary in-memory stage timing for the isolated live probe.
-#[derive(Resource, Default)]
-pub(crate) struct RoadStageTimings {
-    pub current: Option<RoadStageTiming>,
-    pub update_index: u64,
-}
-
-#[derive(Clone, Copy, Default)]
-pub(crate) struct RoadStageTiming {
-    pub update_index: u64,
-    pub real_elapsed_s: f64,
-    pub widths_ms: f64,
-    pub geometry_ms: f64,
-    pub mesh_ms: f64,
-    pub replace_ms: f64,
-    pub total_ms: f64,
-}
-
 pub(crate) struct PlanetRoadsPlugin;
 
 impl Plugin for PlanetRoadsPlugin {
     fn build(&self, app: &mut App) {
-        if std::env::var("TERRA_PLANET_TRANSITION_DIAGNOSTIC_TIMING_ONLY").as_deref() == Ok("1") {
-            app.init_resource::<RoadStageTimings>();
-        }
         app.init_resource::<RoadHighlightLayer>()
             .add_systems(
                 OnEnter(shared::state::AppState::Playing),
@@ -369,13 +348,7 @@ fn update_road_highlight_widths(
     highlight_mesh: Query<&Mesh3d, With<RoadHighlightMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut refresh: Local<RoadMeshRefresh>,
-    mut timings: Option<ResMut<RoadStageTimings>>,
 ) {
-    if let Some(timings) = timings.as_mut() {
-        timings.current = None;
-        timings.update_index += 1;
-    }
-    let started = timings.as_ref().map(|_| std::time::Instant::now());
     if !state.is_planet_view_active() || !layer.is_enabled() {
         return;
     }
@@ -410,7 +383,6 @@ fn update_road_highlight_widths(
         return;
     }
 
-    let widths_started = started.map(|_| std::time::Instant::now());
     let widths = road_highlight_widths(&paths, |sample| {
         let depth = perspective_camera_depth(*camera_transform, sample.center);
         projected_surface_ribbon_width(
@@ -423,37 +395,20 @@ fn update_road_highlight_widths(
         .unwrap_or(MIN_ROAD_WIDTH_METERS)
     });
 
-    let widths_ms = widths_started.map_or(0.0, |at| at.elapsed().as_secs_f64() * 1000.0);
     if epoch_changed {
         refresh.last_world_epoch = Some(*world_epoch);
         refresh.last_widths = Some(road_highlight_widths(&paths, |_| MIN_ROAD_WIDTH_METERS));
     }
     if !refresh.geometry_is_current(*world_epoch, &widths) {
-        let geometry_started = started.map(|_| std::time::Instant::now());
         let triangles = build_highlight_triangles(&paths, &ground.0, &widths);
-        let geometry_ms = geometry_started.map_or(0.0, |at| at.elapsed().as_secs_f64() * 1000.0);
-        let mesh_started = started.map(|_| std::time::Instant::now());
         let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; triangles.len()];
         let mesh = build_visual_mesh(&triangles, &colors);
-        let mesh_ms = mesh_started.map_or(0.0, |at| at.elapsed().as_secs_f64() * 1000.0);
-        let replace_started = started.map(|_| std::time::Instant::now());
         if let Ok(handle) = highlight_mesh.single()
             && let Some(mut existing) = meshes.get_mut(&handle.0)
         {
             *existing = mesh;
         }
         refresh.last_widths = Some(widths);
-        if let (Some(timings), Some(started)) = (timings.as_mut(), started) {
-            timings.current = Some(RoadStageTiming {
-                update_index: timings.update_index,
-                real_elapsed_s: time.elapsed_secs_f64(),
-                widths_ms,
-                geometry_ms,
-                mesh_ms,
-                replace_ms: replace_started.unwrap().elapsed().as_secs_f64() * 1000.0,
-                total_ms: started.elapsed().as_secs_f64() * 1000.0,
-            });
-        }
     }
     refresh.elapsed = 0.0;
     refresh.last_camera_position = Some(camera_transform.translation);

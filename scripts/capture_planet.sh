@@ -85,13 +85,10 @@ printf '%s\n' 'cargo build --locked -p main --features asset-review' > "$output/
 if [ "$mode" = diagnostic ]; then
     python3 - "$output" <<'PYTHON'
 from pathlib import Path
-import os
 import sys
 output = Path(sys.argv[1])
 status = output / 'diagnostic-status.txt'
-expected = ('status=timing-diagnostic-complete'
-            if os.environ.get('TERRA_PLANET_TRANSITION_DIAGNOSTIC_TIMING_ONLY') == '1'
-            else 'status=diagnostic-complete')
+expected = 'status=diagnostic-complete'
 if not status.is_file() or expected not in status.read_text().splitlines():
     sys.exit(f'Diagnostic incomplete or rejected; inspect {output}')
 print(f'Diagnostic complete in {output}; rendered inspection is still required.')
