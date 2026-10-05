@@ -1838,7 +1838,7 @@ fn sample_frame(
     if super::phase_trace::enabled()
         && let Some(trace) = world.get_resource::<super::phase_trace::ScheduleTraceRecorder>()
     {
-        trace.record_frame_sample(real_elapsed);
+        trace.record_frame_sample(real_elapsed, real.last_update(), real.delta());
     }
     FrameSample {
         real_elapsed,
@@ -2179,6 +2179,11 @@ fn flush_route_trace_sidecars(world: &World, run: &mut PlanetAcceptance, route: 
                         ),
                     );
                 }
+                if let Err(error) = fs::write(&path, csv) {
+                    record_error(run, format!("write {}: {error}", path.display()));
+                }
+                let path = directory.join(format!("repeat-{repeat}-system-span-summary.csv"));
+                let csv = trace.take_native_system_summary_csv(route.name(), repeat);
                 if let Err(error) = fs::write(&path, csv) {
                     record_error(run, format!("write {}: {error}", path.display()));
                 }
