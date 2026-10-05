@@ -125,54 +125,50 @@ camera clearance, fades, and displaced-material prepass parity.
 
 ## Recorded outcome
 
-Acceptance remains pending. The first actual renderer pass is preserved at
-`/tmp/terra-spec-45/acceptance-57-run1`; it is rejected and contains no accepted
-performance measurements.
+Acceptance remains incomplete because the final warmed run failed the frame-stall
+limit on every route. The unchanged, trace-free run is preserved at
+/tmp/terra-spec-45/acceptance-57-visible-space-0104ff7, built from commit
+0104ff7d4c07b4f4870d000720eb6326194fa7f9. Its manifest, raw intervals,
+independent recalculation, application log, source hashes, and host sampler are in
+that directory. The independent validator reports four recurring-stall failures;
+all 12 repeats passed continuous movement, live awake physics, advancing simulation,
+and daylight-progression checks.
 
-That pass produced all twelve Metal-rendered primary-window PNGs on an Apple
-M4 Pro (20-core GPU). The application viewport was 2560×1440 physical pixels,
-1280×720 logical pixels, scale factor 2, with FIFO presentation on the normal
-3024×1964 Retina display. Inspection found that the gameplay readout remained
-opaque over the destination panel, and the settlement capture used a near-ground
-radius that could not show the settlement. The capture configuration also called
-noon 60° even though the fixed solar orbit reaches only 23.4° at this anchor.
-These require correction before acceptance; the actual vectors and elevations
-remain recorded in the manifest.
+The run used a 60-second warmup and three 60-second repeats per route, with the
+normal asset-review feature and no schedule or work tracing. It ran on an Apple M4
+Pro with a 20-core GPU and 24 GB memory. The primary viewport was 2560×1440
+physical pixels (1280×720 logical, scale factor 2), FIFO presentation, on the
+3024×1964 built-in display. The application stayed on the visible macOS Space;
+awake display checks alone do not ensure captures are rendered on the active Space.
+The manifest records production shadows disabled, so this run makes no active-shadow
+performance claim. Keep every raw interval when reviewing the outliers.
 
-The inspected globe/night and opposite captures retain a dark night side and
-readable settlement labels and roads. Ambient brightness matches exactly between
-globe and opposite views for each fixed body/sun phase (86.6294 at local noon,
-35 at sunset/night). These are limited observations from the rejected matrix,
-not a completed visual or performance acceptance claim.
+All twelve captures were directly inspected. The ground, settlement, globe, and
+opposite-hemisphere views show real, nonblack renders; atmosphere, night darkness,
+roads, and labels remain coherent, with no new clipping or overlay defect. Fixed
+body/sun ambient values match between globe and opposite views at 86.6294 for noon
+and 35 for sunset and night. Static images do not establish motion or pacing.
 
+| Route | Slow intervals by repeat (>33.33 ms) | Repeats affected | p50 range (ms) | p95 range (ms) | Maximum (ms) |
+| --- | --- | ---: | ---: | ---: | ---: |
+| entry-reversal | 39 / 1 / 0 | 2 of 3 | 8.320–8.337 | 9.108–10.371 | 1011.830 |
+| orbit-zoom | 0 / 3 / 7 | 2 of 3 | 8.335–8.363 | 9.344–9.874 | 88.823 |
+| follow-vehicle-recovery | 1 / 0 / 2 | 2 of 3 | 9.221–9.631 | 17.895–17.953 | 1070.265 |
+| return-reversal | 2 / 0 / 3 | 2 of 3 | 9.745–10.374 | 17.694–17.878 | 52.320 |
 
-A second partial pass is preserved at
-`/tmp/terra-spec-45/acceptance-57-final` (the directory name does not imply
-acceptance). It contains twelve corrected captures and one measured 60-second
-entry/reversal repeat after warmup. The readout overlap and settlement framing
-were corrected. Inspection found discontinuities in the road highlights, and the
-user reported uneven speed, unwanted rotation and unsatisfactory paths during
-entry/exit. These remain under investigation.
+The configured rule rejects a route when at least two repeats contain any interval
+above 33.33 ms. Each route meets that rejection condition. The largest isolated
+intervals occurred at 1011.830 ms in entry repeat 2 and 1070.265 ms in follow repeat
+1; the retained raw data does not establish their cause. The vm_stat sidecar was
+sampled without per-row timestamps, so it cannot support precise host-memory/frame
+alignment.
 
-The partial repeat recorded 3,500 intervals: median 16.677 ms, p95 18.808 ms,
-p99 28.197 ms, maximum 268.487 ms, and nine intervals above 33.33 ms. Recorded
-controlled-body positions did not move, so this repeat does not meet the live
-route contract. The run was stopped before repeat two. Its missing completion
-status correctly causes independent validation to reject it. Normal settings
-recorded shadows disabled; no active-shadow performance claim is made.
-
-The third pass, `/tmp/terra-spec-45/acceptance-57-run3`, contains twelve inspected
-captures with continuous road highlights and corrected interface presentation.
-The companion `/tmp/terra-spec-45/diagnostic-57-camera-909b56f-fresh` completed all
-eight transition/weather captures, six map toggles, opposite-side orbit, and
-15.23 m of movement with live physics. Its early opening image keeps the terrain
-and controlled-body marker in frame; the return image shows the settled chase
-view. Snow is absent in the map image and visible again after return.
-
-Run three is nevertheless rejected for recurring entry/reversal stalls. All
-three warmed 60-second repeats passed movement and physics gates, with paths of
-210.19–224.68 m and 49.61–49.63 seconds of advancing fixed simulation time. Their
-p95 frame times were 11.48–11.64 ms, but each contained 39–46 intervals above
-33.33 ms, and maxima were 156.58–184.48 ms. The remaining routes were stopped
-after this rejection. Subsequent short diagnostic probes isolated bulk scenery
-removal as a major contributor; they do not replace full performance acceptance.
+Earlier fixes addressed the readout overlap, settlement framing, road-highlight
+continuity, camera transition motion, map precipitation visibility, and selector
+access while Planet view is active. The separate rendered transition/weather
+diagnostic at /tmp/terra-spec-45/diagnostic-57-camera-909b56f-fresh shows the
+opening and return framing, snow hidden while mapped and visible again afterward,
+and live body movement. These checks complement but do not replace the failed
+warmed performance run. Further profiling must distinguish renderer scheduling
+and surface waits from application system work before changing visual-detail
+budgets.
