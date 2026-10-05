@@ -281,10 +281,13 @@ pub(super) fn readout(
         With<crate::ui::SidebarExplorationReadout>,
     >,
 ) {
-    let (movement, view, actions) = if state.selector {
+    let (movement, view, follow, vehicle_action, teleport_action, actions) = if state.selector {
         (
             "Travel mode: Vehicle selection · simulation paused".to_owned(),
             "Planet view: unavailable during vehicle selection".to_owned(),
+            "Follow body · F · unavailable during vehicle selection".to_owned(),
+            "Vehicle selection is open · V".to_owned(),
+            "Teleport to selected destination · T".to_owned(),
             "Choose Car or Plane · Esc / V cancel".to_owned(),
         )
     } else {
@@ -329,20 +332,27 @@ pub(super) fn readout(
                 })
             })
             .unwrap_or_else(|| "Travel mode: —".to_owned());
-        let view = if state.is_planet_view_active() {
-            format!(
-                "Planet view: Follow {} · drag to orbit · wheel to zoom",
-                if state.planet_view_follows_body() {
-                    "on"
-                } else {
-                    "off"
-                }
-            )
+        let view = if state.planet_camera.is_requested_open() {
+            "Close Planet view · M".to_owned()
         } else {
-            "Planet view: M to open".to_owned()
+            "Open Planet view · M".to_owned()
         };
+        let follow = format!(
+            "Follow body · F · {}",
+            if state.planet_view_follows_body() {
+                "on"
+            } else {
+                "off"
+            }
+        );
+        let vehicle_action = if state.is_in_vehicle() {
+            "Exit vehicle · E".to_owned()
+        } else {
+            "Enter vehicle · E".to_owned()
+        };
+        let teleport_action = "Teleport to selected destination · T".to_owned();
         let mut actions = format!(
-            "Recover: Hold R · {:.0}%\nPlanet view: M\n{}",
+            "Recover: Hold R · {:.0}%\n{}",
             state.recovery.min(1.0) * 100.0,
             if state.is_in_vehicle() {
                 "Exit vehicle: E"
@@ -354,13 +364,23 @@ pub(super) fn readout(
             actions.push('\n');
             actions.push_str(&state.message);
         }
-        (movement, view, actions)
+        (
+            movement,
+            view,
+            follow,
+            vehicle_action,
+            teleport_action,
+            actions,
+        )
     };
 
     for (mut text, slot) in &mut texts {
         let value = match slot {
             crate::ui::SidebarReadoutSlot::Movement => &movement,
             crate::ui::SidebarReadoutSlot::View => &view,
+            crate::ui::SidebarReadoutSlot::Follow => &follow,
+            crate::ui::SidebarReadoutSlot::VehicleAction => &vehicle_action,
+            crate::ui::SidebarReadoutSlot::TeleportAction => &teleport_action,
             crate::ui::SidebarReadoutSlot::Actions => &actions,
             _ => continue,
         };

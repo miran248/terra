@@ -56,8 +56,22 @@ pub(crate) enum SidebarReadoutSlot {
     Road,
     Movement,
     View,
+    Follow,
+    VehicleAction,
+    TeleportAction,
     Actions,
 }
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarAction {
+    TogglePlanetView,
+    ToggleFollow,
+    Interact,
+    Teleport,
+}
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SidebarActionControl(pub(crate) SidebarAction);
 
 #[derive(Component)]
 pub(crate) struct SidebarWorldReadout;
@@ -167,7 +181,7 @@ pub(crate) fn spawn_sidebar(commands: &mut Commands, font: &UiFont) {
                 ..default()
             },
             BackgroundColor(theme::PANEL_BG.with_alpha(0.84)),
-            GlobalZIndex(20),
+            GlobalZIndex(100),
             FocusPolicy::Block,
             Sidebar,
         ))
@@ -257,9 +271,10 @@ pub(crate) fn spawn_sidebar(commands: &mut Commands, font: &UiFont) {
                         .spawn(sidebar_section(SidebarSection::View))
                         .with_children(|section| {
                             section.spawn(sidebar_title("VIEW", font));
-                            section.spawn(sidebar_exploration_row(
-                                "Planet view: M to open · drag to orbit · wheel to zoom",
+                            section.spawn(sidebar_action_row(
+                                "Open Planet view · M",
                                 SidebarReadoutSlot::View,
+                                SidebarAction::TogglePlanetView,
                                 font,
                             ));
                         });
@@ -274,6 +289,18 @@ pub(crate) fn spawn_sidebar(commands: &mut Commands, font: &UiFont) {
                         .spawn(sidebar_section(SidebarSection::Actions))
                         .with_children(|section| {
                             section.spawn(sidebar_title("ACTIONS", font));
+                            section.spawn(sidebar_action_row(
+                                "Enter vehicle · E",
+                                SidebarReadoutSlot::VehicleAction,
+                                SidebarAction::Interact,
+                                font,
+                            ));
+                            section.spawn(sidebar_action_row(
+                                "Teleport to selected destination · T",
+                                SidebarReadoutSlot::TeleportAction,
+                                SidebarAction::Teleport,
+                                font,
+                            ));
                             section.spawn(sidebar_exploration_row(
                                 "Recover: Hold R · 0%",
                                 SidebarReadoutSlot::Actions,
@@ -337,6 +364,27 @@ fn sidebar_exploration_row(text: &str, slot: SidebarReadoutSlot, font: &UiFont) 
         },
         slot,
         SidebarExplorationReadout,
+    )
+}
+
+pub(crate) fn sidebar_action_row(
+    text: &str,
+    slot: SidebarReadoutSlot,
+    action: SidebarAction,
+    font: &UiFont,
+) -> impl Bundle {
+    (
+        Text::new(text),
+        text_font(font, 12.0),
+        TextColor(theme::INK),
+        Node {
+            width: Val::Percent(100.0),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        slot,
+        SidebarExplorationReadout,
+        SidebarActionControl(action),
     )
 }
 
