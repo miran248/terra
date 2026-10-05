@@ -24,6 +24,13 @@ const LON_BUCKETS: usize = 128;
 const FACET_LAT_BUCKETS: usize = 256;
 const FACET_LON_BUCKETS: usize = 512;
 const ROAD_PROJECTION_BARYCENTRIC_EPSILON: f32 = 1e-5;
+const ROAD_PROJECTION_HINT_EDGE_MARGIN: f32 = 1e-3;
+
+#[derive(Default)]
+pub(crate) struct RoadProjectionHint {
+    mesh_identity: usize,
+    triangle: Option<usize>,
+}
 
 fn bucket(dir: Vec3) -> (usize, usize) {
     bucket_with_resolution(dir, LAT_BUCKETS, LON_BUCKETS)
@@ -123,16 +130,48 @@ impl PlanetMesh {
     /// general terrain lookup above unchanged and narrows the candidate set for the
     /// many lateral samples a ribbon needs.
     pub fn facet_radius_for_road_projection(&self, dir: Vec3, fallback: f32) -> f32 {
-        self.facet_radius_from_grid(
+        let mut hint = RoadProjectionHint::default();
+        self.facet_radius_for_road_projection_with_hint(dir, fallback, &mut hint)
+    }
+
+    pub(crate) fn facet_radius_for_road_projection_with_hint(
+        &self,
+        dir: Vec3,
+        fallback: f32,
+        hint: &mut RoadProjectionHint,
+    ) -> f32 {
+        self.road_projection_radius_with_hint(dir, fallback, hint).0
+    }
+
+    fn road_projection_radius_with_hint(
+        &self,
+        dir: Vec3,
+        fallback: f32,
+        hint: &mut RoadProjectionHint,
+    ) -> (f32, bool) {
+        let mesh_identity = self as *const Self as usize;
+        if hint.mesh_identity == mesh_identity
+            && let Some(triangle) = hint.triangle
+            && let Some(cached_face) = self.tris.get(triangle)
+            && let Some(hit) = road_projection_ray_hit(dir, cached_face)
+            && hit.is_interior()
+        {
+            return (hit.radius, true);
+        }
+
+        let hit = self.facet_hit_from_grid(
             dir,
-            fallback,
             &self.facet_grid,
             FACET_LAT_BUCKETS,
             FACET_LON_BUCKETS,
             ROAD_PROJECTION_BARYCENTRIC_EPSILON,
-        )
+        );
+        hint.mesh_identity = mesh_identity;
+        hint.triangle = hit.map(|(triangle, _)| triangle);
+        (hit.map_or(fallback, |(_, radius)| radius), false)
     }
 
+    /// Shared lookup implementation for a particular direction index and edge policy.
     fn facet_radius_from_grid(
         &self,
         dir: Vec3,
@@ -142,6 +181,18 @@ impl PlanetMesh {
         lon_buckets: usize,
         barycentric_epsilon: f32,
     ) -> f32 {
+        self.facet_hit_from_grid(dir, grid, lat_buckets, lon_buckets, barycentric_epsilon)
+            .map_or(fallback, |(_, radius)| radius)
+    }
+
+    fn facet_hit_from_grid(
+        &self,
+        dir: Vec3,
+        grid: &[Vec<u32>],
+        lat_buckets: usize,
+        lon_buckets: usize,
+        barycentric_epsilon: f32,
+    ) -> Option<(usize, f32)> {
         let (li, oi) = bucket_with_resolution(dir, lat_buckets, lon_buckets);
         for &idx in &grid[li * lon_buckets + oi] {
             if let Some(r) = ray_triangle_radius_with_tolerance(
@@ -149,17 +200,16 @@ impl PlanetMesh {
                 &self.tris[idx as usize],
                 barycentric_epsilon,
             ) {
-                return r;
+                return Some((idx as usize, r));
             }
         }
-        // Keep the exact-surface fallback for large or boundary-crossing facets that
-        // extend beyond their centroid's neighbouring buckets.
-        for t in &self.tris {
-            if let Some(r) = ray_triangle_radius_with_tolerance(dir, t, barycentric_epsilon) {
-                return r;
+        for (index, triangle) in self.tris.iter().enumerate() {
+            if let Some(r) = ray_triangle_radius_with_tolerance(dir, triangle, barycentric_epsilon)
+            {
+                return Some((index, r));
             }
         }
-        fallback
+        None
     }
 }
 
@@ -184,12 +234,56 @@ fn ray_triangle_radius_with_tolerance(
     triangle: &[Vec3; 3],
     barycentric_epsilon: f32,
 ) -> Option<f32> {
-    ray_triangle_distance_from_offset_with_tolerance(
-        dir,
-        -triangle[0],
-        triangle,
-        barycentric_epsilon,
-    )
+    road_projection_ray_hit_with_tolerance(dir, triangle, barycentric_epsilon).map(|hit| hit.radius)
+}
+
+struct RoadProjectionRayHit {
+    radius: f32,
+    u: f32,
+    v: f32,
+}
+
+impl RoadProjectionRayHit {
+    fn is_interior(&self) -> bool {
+        let w = 1.0 - self.u - self.v;
+        self.u > ROAD_PROJECTION_HINT_EDGE_MARGIN
+            && self.v > ROAD_PROJECTION_HINT_EDGE_MARGIN
+            && w > ROAD_PROJECTION_HINT_EDGE_MARGIN
+    }
+}
+
+/// A local shortcut for consecutive road samples. The terrain is a single radial surface,
+/// so an interior hit on the previous triangle remains the unique surface hit until the
+/// direction approaches a face edge; edge-near rays use the ordered indexed lookup below.
+fn road_projection_ray_hit(dir: Vec3, triangle: &[Vec3; 3]) -> Option<RoadProjectionRayHit> {
+    road_projection_ray_hit_with_tolerance(dir, triangle, ROAD_PROJECTION_BARYCENTRIC_EPSILON)
+}
+
+fn road_projection_ray_hit_with_tolerance(
+    dir: Vec3,
+    triangle: &[Vec3; 3],
+    barycentric_epsilon: f32,
+) -> Option<RoadProjectionRayHit> {
+    let e1 = triangle[1] - triangle[0];
+    let e2 = triangle[2] - triangle[0];
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    if det.abs() < 1e-6 {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let origin_to_triangle = -triangle[0];
+    let u = origin_to_triangle.dot(p) * inv;
+    if u < -barycentric_epsilon || u > 1.0 + barycentric_epsilon {
+        return None;
+    }
+    let q = origin_to_triangle.cross(e1);
+    let v = dir.dot(q) * inv;
+    if v < -barycentric_epsilon || u + v > 1.0 + barycentric_epsilon {
+        return None;
+    }
+    let radius = e2.dot(q) * inv;
+    (radius > 0.0).then_some(RoadProjectionRayHit { radius, u, v })
 }
 
 fn ray_triangle_distance_from_offset(
@@ -395,6 +489,30 @@ mod tests {
             road_candidate_total * 4 < coarse_candidate_total,
             "road index candidates {road_candidate_total} should be far below coarse candidates {coarse_candidate_total}"
         );
+    }
+
+    #[test]
+    fn road_projection_hint_reuses_interior_facets_without_changing_radii() {
+        let mesh = PlanetMesh::new(unit_icosphere_tris(5));
+        let mut hint = RoadProjectionHint::default();
+        let mut reused = 0usize;
+        let count = 1_000usize;
+        let start = Vec3::new(0.31, 0.47, -0.83).normalize();
+        let tangent = Vec3::Y.cross(start).normalize();
+
+        for index in 0..count {
+            let along = index as f32 * 1e-4;
+            let direction = (start + tangent * along).normalize();
+            let expected = mesh.facet_radius_for_road_projection(direction, -1.0);
+            let (actual, used_hint) =
+                mesh.road_projection_radius_with_hint(direction, -1.0, &mut hint);
+
+            assert_eq!(actual.to_bits(), expected.to_bits());
+            reused += usize::from(used_hint);
+        }
+
+        assert!(reused > count / 2, "only {reused}/{count} facets reused");
+        assert!(reused < count, "the sequence should cross facet boundaries");
     }
 
     #[test]

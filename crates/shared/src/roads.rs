@@ -219,6 +219,7 @@ pub fn build_terrain_following_road_ribbon(
 
     let max_width = widths_m.iter().copied().fold(0.0, f32::max);
     let lateral_segments = (max_width / MAX_RIBBON_SURFACE_SAMPLE_SPACING_M).ceil() as usize;
+    let mut facet_hint = crate::planet::RoadProjectionHint::default();
     let mut cross_sections = Vec::with_capacity(samples.len());
     for (index, sample) in samples.iter().enumerate() {
         let normal = sample.normal.normalize();
@@ -239,7 +240,12 @@ pub fn build_terrain_following_road_ribbon(
             let across = segment as f32 / lateral_segments as f32;
             let offset = (0.5 - across) * width;
             let point = sample.center + side * offset;
-            section.push(project_road_point_to_terrain(point, ground, surface_lift_m));
+            section.push(project_road_point_to_terrain(
+                point,
+                ground,
+                surface_lift_m,
+                &mut facet_hint,
+            ));
         }
         cross_sections.push(section);
     }
@@ -263,7 +269,7 @@ pub fn build_terrain_following_road_ribbon(
         }
     }
     append_road_end_caps(&mut triangles, samples, widths_m, |point| {
-        project_road_point_to_terrain(point, ground, surface_lift_m)
+        project_road_point_to_terrain(point, ground, surface_lift_m, &mut facet_hint)
     });
     triangles
 }
@@ -272,12 +278,14 @@ fn project_road_point_to_terrain(
     point: Vec3,
     ground: &crate::planet::PlanetMesh,
     surface_lift_m: f32,
+    facet_hint: &mut crate::planet::RoadProjectionHint,
 ) -> Vec3 {
     let direction = point.normalize_or_zero();
     if direction.length_squared() < 0.5 {
         return point;
     }
-    let radius = ground.facet_radius_for_road_projection(direction, PLANET_RADIUS);
+    let radius =
+        ground.facet_radius_for_road_projection_with_hint(direction, PLANET_RADIUS, facet_hint);
     direction * (radius + surface_lift_m)
 }
 
