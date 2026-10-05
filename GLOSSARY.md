@@ -7,6 +7,9 @@ Terra is a spherical world with natural geography and built features. This gloss
 **Planet view**:
 A live, rotatable view of the whole planet used to navigate and choose teleport destinations.
 
+**Surface label**:
+A geographic name presented as lettering wrapped along the planet's surface in Planet view or the minimap. Its location stays anchored to the named place while its orientation can turn for readability.
+
 **Vehicle**:
 A means of transport that the explorer can enter, operate, and exit to travel through the world.
 _Avoid_: Exploration mode when referring to a vehicle present in the world.
