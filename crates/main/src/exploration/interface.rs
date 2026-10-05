@@ -466,7 +466,7 @@ pub(super) fn pointer_input(
                         .orbit_from_surface_drag(*camera, previous, current)
                 });
             if !anchored {
-                state.planet_camera.orbit_from(
+                state.planet_camera.orbit_from_drag(
                     *camera,
                     motion.orbit_delta * orbit_gain(*camera, projection, viewport.y),
                 );

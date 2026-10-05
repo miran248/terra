@@ -235,6 +235,7 @@ pub struct PlanetViewCamera {
     attained_radius: f32,
     detached_direction: Vec3,
     detached_heading: Vec3,
+    snap_orbit_this_frame: bool,
     // Previous runtime-accepted pose; the next update measures motion from it
     // so interrupted transitions inherit actual, collision-constrained motion.
     last_motion_pose: Option<Transform>,
@@ -256,6 +257,7 @@ impl Default for PlanetViewCamera {
             attained_radius: PLANET_RADIUS,
             detached_direction: Vec3::Y,
             detached_heading: Vec3::NEG_Z,
+            snap_orbit_this_frame: false,
             last_motion_pose: None,
             last_linear_velocity: Vec3::ZERO,
             last_angular_velocity: Vec3::ZERO,
@@ -430,13 +432,20 @@ impl PlanetViewCamera {
     /// while later deltas accumulate on the detached target. `delta.y` follows
     /// the pointer's down-positive screen coordinate.
     pub fn orbit_from(&mut self, current: Transform, delta: Vec2) {
-        if !delta.is_finite() || delta == Vec2::ZERO {
-            return;
+        if let Some(rotation) = screen_drag_rotation(current, delta) {
+            self.orbit_from_rotation(current, rotation);
         }
-        let screen_right = current.rotation * Vec3::X;
-        let screen_up = current.rotation * Vec3::Y;
-        let rotation = Quat::from_scaled_axis(-screen_up * delta.x - screen_right * delta.y);
-        self.orbit_from_rotation(current, rotation);
+    }
+
+    /// Apply a screen-space pointer drag and request an immediate attained
+    /// orientation update for this camera frame. The owning camera system still
+    /// smooths requested radius independently, so zoom remains continuous.
+    pub fn orbit_from_drag(&mut self, current: Transform, delta: Vec2) {
+        if let Some(rotation) = screen_drag_rotation(current, delta)
+            && self.orbit_from_rotation(current, rotation)
+        {
+            self.snap_orbit_this_frame = true;
+        }
     }
 
     /// Keep a nominal globe point under the pointer while dragging between two
@@ -454,13 +463,14 @@ impl PlanetViewCamera {
         if !angle.is_finite() || angle <= 1e-7 {
             return false;
         }
-        self.orbit_from_rotation(current, rotation);
-        true
+        let applied = self.orbit_from_rotation(current, rotation);
+        self.snap_orbit_this_frame |= applied;
+        applied
     }
 
-    fn orbit_from_rotation(&mut self, current: Transform, rotation: Quat) {
+    fn orbit_from_rotation(&mut self, current: Transform, rotation: Quat) -> bool {
         if !rotation.is_finite() {
-            return;
+            return false;
         }
         let current_direction = current
             .translation
@@ -492,6 +502,7 @@ impl PlanetViewCamera {
             self.resume_on_open = true;
             self.retain_orbit_target_on_open = true;
         }
+        true
     }
 
     /// Update the main-camera pose from current gameplay and world inputs.
@@ -507,6 +518,7 @@ impl PlanetViewCamera {
         delta_seconds: f32,
         surface_radius: f32,
     ) -> Transform {
+        let snap_orbit_this_frame = std::mem::take(&mut self.snap_orbit_this_frame);
         if delta_seconds > 1e-6
             && let Some(previous) = self.last_motion_pose
         {
@@ -698,7 +710,15 @@ impl PlanetViewCamera {
             };
             let target = planet_pose(direction, requested_radius, heading);
             let response = response(VIEW_RESPONSE, delta_seconds);
-            if self.follow && !self.follow_recenter {
+            if snap_orbit_this_frame {
+                let radius = lerp(current.translation.length(), requested_radius, response)
+                    .max(minimum_radius);
+                Transform {
+                    translation: direction * radius,
+                    rotation: target.rotation,
+                    ..default()
+                }
+            } else if self.follow && !self.follow_recenter {
                 let radius = lerp(current.translation.length(), requested_radius, response)
                     .max(minimum_radius);
                 Transform {
@@ -734,6 +754,17 @@ impl PlanetViewCamera {
         self.attained_radius = result.translation.length();
         result
     }
+}
+
+fn screen_drag_rotation(current: Transform, delta: Vec2) -> Option<Quat> {
+    if !delta.is_finite() || delta == Vec2::ZERO || !current.rotation.is_finite() {
+        return None;
+    }
+    let screen_right = current.rotation * Vec3::X;
+    let screen_up = current.rotation * Vec3::Y;
+    Some(Quat::from_scaled_axis(
+        -screen_up * delta.x - screen_right * delta.y,
+    ))
 }
 
 fn planet_pose(direction: Vec3, radius: f32, heading: Vec3) -> Transform {
@@ -1090,6 +1121,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn attained_camera_keeps_the_grabbed_surface_under_pointer_during_drag() {
+        let viewport = Vec2::new(1280.0, 720.0);
+        let fov_y = 50.0_f32.to_radians();
+        let start_cursor = Vec2::new(viewport.x * 0.5, viewport.y * 0.5);
+        let end_cursor = start_cursor + Vec2::new(75.0, -45.0);
+        let directions = [
+            Vec3::Y,
+            Vec3::new(0.02, 0.999, -0.03).normalize(),
+            Vec3::new(-0.62, 0.21, 0.75).normalize(),
+            Vec3::new(0.24, -0.91, -0.34).normalize(),
+        ];
+
+        for radius in [
+            PLANET_VIEW_NEAR_RADIUS,
+            (PLANET_VIEW_NEAR_RADIUS + PLANET_VIEW_FAR_RADIUS) * 0.5,
+            PLANET_VIEW_FAR_RADIUS,
+        ] {
+            for direction in directions {
+                let world_up = if direction.dot(Vec3::Y).abs() > 0.95 {
+                    Vec3::Z
+                } else {
+                    Vec3::Y
+                };
+                let start = Transform::from_translation(direction * radius)
+                    .looking_at(Vec3::ZERO, world_up);
+                let anchor = planet_surface_hit_direction(start, start_cursor, viewport, fov_y)
+                    .expect("the centered pointer ray should hit the planet");
+                let mut policy = PlanetViewCamera {
+                    phase: Phase::Browsing,
+                    requested_open: true,
+                    requested_radius: radius,
+                    attained_radius: radius,
+                    follow: false,
+                    detached_direction: direction,
+                    detached_heading: tangent_heading(start.rotation * Vec3::Y, direction),
+                    ..default()
+                };
+                let mut current = start;
+                let body = direction * PLANET_RADIUS;
+                let mut previous_cursor = start_cursor;
+                let mut maximum_slip = 0.0_f32;
+
+                for sample in 1..=15 {
+                    let cursor = start_cursor.lerp(end_cursor, sample as f32 / 15.0);
+                    let previous_hit =
+                        planet_surface_hit_direction(current, previous_cursor, viewport, fov_y)
+                            .expect("the previous pointer ray should continue to hit the globe");
+                    let current_hit =
+                        planet_surface_hit_direction(current, cursor, viewport, fov_y)
+                            .expect("the current pointer ray should continue to hit the globe");
+                    assert!(policy.orbit_from_surface_drag(current, previous_hit, current_hit));
+                    current = policy.update(
+                        current,
+                        start,
+                        body,
+                        start.rotation * Vec3::Y,
+                        1.0 / 60.0,
+                        PLANET_RADIUS,
+                    );
+                    let projected =
+                        project_logical(current, anchor * PLANET_RADIUS, viewport, fov_y);
+                    maximum_slip = maximum_slip.max(projected.distance(cursor));
+                    previous_cursor = cursor;
+                }
+
+                assert!(
+                    maximum_slip < 1.0,
+                    "attained camera let the grabbed point slip {maximum_slip:.2} logical pixels at radius {radius:.1}, direction {direction:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn drag_pose_snaps_orientation_while_zoom_distance_remains_smooth() {
+        let viewport = Vec2::new(1280.0, 720.0);
+        let fov_y = 50.0_f32.to_radians();
+        let previous_cursor = Vec2::new(viewport.x * 0.5, viewport.y * 0.5);
+        let current_cursor = previous_cursor + Vec2::new(45.0, -25.0);
+        let start = planet_pose(Vec3::Y, PLANET_VIEW_NEAR_RADIUS, Vec3::NEG_Z);
+        let previous_hit = planet_surface_hit_direction(start, previous_cursor, viewport, fov_y)
+            .expect("centered pointer ray hits the planet");
+        let current_hit = planet_surface_hit_direction(start, current_cursor, viewport, fov_y)
+            .expect("dragged pointer ray hits the planet");
+        let mut policy = PlanetViewCamera {
+            phase: Phase::Browsing,
+            requested_open: true,
+            requested_radius: PLANET_VIEW_NEAR_RADIUS,
+            attained_radius: PLANET_VIEW_NEAR_RADIUS,
+            follow: false,
+            detached_direction: Vec3::Y,
+            detached_heading: Vec3::NEG_Z,
+            ..default()
+        };
+        policy.zoom_by(1.5);
+        assert!(policy.orbit_from_surface_drag(start, previous_hit, current_hit));
+
+        let moved = policy.update(
+            start,
+            start,
+            Vec3::Y * PLANET_RADIUS,
+            Vec3::NEG_Z,
+            1.0 / 60.0,
+            PLANET_RADIUS,
+        );
+        assert!(moved.translation.length() > PLANET_VIEW_NEAR_RADIUS);
+        assert!(moved.translation.length() < policy.requested_radius());
+        let target_direction = policy.detached_direction;
+        let target_pose = planet_pose(
+            target_direction,
+            moved.translation.length(),
+            policy.detached_heading,
+        );
+        assert!(
+            moved.translation.normalize().dot(target_direction) > 0.99999,
+            "drag orientation should follow the pointer immediately while zoom changes"
+        );
+        assert!(moved.rotation.dot(target_pose.rotation).abs() > 0.99999);
     }
 
     #[test]
