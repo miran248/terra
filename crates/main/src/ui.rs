@@ -784,35 +784,25 @@ fn update_sidebar_world_readout(
     if !timer.0.tick(time.delta()).just_finished() {
         return;
     }
-    let mut values = Vec::new();
+    let empty_values = [
+        (SidebarReadoutSlot::Clock, "Clock: —".to_owned()),
+        (SidebarReadoutSlot::Weather, "Weather: —".to_owned()),
+        (SidebarReadoutSlot::Temperature, "Temperature: —".to_owned()),
+        (SidebarReadoutSlot::Terrain, "Terrain: —".to_owned()),
+        (SidebarReadoutSlot::Elevation, "Elevation: —".to_owned()),
+        (SidebarReadoutSlot::Settlement, "Settlement: —".to_owned()),
+        (SidebarReadoutSlot::Region, "Region: —".to_owned()),
+        (SidebarReadoutSlot::Road, "Road / bridge: —".to_owned()),
+    ];
     let Some(terrain) = terrain else {
-        values.extend([
-            (SidebarReadoutSlot::Clock, "Clock: —".to_owned()),
-            (SidebarReadoutSlot::Weather, "Weather: —".to_owned()),
-            (SidebarReadoutSlot::Temperature, "Temperature: —".to_owned()),
-            (SidebarReadoutSlot::Terrain, "Terrain: —".to_owned()),
-            (SidebarReadoutSlot::Elevation, "Elevation: —".to_owned()),
-            (SidebarReadoutSlot::Settlement, "Settlement: —".to_owned()),
-            (SidebarReadoutSlot::Region, "Region: —".to_owned()),
-            (SidebarReadoutSlot::Road, "Road / bridge: —".to_owned()),
-        ]);
-        write_sidebar_world_rows(&mut text_q, &values, Color::WHITE);
+        write_sidebar_world_rows(&mut text_q, &empty_values, Color::WHITE);
         return;
     };
     let Ok(tf) = player_q.single() else {
-        values.extend([
-            (SidebarReadoutSlot::Clock, "Clock: —".to_owned()),
-            (SidebarReadoutSlot::Weather, "Weather: —".to_owned()),
-            (SidebarReadoutSlot::Temperature, "Temperature: —".to_owned()),
-            (SidebarReadoutSlot::Terrain, "Terrain: —".to_owned()),
-            (SidebarReadoutSlot::Elevation, "Elevation: —".to_owned()),
-            (SidebarReadoutSlot::Settlement, "Settlement: —".to_owned()),
-            (SidebarReadoutSlot::Region, "Region: —".to_owned()),
-            (SidebarReadoutSlot::Road, "Road / bridge: —".to_owned()),
-        ]);
-        write_sidebar_world_rows(&mut text_q, &values, Color::WHITE);
+        write_sidebar_world_rows(&mut text_q, &empty_values, Color::WHITE);
         return;
     };
+    let mut values = Vec::new();
     let pos = shared::sphere::SpherePos::new(tf.translation);
     // Read precomputed face type from level data — guaranteed to match terrain colors.
     let tile = if let (Some(planet), Some(ft), Some(corners)) = (
