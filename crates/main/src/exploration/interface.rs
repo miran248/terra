@@ -31,6 +31,9 @@ pub(super) struct DestinationDetails;
 #[derive(Component)]
 pub(super) struct VehicleSelectorAction;
 
+#[derive(Component)]
+pub(super) struct CameraSelectorAction;
+
 pub(super) fn setup(
     mut commands: Commands,
     font: Res<crate::ui::UiFont>,
@@ -136,6 +139,27 @@ pub(super) fn setup(
                 &font,
             ))
             .insert(VehicleSelectorAction);
+        for (mode, label) in [
+            (CameraFollowMode::Facing, "1 · Facing"),
+            (CameraFollowMode::Orientation, "3 · Orientation"),
+        ] {
+            section
+                .spawn(crate::ui::sidebar_action_row(
+                    label,
+                    crate::ui::SidebarReadoutSlot::SelectorChoice,
+                    crate::ui::SidebarAction::SelectCameraFollow(mode),
+                    &font,
+                ))
+                .insert(CameraSelectorAction);
+        }
+        section
+            .spawn(crate::ui::sidebar_action_row(
+                "Cancel · Esc / C",
+                crate::ui::SidebarReadoutSlot::SelectorChoice,
+                crate::ui::SidebarAction::CancelCameraSelector,
+                &font,
+            ))
+            .insert(CameraSelectorAction);
     });
 }
 
@@ -151,8 +175,19 @@ pub(super) fn update_presentation(
         ),
     >,
     mut action_nodes: Query<
-        (&mut Node, Option<&VehicleSelectorAction>),
-        With<crate::ui::SidebarActionControl>,
+        (
+            &mut Node,
+            Option<&VehicleSelectorAction>,
+            Option<&CameraSelectorAction>,
+            &mut Text,
+            &crate::ui::SidebarActionControl,
+        ),
+        (
+            With<crate::ui::SidebarActionControl>,
+            Without<PlanetViewInterfaceElement>,
+            Without<GameplayHudElement>,
+            Without<DestinationDetails>,
+        ),
     >,
     mut fade_elements: Query<
         (
@@ -188,14 +223,34 @@ pub(super) fn update_presentation(
             node.display = display;
         }
     }
-    for (mut node, selector_action) in &mut action_nodes {
-        let display = if state.selector == selector_action.is_some() {
+    for (mut node, vehicle_action, camera_action, mut text, control) in &mut action_nodes {
+        let visible = match (vehicle_action.is_some(), camera_action.is_some()) {
+            (true, false) => state.selector,
+            (false, true) => state.camera_selector,
+            (false, false) => !state.selector && !state.camera_selector,
+            (true, true) => false,
+        };
+        let display = if visible {
             Display::Flex
         } else {
             Display::None
         };
         if node.display != display {
             node.display = display;
+        }
+        if let crate::ui::SidebarAction::SelectCameraFollow(mode) = control.0 {
+            let label = match mode {
+                CameraFollowMode::Facing => "1 · Facing",
+                CameraFollowMode::Orientation => "3 · Orientation",
+            };
+            let content = if mode == state.camera_follow_mode {
+                format!("{label} · SELECTED")
+            } else {
+                label.to_owned()
+            };
+            if text.0 != content {
+                *text = Text::new(content);
+            }
         }
     }
     for (
@@ -304,7 +359,7 @@ pub(super) fn pointer_input(
 ) {
     let orbit_intent = std::mem::take(&mut state.planet_orbit_intent);
     let zoom_intent = std::mem::take(&mut state.planet_zoom_intent);
-    if !state.selector && state.planet_camera.is_active() {
+    if !state.selector && !state.camera_selector && state.planet_camera.is_active() {
         if orbit_intent != Vec2::ZERO
             && let Some((camera, projection)) = cameras.iter().next()
         {
@@ -342,7 +397,7 @@ pub(super) fn pointer_input(
             MouseScrollUnit::Pixel => wheel.y * 0.002,
         };
     }
-    if state.selector {
+    if state.selector || state.camera_selector {
         if state.planet_pointer.capture() != Some(PointerCapture::Selector) {
             state.planet_pointer.cancel();
             state.pressed_sidebar_action = None;
@@ -469,7 +524,7 @@ pub(super) fn pointer_input(
                 }
                 Some(PointerRelease::CapturedClick(PointerCapture::Selector, _)) => {
                     let pressed = state.pressed_sidebar_action.take();
-                    if state.selector
+                    if (state.selector || state.camera_selector)
                         && let Some(control_entity) = pressed
                         && let Ok((_, node, transform, control)) =
                             action_controls.get(control_entity)
@@ -515,7 +570,12 @@ pub(super) fn pointer_input(
                     .iter()
                     .any(|(node, transform)| node.contains_point(*transform, position)))
     });
-    if scroll != 0.0 && !state.selector && !over_interface && state.planet_camera.is_active() {
+    if scroll != 0.0
+        && !state.selector
+        && !state.camera_selector
+        && !over_interface
+        && state.planet_camera.is_active()
+    {
         state.planet_camera.zoom_by((-scroll).exp());
         state.set_planet_view_open(true);
     }
@@ -543,11 +603,20 @@ fn apply_sidebar_action(
         crate::ui::SidebarAction::ToggleVehicleSelector => {
             super::open_vehicle_selector(state, virtual_time);
         }
+        crate::ui::SidebarAction::ToggleCameraSelector => {
+            super::open_camera_selector(state, virtual_time);
+        }
         crate::ui::SidebarAction::SelectVehicle(kind) => {
             super::choose_vehicle(kind, state, virtual_time);
         }
+        crate::ui::SidebarAction::SelectCameraFollow(mode) => {
+            super::choose_camera_follow_mode(mode, state, virtual_time);
+        }
         crate::ui::SidebarAction::CancelVehicleSelector => {
             super::cancel_vehicle_selector(state, virtual_time);
+        }
+        crate::ui::SidebarAction::CancelCameraSelector => {
+            super::cancel_camera_selector(state, virtual_time);
         }
         crate::ui::SidebarAction::HoldRecovery => {}
     }
