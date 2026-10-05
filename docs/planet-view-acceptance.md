@@ -36,6 +36,14 @@ the normal primary window on the normal display without resizing it during a
 run. The recorded physical/logical viewport, scale factor, and present mode are
 the authority for the measured configuration.
 
+For frame-spike diagnosis, set `TERRA_PLANET_WORK_TRACE=1` with the normal
+launcher. This adds `planet-work-trace.csv` for all four measured routes and records
+`system_stage_trace=enabled` in the configuration. Rows identify the route, repeat,
+route-relative time, absolute `Time<Real>` elapsed time, and scene/road work. Use
+these timestamps to align work with raw frame intervals, allowing for deferred
+render work in following frames. The sidecar does not change captures, route
+timing, warm-ups, repeats, or acceptance thresholds.
+
 A short transition and precipitation diagnostic uses the same provenance runner:
 
 ```sh

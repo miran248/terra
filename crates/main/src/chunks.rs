@@ -40,6 +40,100 @@ use shared::level::{SceneryData, StructureData, WaterPhase};
 use shared::planet_detail::{self, SceneryTier};
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
+use std::time::Instant;
+
+/// Optional per-stage measurements aligned with the acceptance frame trace.
+#[derive(Resource, Default)]
+pub(crate) struct PlanetWorkTrace {
+    measurement_start: Option<f64>,
+    route: Option<&'static str>,
+    repeat: u8,
+    rows: Vec<PlanetWorkTraceRow>,
+}
+
+#[derive(Clone, Copy)]
+struct PlanetWorkTraceRow {
+    route: &'static str,
+    repeat: u8,
+    elapsed_s: f64,
+    real_elapsed_s: f64,
+    stage: &'static str,
+    camera_radius_m: f32,
+    duration_ms: f64,
+    a: usize,
+    b: usize,
+    c: usize,
+    d: usize,
+}
+
+impl PlanetWorkTrace {
+    pub(crate) fn active(&self) -> bool {
+        self.measurement_start.is_some()
+    }
+
+    pub(crate) fn start_repeat(&mut self, elapsed_s: f64, route: &'static str, repeat: u8) {
+        self.measurement_start = Some(elapsed_s);
+        self.route = Some(route);
+        self.repeat = repeat;
+    }
+
+    pub(crate) fn stop_repeat(&mut self) {
+        self.measurement_start = None;
+        self.route = None;
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        elapsed_s: f64,
+        stage: &'static str,
+        camera_radius_m: f32,
+        duration_ms: f64,
+        a: usize,
+        b: usize,
+        c: usize,
+        d: usize,
+    ) {
+        let Some(measurement_start) = self.measurement_start else {
+            return;
+        };
+        self.rows.push(PlanetWorkTraceRow {
+            route: self.route.unwrap_or("unknown"),
+            repeat: self.repeat,
+            elapsed_s: elapsed_s - measurement_start,
+            real_elapsed_s: elapsed_s,
+            stage,
+            camera_radius_m,
+            duration_ms,
+            a,
+            b,
+            c,
+            d,
+        });
+    }
+
+    pub(crate) fn to_csv(&self) -> String {
+        let mut csv = String::from(
+            "route,repeat,elapsed_s,real_elapsed_s,stage,camera_radius_m,duration_ms,operation_a,operation_b,operation_c,operation_d\n",
+        );
+        for row in &self.rows {
+            csv.push_str(&format!(
+                "{},{},{:.6},{:.6},{},{:.3},{:.6},{},{},{},{}\n",
+                row.route,
+                row.repeat,
+                row.elapsed_s,
+                row.real_elapsed_s,
+                row.stage,
+                row.camera_radius_m,
+                row.duration_ms,
+                row.a,
+                row.b,
+                row.c,
+                row.d,
+            ));
+        }
+        csv
+    }
+}
 
 /// Chunk count: the subdivision-2 icosphere faces (20 × 4²).
 pub const CHUNK_COUNT: usize = 320;
@@ -222,22 +316,45 @@ pub fn update_chunk_lods(
     camera: Query<&Transform, With<MainCamera>>,
     terrain: Option<Res<TerrainGen>>,
     mut mgr: ResMut<ChunkManager>,
+    mut probe: Option<ResMut<PlanetWorkTrace>>,
+    time: Res<Time<Real>>,
 ) {
+    let started = probe
+        .as_ref()
+        .is_some_and(|probe| probe.active())
+        .then(Instant::now);
     let Some(cam) = camera.iter().next() else {
         return;
     };
+    let camera_radius_m = cam.translation.length();
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
     let camera_altitude = crate::map::altitude_above_surface(cam.translation, terrain.as_deref());
 
     // LOD 1 is the immediately visible globe. First-time chunks do not jump
     // directly to local detail; later promotions are nearest-first and budgeted.
     let initializing = mgr.chunks.iter().any(|state| state.lod == 0);
+    let mut transitions = 0;
+    let mut water_rebuilds = 0;
     for chunk in 0..CHUNK_COUNT {
         if mgr.chunks[chunk].lod == 0 {
             set_chunk_lod(&mut commands, &mut meshes, &mut mgr, chunk, 1);
+            transitions += 1;
+            water_rebuilds += 1;
         }
     }
     if initializing {
+        if let (Some(probe), Some(started)) = (probe.as_mut(), started) {
+            probe.record(
+                time.elapsed_secs_f64(),
+                "chunk_lod",
+                camera_radius_m,
+                started.elapsed().as_secs_f64() * 1_000.0,
+                transitions,
+                water_rebuilds,
+                0,
+                0,
+            );
+        }
         return;
     }
 
@@ -252,14 +369,30 @@ pub fn update_chunk_lods(
     let mut budget = TRANSITIONS_PER_FRAME;
     for (chunk, dist) in order {
         if budget == 0 {
-            return;
+            break;
         }
         let cur = mgr.chunks[chunk].lod;
         let want = planet_detail::desired_chunk_lod(dist, camera_altitude, cur);
         if want != cur {
+            if water_subdiv(cur) != water_subdiv(want) {
+                water_rebuilds += 1;
+            }
             set_chunk_lod(&mut commands, &mut meshes, &mut mgr, chunk, want);
+            transitions += 1;
             budget -= 1;
         }
+    }
+    if let (Some(probe), Some(started)) = (probe.as_mut(), started) {
+        probe.record(
+            time.elapsed_secs_f64(),
+            "chunk_lod",
+            camera_radius_m,
+            started.elapsed().as_secs_f64() * 1_000.0,
+            transitions,
+            water_rebuilds,
+            0,
+            0,
+        );
     }
 }
 
@@ -385,10 +518,17 @@ pub fn stream_scenery(
     camera: Query<&Transform, With<MainCamera>>,
     terrain: Option<Res<TerrainGen>>,
     mut mgr: ResMut<ChunkManager>,
+    mut probe: Option<ResMut<PlanetWorkTrace>>,
+    time: Res<Time<Real>>,
 ) {
     let Some(cam) = camera.iter().next() else {
         return;
     };
+    let started = probe
+        .as_ref()
+        .is_some_and(|probe| probe.active())
+        .then(Instant::now);
+    let camera_radius_m = cam.translation.length();
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
     let pending = |mgr: &ChunkManager, chunk: usize| {
         let state = &mgr.chunks[chunk];
@@ -416,6 +556,8 @@ pub fn stream_scenery(
     let mut budget = SCENE_ROOT_WORK_PER_UPDATE;
     let mut removal_budget = SCENE_ROOT_REMOVALS_PER_UPDATE;
     let mut removed_scenery = std::collections::HashSet::with_capacity(removal_budget);
+    let mut roots_removed = 0;
+    let mut roots_spawned = 0;
 
     // Remove detail farthest from the camera first. Pop from each resident
     // prefix and move the cursors back so a later LOD reversal resumes at the
@@ -441,6 +583,7 @@ pub fn stream_scenery(
             if is_scenery {
                 removed_scenery.insert(entity);
             }
+            roots_removed += 1;
             budget -= 1;
             removal_budget -= 1;
         }
@@ -465,6 +608,7 @@ pub fn stream_scenery(
             };
             let entity = spawn_structure(&mut commands, &catalog, &structure);
             mgr.chunks[chunk].structures.push(entity);
+            roots_spawned += 1;
             budget -= 1;
         }
         if budget == 0 {
@@ -489,6 +633,7 @@ pub fn stream_scenery(
             mgr.chunks[chunk].scenery_large.push(entity);
             mgr.cull_order.push(entity);
             mgr.chunks[chunk].large_cursor = index + 1;
+            roots_spawned += 1;
             budget -= 1;
         }
         if budget == 0 {
@@ -510,11 +655,24 @@ pub fn stream_scenery(
             mgr.chunks[chunk].scenery_small.push(entity);
             mgr.cull_order.push(entity);
             mgr.chunks[chunk].small_cursor = index + 1;
+            roots_spawned += 1;
             budget -= 1;
         }
         if budget == 0 {
             break;
         }
+    }
+    if let (Some(probe), Some(started)) = (probe.as_mut(), started) {
+        probe.record(
+            time.elapsed_secs_f64(),
+            "scene_roots",
+            camera_radius_m,
+            started.elapsed().as_secs_f64() * 1_000.0,
+            roots_removed,
+            roots_spawned,
+            order.len(),
+            budget,
+        );
     }
 }
 

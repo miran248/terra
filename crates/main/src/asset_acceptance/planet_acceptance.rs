@@ -43,6 +43,7 @@ const ROUTES: [Route; 4] = [
 const WARMUP_SECONDS: f64 = 60.0;
 const MEASURE_SECONDS: f64 = 60.0;
 const REPEATS: u8 = 3;
+const WORK_TRACE_ENV: &str = "TERRA_PLANET_WORK_TRACE";
 const STALL_LIMIT_MS: f64 = 1000.0 / 30.0;
 pub(super) const MIN_MEASURED_BODY_PATH_M: f64 = 10.0;
 pub(super) const MIN_MEASURED_BODY_EXCURSION_M: f64 = 5.0;
@@ -379,6 +380,9 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
         "Planet acceptance output must be fresh"
     );
 
+    if work_trace_enabled() {
+        app.insert_resource(crate::chunks::PlanetWorkTrace::default());
+    }
     app.insert_resource(PlanetAcceptance {
         directory,
         phase: Phase::WaitingForWorld,
@@ -403,6 +407,10 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
             .after(CameraUpdateSystems)
             .run_if(in_state(AppState::Playing)),
     );
+}
+
+fn work_trace_enabled() -> bool {
+    std::env::var_os(WORK_TRACE_ENV).is_some()
 }
 
 fn drive_planet_acceptance(world: &mut World) {
@@ -470,11 +478,19 @@ fn drive_planet_acceptance(world: &mut World) {
             drive_route(world, route, elapsed, true, &mut actions, &mut run);
             if elapsed >= WARMUP_SECONDS {
                 info!(route = route.name(), "Planet acceptance warm-up completed");
+                let measuring_actions = RouteActions::default();
+                if work_trace_enabled() {
+                    if let Some(mut probe) =
+                        world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
+                    {
+                        probe.start_repeat(now, route.name(), 1);
+                    }
+                }
                 Phase::Measuring {
                     route,
                     repeat: 1,
                     started_at: now,
-                    actions: RouteActions::default(),
+                    actions: measuring_actions,
                     samples: Vec::with_capacity(4_000),
                 }
             } else {
@@ -496,12 +512,26 @@ fn drive_planet_acceptance(world: &mut World) {
             drive_route(world, route, elapsed, false, &mut actions, &mut run);
             if elapsed >= MEASURE_SECONDS {
                 finish_repeat(world, &mut run, route, repeat, &samples);
+                if work_trace_enabled()
+                    && let Some(mut probe) =
+                        world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
+                {
+                    probe.stop_repeat();
+                }
                 if repeat < REPEATS {
+                    let next_actions = RouteActions::default();
+                    if work_trace_enabled() {
+                        if let Some(mut probe) =
+                            world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
+                        {
+                            probe.start_repeat(now, route.name(), repeat + 1);
+                        }
+                    }
                     Phase::Measuring {
                         route,
                         repeat: repeat + 1,
                         started_at: now,
-                        actions: RouteActions::default(),
+                        actions: next_actions,
                         samples: Vec::with_capacity(4_000),
                     }
                 } else if let Some(next) = ROUTES.get(route_index(route) + 1).copied() {
@@ -727,8 +757,13 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
     let noon_elevation = player_pose(world)
         .map(|(position, _)| maximum_sun_elevation_degrees(position))
         .unwrap_or(f32::NAN);
+    let stage_trace = if work_trace_enabled() {
+        "enabled"
+    } else {
+        "disabled"
+    };
     let configuration = format!(
-        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures=asset-review\nshadows=normal-production-settings\n",
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures=asset-review\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\n",
         window.unwrap_or_else(|| "not-yet-available".into()),
         MEASURE_SECONDS * 0.5,
     );
@@ -1986,6 +2021,11 @@ pub(super) fn csv(value: &str) -> String {
 }
 
 fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
+    if let Some(probe) = world.get_resource::<crate::chunks::PlanetWorkTrace>()
+        && let Err(error) = fs::write(run.directory.join("planet-work-trace.csv"), probe.to_csv())
+    {
+        record_error(run, format!("write planet work trace: {error}"));
+    }
     let mut missing = Vec::new();
     for index in 0..CAPTURE_VIEWS.len() * SOLAR_PHASES.len() {
         let path = run.directory.join("captures").join(capture_file(index));

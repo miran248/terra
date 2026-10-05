@@ -6,6 +6,7 @@ use shared::roads::{
     SurfaceRoadSample, build_surface_road_ribbon, build_terrain_following_road_ribbon,
     projected_surface_ribbon_width,
 };
+use std::time::Instant;
 
 use crate::{
     exploration::{Exploration, ExplorationUpdate},
@@ -530,7 +531,16 @@ fn update_road_highlight_widths(
     >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut refresh: ResMut<RoadMeshRefresh>,
+    mut probe: Option<ResMut<crate::chunks::PlanetWorkTrace>>,
 ) {
+    let started = probe
+        .as_ref()
+        .is_some_and(|probe| probe.active())
+        .then(Instant::now);
+    let camera_radius_m = cameras
+        .single()
+        .map(|(_, _, transform)| transform.translation.length())
+        .unwrap_or(f32::NAN);
     let epoch_changed = refresh.observe_world_epoch(*world_epoch);
     if epoch_changed && let Ok((_, _, mut mesh_state)) = highlight_mesh.single_mut() {
         mesh_state.ready = false;
@@ -542,6 +552,8 @@ fn update_road_highlight_widths(
     }
 
     refresh.elapsed += time.delta_secs();
+    let mut width_request = false;
+    let mut mesh_committed = false;
     if let Ok((camera, Projection::Perspective(perspective), camera_transform)) = cameras.single()
         && let Some(viewport_size) = camera.logical_viewport_size()
         && viewport_size.y > 0.0
@@ -570,6 +582,7 @@ fn update_road_highlight_widths(
                 .unwrap_or(MIN_ROAD_WIDTH_METERS)
             });
             refresh.request_geometry(*world_epoch, widths);
+            width_request = true;
             refresh.request_world_epoch = Some(*world_epoch);
             refresh.elapsed = 0.0;
             refresh.last_camera_position = Some(camera_transform.translation);
@@ -590,18 +603,48 @@ fn update_road_highlight_widths(
                         *mesh_asset = mesh;
                         mesh_state.ready = true;
                         refresh.record_geometry_commit(completed.epoch, completed.widths);
+                        mesh_committed = true;
                     }
                 } else {
                     commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
                     mesh_state.ready = true;
                     refresh.record_geometry_commit(completed.epoch, completed.widths);
+                    mesh_committed = true;
                 }
             }
+        }
+        if let (Some(probe), Some(started)) = (probe.as_mut(), started) {
+            probe.record(
+                time.elapsed_secs_f64(),
+                "road_geometry",
+                camera_radius_m,
+                started.elapsed().as_secs_f64() * 1_000.0,
+                0,
+                usize::from(width_request),
+                1,
+                usize::from(mesh_committed),
+            );
         }
         return;
     }
 
-    refresh.advance_geometry(&paths, &ground.0, ROAD_GEOMETRY_PATHS_PER_FRAME);
+    let paths_processed =
+        refresh.advance_geometry(&paths, &ground.0, ROAD_GEOMETRY_PATHS_PER_FRAME);
+    let geometry_complete = refresh.completed_geometry.is_some();
+    if (paths_processed > 0 || width_request || geometry_complete || epoch_changed)
+        && let (Some(probe), Some(started)) = (probe.as_mut(), started)
+    {
+        probe.record(
+            time.elapsed_secs_f64(),
+            "road_geometry",
+            camera_radius_m,
+            started.elapsed().as_secs_f64() * 1_000.0,
+            paths_processed,
+            usize::from(width_request),
+            usize::from(geometry_complete),
+            usize::from(mesh_committed),
+        );
+    }
 }
 
 fn perspective_camera_depth(camera_transform: Transform, world_position: Vec3) -> f32 {
