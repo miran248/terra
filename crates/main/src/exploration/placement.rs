@@ -97,23 +97,15 @@ impl Placement<'_, '_> {
         excluded: &[Entity],
         radius: f32,
     ) -> Option<(Vec3, Vec3)> {
-        let up = origin.normalize();
-        let forward = tangent(heading, up);
-        let side = forward.cross(up);
-        for ring in 0..=6 {
-            let distance = radius * ring as f32 / 6.0;
-            for sector in 0..if ring == 0 { 1 } else { 16 } {
-                let angle = sector as f32 * std::f32::consts::TAU / 16.0;
-                let candidate = origin + (forward * angle.cos() + side * angle.sin()) * distance;
-                for yaw in 0..if kind.is_some() { 8 } else { 1 } {
-                    let heading = Quat::from_axis_angle(
-                        candidate.normalize(),
-                        yaw as f32 * std::f32::consts::TAU / 8.0,
-                    ) * forward;
-                    if let Some(p) = self.at(candidate, heading, kind, excluded) {
-                        return Some((p, tangent(heading, p.normalize())));
-                    }
-                }
+        let shape = Self::shape(kind);
+        let candidates = if kind.is_some() {
+            shared::placement::PlacementCandidateSearch::vehicle(origin, heading, radius)
+        } else {
+            shared::placement::PlacementCandidateSearch::fixed_heading(origin, heading, radius)
+        };
+        for (candidate, heading) in candidates {
+            if let Some(p) = self.at_with_shape(candidate, heading, kind, excluded, &shape) {
+                return Some((p, tangent(heading, p.normalize())));
             }
         }
         None
@@ -124,6 +116,25 @@ impl Placement<'_, '_> {
         heading: Vec3,
         kind: Option<Kind>,
         excluded: &[Entity],
+    ) -> Option<Vec3> {
+        let shape = Self::shape(kind);
+        self.at_with_shape(origin, heading, kind, excluded, &shape)
+    }
+
+    fn shape(kind: Option<Kind>) -> Collider {
+        kind.map_or_else(
+            || crate::asset_collision::actor_body("actor.player").0,
+            Kind::collider,
+        )
+    }
+
+    pub(super) fn at_with_shape(
+        &self,
+        origin: Vec3,
+        heading: Vec3,
+        kind: Option<Kind>,
+        excluded: &[Entity],
+        shape: &Collider,
     ) -> Option<Vec3> {
         let up = origin.normalize();
         let filter = SpatialQueryFilter::from_excluded_entities(excluded.iter().copied());
@@ -154,13 +165,9 @@ impl Placement<'_, '_> {
         }
         let forward = tangent(heading, up);
         let rotation = facing(forward, up);
-        let shape = kind.map_or_else(
-            || crate::asset_collision::actor_body("actor.player").0,
-            Kind::collider,
-        );
         if !self
             .spatial
-            .shape_intersections(&shape, center, rotation, &filter)
+            .shape_intersections(shape, center, rotation, &filter)
             .is_empty()
         {
             return None;
@@ -230,7 +237,7 @@ impl Placement<'_, '_> {
                 let next = surface?;
                 if !self
                     .spatial
-                    .shape_intersections(&shape, next, rotation, &filter)
+                    .shape_intersections(shape, next, rotation, &filter)
                     .is_empty()
                 {
                     return None;
@@ -240,7 +247,7 @@ impl Placement<'_, '_> {
                     if self
                         .spatial
                         .cast_shape(
-                            &shape,
+                            shape,
                             prev,
                             rotation,
                             Dir3::new(delta).ok()?,

@@ -1000,7 +1000,7 @@ mod tests {
         assert_eq!(world.resource::<Exploration>().actions.len(), 1);
         {
             let mut state = world.resource_mut::<Exploration>();
-            state.actions.clear();
+            state.clear_actions();
             state.occupied = Some(car);
         }
         interact(&mut world, car); // The director has not changed its beat yet.
@@ -1010,7 +1010,7 @@ mod tests {
         assert_eq!(world.resource::<Exploration>().actions.len(), 1);
         {
             let mut state = world.resource_mut::<Exploration>();
-            state.actions.clear();
+            state.clear_actions();
             state.occupied = None;
         }
         exit_vehicle(&mut world, car);
