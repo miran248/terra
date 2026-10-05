@@ -10,6 +10,7 @@ use shared::level::{
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
+use std::time::Instant;
 
 /// Small speculative skin; swept CCD protects fast motion without a half-meter visual offset.
 const TERRAIN_MARGIN: f32 = 0.02;
@@ -174,6 +175,7 @@ fn cull_props(
     mut props: Query<(&CullRange, &GlobalTransform, &mut Visibility)>,
     chunks: Res<crate::chunks::ChunkManager>,
     terrain: Option<Res<TerrainGen>>,
+    mut probe: Option<ResMut<crate::chunks::PlanetWorkTrace>>,
 ) {
     *timer += time.delta_secs();
     if *timer < 0.2 {
@@ -181,6 +183,10 @@ fn cull_props(
     }
     *timer = 0.0;
     let Ok(cam) = camera.single() else { return };
+    let started = probe
+        .as_ref()
+        .is_some_and(|probe| probe.active())
+        .then(Instant::now);
     let eye = cam.translation;
     let altitude = altitude_above_surface(eye, terrain.as_deref());
     let total = chunks.cull_order.len();
@@ -189,9 +195,12 @@ fn cull_props(
     }
     let count = PROP_CULL_PER_UPDATE.min(total);
     let start = *cursor % total;
+    let mut visibility_changes = 0;
+    let mut stale_entities = 0;
     for offset in 0..count {
         let entity = chunks.cull_order[(start + offset) % total];
         let Ok((range, tf, mut vis)) = props.get_mut(entity) else {
+            stale_entities += 1;
             continue;
         };
         let point = tf.translation();
@@ -211,9 +220,22 @@ fn cull_props(
         };
         if *vis != want {
             *vis = want;
+            visibility_changes += 1;
         }
     }
     *cursor = (start + count) % total;
+    if let (Some(probe), Some(started)) = (probe.as_mut(), started) {
+        probe.record(
+            time.elapsed_secs_f64(),
+            "prop_cull",
+            eye.length(),
+            started.elapsed().as_secs_f64() * 1_000.0,
+            count,
+            visibility_changes,
+            stale_entities,
+            total,
+        );
+    }
 }
 
 /// Face-based region memberships and named bridge surfaces for the HUD.
@@ -1078,6 +1100,17 @@ pub fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Me
         colors_out.push(color[2]);
     }
 
+    build_visual_mesh_from_attributes(positions, normals_out, colors_out)
+}
+
+pub(crate) fn build_visual_mesh_from_attributes(
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    colors: Vec<[f32; 4]>,
+) -> Mesh {
+    debug_assert_eq!(positions.len(), normals.len());
+    debug_assert_eq!(positions.len(), colors.len());
+
     let mut mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         Default::default(),
@@ -1088,11 +1121,11 @@ pub fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Me
     );
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_NORMAL,
-        VertexAttributeValues::Float32x3(normals_out),
+        VertexAttributeValues::Float32x3(normals),
     );
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_COLOR,
-        VertexAttributeValues::Float32x4(colors_out),
+        VertexAttributeValues::Float32x4(colors),
     );
     mesh
 }

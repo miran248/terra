@@ -73,8 +73,8 @@ impl Weather {
 /// A single precipitation particle; `idx` gives it a stable slot in the pool so
 /// intensity can activate a deterministic fraction of the pool.
 #[derive(Component)]
-struct Precip {
-    idx: u32,
+pub(crate) struct Precip {
+    pub(crate) idx: u32,
 }
 
 pub struct WeatherPlugin;

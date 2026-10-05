@@ -421,6 +421,23 @@ pub(super) fn pointer_input(
         &VehicleSelectorChoice,
     )>,
 ) {
+    let orbit_intent = std::mem::take(&mut state.planet_orbit_intent);
+    let zoom_intent = std::mem::take(&mut state.planet_zoom_intent);
+    if !state.selector && state.planet_camera.is_active() {
+        if orbit_intent != Vec2::ZERO
+            && let Some(camera) = cameras.iter().next()
+        {
+            state
+                .planet_camera
+                .orbit_from(*camera, orbit_intent * ORBIT_RADIANS_PER_LOGICAL_PIXEL);
+            state.set_planet_view_open(true);
+        }
+        if zoom_intent != 0.0 {
+            state.planet_camera.zoom_by((-zoom_intent).exp());
+            state.set_planet_view_open(true);
+        }
+    }
+
     let Ok(window) = windows.single() else {
         let _ = wheels.read().count();
         state.planet_pointer.cancel();

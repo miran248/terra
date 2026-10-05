@@ -12,7 +12,7 @@ use crate::{
     physics::{RadialGravity, RadialUpright},
 };
 use avian3d::prelude::*;
-use bevy::prelude::*;
+use bevy::{input::InputSystems, prelude::*};
 use placement::Placement;
 use shared::{
     car_prototype::CarMotion,
@@ -256,6 +256,8 @@ pub struct Exploration {
     actions: std::collections::VecDeque<Action>,
     snap_camera: bool,
     planet_camera: PlanetViewCamera,
+    planet_orbit_intent: Vec2,
+    planet_zoom_intent: f32,
     planet_presentation: PlanetViewPresentation,
     planet_pointer: PlanetViewPointer,
     pressed_planet_control: Option<Entity>,
@@ -295,6 +297,10 @@ impl Exploration {
 
     pub fn is_planet_view_active(&self) -> bool {
         self.planet_camera.is_active()
+    }
+
+    pub(crate) fn is_vehicle_selector_open(&self) -> bool {
+        self.selector
     }
 
     /// Selection and teleport are enabled only after the interface fully opens.
@@ -475,8 +481,52 @@ impl Exploration {
         self.planet_camera.follows_body()
     }
 
+    /// Queue a planet-view orbit using the same logical-pixel delta as a drag.
+    pub fn request_planet_view_orbit(&mut self, logical_delta: Vec2) -> bool {
+        if self.selector
+            || !self.planet_camera.is_active()
+            || !logical_delta.is_finite()
+            || logical_delta == Vec2::ZERO
+        {
+            return false;
+        }
+        self.planet_orbit_intent += logical_delta;
+        true
+    }
+
+    /// Queue normalized wheel input after line/pixel unit conversion; positive values zoom in.
+    pub fn request_planet_view_zoom(&mut self, wheel_delta: f32) -> bool {
+        if self.selector
+            || !self.planet_camera.is_active()
+            || !wheel_delta.is_finite()
+            || wheel_delta == 0.0
+        {
+            return false;
+        }
+        self.planet_zoom_intent += wheel_delta;
+        true
+    }
+
+    /// Requested and attained radial camera distances in meters.
+    pub fn planet_view_camera_radii(&self) -> (f32, f32) {
+        (
+            self.planet_camera.requested_radius(),
+            self.planet_camera.attained_radius(),
+        )
+    }
+
     pub fn toggle_planet_view_follow(&mut self, camera_pose: Transform) {
         self.planet_camera.toggle_follow_from(camera_pose);
+    }
+
+    /// Existing reusable vehicle for this kind, if it has been summoned.
+    pub fn vehicle_entity(&self, kind: Kind) -> Option<Entity> {
+        self.vehicles[kind.index()]
+    }
+
+    /// Whether the explorer currently controls a vehicle.
+    pub fn is_in_vehicle(&self) -> bool {
+        self.occupied.is_some()
     }
 }
 #[derive(Resource)]
@@ -487,6 +537,8 @@ type ExplorationBody = Or<(With<Player>, With<Vehicle>)>;
 struct Seated;
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExplorationUpdate;
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct ExplorationInput;
 
 pub struct ExplorationPlugin;
 impl Plugin for ExplorationPlugin {
@@ -508,6 +560,8 @@ impl Plugin for ExplorationPlugin {
                     world::residency,
                 )
                     .chain()
+                    .in_set(ExplorationInput)
+                    .after(InputSystems)
                     .run_if(in_state(AppState::Playing)),
             )
             .add_systems(
@@ -621,7 +675,10 @@ fn input(
         return;
     }
     if keys.just_pressed(KeyCode::KeyV) {
-        if state.occupied.is_some() {
+        if state.planet_camera.is_active() {
+            // Vehicle selection is reserved for ordinary exploration. Ignore
+            // the press for this frame so closing Planet view cannot defer it.
+        } else if state.occupied.is_some() {
             state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
         } else {
             state.selector = true;
@@ -2235,21 +2292,14 @@ pub(crate) mod tests {
             MainCamera,
             Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
         ));
-        app.world_mut()
-            .resource_mut::<ButtonInput<KeyCode>>()
-            .press(KeyCode::KeyV);
+        app.add_systems(
+            PreUpdate,
+            inject_selector_priority_keys
+                .after(InputSystems)
+                .before(ExplorationInput),
+        );
         app.update();
         assert!(app.world().resource::<Exploration>().selector);
-
-        {
-            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
-            keys.clear_just_pressed(KeyCode::KeyV);
-            keys.release(KeyCode::KeyV);
-            keys.press(KeyCode::Escape);
-            keys.press(KeyCode::KeyM);
-            keys.press(KeyCode::KeyF);
-            keys.press(KeyCode::KeyT);
-        }
         app.update();
 
         let state = app.world().resource::<Exploration>();
@@ -2257,6 +2307,77 @@ pub(crate) mod tests {
         assert!(!state.planet_camera.is_requested_open());
         assert!(!state.planet_view_ready());
         assert!(state.planet_view_follows_body());
+    }
+
+    #[test]
+    fn vehicle_selector_cannot_open_during_planet_view_or_be_deferred_until_close() {
+        let (mut app, _) = fixture();
+        spawn_planet_view_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+
+        // V is rejected while the camera is entering Planet view.
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(!app.world().resource::<Exploration>().selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+        }
+
+        for _ in 0..100 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(!app.world().resource::<Exploration>().selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+        }
+
+        // V is also rejected during the return transition. Holding it through
+        // the rest of that transition must not open the selector afterwards.
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(!app.world().resource::<Exploration>().selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        for _ in 0..150 {
+            app.update();
+        }
+        let state = app.world().resource::<Exploration>();
+        assert!(!state.is_planet_view_active());
+        assert!(!state.selector);
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    fn inject_selector_priority_keys(mut frame: Local<u8>, mut keys: ResMut<ButtonInput<KeyCode>>) {
+        match *frame {
+            0 => keys.press(KeyCode::KeyV),
+            1 => {
+                keys.press(KeyCode::Escape);
+                keys.press(KeyCode::KeyM);
+                keys.press(KeyCode::KeyF);
+                keys.press(KeyCode::KeyT);
+            }
+            _ => {}
+        }
+        *frame = frame.saturating_add(1);
     }
 
     pub(crate) fn fixture() -> (App, Entity) {
@@ -3066,6 +3187,41 @@ pub(crate) mod tests {
                 .distance(body)
                 < 30.0
         );
+    }
+
+    #[test]
+    fn live_camera_intents_zoom_without_detaching_and_orbit_detaches() {
+        let (mut app, _) = fixture();
+        app.world_mut().spawn((
+            MainCamera,
+            Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+            Projection::Perspective(PerspectiveProjection::default()),
+        ));
+        let far = shared::planet_view::PLANET_VIEW_FAR_RADIUS;
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.set_planet_view_open(true);
+            assert!(state.request_planet_view_zoom(0.5));
+        }
+
+        app.update();
+
+        {
+            let state = app.world().resource::<Exploration>();
+            assert!(state.planet_view_camera_radii().0 < far);
+            assert!(state.planet_view_follows_body());
+        }
+        assert!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .request_planet_view_orbit(Vec2::new(80.0, 0.0))
+        );
+
+        app.update();
+
+        let state = app.world().resource::<Exploration>();
+        assert!(!state.planet_view_follows_body());
+        assert!(state.planet_view_camera_radii().1.is_finite());
     }
 
     #[test]

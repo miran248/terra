@@ -191,6 +191,12 @@ impl PlanetViewCamera {
     pub fn zoom_by(&mut self, multiplier: f32) {
         if multiplier.is_finite() && multiplier > 0.0 {
             self.request_radius(self.requested_radius * multiplier);
+            if self.is_active() && self.phase == Phase::Chase {
+                // A zoom received in the same frame as the first open request
+                // is an explicit user radius. Do not replace it with the
+                // default far radius when the camera transition starts.
+                self.resume_on_open = true;
+            }
             if self.is_active() && !self.requested_open {
                 self.requested_open = true;
                 self.resume_on_open = true;

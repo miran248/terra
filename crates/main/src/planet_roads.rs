@@ -6,10 +6,11 @@ use shared::roads::{
     SurfaceRoadSample, build_surface_road_ribbon, build_terrain_following_road_ribbon,
     projected_surface_ribbon_width,
 };
+use std::time::Instant;
 
 use crate::{
     exploration::{Exploration, ExplorationUpdate},
-    map::{MainCamera, build_visual_mesh},
+    map::MainCamera,
     ui::UiFont,
 };
 
@@ -81,7 +82,7 @@ struct RoadGeometryJob {
     epoch: crate::map::WorldEpoch,
     widths: RoadHighlightWidths,
     next_path: usize,
-    triangles: Vec<[[f32; 3]; 3]>,
+    prepared_mesh: PreparedRoadMesh,
 }
 
 impl RoadGeometryJob {
@@ -90,7 +91,7 @@ impl RoadGeometryJob {
             epoch,
             widths,
             next_path: 0,
-            triangles: Vec::new(),
+            prepared_mesh: PreparedRoadMesh::default(),
         }
     }
 
@@ -105,20 +106,21 @@ impl RoadGeometryJob {
         let processed = end - self.next_path;
 
         for path_index in self.next_path..end {
-            if path_index < paths.terrain.len() {
-                self.triangles.extend(build_terrain_following_road_ribbon(
+            let triangles = if path_index < paths.terrain.len() {
+                build_terrain_following_road_ribbon(
                     &paths.terrain[path_index],
                     &self.widths.terrain[path_index],
                     ground,
                     ROAD_SURFACE_LIFT_METERS,
-                ));
+                )
             } else {
                 let bridge_index = path_index - paths.terrain.len();
-                self.triangles.extend(build_surface_road_ribbon(
+                build_surface_road_ribbon(
                     &paths.bridges[bridge_index],
                     &self.widths.bridges[bridge_index],
-                ));
-            }
+                )
+            };
+            self.prepared_mesh.append_white_triangles(&triangles);
         }
 
         self.next_path = end;
@@ -133,7 +135,7 @@ impl RoadGeometryJob {
         CompletedRoadGeometry {
             epoch: self.epoch,
             widths: self.widths,
-            triangles: self.triangles,
+            prepared_mesh: self.prepared_mesh,
         }
     }
 }
@@ -141,7 +143,42 @@ impl RoadGeometryJob {
 struct CompletedRoadGeometry {
     epoch: crate::map::WorldEpoch,
     widths: RoadHighlightWidths,
-    triangles: Vec<[[f32; 3]; 3]>,
+    prepared_mesh: PreparedRoadMesh,
+}
+
+#[derive(Default)]
+struct PreparedRoadMesh {
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    colors: Vec<[f32; 4]>,
+}
+
+impl PreparedRoadMesh {
+    fn append_white_triangles(&mut self, triangles: &[[[f32; 3]; 3]]) {
+        let additional_vertices = triangles.len() * 3;
+        self.positions.reserve(additional_vertices);
+        self.normals.reserve(additional_vertices);
+        self.colors.reserve(additional_vertices);
+
+        for triangle in triangles {
+            let a = Vec3::from_array(triangle[0]);
+            let b = Vec3::from_array(triangle[1]);
+            let c = Vec3::from_array(triangle[2]);
+            let normal = (b - a).cross(c - a).normalize().to_array();
+
+            self.positions.extend_from_slice(triangle);
+            self.normals.extend([normal; 3]);
+            self.colors.extend([[1.0, 1.0, 1.0, 1.0]; 3]);
+        }
+    }
+
+    fn into_mesh(self) -> Mesh {
+        crate::map::build_visual_mesh_from_attributes(self.positions, self.normals, self.colors)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.positions.is_empty()
+    }
 }
 
 #[derive(Resource, Default)]
@@ -300,13 +337,11 @@ impl Plugin for PlanetRoadsPlugin {
 fn setup_road_highlight(
     mut commands: Commands,
     font: Res<UiFont>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut refresh: ResMut<RoadMeshRefresh>,
 ) {
     *refresh = RoadMeshRefresh::default();
     commands.spawn((
-        Mesh3d(meshes.add(build_visual_mesh(&[], &[]))),
         MeshMaterial3d(materials.add(road_highlight_material(1.0))),
         Transform::default(),
         Visibility::Hidden,
@@ -518,6 +553,7 @@ fn widths_for_path_collection(
 }
 
 fn update_road_highlight_widths(
+    mut commands: Commands,
     time: Res<Time<Real>>,
     state: Res<Exploration>,
     layer: Res<RoadHighlightLayer>,
@@ -525,12 +561,24 @@ fn update_road_highlight_widths(
     ground: Res<crate::map::CollisionTerrain>,
     world_epoch: Res<crate::map::WorldEpoch>,
     cameras: Query<(&Camera, &Projection, &Transform), With<MainCamera>>,
-    mut highlight_mesh: Query<(&Mesh3d, &mut RoadHighlightMesh), With<RoadHighlightMesh>>,
+    mut highlight_mesh: Query<
+        (Entity, Option<&Mesh3d>, &mut RoadHighlightMesh),
+        With<RoadHighlightMesh>,
+    >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut refresh: ResMut<RoadMeshRefresh>,
+    mut probe: Option<ResMut<crate::chunks::PlanetWorkTrace>>,
 ) {
+    let started = probe
+        .as_ref()
+        .is_some_and(|probe| probe.active())
+        .then(Instant::now);
+    let camera_radius_m = cameras
+        .single()
+        .map(|(_, _, transform)| transform.translation.length())
+        .unwrap_or(f32::NAN);
     let epoch_changed = refresh.observe_world_epoch(*world_epoch);
-    if epoch_changed && let Ok((_, mut mesh_state)) = highlight_mesh.single_mut() {
+    if epoch_changed && let Ok((_, _, mut mesh_state)) = highlight_mesh.single_mut() {
         mesh_state.ready = false;
     }
 
@@ -540,6 +588,8 @@ fn update_road_highlight_widths(
     }
 
     refresh.elapsed += time.delta_secs();
+    let mut width_request = false;
+    let mut mesh_committed = false;
     if let Ok((camera, Projection::Perspective(perspective), camera_transform)) = cameras.single()
         && let Some(viewport_size) = camera.logical_viewport_size()
         && viewport_size.y > 0.0
@@ -568,6 +618,7 @@ fn update_road_highlight_widths(
                 .unwrap_or(MIN_ROAD_WIDTH_METERS)
             });
             refresh.request_geometry(*world_epoch, widths);
+            width_request = true;
             refresh.request_world_epoch = Some(*world_epoch);
             refresh.elapsed = 0.0;
             refresh.last_camera_position = Some(camera_transform.translation);
@@ -577,19 +628,63 @@ fn update_road_highlight_widths(
     }
 
     if refresh.completed_geometry.is_some() {
-        if let Ok((handle, mut mesh_state)) = highlight_mesh.single_mut()
-            && let Some(mut mesh_asset) = meshes.get_mut(&handle.0)
+        if let Ok((entity, current_mesh, mut mesh_state)) = highlight_mesh.single_mut()
             && let Some(completed) = refresh.take_ready_geometry(*world_epoch)
         {
-            let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; completed.triangles.len()];
-            *mesh_asset = build_visual_mesh(&completed.triangles, &colors);
-            mesh_state.ready = true;
-            refresh.record_geometry_commit(completed.epoch, completed.widths);
+            let CompletedRoadGeometry {
+                epoch,
+                widths,
+                prepared_mesh,
+            } = completed;
+            if !prepared_mesh.is_empty() {
+                let mesh = prepared_mesh.into_mesh();
+                if let Some(current_mesh) = current_mesh {
+                    if let Some(mut mesh_asset) = meshes.get_mut(&current_mesh.0) {
+                        *mesh_asset = mesh;
+                        mesh_state.ready = true;
+                        refresh.record_geometry_commit(epoch, widths);
+                        mesh_committed = true;
+                    }
+                } else {
+                    commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
+                    mesh_state.ready = true;
+                    refresh.record_geometry_commit(epoch, widths);
+                    mesh_committed = true;
+                }
+            }
+        }
+        if let (Some(probe), Some(started)) = (probe.as_mut(), started) {
+            probe.record(
+                time.elapsed_secs_f64(),
+                "road_geometry",
+                camera_radius_m,
+                started.elapsed().as_secs_f64() * 1_000.0,
+                0,
+                usize::from(width_request),
+                1,
+                usize::from(mesh_committed),
+            );
         }
         return;
     }
 
-    refresh.advance_geometry(&paths, &ground.0, ROAD_GEOMETRY_PATHS_PER_FRAME);
+    let paths_processed =
+        refresh.advance_geometry(&paths, &ground.0, ROAD_GEOMETRY_PATHS_PER_FRAME);
+    let geometry_complete = refresh.completed_geometry.is_some();
+    if (paths_processed > 0 || width_request || geometry_complete || epoch_changed)
+        && let (Some(probe), Some(started)) = (probe.as_mut(), started)
+    {
+        probe.record(
+            time.elapsed_secs_f64(),
+            "road_geometry",
+            camera_radius_m,
+            started.elapsed().as_secs_f64() * 1_000.0,
+            paths_processed,
+            usize::from(width_request),
+            usize::from(geometry_complete),
+            usize::from(mesh_committed),
+        );
+    }
 }
 
 fn perspective_camera_depth(camera_transform: Transform, world_position: Vec3) -> f32 {
@@ -599,7 +694,41 @@ fn perspective_camera_depth(camera_transform: Transform, world_position: Vec3) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map::build_visual_mesh;
     use bevy::camera::{CameraProjection, RenderTargetInfo, Viewport};
+
+    #[test]
+    fn road_highlight_setup_defers_mesh_asset_until_geometry_is_ready() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .insert_resource(UiFont(Handle::default()))
+            .insert_resource(RoadMeshRefresh::default())
+            .add_systems(Update, setup_road_highlight);
+
+        app.update();
+
+        let mut highlights = app
+            .world_mut()
+            .query_filtered::<Entity, With<RoadHighlightMesh>>();
+        let highlight = highlights
+            .iter(app.world())
+            .next()
+            .expect("road highlight entity should be prepared");
+        assert!(app.world().get::<Mesh3d>(highlight).is_none());
+        assert_eq!(
+            *app.world().get::<Visibility>(highlight).unwrap(),
+            Visibility::Hidden
+        );
+        assert!(
+            !app.world()
+                .get::<RoadHighlightMesh>(highlight)
+                .unwrap()
+                .ready
+        );
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 0);
+    }
 
     #[test]
     fn roads_control_has_no_target_when_the_planet_interface_is_hidden() {
@@ -804,6 +933,49 @@ mod tests {
         }
     }
 
+    #[derive(Debug, PartialEq)]
+    struct TestMeshAttributes {
+        positions: Vec<[f32; 3]>,
+        normals: Vec<[f32; 3]>,
+        colors: Vec<[f32; 4]>,
+    }
+
+    fn test_mesh_attributes(mesh: &Mesh) -> TestMeshAttributes {
+        let positions = match mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(values)) => values.clone(),
+            other => panic!("expected Float32x3 mesh positions, got {other:?}"),
+        };
+        let normals = match mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x3(values)) => values.clone(),
+            other => panic!("expected Float32x3 mesh normals, got {other:?}"),
+        };
+        let colors = match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+            Some(bevy::mesh::VertexAttributeValues::Float32x4(values)) => values.clone(),
+            other => panic!("expected Float32x4 mesh colors, got {other:?}"),
+        };
+        TestMeshAttributes {
+            positions,
+            normals,
+            colors,
+        }
+    }
+
+    fn assert_prepared_mesh_matches(prepared: &PreparedRoadMesh, expected: &Mesh) {
+        let expected = test_mesh_attributes(expected);
+        assert!(
+            prepared.positions == expected.positions,
+            "prepared road positions differ from the visual mesh oracle"
+        );
+        assert!(
+            prepared.normals == expected.normals,
+            "prepared road normals differ from the visual mesh oracle"
+        );
+        assert!(
+            prepared.colors == expected.colors,
+            "prepared road colors differ from the visual mesh oracle"
+        );
+    }
+
     fn projected_widths_for_test_pose(
         paths: &RoadHighlightPaths,
         transform: Transform,
@@ -909,6 +1081,137 @@ mod tests {
     }
 
     #[test]
+    fn first_road_geometry_commit_attaches_only_a_nonempty_mesh() {
+        let paths = road_job_fixture_paths();
+        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let epoch = crate::map::WorldEpoch::new(6);
+        let widths = road_job_fixture_widths(&paths, 4.0, 5.0);
+        let camera_transform =
+            Transform::from_translation(Vec3::Y * (shared::sphere::PLANET_RADIUS + 1_000.0))
+                .looking_at(Vec3::ZERO, Vec3::Z);
+        let (mut app, _, highlight, placeholder) = app_for_road_geometry_refresh(
+            paths,
+            ground,
+            epoch,
+            camera_transform,
+            widths,
+            build_visual_mesh(&[], &[]),
+        );
+        app.world_mut().entity_mut(highlight).remove::<Mesh3d>();
+        app.world_mut()
+            .entity_mut(highlight)
+            .get_mut::<RoadHighlightMesh>()
+            .unwrap()
+            .ready = false;
+        app.world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .remove(placeholder.id());
+        assert!(app.world().get::<Mesh3d>(highlight).is_none());
+
+        for _ in 0..8 {
+            app.update();
+            if app.world().get::<Mesh3d>(highlight).is_some() {
+                break;
+            }
+        }
+
+        assert!(
+            app.world()
+                .get::<RoadHighlightMesh>(highlight)
+                .unwrap()
+                .ready
+        );
+        let mesh = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&app.world().get::<Mesh3d>(highlight).unwrap().0)
+            .expect("the completed road geometry is allocated");
+        assert!(mesh.get_vertex_buffer_size() > 0);
+    }
+
+    #[test]
+    fn road_mesh_attributes_are_prepared_before_the_atomic_asset_swap() {
+        let paths = road_job_fixture_paths();
+        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let epoch = crate::map::WorldEpoch::new(20);
+        let old_widths = road_job_fixture_widths(&paths, 4.0, 5.0);
+        let old_triangles = build_highlight_triangles(&paths, &ground, &old_widths);
+        let old_mesh = build_visual_mesh(
+            &old_triangles,
+            &vec![[[1.0, 1.0, 1.0, 1.0]; 3]; old_triangles.len()],
+        );
+        let old_attributes = test_mesh_attributes(&old_mesh);
+
+        let camera_transform =
+            Transform::from_translation(Vec3::Z * (shared::sphere::PLANET_RADIUS + 10_000.0))
+                .looking_at(Vec3::ZERO, Vec3::Y);
+        let perspective = PerspectiveProjection {
+            far: 20_000_000.0,
+            ..default()
+        };
+        let requested_widths =
+            projected_widths_for_test_pose(&paths, camera_transform, &perspective, 900.0);
+        let expected_triangles = build_highlight_triangles(&paths, &ground, &requested_widths);
+        let expected_mesh = build_visual_mesh(
+            &expected_triangles,
+            &vec![[[1.0, 1.0, 1.0, 1.0]; 3]; expected_triangles.len()],
+        );
+        let expected_attributes = test_mesh_attributes(&expected_mesh);
+
+        let (mut app, _, _, mesh_handle) = app_for_road_geometry_refresh(
+            paths,
+            ground,
+            epoch,
+            camera_transform,
+            old_widths,
+            old_mesh,
+        );
+
+        for _ in 0..8 {
+            app.update();
+            if app
+                .world()
+                .resource::<RoadMeshRefresh>()
+                .completed_geometry
+                .is_some()
+            {
+                break;
+            }
+        }
+
+        let completed = app
+            .world()
+            .resource::<RoadMeshRefresh>()
+            .completed_geometry
+            .as_ref()
+            .expect("the bounded path job reaches its completed state");
+        assert_prepared_mesh_matches(&completed.prepared_mesh, &expected_mesh);
+        assert_eq!(completed.widths, requested_widths);
+        assert_eq!(
+            test_mesh_attributes(
+                app.world()
+                    .resource::<Assets<Mesh>>()
+                    .get(&mesh_handle)
+                    .expect("the prior road mesh remains allocated")
+            ),
+            old_attributes,
+            "staging the new mesh must not mutate the currently visible asset"
+        );
+
+        app.update();
+        assert_eq!(
+            test_mesh_attributes(
+                app.world()
+                    .resource::<Assets<Mesh>>()
+                    .get(&mesh_handle)
+                    .expect("the committed road mesh remains allocated")
+            ),
+            expected_attributes,
+            "the atomic swap must commit the exact position, normal, and color output"
+        );
+    }
+
+    #[test]
     fn road_geometry_job_is_bounded_atomic_and_coalesces_camera_reversals() {
         let paths = road_job_fixture_paths();
         let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
@@ -942,11 +1245,13 @@ mod tests {
         assert_eq!(visible_mesh, original_visible_mesh);
 
         let first_result = refresh.take_ready_geometry(epoch).unwrap();
-        assert_eq!(
-            first_result.triangles,
-            build_highlight_triangles(&paths, &ground, &first_camera_widths)
+        let first_triangles = build_highlight_triangles(&paths, &ground, &first_camera_widths);
+        let first_mesh = build_visual_mesh(
+            &first_triangles,
+            &vec![[[1.0, 1.0, 1.0, 1.0]; 3]; first_triangles.len()],
         );
-        visible_mesh = first_result.triangles;
+        assert_prepared_mesh_matches(&first_result.prepared_mesh, &first_mesh);
+        visible_mesh = first_triangles;
         refresh.record_geometry_commit(first_result.epoch, first_result.widths);
         assert_ne!(visible_mesh, original_visible_mesh);
 
@@ -956,10 +1261,12 @@ mod tests {
             assert!(processed <= 8);
         }
         let latest_result = refresh.take_ready_geometry(epoch).unwrap();
-        assert_eq!(
-            latest_result.triangles,
-            build_highlight_triangles(&paths, &ground, &latest_camera_widths)
+        let latest_triangles = build_highlight_triangles(&paths, &ground, &latest_camera_widths);
+        let latest_mesh = build_visual_mesh(
+            &latest_triangles,
+            &vec![[[1.0, 1.0, 1.0, 1.0]; 3]; latest_triangles.len()],
         );
+        assert_prepared_mesh_matches(&latest_result.prepared_mesh, &latest_mesh);
     }
 
     #[test]

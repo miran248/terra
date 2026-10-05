@@ -6,10 +6,44 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
 };
 use shared::{level::LevelData, sphere::SpherePos, state::AppState, terrain::Terrain};
+use std::path::PathBuf;
+
+mod diagnostic_drag;
+mod planet_acceptance;
+mod transition_diagnostic;
 
 pub struct AssetAcceptancePlugin;
 impl Plugin for AssetAcceptancePlugin {
     fn build(&self, app: &mut App) {
+        if let Some(directory) = std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC") {
+            assert!(
+                [
+                    "TERRA_PLANET_ACCEPTANCE_CAPTURE",
+                    "TERRA_PRODUCTION_CAPTURE",
+                    "TERRA_LIGHTING_CAPTURE",
+                    "TERRA_FLIGHT_CAPTURE",
+                ]
+                .into_iter()
+                .all(|name| std::env::var_os(name).is_none()),
+                "TERRA_PLANET_TRANSITION_DIAGNOSTIC cannot run beside another capture mode"
+            );
+            transition_diagnostic::register_transition_diagnostic(app, PathBuf::from(directory));
+            return;
+        }
+        if let Some(directory) = std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE") {
+            assert!(
+                [
+                    "TERRA_PRODUCTION_CAPTURE",
+                    "TERRA_LIGHTING_CAPTURE",
+                    "TERRA_FLIGHT_CAPTURE",
+                ]
+                .into_iter()
+                .all(|name| std::env::var_os(name).is_none()),
+                "TERRA_PLANET_ACCEPTANCE_CAPTURE cannot run beside another capture mode"
+            );
+            planet_acceptance::register(app, PathBuf::from(directory));
+            return;
+        }
         if std::env::var_os("TERRA_PRODUCTION_CAPTURE").is_some() {
             app.add_systems(Update, capture.run_if(in_state(AppState::Playing)));
         }
