@@ -262,9 +262,10 @@ TERRA_PLANET_SIDEBAR_DIAGNOSTIC=/tmp/terra-spec58/sidebar-fresh \
 
 The rendered sidebar route uses 2560×840 physical pixels (1280×420 logical,
 scale factor 2), exercising overflow and scrolling. Evidence at
-`/tmp/terra-spec58/sidebar-acceptance-63e` reports eight captures and passing
+`/tmp/terra-spec58/sidebar-bb77636` reports eight captures and passing
 selector pause/Cancel/Car, mouse view close, Follow, wheel isolation, early
-recovery cancellation, and completed on-foot recovery checks. Inline selection,
+recovery cancellation, and completed on-foot recovery after a measured 1.007-second
+hold. Inline selection,
 recovery progress and completion, Context, and scrolling captures were directly
 inspected. Production fixture tests complement this route for Plane selection,
 enter/exit, keyboard recovery, occupied recovery, and capture loss.
