@@ -300,13 +300,11 @@ impl Plugin for PlanetRoadsPlugin {
 fn setup_road_highlight(
     mut commands: Commands,
     font: Res<UiFont>,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut refresh: ResMut<RoadMeshRefresh>,
 ) {
     *refresh = RoadMeshRefresh::default();
     commands.spawn((
-        Mesh3d(meshes.add(build_visual_mesh(&[], &[]))),
         MeshMaterial3d(materials.add(road_highlight_material(1.0))),
         Transform::default(),
         Visibility::Hidden,
@@ -518,6 +516,7 @@ fn widths_for_path_collection(
 }
 
 fn update_road_highlight_widths(
+    mut commands: Commands,
     time: Res<Time<Real>>,
     state: Res<Exploration>,
     layer: Res<RoadHighlightLayer>,
@@ -525,12 +524,15 @@ fn update_road_highlight_widths(
     ground: Res<crate::map::CollisionTerrain>,
     world_epoch: Res<crate::map::WorldEpoch>,
     cameras: Query<(&Camera, &Projection, &Transform), With<MainCamera>>,
-    mut highlight_mesh: Query<(&Mesh3d, &mut RoadHighlightMesh), With<RoadHighlightMesh>>,
+    mut highlight_mesh: Query<
+        (Entity, Option<&Mesh3d>, &mut RoadHighlightMesh),
+        With<RoadHighlightMesh>,
+    >,
     mut meshes: ResMut<Assets<Mesh>>,
     mut refresh: ResMut<RoadMeshRefresh>,
 ) {
     let epoch_changed = refresh.observe_world_epoch(*world_epoch);
-    if epoch_changed && let Ok((_, mut mesh_state)) = highlight_mesh.single_mut() {
+    if epoch_changed && let Ok((_, _, mut mesh_state)) = highlight_mesh.single_mut() {
         mesh_state.ready = false;
     }
 
@@ -577,15 +579,24 @@ fn update_road_highlight_widths(
     }
 
     if refresh.completed_geometry.is_some() {
-        if let Ok((handle, mut mesh_state)) = highlight_mesh.single_mut()
-            && let Some(mut mesh_asset) = meshes.get_mut(&handle.0)
+        if let Ok((entity, current_mesh, mut mesh_state)) = highlight_mesh.single_mut()
             && let Some(completed) = refresh.take_ready_geometry(*world_epoch)
         {
             let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; completed.triangles.len()];
             let mesh = build_visual_mesh(&completed.triangles, &colors);
-            *mesh_asset = mesh;
-            mesh_state.ready = true;
-            refresh.record_geometry_commit(completed.epoch, completed.widths);
+            if mesh.get_vertex_buffer_size() > 0 {
+                if let Some(current_mesh) = current_mesh {
+                    if let Some(mut mesh_asset) = meshes.get_mut(&current_mesh.0) {
+                        *mesh_asset = mesh;
+                        mesh_state.ready = true;
+                        refresh.record_geometry_commit(completed.epoch, completed.widths);
+                    }
+                } else {
+                    commands.entity(entity).insert(Mesh3d(meshes.add(mesh)));
+                    mesh_state.ready = true;
+                    refresh.record_geometry_commit(completed.epoch, completed.widths);
+                }
+            }
         }
         return;
     }
@@ -601,6 +612,39 @@ fn perspective_camera_depth(camera_transform: Transform, world_position: Vec3) -
 mod tests {
     use super::*;
     use bevy::camera::{CameraProjection, RenderTargetInfo, Viewport};
+
+    #[test]
+    fn road_highlight_setup_defers_mesh_asset_until_geometry_is_ready() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<StandardMaterial>()
+            .insert_resource(UiFont(Handle::default()))
+            .insert_resource(RoadMeshRefresh::default())
+            .add_systems(Update, setup_road_highlight);
+
+        app.update();
+
+        let mut highlights = app
+            .world_mut()
+            .query_filtered::<Entity, With<RoadHighlightMesh>>();
+        let highlight = highlights
+            .iter(app.world())
+            .next()
+            .expect("road highlight entity should be prepared");
+        assert!(app.world().get::<Mesh3d>(highlight).is_none());
+        assert_eq!(
+            *app.world().get::<Visibility>(highlight).unwrap(),
+            Visibility::Hidden
+        );
+        assert!(
+            !app.world()
+                .get::<RoadHighlightMesh>(highlight)
+                .unwrap()
+                .ready
+        );
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 0);
+    }
 
     #[test]
     fn roads_control_has_no_target_when_the_planet_interface_is_hidden() {
@@ -907,6 +951,55 @@ mod tests {
         });
         app.add_systems(Update, update_road_highlight_widths);
         (app, camera_entity, highlight_entity, mesh_handle)
+    }
+
+    #[test]
+    fn first_road_geometry_commit_attaches_only_a_nonempty_mesh() {
+        let paths = road_job_fixture_paths();
+        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let epoch = crate::map::WorldEpoch::new(6);
+        let widths = road_job_fixture_widths(&paths, 4.0, 5.0);
+        let camera_transform =
+            Transform::from_translation(Vec3::Y * (shared::sphere::PLANET_RADIUS + 1_000.0))
+                .looking_at(Vec3::ZERO, Vec3::Z);
+        let (mut app, _, highlight, placeholder) = app_for_road_geometry_refresh(
+            paths,
+            ground,
+            epoch,
+            camera_transform,
+            widths,
+            build_visual_mesh(&[], &[]),
+        );
+        app.world_mut().entity_mut(highlight).remove::<Mesh3d>();
+        app.world_mut()
+            .entity_mut(highlight)
+            .get_mut::<RoadHighlightMesh>()
+            .unwrap()
+            .ready = false;
+        app.world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .remove(placeholder.id());
+        assert!(app.world().get::<Mesh3d>(highlight).is_none());
+
+        for _ in 0..8 {
+            app.update();
+            if app.world().get::<Mesh3d>(highlight).is_some() {
+                break;
+            }
+        }
+
+        assert!(
+            app.world()
+                .get::<RoadHighlightMesh>(highlight)
+                .unwrap()
+                .ready
+        );
+        let mesh = app
+            .world()
+            .resource::<Assets<Mesh>>()
+            .get(&app.world().get::<Mesh3d>(highlight).unwrap().0)
+            .expect("the completed road geometry is allocated");
+        assert!(mesh.get_vertex_buffer_size() > 0);
     }
 
     #[test]

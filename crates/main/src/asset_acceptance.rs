@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 mod diagnostic_drag;
 mod planet_acceptance;
+mod transition_diagnostic;
 
 pub struct AssetAcceptancePlugin;
 impl Plugin for AssetAcceptancePlugin {
@@ -26,7 +27,7 @@ impl Plugin for AssetAcceptancePlugin {
                 .all(|name| std::env::var_os(name).is_none()),
                 "TERRA_PLANET_TRANSITION_DIAGNOSTIC cannot run beside another capture mode"
             );
-            planet_acceptance::register_transition_diagnostic(app, PathBuf::from(directory));
+            transition_diagnostic::register_transition_diagnostic(app, PathBuf::from(directory));
             return;
         }
         if let Some(directory) = std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE") {
