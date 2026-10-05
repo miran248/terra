@@ -54,10 +54,10 @@ pub struct TerrainGen {
     /// Coarse zone layout (L1) and a coarse mesh for position → zone lookup.
     zones: Zones,
     coarse_mesh: PlanetMesh,
-    /// L2 topology, exposed for gen_level's fine passes and runtime spawning.
-    pub river_paths: Vec<Vec<SpherePos>>,
-    pub settlement_anchors: Vec<SpherePos>,
-    pub road_paths: Vec<Vec<SpherePos>>,
+    /// L2 topology retained while the crate's generation passes run.
+    pub(crate) river_paths: Vec<Vec<SpherePos>>,
+    pub(crate) settlement_anchors: Vec<SpherePos>,
+    pub(crate) road_paths: Vec<Vec<SpherePos>>,
     settlement_config: SettlementConfig,
     seed: u32,
 }
@@ -103,11 +103,10 @@ impl TerrainGen {
 
     /// Grid, noise generators, and coarse zones — the deterministic
     /// environment every later planning step reads. No elevation yet.
-    pub fn init(seed: u32) -> Self {
-        Self::init_with_settlement_config(seed, SettlementConfig::default())
-    }
-
-    pub fn init_with_settlement_config(seed: u32, settlement_config: SettlementConfig) -> Self {
+    pub(crate) fn init_with_settlement_config(
+        seed: u32,
+        settlement_config: SettlementConfig,
+    ) -> Self {
         settlement_config
             .validate()
             .unwrap_or_else(|error| panic!("invalid settlement config: {error}"));
@@ -187,12 +186,12 @@ impl TerrainGen {
     }
     /// Plain setter — temperature depends on altitude, so the orchestrator
     /// must follow any field change with ComputeClimate → set_climate.
-    pub fn set_vert_elevations(&mut self, v: Vec<f32>) {
+    pub(crate) fn set_vert_elevations(&mut self, v: Vec<f32>) {
         assert_eq!(v.len(), self.verts.len());
         self.vert_elev = v;
     }
 
-    pub fn set_climate(&mut self, moist: Vec<f32>, temp: Vec<f32>) {
+    pub(crate) fn set_climate(&mut self, moist: Vec<f32>, temp: Vec<f32>) {
         assert_eq!(moist.len(), self.verts.len());
         assert_eq!(temp.len(), self.verts.len());
         self.vert_moist = moist;
@@ -409,7 +408,7 @@ impl TerrainGen {
     /// The PROPOSED field: zone-remapped noise, smoothed, identity-clamped.
     /// It is a classification hint only — the final elevation is synthesized by
     /// the constraint solver (worldgen::SolveElevation) from the tile map.
-    pub fn propose_elevation(&self) -> Vec<f32> {
+    pub(crate) fn propose_elevation(&self) -> Vec<f32> {
         let mut e = self.compute_base_elevations();
         self.smooth_vert_elevations(&mut e, 2);
         self.clamp_zone_identity(&mut e);
@@ -579,7 +578,7 @@ impl TerrainGen {
 
     // ---- L2: river path planning (channels are dug by the elevation solver) ----
 
-    pub fn plan_river_paths(&self) -> Vec<Vec<SpherePos>> {
+    pub(crate) fn plan_river_paths(&self) -> Vec<Vec<SpherePos>> {
         let mountain_zones: Vec<u16> = self
             .zones
             .zones_of_kind(ZoneKind::MountainRange)
@@ -621,7 +620,7 @@ impl TerrainGen {
 
     // ---- L3 stage 3: settlement anchors (read-only refinement of L1 zones) ----
 
-    pub fn plan_settlement_anchors(&self) -> Vec<SpherePos> {
+    pub(crate) fn plan_settlement_anchors(&self) -> Vec<SpherePos> {
         let mut anchors = Vec::new();
         for (_, zone) in self.zones.zones_of_kind(ZoneKind::Settlement) {
             let cands: Vec<SpherePos> = zone
@@ -655,7 +654,7 @@ impl TerrainGen {
     // ---- L3 stage 4: roads (corridor smoothing on the shared vertices) ----
 
     /// Reads `settlement_anchors` — evolve must fold SettlementsPlaced first.
-    pub fn plan_road_paths(&self) -> Vec<Vec<SpherePos>> {
+    pub(crate) fn plan_road_paths(&self) -> Vec<Vec<SpherePos>> {
         let hosts: Vec<u16> = self
             .zones
             .zones_of_kind(ZoneKind::Settlement)
@@ -698,7 +697,7 @@ impl TerrainGen {
 
     /// Moisture/temperature tables derived from noise + the CURRENT elevation
     /// field (temperature lapses with altitude).
-    pub fn compute_climate(&self) -> (Vec<f32>, Vec<f32>) {
+    pub(crate) fn compute_climate(&self) -> (Vec<f32>, Vec<f32>) {
         let mut moist = vec![0.0f32; self.verts.len()];
         let mut temp = vec![0.0f32; self.verts.len()];
         for i in 0..self.verts.len() {

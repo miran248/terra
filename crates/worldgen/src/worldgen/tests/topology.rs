@@ -5,7 +5,7 @@ fn kernel_is_local() {
     // The interpolation kernel must return genuinely nearby vertices.
     // Guards the polar search bug: the fixed 3x3 grid window returned
     // verts up to 335m away near the poles (longitude cells shrink).
-    let terrain = TerrainGen::init(1);
+    let terrain = TerrainGen::new(1);
     for i in 0..2000 {
         let u = (i as f32 * 0.6180339) % 1.0;
         let v = (i as f32 * 0.7548776) % 1.0;

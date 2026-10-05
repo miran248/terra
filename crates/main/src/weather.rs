@@ -438,7 +438,7 @@ mod tests {
             app.world().get::<Transform>(particle).unwrap().scale,
             Vec3::new(0.015, 0.5, 0.015)
         );
-        let terrain = terra_worldgen::terrain::TerrainGen::init(1337);
+        let terrain = terra_worldgen::terrain::TerrainGen::new(1337);
         let player_position = app.world().get::<Transform>(player).unwrap().translation;
         assert!(is_snow(terrain.temperature_at(
             terra_geometry::sphere::SpherePos::new(player_position)
