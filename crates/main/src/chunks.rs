@@ -86,12 +86,16 @@ impl ChunkStageProbe {
         cache_hit: bool,
         epoch_changed: bool,
         moved: bool,
+        paths_processed: usize,
+        paths_total: usize,
+        geometry_complete: bool,
+        mesh_committed: bool,
         terrain_samples: usize,
         bridge_samples: usize,
         triangles: usize,
     ) {
         self.road_rows.push(format!(
-            "{real_elapsed_s:.6},{widths_ms:.6},{geometry_ms:.6},{mesh_build_ms:.6},{mesh_replace_ms:.6},{total_ms:.6},{cache_hit},{epoch_changed},{moved},{terrain_samples},{bridge_samples},{triangles}\n"
+            "{real_elapsed_s:.6},{widths_ms:.6},{geometry_ms:.6},{mesh_build_ms:.6},{mesh_replace_ms:.6},{total_ms:.6},{cache_hit},{epoch_changed},{moved},{paths_processed},{paths_total},{geometry_complete},{mesh_committed},{terrain_samples},{bridge_samples},{triangles}\n"
         ));
     }
 
@@ -121,7 +125,7 @@ impl ChunkStageProbe {
 
     pub fn road_csv(&self) -> String {
         let mut csv = String::from(
-            "real_elapsed_s,widths_ms,geometry_ms,mesh_build_ms,mesh_replace_ms,total_ms,cache_hit,epoch_changed,moved,terrain_samples,bridge_samples,triangles\n",
+            "real_elapsed_s,widths_ms,geometry_ms,mesh_build_ms,mesh_replace_ms,total_ms,cache_hit,epoch_changed,moved,paths_processed,paths_total,geometry_complete,mesh_committed,terrain_samples,bridge_samples,triangles\n",
         );
         for row in &self.road_rows {
             csv.push_str(row);

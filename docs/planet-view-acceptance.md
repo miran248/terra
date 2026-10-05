@@ -123,3 +123,19 @@ controlled-body positions did not move, so this repeat does not meet the live
 route contract. The run was stopped before repeat two. Its missing completion
 status correctly causes independent validation to reject it. Normal settings
 recorded shadows disabled; no active-shadow performance claim is made.
+
+The third pass, `/tmp/terra-spec-45/acceptance-57-run3`, contains twelve inspected
+captures with continuous road highlights and corrected interface presentation.
+The companion `/tmp/terra-spec-45/diagnostic-57-camera-909b56f-fresh` completed all
+eight transition/weather captures, six map toggles, opposite-side orbit, and
+15.23 m of movement with live physics. Its early opening image keeps the terrain
+and controlled-body marker in frame; the return image shows the settled chase
+view. Snow is absent in the map image and visible again after return.
+
+Run three is nevertheless rejected for recurring entry/reversal stalls. All
+three warmed 60-second repeats passed movement and physics gates, with paths of
+210.19–224.68 m and 49.61–49.63 seconds of advancing fixed simulation time. Their
+p95 frame times were 11.48–11.64 ms, but each contained 39–46 intervals above
+33.33 ms, and maxima were 156.58–184.48 ms. The remaining routes were stopped
+after this rejection. Subsequent short diagnostic probes isolated bulk scenery
+removal as a major contributor; they do not replace full performance acceptance.
