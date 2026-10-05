@@ -443,7 +443,7 @@ fn drive_transition_diagnostic(world: &mut World) {
             &mut diagnostic,
             elapsed,
             "production-pointer",
-            "began continuous left-button drag after the exterior camera reached its full radius",
+            "began released multi-stroke left-button drag after the exterior camera reached its full radius",
         );
     }
     if diagnostic.drag_started && !diagnostic.drag_finished {
@@ -451,18 +451,21 @@ fn drive_transition_diagnostic(world: &mut World) {
             .drag_started_at
             .expect("drag start time is set when drag begins");
         let drag_elapsed = elapsed - drag_started_at;
-        if let Some(points) = diagnostic_cursor_path(world, diagnostic.drag_start_direction) {
+        if let Some(frames) = diagnostic_cursor_path(world, diagnostic.drag_start_direction) {
             if drag_elapsed < DIAGNOSTIC_DRAG_DURATION_SECONDS {
                 let fraction =
                     (drag_elapsed / DIAGNOSTIC_DRAG_DURATION_SECONDS).clamp(0.0, 1.0) as f32;
-                if let Some(position) = sample_cursor_path(&points, fraction) {
-                    set_primary_cursor(world, position);
+                if let Some(frame) = sample_cursor_frame(&frames, fraction) {
+                    set_primary_cursor(world, frame.position);
+                    set_mouse_button(world, MouseButton::Left, frame.pressed);
+                    if frame.pressed {
+                        diagnostic.drag_input_frames =
+                            diagnostic.drag_input_frames.saturating_add(1);
+                    }
                 }
-                set_mouse_button(world, MouseButton::Left, true);
-                diagnostic.drag_input_frames = diagnostic.drag_input_frames.saturating_add(1);
             } else {
-                if let Some(end) = points.last().copied() {
-                    set_primary_cursor(world, end);
+                if let Some(end) = frames.last() {
+                    set_primary_cursor(world, end.position);
                 }
                 set_mouse_button(world, MouseButton::Left, false);
                 diagnostic.drag_finished = true;
@@ -583,16 +586,21 @@ fn write_transition_diagnostic_configuration(
     let drag = window
         .as_deref()
         .and_then(|_| diagnostic_cursor_path(world, diagnostic.drag_start_direction))
-        .map(|points| {
-            let start = points[0];
-            let end = points[points.len() - 1];
+        .map(|frames| {
+            let start = frames.first().expect("generated drag frame").position;
+            let end = frames.last().expect("generated drag frame").position;
+            let strokes = frames
+                .windows(2)
+                .filter(|pair| pair[0].pressed && !pair[1].pressed)
+                .count();
             format!(
-                "start=({:.2},{:.2}) end=({:.2},{:.2}) points={} net_cursor=({:.2},{:.2}) logical_pixels",
+                "start=({:.2},{:.2}) end=({:.2},{:.2}) frames={} strokes={} net_cursor=({:.2},{:.2}) logical_pixels",
                 start.x,
                 start.y,
                 end.x,
                 end.y,
-                points.len(),
+                frames.len(),
+                strokes,
                 end.x - start.x,
                 end.y - start.y,
             )
@@ -608,7 +616,7 @@ fn write_transition_diagnostic_configuration(
         "precipitation intensity 0.85 with moving wind; production particle visibility";
     let weather_captures = "storm-hidden.png,storm-restored.png";
     let text = format!(
-        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\ncontinuous_left_drag={DIAGNOSTIC_DRAG_DURATION_SECONDS:.2}s after exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
+        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\nreleased_multi_stroke_drag={DIAGNOSTIC_DRAG_DURATION_SECONDS:.2}s after exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
         mode,
         std::env::var("TERRA_SOURCE_REVISION").unwrap_or_else(|_| "unset".into()),
         std::env::var("TERRA_SOURCE_BRANCH").unwrap_or_else(|_| "unset".into()),
@@ -630,20 +638,24 @@ fn write_transition_diagnostic_configuration(
     }
 }
 
-fn diagnostic_cursor_path(world: &mut World, start_direction: Vec3) -> Option<Vec<Vec2>> {
+fn diagnostic_cursor_path(
+    world: &mut World,
+    start_direction: Vec3,
+) -> Option<Vec<super::diagnostic_drag::DragInputFrame>> {
     let window = primary_window(world)?;
-    super::diagnostic_drag::opposite_side_drag(start_direction, window.width(), window.height())
+    super::diagnostic_drag::opposite_side_drag(
+        start_direction,
+        window.width(),
+        window.height(),
+        super::diagnostic_drag::DEFAULT_POINTS_PER_STROKE,
+    )
 }
 
-fn sample_cursor_path(points: &[Vec2], fraction: f32) -> Option<Vec2> {
-    let last = points.len().checked_sub(1)?;
-    if last == 0 {
-        return points.first().copied();
-    }
-    let position = fraction.clamp(0.0, 1.0) * last as f32;
-    let index = (position.floor() as usize).min(last);
-    let next = (index + 1).min(last);
-    Some(points[index].lerp(points[next], position.fract()))
+fn sample_cursor_frame(
+    frames: &[super::diagnostic_drag::DragInputFrame],
+    fraction: f32,
+) -> Option<super::diagnostic_drag::DragInputFrame> {
+    super::diagnostic_drag::sample_drag_frame(frames, fraction)
 }
 
 fn set_primary_cursor(world: &mut World, position: Vec2) {
@@ -1331,7 +1343,7 @@ mod transition_diagnostic_tests {
 
     #[derive(Resource)]
     struct InjectedCursorPath {
-        points: Vec<Vec2>,
+        frames: Vec<super::super::diagnostic_drag::DragInputFrame>,
         next: usize,
     }
 
@@ -1344,17 +1356,25 @@ mod transition_diagnostic_tests {
             return;
         };
         mouse.clear_just_pressed(MouseButton::Left);
-        if let Some(position) = path.points.get(path.next).copied() {
-            window.set_cursor_position(Some(position));
-            mouse.press(MouseButton::Left);
+        mouse.clear_just_released(MouseButton::Left);
+        if let Some(frame) = path.frames.get(path.next).copied() {
+            window.set_cursor_position(Some(frame.position));
+            if frame.pressed {
+                mouse.press(MouseButton::Left);
+            } else {
+                mouse.release(MouseButton::Left);
+            }
             path.next += 1;
         } else {
-            window.set_cursor_position(path.points.last().copied());
+            window.set_cursor_position(path.frames.last().map(|frame| frame.position));
             mouse.release(MouseButton::Left);
         }
     }
 
-    fn production_pointer_drag_dot(points: Vec<Vec2>, start_direction: Vec3) -> f32 {
+    fn production_pointer_drag_dot(
+        frames: Vec<super::super::diagnostic_drag::DragInputFrame>,
+        start_direction: Vec3,
+    ) -> f32 {
         let (mut app, _) = crate::exploration::tests::fixture();
         app.world_mut().spawn((
             PrimaryWindow,
@@ -1401,14 +1421,14 @@ mod transition_diagnostic_tests {
             .normalize();
         assert!(actual_start.dot(start_direction) > 0.999);
 
-        app.insert_resource(InjectedCursorPath { points, next: 0 });
+        app.insert_resource(InjectedCursorPath { frames, next: 0 });
         app.add_systems(
             PreUpdate,
             inject_cursor_path
                 .after(InputSystems)
                 .before(crate::exploration::ExplorationInput),
         );
-        let path_frames = app.world().resource::<InjectedCursorPath>().points.len() + 1;
+        let path_frames = app.world().resource::<InjectedCursorPath>().frames.len() + 1;
         for _ in 0..path_frames {
             app.update();
         }
@@ -1429,10 +1449,14 @@ mod transition_diagnostic_tests {
     #[test]
     fn opposite_side_drag_reaches_antipode_through_scale_two_production_pointer_input() {
         let start_direction = Vec3::new(-0.6714, -0.7367, 0.0806).normalize();
-        let points =
-            super::super::diagnostic_drag::opposite_side_drag(start_direction, 1280.0, 720.0)
-                .expect("scale-two logical viewport can contain the orbit path");
-        let dot = production_pointer_drag_dot(points, start_direction);
+        let frames = super::super::diagnostic_drag::opposite_side_drag(
+            start_direction,
+            1280.0,
+            720.0,
+            super::super::diagnostic_drag::DEFAULT_POINTS_PER_STROKE,
+        )
+        .expect("scale-two logical viewport can contain the released two-stroke route");
+        let dot = production_pointer_drag_dot(frames, start_direction);
 
         assert!(
             dot < -0.995,
@@ -1441,22 +1465,16 @@ mod transition_diagnostic_tests {
     }
 
     #[test]
-    fn opposite_side_drag_reaches_antipode_in_twenty_nine_production_pointer_frames() {
+    fn opposite_side_drag_reaches_antipode_with_coarse_stroke_sampling() {
         let start_direction = Vec3::new(-0.6714, -0.7367, 0.0806).normalize();
-        let path =
-            super::super::diagnostic_drag::opposite_side_drag(start_direction, 1280.0, 720.0)
-                .expect("scale-two logical viewport can contain the orbit path");
-        let points = (0..29)
-            .map(|frame| {
-                super::sample_cursor_path(&path, frame as f32 / 28.0)
-                    .expect("the complete path is available")
-            })
-            .collect();
-        let dot = production_pointer_drag_dot(points, start_direction);
+        let frames =
+            super::super::diagnostic_drag::opposite_side_drag(start_direction, 1280.0, 720.0, 15)
+                .expect("coarse samples should preserve both released strokes");
+        let dot = production_pointer_drag_dot(frames, start_direction);
 
         assert!(
             dot < -0.995,
-            "29-frame production pointer path ended at dot {dot} instead of the antipode"
+            "coarse production pointer path ended at dot {dot} instead of the antipode"
         );
     }
 
@@ -1464,19 +1482,40 @@ mod transition_diagnostic_tests {
     fn diagnostic_drag_plan_uses_incremental_points_inside_the_window() {
         let width = 1280.0;
         let height = 720.0;
-        let points = super::super::diagnostic_drag::opposite_side_drag(
+        let frames = super::super::diagnostic_drag::opposite_side_drag(
             Vec3::new(-0.6714, -0.7367, 0.0806),
             width,
             height,
+            super::super::diagnostic_drag::DEFAULT_POINTS_PER_STROKE,
         )
         .expect("viewport can contain the planned orbit");
 
-        assert_eq!(points.len(), 257);
-        assert!(points.iter().all(|point| {
-            point.x >= 8.0 && point.x <= width - 8.0 && point.y >= 8.0 && point.y <= height - 8.0
+        assert!(frames.iter().all(|frame| {
+            frame.position.x >= 8.0
+                && frame.position.x <= width - 8.0
+                && frame.position.y >= 8.0
+                && frame.position.y <= height - 8.0
         }));
-        assert!(points[0].distance(points[1]) > 0.0);
-        assert!(points[points.len() - 1].distance(points[0]) > 700.0);
+        let stroke_starts = frames
+            .windows(2)
+            .filter(|pair| pair[0].pressed && !pair[1].pressed)
+            .count();
+        assert_eq!(
+            stroke_starts, 2,
+            "each captured stroke has an explicit release"
+        );
+        assert!(frames.iter().all(|frame| frame.position.x == width - 8.0));
+        let total_motion = frames
+            .windows(2)
+            .filter(|pair| pair[0].pressed && pair[1].pressed)
+            .map(|pair| pair[0].position.distance(pair[1].position))
+            .sum::<f32>();
+        let gain = shared::planet_view::orbit_radians_per_logical_pixel(
+            PLANET_VIEW_FAR_RADIUS,
+            height,
+            PerspectiveProjection::default().fov,
+        );
+        assert!((total_motion * gain - std::f32::consts::PI).abs() < 0.01);
     }
 
     #[test]

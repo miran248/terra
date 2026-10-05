@@ -6,7 +6,22 @@ use shared::planet_view_interface::{
     GameplayHudElement, PlanetViewInterfaceElement, PointerCapture, PointerRelease,
 };
 
-const ORBIT_RADIANS_PER_LOGICAL_PIXEL: f32 = 0.004;
+const DEFAULT_LOGICAL_VIEWPORT_HEIGHT: f32 = 720.0;
+
+fn vertical_fov(projection: Option<&Projection>) -> f32 {
+    match projection {
+        Some(Projection::Perspective(projection)) => projection.fov,
+        _ => PerspectiveProjection::default().fov,
+    }
+}
+
+fn orbit_gain(camera: Transform, projection: Option<&Projection>, viewport_height: f32) -> f32 {
+    shared::planet_view::orbit_radians_per_logical_pixel(
+        camera.translation.length(),
+        viewport_height,
+        vertical_fov(projection),
+    )
+}
 
 #[derive(Component)]
 pub(super) struct PlanetViewControls;
@@ -406,7 +421,7 @@ pub(super) fn pointer_input(
     mut wheels: MessageReader<MouseWheel>,
     mut virtual_time: ResMut<Time<Virtual>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<&Transform, With<MainCamera>>,
+    cameras: Query<(&Transform, Option<&Projection>), With<MainCamera>>,
     interface_nodes: Query<(&ComputedNode, &UiGlobalTransform), With<PlanetViewInterfaceElement>>,
     controls: Query<(
         Entity,
@@ -425,11 +440,17 @@ pub(super) fn pointer_input(
     let zoom_intent = std::mem::take(&mut state.planet_zoom_intent);
     if !state.selector && state.planet_camera.is_active() {
         if orbit_intent != Vec2::ZERO
-            && let Some(camera) = cameras.iter().next()
+            && let Some((camera, projection)) = cameras.iter().next()
         {
-            state
-                .planet_camera
-                .orbit_from(*camera, orbit_intent * ORBIT_RADIANS_PER_LOGICAL_PIXEL);
+            let viewport_height = windows
+                .iter()
+                .next()
+                .map(Window::height)
+                .unwrap_or(DEFAULT_LOGICAL_VIEWPORT_HEIGHT);
+            state.planet_camera.orbit_from(
+                *camera,
+                orbit_intent * orbit_gain(*camera, projection, viewport_height),
+            );
             state.set_planet_view_open(true);
         }
         if zoom_intent != 0.0 {
@@ -502,13 +523,36 @@ pub(super) fn pointer_input(
     {
         let motion = state.planet_pointer.move_to(position, scale_factor);
         if motion.dragging
-            && let Some(camera) = cameras.iter().next()
+            && let Some((camera, projection)) = cameras.iter().next()
             && state.planet_pointer.capture() == Some(PointerCapture::World)
         {
-            state.planet_camera.orbit_from(
+            let viewport = Vec2::new(window.width(), window.height());
+            let fov = vertical_fov(projection);
+            let previous_hit = shared::planet_view::planet_surface_hit_direction(
                 *camera,
-                motion.orbit_delta * ORBIT_RADIANS_PER_LOGICAL_PIXEL,
+                motion.previous_position,
+                viewport,
+                fov,
             );
+            let current_hit = shared::planet_view::planet_surface_hit_direction(
+                *camera,
+                motion.position,
+                viewport,
+                fov,
+            );
+            let anchored = previous_hit
+                .zip(current_hit)
+                .is_some_and(|(previous, current)| {
+                    state
+                        .planet_camera
+                        .orbit_from_surface_drag(*camera, previous, current)
+                });
+            if !anchored {
+                state.planet_camera.orbit_from(
+                    *camera,
+                    motion.orbit_delta * orbit_gain(*camera, projection, viewport.y),
+                );
+            }
             state.set_planet_view_open(true);
         }
         if mouse.just_released(MouseButton::Left) {
@@ -522,7 +566,11 @@ pub(super) fn pointer_input(
                         && let Ok((_, node, transform, control)) = controls.get(control_entity)
                         && node.contains_point(*transform, position)
                     {
-                        apply_planet_control(*control, &mut state, cameras.iter().next());
+                        apply_planet_control(
+                            *control,
+                            &mut state,
+                            cameras.iter().next().map(|(camera, _)| camera),
+                        );
                     }
                 }
                 Some(PointerRelease::CapturedClick(PointerCapture::Selector, _)) => {
