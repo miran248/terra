@@ -32,6 +32,7 @@ const DIAGNOSTIC_INITIAL_OPEN_DELAY_SECONDS: f64 = 0.1;
 const DIAGNOSTIC_REVERSAL_MINIMUM_GAP_SECONDS: f64 = 0.55;
 const DIAGNOSTIC_DRAG_READY_GAP_SECONDS: f64 = 0.2;
 const DIAGNOSTIC_DRAG_DURATION_SECONDS: f64 = 1.1;
+const DIAGNOSTIC_OPPOSITE_DOT_THRESHOLD: f32 = -0.995;
 const DIAGNOSTIC_MOVEMENT_DURATION_SECONDS: f64 = 7.0;
 const DIAGNOSTIC_FINAL_RETURN_GAP_SECONDS: f64 = 0.15;
 const DIAGNOSTIC_STORM_REOPEN_GAP_SECONDS: f64 = 1.0;
@@ -113,6 +114,10 @@ fn transition_action_due(
     stage_ready: bool,
 ) -> bool {
     stage_ready && previous_action_at.is_some_and(|previous| elapsed - previous >= minimum_gap)
+}
+
+fn opposite_pose_reached(radial_dot: f32) -> bool {
+    radial_dot.is_finite() && radial_dot <= DIAGNOSTIC_OPPOSITE_DOT_THRESHOLD
 }
 
 fn radius_motion_flags(
@@ -730,7 +735,7 @@ fn capture_transition_diagnostic(world: &mut World) {
             .translation
             .normalize_or(Vec3::Y)
             .dot(diagnostic.drag_start_direction);
-        if diagnostic.drag_end_direction_dot <= -0.85 {
+        if opposite_pose_reached(diagnostic.drag_end_direction_dot) {
             diagnostic.opposite_pose_confirmed = true;
             diagnostic.opposite_pose_at = Some(elapsed);
             let drag_end_direction_dot = diagnostic.drag_end_direction_dot;
@@ -795,7 +800,9 @@ fn capture_transition_diagnostic(world: &mut World) {
             &mut diagnostic,
             "drag-opposite.png",
             target,
-            |diag| diag.opposite_pose_confirmed && diag.drag_end_direction_dot <= -0.85,
+            |diag| {
+                diag.opposite_pose_confirmed && opposite_pose_reached(diag.drag_end_direction_dot)
+            },
         );
     }
     if !screenshot_requested && let Some(opened_at) = diagnostic.m_event_times[4] {
@@ -1089,7 +1096,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     let capture_metadata_valid = capture_metadata_is_exactly_once(&diagnostic.capture_metadata);
     let drag_passed = diagnostic.opposite_pose_confirmed
         && diagnostic.drag_input_frames >= 2
-        && diagnostic.drag_end_direction_dot <= -0.85;
+        && opposite_pose_reached(diagnostic.drag_end_direction_dot);
     let entry_captures_timely = diagnostic
         .entry_capture_lateness_s
         .iter()
@@ -1244,6 +1251,15 @@ mod transition_diagnostic_tests {
     use shared::planet_view::PLANET_VIEW_FAR_RADIUS;
 
     use crate::{exploration::Exploration, map::MainCamera};
+
+    #[test]
+    fn opposite_pose_measurement_requires_the_strict_antipode_threshold() {
+        assert!(super::opposite_pose_reached(-1.0));
+        assert!(super::opposite_pose_reached(-0.995));
+        assert!(!super::opposite_pose_reached(-0.9949));
+        assert!(!super::opposite_pose_reached(-0.98399));
+        assert!(!super::opposite_pose_reached(f32::NAN));
+    }
 
     #[test]
     fn opposite_pose_capture_is_requested_once_even_while_the_camera_holds_position() {
