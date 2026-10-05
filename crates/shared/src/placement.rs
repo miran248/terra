@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-use crate::sphere::tangent_heading;
+use terra_geometry::sphere::tangent_heading;
 
 const SEARCH_RINGS: usize = 6;
 const RING_SECTORS: usize = 16;

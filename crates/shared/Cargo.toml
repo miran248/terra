@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bevy = "0.19.1"
+terra-geometry = { path = "../geometry" }
 noise = "0.9.0"
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", features = ["alloc"] }
@@ -13,10 +14,6 @@ serde_json = "1"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false }
-
-[[bench]]
-name = "facet_radius"
-harness = false
 
 [[bench]]
 name = "terrain_gen"

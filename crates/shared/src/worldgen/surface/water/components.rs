@@ -49,6 +49,6 @@ pub(in crate::worldgen) fn cluster_face_types(
 }
 use crate::terrain::Terrain;
 #[cfg(test)]
-use crate::topology::FaceComponentId;
-use crate::topology::{CellComponentId, ComponentLabels};
+use terra_geometry::topology::FaceComponentId;
+use terra_geometry::topology::{CellComponentId, ComponentLabels};
 use crate::worldgen::Grid;

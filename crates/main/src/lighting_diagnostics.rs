@@ -9,9 +9,9 @@ use bevy::{
 };
 use shared::{
     level::{LevelData, RoadKind, StructureKind, WaterPhase},
-    sphere::SpherePos,
     state::AppState,
 };
+use terra_geometry::sphere::SpherePos;
 use std::{io::Write, path::PathBuf};
 
 pub struct LightingDiagnosticsPlugin;

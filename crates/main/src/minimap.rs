@@ -17,7 +17,7 @@ use shared::planet_markers::{
 };
 use shared::planet_view::planet_compass_color;
 use shared::planet_view_interface::GameplayHudElement;
-use shared::sphere::{PLANET_RADIUS, SpherePos};
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
 use shared::theme;
@@ -310,7 +310,7 @@ fn map_click_surface_hit(
         .filter_map(|triangle| {
             let triangle = triangle.map(Vec3::from_array);
             let distance =
-                shared::planet::ray_triangle_intersection_distance(origin, direction, &triangle)?;
+                terra_geometry::planet::ray_triangle_intersection_distance(origin, direction, &triangle)?;
             let position = origin + direction.normalize_or_zero() * distance;
             let mut normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
             if normal.length_squared() < 1e-8 {
@@ -1006,7 +1006,7 @@ mod tests {
             level.vert_elev.clone(),
             level.settlement_config,
         );
-        let ground = shared::planet::PlanetMesh::new(
+        let ground = terra_geometry::planet::PlanetMesh::new(
             level
                 .terrain_tris
                 .iter()
@@ -1023,7 +1023,7 @@ mod tests {
                     .iter()
                     .map(|point| SpherePos::new(Vec3::from_array(*point)))
                     .collect::<Vec<_>>();
-                let geometry = shared::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
+                let geometry = terra_geometry::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
                 (road.name.clone(), geometry.top_surface)
             })
             .collect();
@@ -1273,7 +1273,7 @@ mod tests {
         let radial = deck_point.normalize();
         let hidden_camera = -radial * (PLANET_RADIUS + SURFACE_PICKING_ALTITUDE);
         let hidden_ray = radial;
-        let hidden_deck_distance = shared::planet::ray_triangle_intersection_distance(
+        let hidden_deck_distance = terra_geometry::planet::ray_triangle_intersection_distance(
             hidden_camera,
             hidden_ray,
             &triangle,

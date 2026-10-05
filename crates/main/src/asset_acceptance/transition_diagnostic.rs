@@ -2006,7 +2006,7 @@ fn diagnostic_sample(world: &mut World, elapsed: f64, movement_window: bool) -> 
         .get_resource::<shared::terrain::TerrainGen>()
         .map(|terrain| {
             if crate::weather::is_snow(
-                terrain.temperature_at(shared::sphere::SpherePos::new(player)),
+                terrain.temperature_at(terra_geometry::sphere::SpherePos::new(player)),
             ) {
                 "snow"
             } else {

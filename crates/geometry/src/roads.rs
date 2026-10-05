@@ -1,4 +1,4 @@
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
 
@@ -359,16 +359,6 @@ fn append_road_end_caps(
             }
         }
     }
-}
-
-/// Deterministic settlement name: a fixed syllable table indexed by settlement number,
-/// so the same seed/order always yields the same names.
-pub fn settlement_name(i: usize) -> String {
-    const PRE: [&str; 8] = [
-        "Ash", "Oak", "Stone", "River", "Fair", "Wind", "Cold", "Green",
-    ];
-    const SUF: [&str; 6] = ["ford", "haven", "bury", "wick", "dale", "hollow"];
-    format!("{}{}", PRE[i % PRE.len()], SUF[(i / PRE.len()) % SUF.len()])
 }
 
 /// A gently wobbled great-circle polyline between two points — the shape of a road.

@@ -1,5 +1,5 @@
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::Grid;
 
 use super::components::cluster_cell_types;
@@ -11,7 +11,7 @@ pub(in crate::worldgen) fn water_surface_radii(
     terrain: &TerrainGen,
     cells: &[Terrain],
 ) -> Vec<f32> {
-    let sea_r = crate::sphere::PLANET_RADIUS - 2.0;
+    let sea_r = terra_geometry::sphere::PLANET_RADIUS - 2.0;
 
     let vert_r: Vec<f32> = grid
         .topology

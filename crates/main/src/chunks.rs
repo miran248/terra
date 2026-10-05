@@ -38,7 +38,7 @@ use shared::art::AssetName;
 use shared::level::SceneryKind;
 use shared::level::{SceneryData, StructureData, WaterPhase};
 use shared::planet_detail::{self, SceneryTier};
-use shared::sphere::PLANET_RADIUS;
+use terra_geometry::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
 use std::time::Instant;
 
@@ -1017,7 +1017,7 @@ fn spawn_scenery(
 mod tests {
     use super::*;
     use shared::level::{FloraKind, StructureKind};
-    use shared::planet::{PlanetMesh, unit_icosphere_tris};
+    use terra_geometry::planet::{PlanetMesh, unit_icosphere_tris};
 
     const DETAIL_BUDGET_TEST_ROOTS: usize = 700;
 
@@ -1362,9 +1362,9 @@ mod tests {
 
     #[test]
     fn planet_scale_keeps_regional_scenery_and_hides_small_props() {
-        let camera = Vec3::X * shared::sphere::PLANET_RADIUS * 3.0;
+        let camera = Vec3::X * terra_geometry::sphere::PLANET_RADIUS * 3.0;
         let tree = SceneryData {
-            pos: (Vec3::X * shared::sphere::PLANET_RADIUS).to_array(),
+            pos: (Vec3::X * terra_geometry::sphere::PLANET_RADIUS).to_array(),
             face: 0,
             kind: SceneryKind::Flora(FloraKind::Tree),
             variant: 0,

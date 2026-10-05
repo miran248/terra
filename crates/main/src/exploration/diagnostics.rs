@@ -78,9 +78,9 @@ fn baked_bridge_entry_deck_and_exit_in_both_directions() {
         let points: Vec<_> = road
             .points
             .iter()
-            .map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p)))
+            .map(|p| terra_geometry::sphere::SpherePos::new(Vec3::from_array(*p)))
             .collect();
-        let deck = shared::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
+        let deck = terra_geometry::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
         let normals: Vec<_> = deck
             .top_surface
             .iter()
@@ -98,7 +98,7 @@ fn baked_bridge_entry_deck_and_exit_in_both_directions() {
             deck.top_surface
                 .iter()
                 .filter_map(|tri| {
-                    shared::planet::ray_triangle_radius(direction, &tri.map(Vec3::from_array))
+                    terra_geometry::planet::ray_triangle_radius(direction, &tri.map(Vec3::from_array))
                 })
                 .max_by(f32::total_cmp)
         };
@@ -109,7 +109,7 @@ fn baked_bridge_entry_deck_and_exit_in_both_directions() {
                 (points[0].0, points.last().unwrap().0)
             };
             let heading = tangent(to - from, from);
-            let length = from.angle_between(to) * shared::sphere::PLANET_RADIUS;
+            let length = from.angle_between(to) * terra_geometry::sphere::PLANET_RADIUS;
             for (reverse_gear, initial_speed) in
                 [(false, 0.0), (false, 8.0), (true, 0.0), (true, 3.0)]
             {
@@ -118,7 +118,7 @@ fn baked_bridge_entry_deck_and_exit_in_both_directions() {
                     ("deck", length * 0.5),
                     ("exit", length - 8.0),
                 ] {
-                    let angle = distance / shared::sphere::PLANET_RADIUS;
+                    let angle = distance / terra_geometry::sphere::PLANET_RADIUS;
                     let start = from * angle.cos() + heading * angle.sin();
                     let top = deck_radius(start).unwrap_or(0.0);
                     let position = start * (ground.facet_radius(start, 2000.0).max(top) + 0.48);

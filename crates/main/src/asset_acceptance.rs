@@ -8,7 +8,8 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
     window::PrimaryWindow,
 };
-use shared::{level::LevelData, sphere::SpherePos, state::AppState, terrain::Terrain};
+use shared::{level::LevelData, state::AppState, terrain::Terrain};
+use terra_geometry::sphere::SpherePos;
 use std::path::PathBuf;
 
 mod diagnostic_drag;
@@ -336,7 +337,7 @@ fn capture(
     }
     let surface_radius = ground
         .0
-        .facet_radius(position.0.normalize(), shared::sphere::PLANET_RADIUS);
+        .facet_radius(position.0.normalize(), terra_geometry::sphere::PLANET_RADIUS);
     state.min_clearance = state
         .min_clearance
         .min(position.0.length() - surface_radius);

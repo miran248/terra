@@ -9,7 +9,7 @@
 ## Workflow
 
 - Use test-driven development for behavior changes: add a failing test, implement the smallest fix, then refactor while green.
-- Keep reusable code in `shared`; binary crates orchestrate it.
+- Keep reusable code in its owning domain crate; binary crates orchestrate it.
 - Use the toolchain pinned in `rust-toolchain.toml` and the repository Cargo configuration.
 - Commit with Conventional Commits. Never push unless explicitly requested.
 
@@ -39,6 +39,7 @@ Use a single-context glossary and ADR layout. Read
 
 ## Child context index
 
+- `crates/geometry/`: [AGENTS.md](crates/geometry/AGENTS.md)
 - `crates/main/`: [AGENTS.md](crates/main/AGENTS.md)
 - `crates/gen_assets/`: [AGENTS.md](crates/gen_assets/AGENTS.md)
 - `crates/gen_level/`: [AGENTS.md](crates/gen_level/AGENTS.md)

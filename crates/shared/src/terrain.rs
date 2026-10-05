@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::level::{SettlementConfig, SettlementKind};
-use crate::planet::{PlanetMesh, unit_icosphere_tris};
-use crate::sphere::{PLANET_RADIUS, SpherePos, slerp};
+use terra_geometry::planet::{PlanetMesh, unit_icosphere_tris};
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos, slerp};
 use crate::zones::{COARSE_SUB, ZoneConfig, ZoneKind, Zones};
 
 /// Mean radius of the visible lake carved inside its larger coarse containment
@@ -786,9 +786,9 @@ impl TerrainGen {
                     continue;
                 }
                 let b = anchors[bi];
-                let steps = (dist / crate::roads::SAMPLE_SPACING).ceil().max(1.0) as usize;
+                let steps = (dist / terra_geometry::roads::SAMPLE_SPACING).ceil().max(1.0) as usize;
                 let path =
-                    crate::roads::build_land_road_path(*a, b, steps, (a.0 + b.0).normalize());
+                    terra_geometry::roads::build_land_road_path(*a, b, steps, (a.0 + b.0).normalize());
                 let on_land = path.iter().all(|p| self.interp_elevation(*p) > 0.02);
                 if on_land {
                     paths.push(path);

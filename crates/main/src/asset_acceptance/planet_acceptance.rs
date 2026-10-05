@@ -17,9 +17,8 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
     window::PrimaryWindow,
 };
-use shared::{
-    level::LevelData, planet_view::PLANET_VIEW_FAR_RADIUS, sphere::PLANET_RADIUS, state::AppState,
-};
+use shared::{level::LevelData, planet_view::PLANET_VIEW_FAR_RADIUS, state::AppState};
+use terra_geometry::sphere::PLANET_RADIUS;
 use std::{
     fs::{self, OpenOptions},
     io::Write,

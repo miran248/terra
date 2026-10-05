@@ -7,8 +7,8 @@ use shared::level::{
     BlendTarget, FaceTag, Landform, LevelData, RoadKind, RoadMaterial, SceneryKind, SettlementKind,
     SlopeClass, WaterDepth, WaterPhase,
 };
-use shared::planet::PlanetMesh;
-use shared::sphere::PLANET_RADIUS;
+use terra_geometry::planet::PlanetMesh;
+use terra_geometry::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
 use std::time::Instant;
 
@@ -121,7 +121,7 @@ pub struct CullRange {
 pub(crate) fn altitude_above_surface(position: Vec3, terrain: Option<&TerrainGen>) -> f32 {
     let direction = position.normalize_or(Vec3::Y);
     let surface_radius = terrain.map_or(PLANET_RADIUS, |terrain| {
-        terrain.surface_radius(shared::sphere::SpherePos::new(direction))
+        terrain.surface_radius(terra_geometry::sphere::SpherePos::new(direction))
     });
     position.length() - surface_radius
 }
@@ -272,7 +272,7 @@ impl LevelRegions {
                     .iter()
                     .filter_map(|triangle| {
                         let triangle = triangle.map(Vec3::from_array);
-                        shared::planet::ray_triangle_intersection_distance(
+                        terra_geometry::planet::ray_triangle_intersection_distance(
                             player_position,
                             -direction,
                             &triangle,
@@ -417,7 +417,7 @@ pub(crate) fn setup_map(
         }),
     });
 
-    let spawn_surface_r = terrain.surface_radius(shared::sphere::SpherePos::new(Vec3::from_array(
+    let spawn_surface_r = terrain.surface_radius(terra_geometry::sphere::SpherePos::new(Vec3::from_array(
         level.settlements.first().expect("no settlements").pos,
     )));
 
@@ -472,12 +472,12 @@ pub(crate) fn setup_map(
         .iter()
         .filter(|road| road.kind == RoadKind::Road)
     {
-        let path: Vec<shared::sphere::SpherePos> = road
+        let path: Vec<terra_geometry::sphere::SpherePos> = road
             .points
             .iter()
-            .map(|point| shared::sphere::SpherePos::new(Vec3::from_array(*point)))
+            .map(|point| terra_geometry::sphere::SpherePos::new(Vec3::from_array(*point)))
             .collect();
-        let samples = shared::roads::sample_surface_road_path(
+        let samples = terra_geometry::roads::sample_surface_road_path(
             &path,
             &ground,
             None,
@@ -512,12 +512,12 @@ pub(crate) fn setup_map(
     for road in level.roads.iter().filter(|r| r.kind == RoadKind::Bridge) {
         let marker_index = bridge_index;
         bridge_index = bridge_index.saturating_add(1);
-        let span: Vec<shared::sphere::SpherePos> = road
+        let span: Vec<terra_geometry::sphere::SpherePos> = road
             .points
             .iter()
-            .map(|p| shared::sphere::SpherePos::new(Vec3::from_array(*p)))
+            .map(|p| terra_geometry::sphere::SpherePos::new(Vec3::from_array(*p)))
             .collect();
-        let deck = shared::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
+        let deck = terra_geometry::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
         if deck.triangles.is_empty() {
             continue;
         }
@@ -530,7 +530,7 @@ pub(crate) fn setup_map(
                 position,
             });
         }
-        let samples = shared::roads::sample_surface_road_path(
+        let samples = terra_geometry::roads::sample_surface_road_path(
             &span,
             &ground,
             Some(&deck.top_surface),
@@ -630,7 +630,7 @@ pub(crate) fn setup_map(
 
     // Player: spawn ON the ground at the first settlement.
     let s = level.settlements.first().expect("no settlements");
-    let start = shared::sphere::SpherePos::new(Vec3::from_array(s.pos));
+    let start = terra_geometry::sphere::SpherePos::new(Vec3::from_array(s.pos));
     let up = start.0;
 
     // Start at local noon for the spawn settlement.
@@ -794,21 +794,21 @@ mod region_identity_tests {
 
     #[test]
     fn bridge_hud_name_requires_the_player_to_be_on_the_deck_surface() {
-        let ground = shared::planet::PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let ground = terra_geometry::planet::PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let road = bridge("Test Bridge");
         let points = road
             .points
             .iter()
-            .map(|point| shared::sphere::SpherePos::new(Vec3::from_array(*point)))
+            .map(|point| terra_geometry::sphere::SpherePos::new(Vec3::from_array(*point)))
             .collect::<Vec<_>>();
-        let deck = shared::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
-        let direction = shared::sphere::slerp(points[0], points[1], 0.5).0;
+        let deck = terra_geometry::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
+        let direction = terra_geometry::sphere::slerp(points[0], points[1], 0.5).0;
         let deck_radius = deck
             .top_surface
             .iter()
             .filter_map(|triangle| {
                 let triangle = triangle.map(Vec3::from_array);
-                shared::planet::ray_triangle_radius(direction, &triangle)
+                terra_geometry::planet::ray_triangle_radius(direction, &triangle)
             })
             .max_by(f32::total_cmp)
             .expect("deck top should cross its centerline");
@@ -837,7 +837,7 @@ mod region_identity_tests {
             "../assets/level_1337.bin"
         ))
         .expect("load generated level");
-        let ground = shared::planet::PlanetMesh::new(
+        let ground = terra_geometry::planet::PlanetMesh::new(
             level
                 .terrain_tris
                 .iter()
@@ -856,9 +856,9 @@ mod region_identity_tests {
             let points = road
                 .points
                 .iter()
-                .map(|point| shared::sphere::SpherePos::new(Vec3::from_array(*point)))
+                .map(|point| terra_geometry::sphere::SpherePos::new(Vec3::from_array(*point)))
                 .collect::<Vec<_>>();
-            let deck = shared::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
+            let deck = terra_geometry::roads::build_bridge_deck_geometry(&points, &ground, 4.0);
             bridge_top_surfaces_by_name.insert(road.name.clone(), deck.top_surface);
         }
         let regions = LevelRegions {
@@ -874,7 +874,7 @@ mod region_identity_tests {
             for triangle in surface {
                 let triangle = triangle.map(Vec3::from_array);
                 let direction = (triangle[0] + triangle[1] + triangle[2]).normalize();
-                let deck_radius = shared::planet::ray_triangle_radius(direction, &triangle)
+                let deck_radius = terra_geometry::planet::ray_triangle_radius(direction, &triangle)
                     .expect("top triangle crosses its centroid ray");
                 let face = ground
                     .face_at(direction)
@@ -937,7 +937,7 @@ mod startup_physics_tests {
             .settlements
             .first()
             .expect("generated spawn settlement");
-        let start = shared::sphere::SpherePos::new(Vec3::from_array(settlement.pos));
+        let start = terra_geometry::sphere::SpherePos::new(Vec3::from_array(settlement.pos));
         let spawn_surface_r = terrain.surface_radius(start);
         let spawn_pos = player_spawn_position(start.0, spawn_surface_r);
 

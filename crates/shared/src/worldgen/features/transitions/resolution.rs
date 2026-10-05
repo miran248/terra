@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 use crate::wfc;
 use crate::worldgen::{Grid, link_tile_pinches};
 

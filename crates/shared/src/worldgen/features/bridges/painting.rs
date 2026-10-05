@@ -11,7 +11,7 @@ pub(in crate::worldgen) fn paint_features(
     // roadable, so a route with no suitable land path is left disconnected.
     let blocked =
         |cell: CellId| !features::roadable(cells[cell.index()], slope_class[cell.index()]);
-    let extra = |cell: crate::topology::CellId| match slope_class[cell.index()] {
+    let extra = |cell: terra_geometry::topology::CellId| match slope_class[cell.index()] {
         SlopeClass::Flat => 0,
         SlopeClass::Gentle => 400,
         _ => 4000, // steep
@@ -74,7 +74,7 @@ pub(in crate::worldgen) fn paint_features(
 }
 use crate::level::SlopeClass;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 use crate::worldgen::{
     Grid, Painted, RoadPath, features, link_feature_pinches, nearest_cell, router,
 };

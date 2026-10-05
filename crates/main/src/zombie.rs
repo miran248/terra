@@ -5,7 +5,7 @@ use crate::wave::WaveManager;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use rand::RngExt;
-use shared::sphere::PLANET_RADIUS;
+use terra_geometry::sphere::PLANET_RADIUS;
 use shared::state::AppState;
 
 #[derive(Component)]

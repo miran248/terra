@@ -1,4 +1,6 @@
-use bevy::prelude::*;
+use bevy_ecs::prelude::Component;
+use bevy_math::{Quat, Vec3};
+use bevy_transform::components::Transform;
 
 /// World units are meters: 1.0 == 1 m. Kept explicit so dimensions read physically.
 pub const METER: f32 = 1.0;

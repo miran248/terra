@@ -11,7 +11,7 @@ use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
 use shared::items::Recipe;
 use shared::level::RegionKind;
-use shared::planet::PlanetMesh;
+use terra_geometry::planet::PlanetMesh;
 use shared::terrain::Terrain;
 use shared::theme;
 use shared::upgrades::Upgrade;
@@ -803,7 +803,7 @@ fn update_sidebar_world_readout(
         return;
     };
     let mut values = Vec::new();
-    let pos = shared::sphere::SpherePos::new(tf.translation);
+    let pos = terra_geometry::sphere::SpherePos::new(tf.translation);
     // Read precomputed face type from level data — guaranteed to match terrain colors.
     let tile = if let (Some(planet), Some(ft), Some(corners)) = (
         planet.as_ref(),

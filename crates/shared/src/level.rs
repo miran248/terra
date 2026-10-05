@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
 
 use crate::terrain::Terrain;
-use crate::topology::FaceId;
+use terra_geometry::topology::FaceId;
 
 /// Magic prefix for generated level artifacts.
 pub const LEVEL_ARTIFACT_MAGIC: [u8; 4] = *b"TERA";
@@ -827,7 +827,7 @@ pub enum RoadKind {
 
 #[cfg(test)]
 mod tests {
-    use crate::topology::FaceId;
+    use terra_geometry::topology::FaceId;
 
     use super::{
         FloraKind, Landform, LevelArtifactError, LevelData, RegionMemberships, RoadEndpointRole,

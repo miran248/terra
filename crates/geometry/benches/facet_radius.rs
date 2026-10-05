@@ -1,6 +1,6 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use shared::planet::{PlanetMesh, ray_triangle_radius, unit_icosphere_tris};
-use shared::sphere::PLANET_RADIUS;
+use terra_geometry::planet::{PlanetMesh, ray_triangle_radius, unit_icosphere_tris};
+use terra_geometry::sphere::PLANET_RADIUS;
 use std::hint::black_box;
 
 /// Deterministic spread of query directions over the sphere.

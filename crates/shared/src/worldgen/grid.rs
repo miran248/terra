@@ -1,8 +1,8 @@
 use bevy::prelude::Vec3;
 
-use crate::planet::{PlanetMesh, unit_icosphere_tris};
-use crate::sphere::SpherePos;
-use crate::topology::{CellId, FaceId, TerrainTopology};
+use terra_geometry::planet::{PlanetMesh, unit_icosphere_tris};
+use terra_geometry::sphere::SpherePos;
+use terra_geometry::topology::{CellId, FaceId, TerrainTopology};
 use crate::zones::FINE_SUB;
 
 /// Fine generation lattice. Terrain identity lives on its vertices (`CellId`);

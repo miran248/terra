@@ -5,9 +5,9 @@ use crate::level::{
     RoadData, RoadEndpointData, RoadEndpointRole, RoadKind, SettlementConfig, SettlementKind,
     SlopeClass, StructureKind,
 };
-use crate::sphere::{PLANET_RADIUS, SpherePos, ring_point};
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos, ring_point};
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 
 use super::{
     CellSet, Grid, Painted, RoadPath, RoadPathPurpose, StructureSite, features,
@@ -690,7 +690,7 @@ pub(super) fn connect_bridges(
                 valid_entries = false;
                 break;
             };
-            for cell in grid.face_cells(crate::topology::FaceId::new(face_index)) {
+            for cell in grid.face_cells(terra_geometry::topology::FaceId::new(face_index)) {
                 if cells[cell.index()].is_land() {
                     if structure_obstacles.contains(&cell) {
                         valid_entries = false;
@@ -1042,7 +1042,7 @@ fn plan_settlement_structures(
             let max_distance = radius - footprint - 1.0;
             let mut candidates = Vec::new();
             for face_index in 0..grid.face_count() {
-                let face = crate::topology::FaceId::new(face_index);
+                let face = terra_geometry::topology::FaceId::new(face_index);
                 if !grid
                     .face_cells(face)
                     .into_iter()
@@ -1165,7 +1165,7 @@ fn footprint_is_roadable(
     cells: &[Terrain],
     slopes: &[SlopeClass],
     layout_road_cells: &CellSet,
-    face: crate::topology::FaceId,
+    face: terra_geometry::topology::FaceId,
     center: SpherePos,
     footprint_radius: f32,
 ) -> bool {

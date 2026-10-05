@@ -1,6 +1,6 @@
 use bevy::prelude::*;
 
-// All distances are in meters (1 world unit = 1 m). See `shared::sphere::METER`.
+// All distances are in meters (1 world unit = 1 m). See `terra_geometry::sphere::METER`.
 
 pub const PLAYER_SIZE: f32 = 0.55; // capsule totals ~1m tall
 pub const PLAYER_HP: f32 = 500.0;

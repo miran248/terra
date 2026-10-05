@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use super::Grid;
 use crate::level::RegionKind;
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 
 pub(super) mod generation;
 

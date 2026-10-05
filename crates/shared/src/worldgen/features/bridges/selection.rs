@@ -109,7 +109,7 @@ fn bridge_span(
     // solid ground instead of spanning the full distance between inland pads.
     let samples = (anchor_distance / 2.0).ceil().max(2.0) as usize;
     let buildable = |step: usize| {
-        let point = crate::sphere::slerp(pa, pb, step as f32 / samples as f32);
+        let point = terra_geometry::sphere::slerp(pa, pb, step as f32 / samples as f32);
         crate::worldgen::nearest_cell(grid, point).is_some_and(|cell| {
             features::bridge_walkable(cells[cell.index()])
                 && terrain.slope(grid.cell_position(cell)) < BRIDGE_MAX_FOOTING_SLOPE
@@ -128,17 +128,17 @@ fn bridge_span(
     }
     let from = left as f32 / samples as f32;
     let to = right as f32 / samples as f32;
-    let start = crate::sphere::slerp(pa, pb, from);
-    let end = crate::sphere::slerp(pa, pb, to);
+    let start = terra_geometry::sphere::slerp(pa, pb, from);
+    let end = terra_geometry::sphere::slerp(pa, pb, to);
     let distance = start.distance(end);
     if !(BRIDGE_MIN_SPAN..=max_span).contains(&distance) {
         return None;
     }
     let steps = (distance / 6.0).ceil().max(2.0) as usize;
     let span = (0..=steps)
-        .map(|step| crate::sphere::slerp(start, end, step as f32 / steps as f32))
+        .map(|step| terra_geometry::sphere::slerp(start, end, step as f32 / steps as f32))
         .collect::<Vec<_>>();
-    let mid = crate::sphere::slerp(start, end, 0.5);
+    let mid = terra_geometry::sphere::slerp(start, end, 0.5);
     Some((span, mid))
 }
 
@@ -209,7 +209,7 @@ fn commit_bridge(
 fn crosses_only_ocean_between(
     grid: &Grid,
     cells: &[Terrain],
-    components: &crate::topology::ComponentLabels<crate::topology::CellComponentId>,
+    components: &terra_geometry::topology::ComponentLabels<terra_geometry::topology::CellComponentId>,
     a_component: usize,
     b_component: usize,
     a: CellId,
@@ -218,7 +218,7 @@ fn crosses_only_ocean_between(
     let (pa, pb) = (grid.cell_position(a), grid.cell_position(b));
     let steps = (pa.distance(pb) / 6.0).ceil().max(2.0) as usize;
     let path = (0..=steps)
-        .map(|step| crate::sphere::slerp(pa, pb, step as f32 / steps as f32))
+        .map(|step| terra_geometry::sphere::slerp(pa, pb, step as f32 / steps as f32))
         .collect::<Vec<_>>();
     let mut crossed_ocean = false;
     for cell in cell_chain(grid, &path) {
@@ -634,7 +634,7 @@ pub(in crate::worldgen) fn build_bridges(
 use bevy::prelude::Vec3;
 
 use crate::level::SlopeClass;
-use crate::sphere::SpherePos;
+use terra_geometry::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::{Grid, Painted, cell_chain, features};

@@ -16,9 +16,9 @@ use crate::level::{
     WaterDepth, WaterPhase,
 };
 pub use crate::level::{SettlementConfig, SettlementKind};
-use crate::sphere::SpherePos;
+use terra_geometry::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use bevy::prelude::Vec3;
 
 mod classification;
@@ -31,6 +31,16 @@ mod pipeline;
 mod projection;
 mod regions;
 mod router;
+
+/// Deterministic settlement name: a fixed syllable table indexed by settlement number,
+/// so the same seed/order always yields the same names.
+pub(crate) fn settlement_name(i: usize) -> String {
+    const PRE: [&str; 8] = [
+        "Ash", "Oak", "Stone", "River", "Fair", "Wind", "Cold", "Green",
+    ];
+    const SUF: [&str; 6] = ["ford", "haven", "bury", "wick", "dale", "hollow"];
+    format!("{}{}", PRE[i % PRE.len()], SUF[(i / PRE.len()) % SUF.len()])
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct StructureSite {
@@ -438,7 +448,7 @@ impl GenState {
             .iter()
             .enumerate()
             .map(|(i, anchor)| SettlementData {
-                name: crate::roads::settlement_name(i),
+                name: settlement_name(i),
                 pos: anchor.0.to_array(),
                 kind: terrain.settlement_kind(i),
             })

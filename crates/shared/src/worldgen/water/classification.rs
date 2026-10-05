@@ -1,7 +1,7 @@
 use crate::level::{Landform, SlopeClass, WaterDepth};
-use crate::sphere::SpherePos;
+use terra_geometry::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 
 use super::super::{Grid, absorb_small_clusters, classification};
 use super::normalization::cell_zone;
@@ -181,7 +181,7 @@ pub(in crate::worldgen) fn classify_slope(grid: &Grid, terrain: &TerrainGen) -> 
                 .map(|cell| cell.index())
             {
                 let dist =
-                    a.distance(grid.cell_direction(CellId::new(nb))) * crate::sphere::PLANET_RADIUS;
+                    a.distance(grid.cell_direction(CellId::new(nb))) * terra_geometry::sphere::PLANET_RADIUS;
                 if dist > 1.0 {
                     worst = worst.max((alt[cell_index] - alt[nb]).abs() / dist);
                 }

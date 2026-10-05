@@ -1,5 +1,5 @@
 use super::Grid;
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 
 pub(super) fn face_max<T: Copy>(grid: &Grid, per_cell: &[T], rank: impl Fn(T) -> u8) -> Vec<T> {
     grid.topology

@@ -9,6 +9,7 @@ asset-review-schedule-trace = ["asset-review", "bevy/trace"]
 
 [dependencies]
 bevy = { version = "0.19.1", features = ["mouse", "touch", "debug"] }
+terra-geometry = { path = "../geometry" }
 shared = { path = "../shared" }
 rand = "0.10"
 avian3d = { version = "0.7", features = ["diagnostic_ui"] }

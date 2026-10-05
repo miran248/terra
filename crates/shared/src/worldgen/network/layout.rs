@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use crate::level::SettlementKind;
-use crate::sphere::{SpherePos, ring_point};
-use crate::topology::CellId;
+use terra_geometry::sphere::{SpherePos, ring_point};
+use terra_geometry::topology::CellId;
 
 use super::{Grid, router, safe_road_band, unsafe_road_edges};
 

@@ -9,9 +9,9 @@ fn kernel_is_local() {
     for i in 0..2000 {
         let u = (i as f32 * 0.6180339) % 1.0;
         let v = (i as f32 * 0.7548776) % 1.0;
-        let p = crate::sphere::random_point(u, v);
+        let p = terra_geometry::sphere::random_point(u, v);
         for (solver_vertex, _) in terrain.kernel(p) {
-            let d = p.distance(crate::sphere::SpherePos::new(
+            let d = p.distance(terra_geometry::sphere::SpherePos::new(
                 terrain.vert_dir(solver_vertex),
             ));
             assert!(

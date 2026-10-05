@@ -16,8 +16,8 @@ use bevy::{
 use shared::{
     flight_showcase::{pilot_at_speed, pilot_input},
     level::LevelData,
-    sphere::PLANET_RADIUS,
 };
+use terra_geometry::sphere::PLANET_RADIUS;
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Resource, Default)]

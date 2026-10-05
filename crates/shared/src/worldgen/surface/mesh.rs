@@ -186,5 +186,5 @@ use bevy::color::ColorToComponents;
 
 use crate::level::{Landform, RoadMaterial, SlopeClass, WaterDepth};
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::{Grid, Painted, face_solid};

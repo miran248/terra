@@ -14,7 +14,7 @@ use shared::planet_markers::{
     planet_marker_presentation, project_ndc_to_logical_viewport, same_surface_location,
 };
 use shared::planet_view::{planet_compass_color, planet_compass_orientation};
-use shared::sphere::{PLANET_RADIUS, SpherePos};
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
 
@@ -1712,8 +1712,8 @@ mod tests {
                 .is_planet_view_active()
         );
 
-        let body_position = Vec3::new(0.25, 0.968_245_8, 0.0) * shared::sphere::PLANET_RADIUS;
-        let stale_player_transform = Vec3::Y * shared::sphere::PLANET_RADIUS;
+        let body_position = Vec3::new(0.25, 0.968_245_8, 0.0) * terra_geometry::sphere::PLANET_RADIUS;
+        let stale_player_transform = Vec3::Y * terra_geometry::sphere::PLANET_RADIUS;
         app.world_mut()
             .entity_mut(car)
             .insert((Position(body_position), LinearVelocity::ZERO));
@@ -1807,13 +1807,13 @@ mod tests {
         let epoch = WorldEpoch::new(36);
         let settlement = PlanetDestination {
             id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 0),
-            position: Vec3::Z * shared::sphere::PLANET_RADIUS,
+            position: Vec3::Z * terra_geometry::sphere::PLANET_RADIUS,
             surface: PlanetDestinationSurface::Terrain,
             display: "Settlement · S".into(),
         };
         let region = PlanetDestination {
             id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Region, 0),
-            position: Vec3::Z * shared::sphere::PLANET_RADIUS,
+            position: Vec3::Z * terra_geometry::sphere::PLANET_RADIUS,
             surface: PlanetDestinationSurface::Terrain,
             display: "Region · A faraway named region".into(),
         };
@@ -1953,7 +1953,7 @@ mod tests {
         let direction = Vec3::Z;
         let marker = PlanetDestination {
             id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 0),
-            position: direction * shared::sphere::PLANET_RADIUS,
+            position: direction * terra_geometry::sphere::PLANET_RADIUS,
             surface: PlanetDestinationSurface::Terrain,
             display: "Town · Center".into(),
         };
@@ -2101,7 +2101,7 @@ mod tests {
             scale_factor,
         });
         camera.computed.clip_from_view = perspective.get_clip_from_view();
-        let camera_pose = Transform::from_xyz(0.0, 0.0, shared::sphere::PLANET_RADIUS + 400.0)
+        let camera_pose = Transform::from_xyz(0.0, 0.0, terra_geometry::sphere::PLANET_RADIUS + 400.0)
             .looking_at(Vec3::ZERO, Vec3::Y);
         let camera_entity = app
             .world_mut()

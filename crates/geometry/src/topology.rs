@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 macro_rules! id {
-    ($name:ident) => {
+    ($name:ident, $constructor_vis:vis) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct $name(u32);
 
@@ -14,17 +14,19 @@ macro_rules! id {
             pub fn index(self) -> usize {
                 self.0 as usize
             }
-            pub(crate) fn new(index: usize) -> Self {
+            #[doc = "Create a typed identity for a dense index in its owning topology."]
+            #[doc = "The caller must ensure that the index is in range."]
+            $constructor_vis fn new(index: usize) -> Self {
                 Self(u32::try_from(index).expect("terrain topology exceeds u32 ids"))
             }
         }
     };
 }
 
-id!(CellId);
-id!(FaceId);
-id!(CellComponentId);
-id!(FaceComponentId);
+id!(CellId, pub);
+id!(FaceId, pub);
+id!(CellComponentId, pub(crate));
+id!(FaceComponentId, pub(crate));
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComponentLabels<I> {

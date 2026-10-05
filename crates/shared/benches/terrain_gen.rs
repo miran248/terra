@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use shared::sphere::SpherePos;
+use terra_geometry::sphere::SpherePos;
 use shared::terrain::TerrainGen;
 use std::hint::black_box;
 

@@ -7,9 +7,9 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::{
     plane_prototype::{FlightInput, PlaneCamera, PlaneFlight, gentle_landing},
-    planet::PlanetMesh,
     state::AppState,
 };
+use terra_geometry::planet::PlanetMesh;
 
 pub struct PlanePrototypePlugin;
 
@@ -596,7 +596,7 @@ fn readout(
         },
         velocity.length(),
         plane.flight.throttle * 100.0,
-        position.0.length() - shared::sphere::PLANET_RADIUS,
+        position.0.length() - terra_geometry::sphere::PLANET_RADIUS,
         plane.clearance,
         plane.event
     );

@@ -1,7 +1,7 @@
 use super::*;
 use crate::level::{Landform, RegionKind};
 use crate::terrain::Terrain;
-use crate::topology::FaceId;
+use terra_geometry::topology::FaceId;
 
 #[test]
 fn deterministic_pipeline() {

@@ -4,7 +4,7 @@ use bevy::prelude::Vec3;
 
 use super::*;
 use crate::level::{RoadEndpointRole, RoadKind, SlopeClass};
-use crate::sphere::{SpherePos, ring_point};
+use terra_geometry::sphere::{SpherePos, ring_point};
 use crate::terrain::Terrain;
 
 fn distance_to_segment(point: [f32; 3], start: [f32; 3], end: [f32; 3]) -> f32 {
@@ -12,7 +12,7 @@ fn distance_to_segment(point: [f32; 3], start: [f32; 3], end: [f32; 3]) -> f32 {
     let start = Vec3::from_array(start);
     let segment = Vec3::from_array(end) - start;
     let t = ((point - start).dot(segment) / segment.length_squared()).clamp(0.0, 1.0);
-    point.distance(start + segment * t) * crate::sphere::PLANET_RADIUS
+    point.distance(start + segment * t) * terra_geometry::sphere::PLANET_RADIUS
 }
 
 #[test]

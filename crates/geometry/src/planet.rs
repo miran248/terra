@@ -1,4 +1,5 @@
-use bevy::prelude::{Resource, Vec3};
+use bevy_ecs::prelude::Resource;
+use bevy_math::Vec3;
 
 use crate::sphere::PLANET_RADIUS;
 

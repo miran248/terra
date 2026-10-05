@@ -19,7 +19,7 @@ impl Default for PlanetSimulationClock {
     fn default() -> Self {
         Self {
             base_rate: 1.0,
-            attained_radius: shared::sphere::PLANET_RADIUS,
+            attained_radius: terra_geometry::sphere::PLANET_RADIUS,
             planet_view_active: false,
         }
     }

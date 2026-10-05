@@ -205,7 +205,7 @@ fn apply_precip(
     // Local temperature under the player decides rain vs snow.
     let snow = match (player_q.single(), terrain.as_ref()) {
         (Ok(p), Some(t)) => {
-            is_snow(t.temperature_at(shared::sphere::SpherePos::new(p.translation)))
+            is_snow(t.temperature_at(terra_geometry::sphere::SpherePos::new(p.translation)))
         }
         _ => false,
     };
@@ -441,7 +441,7 @@ mod tests {
         let terrain = shared::terrain::TerrainGen::init(1337);
         let player_position = app.world().get::<Transform>(player).unwrap().translation;
         assert!(is_snow(terrain.temperature_at(
-            shared::sphere::SpherePos::new(player_position)
+            terra_geometry::sphere::SpherePos::new(player_position)
         )));
         app.insert_resource(terrain);
         let before_snow_updates = app.world().get::<Transform>(particle).unwrap().translation;

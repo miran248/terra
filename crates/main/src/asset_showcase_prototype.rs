@@ -9,9 +9,8 @@ use bevy::{
     prelude::*,
     render::view::screenshot::{Screenshot, save_to_disk},
 };
-use shared::{
-    actor_animation::ActorPlayback, planet::PlanetMesh, sphere::PLANET_RADIUS, state::AppState,
-};
+use shared::{actor_animation::ActorPlayback, state::AppState};
+use terra_geometry::{planet::PlanetMesh, sphere::PLANET_RADIUS};
 
 pub struct AssetShowcasePlugin;
 impl Plugin for AssetShowcasePlugin {

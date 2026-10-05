@@ -351,7 +351,7 @@ mod tests {
         );
         assert!(
             (camera_altitude
-                - (shared::planet_view::PLANET_VIEW_NEAR_RADIUS - shared::sphere::PLANET_RADIUS))
+                - (shared::planet_view::PLANET_VIEW_NEAR_RADIUS - terra_geometry::sphere::PLANET_RADIUS))
                 .abs()
                 < 3.0,
             "nearest Planet view zoom should attain the documented overview altitude, got {camera_altitude} m"
@@ -415,7 +415,7 @@ mod tests {
         );
 
         let view_direction = Vec3::X;
-        let structure_position = view_direction * (shared::sphere::PLANET_RADIUS + 30.0);
+        let structure_position = view_direction * (terra_geometry::sphere::PLANET_RADIUS + 30.0);
         let structure_rotation = Quat::from_rotation_arc(Vec3::Y, view_direction);
         app.world_mut().insert_resource(CollisionWorld {
             obstacles: vec![Obstacle::new(
@@ -430,7 +430,7 @@ mod tests {
             .world_mut()
             .spawn((
                 MainCamera,
-                Transform::from_xyz(0.0, shared::sphere::PLANET_RADIUS + 5.0, -5.0)
+                Transform::from_xyz(0.0, terra_geometry::sphere::PLANET_RADIUS + 5.0, -5.0)
                     .looking_at(Vec3::ZERO, Vec3::Y),
             ))
             .id();

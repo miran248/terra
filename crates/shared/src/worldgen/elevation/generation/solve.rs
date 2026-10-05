@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use crate::level::{BlendTarget, FaceBlend, Landform};
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 use crate::worldgen::{Grid, Painted, elevation};
 
 use super::{

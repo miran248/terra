@@ -1,6 +1,6 @@
 use std::collections::{BTreeSet, VecDeque};
 
-use crate::sphere::SpherePos;
+use terra_geometry::sphere::SpherePos;
 use crate::zones::{ZoneKind, Zones};
 
 /// Dedicated coarse-zone river router. Neighbor order and BFS tie-breaking are

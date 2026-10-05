@@ -543,7 +543,7 @@ use bevy::prelude::Vec3;
 use crate::level::{
     FaceTag, FloraKind, SceneryData, SceneryKind, SlopeClass, StructureData, StructureKind,
 };
-use crate::sphere::SpherePos;
+use terra_geometry::sphere::SpherePos;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::{Grid, Painted, StructureSite, face_solid, painted_corners};

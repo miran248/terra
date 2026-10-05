@@ -7,8 +7,8 @@
 
 use bevy::prelude::Vec3;
 
-use crate::planet::{build_face_adjacency, unit_icosphere_tris};
-use crate::sphere::PLANET_RADIUS;
+use terra_geometry::planet::{build_face_adjacency, unit_icosphere_tris};
+use terra_geometry::sphere::PLANET_RADIUS;
 
 pub const COARSE_SUB: usize = 3;
 pub const FINE_SUB: usize = 7;
@@ -785,7 +785,7 @@ mod tests {
     fn fine_to_coarse_mapping_matches_geometry() {
         // A fine face's centroid must land inside its computed coarse parent.
         let fine = unit_icosphere_tris(FINE_SUB);
-        let coarse = crate::planet::PlanetMesh::new(unit_icosphere_tris(COARSE_SUB));
+        let coarse = terra_geometry::planet::PlanetMesh::new(unit_icosphere_tris(COARSE_SUB));
         for fi in (0..fine.len()).step_by(997) {
             let cent = ((fine[fi][0] + fine[fi][1] + fine[fi][2]) / 3.0).normalize();
             let parent = fi / FINE_FACES_PER_COARSE;

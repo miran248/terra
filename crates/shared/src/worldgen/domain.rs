@@ -1,6 +1,6 @@
 use std::ops::{Index, IndexMut};
 
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 
 macro_rules! field {
     ($name:ident, $id:ty) => {

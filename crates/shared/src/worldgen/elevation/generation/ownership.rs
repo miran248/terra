@@ -89,5 +89,5 @@ use std::collections::BTreeMap;
 
 use crate::level::Landform;
 use crate::terrain::{Terrain, TerrainGen};
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::Grid;

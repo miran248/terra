@@ -4,7 +4,7 @@
 - The runtime rejects missing, truncated, and unsupported headers or invalid payloads. There is no old-format migration: regenerate level binaries with the current `gen_level` when the schema changes.
 - Output is deterministic for `PLANET_SEED` (default 1337). `LevelData` contains displaced visual/physics triangles, base colors, typed face/corner terrain identities, direct tags and multi-region face memberships, water/river radii, water phase, surface condition, settlements, and road/bridge paths.
 - Terrain rendering and physics share displaced icosphere triangles; generation resolution is controlled by `zones::FINE_SUB`. Runtime builds bridge decks and their colliders from the baked spans.
-- Topology derivation, cell-to-face projection, `LevelData` assembly, and generation statistics belong to `shared::worldgen`, not the CLI.
+- `terra-geometry` owns spherical operations, planet mesh queries, typed topology, and geometric road helpers. Cell-to-face projection, `LevelData` assembly, and generation statistics remain in `shared::worldgen` during this extraction step, not the CLI.
 
 Generate, check, and benchmark:
 

@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use crate::sphere::{PLANET_RADIUS, tangent_heading};
+use terra_geometry::sphere::{PLANET_RADIUS, tangent_heading};
 
 /// Nearest requested camera radius for a local overview around the controlled body.
 pub const PLANET_VIEW_NEAR_RADIUS: f32 = PLANET_RADIUS + 400.0;

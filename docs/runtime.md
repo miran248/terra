@@ -2,7 +2,7 @@
 
 ## World and offline boundary
 
-- Units are meters; canonical world scale lives in `shared::sphere`.
+- Units are meters; canonical world scale lives in `terra_geometry::sphere`.
 - The player spawns at the first settlement in the baked `LevelData`.
 - The world is a 3D planet (`Camera3d`, PBR meshes, `DirectionalLight`). `gen_level` precomputes planet mesh, collision, roads, settlements, and typed face data into local generated `assets/level_{seed}.bin` files, embedded at compile time with `include_bytes!`. Each artifact carries the `TERA` magic and schema version 1 before its Postcard payload. Missing or unsupported headers are rejected; regenerate seed 1337 before building from a clean checkout. These generated binaries are ignored by Git.
 - Runtime consumes typed, face-oriented `LevelData`. Mesh generation, region clustering, and route planning remain offline. Startup reconstructs the terrain query grid, coarse zones, and climate from the seed and baked elevation field through `TerrainGen::from_field`; this reconstruction remains intentional for now. `PlanetMesh::face_at` bridges arbitrary positions; the HUD uses the nearest authoritative face-corner terrain identity.

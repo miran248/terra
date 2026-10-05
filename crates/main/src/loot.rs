@@ -7,7 +7,7 @@ use bevy::prelude::*;
 use rand::RngExt;
 use shared::art::AssetName;
 use shared::items::{Material, WeaponKind};
-use shared::sphere::{PLANET_RADIUS, random_point};
+use terra_geometry::sphere::{PLANET_RADIUS, random_point};
 use shared::state::AppState;
 use shared::upgrades::Upgrade;
 

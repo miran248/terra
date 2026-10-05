@@ -324,7 +324,7 @@ pub(in crate::worldgen) fn region_name(
             .iter()
             .enumerate()
             .min_by(|(_, a), (_, b)| a.0.dot(cent).partial_cmp(&b.0.dot(cent)).unwrap().reverse())
-            .map(|(i, _)| crate::roads::settlement_name(i))
+            .map(|(i, _)| crate::worldgen::settlement_name(i))
             .unwrap_or_else(|| format!("Town {idx}")),
     }
 }

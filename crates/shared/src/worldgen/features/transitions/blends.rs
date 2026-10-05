@@ -64,5 +64,5 @@ use std::collections::BTreeMap;
 
 use crate::level::{BlendTarget, FaceBlend};
 use crate::terrain::Terrain;
-use crate::topology::{CellId, FaceId};
+use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::{Grid, Painted, face_solid, painted_corners};

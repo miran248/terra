@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, BinaryHeap};
 use bevy::prelude::Vec3;
 
 use super::Grid;
-use crate::topology::CellId;
+use terra_geometry::topology::CellId;
 
 const ROUTE_STATE_SLOTS: usize = 7;
 const START_SLOT: usize = 6;

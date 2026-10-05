@@ -17,12 +17,11 @@ use placement::Placement;
 use shared::{
     car_prototype::CarMotion,
     plane_prototype::{FlightInput, PlaneFlight, gentle_landing},
-    planet::PlanetMesh,
     planet_view::PlanetViewCamera,
     planet_view_interface::{PlanetViewPointer, PlanetViewPresentation},
-    sphere::tangent_heading as tangent,
     state::AppState,
 };
+use terra_geometry::{planet::PlanetMesh, sphere::tangent_heading as tangent};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -1943,7 +1942,7 @@ pub(crate) mod tests {
     #[test]
     fn planet_camera_transition_advances_while_simulation_time_is_paused() {
         let (mut app, _) = fixture();
-        let planet_radius = shared::sphere::PLANET_RADIUS;
+        let planet_radius = terra_geometry::sphere::PLANET_RADIUS;
         let camera = app
             .world_mut()
             .spawn((
@@ -3845,7 +3844,7 @@ pub(crate) mod tests {
             if move_body {
                 let body_rotation = Quat::from_rotation_z(time * 0.01);
                 app.world_mut().get_mut::<Position>(explorer).unwrap().0 =
-                    body_rotation * Vec3::Y * (shared::sphere::PLANET_RADIUS + 0.6);
+                    body_rotation * Vec3::Y * (terra_geometry::sphere::PLANET_RADIUS + 0.6);
                 app.world_mut().get_mut::<Player>(explorer).unwrap().heading =
                     body_rotation * Vec3::NEG_Z;
             }
@@ -4106,7 +4105,7 @@ pub(crate) mod tests {
     fn opposite_side_m_return_keeps_the_planet_centered_and_tracks_its_path() {
         let metrics = [30, 60, 120].map(opposite_side_return_trace);
         for measurement in &metrics {
-            assert!(measurement.min_swing_radius > shared::sphere::PLANET_RADIUS + 300.0);
+            assert!(measurement.min_swing_radius > terra_geometry::sphere::PLANET_RADIUS + 300.0);
             assert!(measurement.max_path_error_degrees < 2.0);
             assert!(measurement.final_body_distance < 30.0);
             assert!(
@@ -4468,8 +4467,8 @@ pub(crate) mod tests {
             assert!(app.world().get::<Transform>(camera).unwrap().translation.y > 2000.2);
         }
         let planet_view = app.world().get::<Transform>(camera).unwrap();
-        assert!(planet_view.translation.length() > shared::sphere::PLANET_RADIUS * 2.0);
-        assert!(planet_view.translation.length() < shared::sphere::PLANET_RADIUS * 4.0);
+        assert!(planet_view.translation.length() > terra_geometry::sphere::PLANET_RADIUS * 2.0);
+        assert!(planet_view.translation.length() < terra_geometry::sphere::PLANET_RADIUS * 4.0);
         assert!(
             app.world()
                 .get::<Position>(explorer)
@@ -4484,7 +4483,7 @@ pub(crate) mod tests {
             .press(KeyCode::Escape);
         app.update();
         let returning = app.world().get::<Transform>(camera).unwrap();
-        assert!(returning.translation.length() > shared::sphere::PLANET_RADIUS * 2.0);
+        assert!(returning.translation.length() > terra_geometry::sphere::PLANET_RADIUS * 2.0);
         assert!(returning.translation.y > 2000.2);
 
         for _ in 0..120 {
@@ -4919,7 +4918,7 @@ pub(crate) mod tests {
     #[test]
     fn clearance_limited_zoom_resumes_smoothly_after_a_structure_is_removed() {
         let (mut app, _) = fixture();
-        let planet_radius = shared::sphere::PLANET_RADIUS;
+        let planet_radius = terra_geometry::sphere::PLANET_RADIUS;
         app.world_mut().spawn((
             RigidBody::Static,
             Collider::sphere(planet_radius),
@@ -5031,7 +5030,7 @@ pub(crate) mod tests {
     #[test]
     fn antipodal_orbit_and_interrupted_return_stay_outside_the_planet() {
         let (mut app, explorer) = fixture();
-        let planet_radius = shared::sphere::PLANET_RADIUS;
+        let planet_radius = terra_geometry::sphere::PLANET_RADIUS;
         app.world_mut().spawn((
             RigidBody::Static,
             Collider::sphere(planet_radius),

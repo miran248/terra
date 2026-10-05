@@ -170,8 +170,8 @@ pub(super) fn camera(
     let view_direction = state.planet_camera.view_direction(position);
     let surface_radius = surface
         .as_deref()
-        .map_or(shared::sphere::PLANET_RADIUS, |terrain| {
-            terrain.surface_radius(shared::sphere::SpherePos::new(view_direction))
+        .map_or(terra_geometry::sphere::PLANET_RADIUS, |terrain| {
+            terrain.surface_radius(terra_geometry::sphere::SpherePos::new(view_direction))
         });
     let mut planet_pose = state.planet_camera.update(
         current_camera,
@@ -308,7 +308,7 @@ pub(super) fn readout(
             .and_then(|entity| vehicles.get(entity).ok())
             .map(|(vehicle, velocity)| {
                 let altitude = player.single().map_or(0.0, |(position, _)| {
-                    position.0.length() - shared::sphere::PLANET_RADIUS
+                    position.0.length() - terra_geometry::sphere::PLANET_RADIUS
                 });
                 let condition = if vehicle.crashed {
                     " · Crashed"

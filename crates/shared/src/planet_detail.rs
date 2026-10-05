@@ -1,7 +1,7 @@
 use bevy::prelude::Vec3;
 
 use crate::level::{FloraKind, SceneryKind};
-use crate::sphere::PLANET_RADIUS;
+use terra_geometry::sphere::PLANET_RADIUS;
 
 pub const LOCAL_DETAIL_DISTANCE: f32 = 300.0;
 pub const REGIONAL_DETAIL_DISTANCE: f32 = 960.0;

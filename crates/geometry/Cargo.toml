@@ -1,0 +1,17 @@
+[package]
+name = "terra-geometry"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy_ecs = "0.19.1"
+bevy_math = "0.19.1"
+bevy_transform = "0.19.1"
+
+[dev-dependencies]
+bevy = "0.19.1"
+criterion = { version = "0.8.2", default-features = false }
+
+[[bench]]
+name = "facet_radius"
+harness = false

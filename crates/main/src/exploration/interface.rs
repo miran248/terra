@@ -583,8 +583,8 @@ mod tests {
 
     #[test]
     fn follow_button_preserves_the_attained_camera_pose_when_detaching() {
-        let body_position = Vec3::Y * shared::sphere::PLANET_RADIUS;
-        let chase = Transform::from_xyz(0.0, shared::sphere::PLANET_RADIUS + 5.0, -5.0)
+        let body_position = Vec3::Y * terra_geometry::sphere::PLANET_RADIUS;
+        let chase = Transform::from_xyz(0.0, terra_geometry::sphere::PLANET_RADIUS + 5.0, -5.0)
             .looking_at(body_position, Vec3::Y);
         let mut current = chase;
         let mut state = Exploration::default();
@@ -596,7 +596,7 @@ mod tests {
                 body_position,
                 Vec3::NEG_Z,
                 1.0 / 60.0,
-                shared::sphere::PLANET_RADIUS,
+                terra_geometry::sphere::PLANET_RADIUS,
             );
             state.planet_camera.finish_transition_if_ready();
         }
@@ -606,7 +606,7 @@ mod tests {
             body_position,
             Vec3::X,
             1.0 / 60.0,
-            shared::sphere::PLANET_RADIUS,
+            terra_geometry::sphere::PLANET_RADIUS,
         );
         let attained = current;
 
@@ -620,10 +620,10 @@ mod tests {
         let detached = state.planet_camera.update(
             attained,
             chase,
-            Vec3::X * shared::sphere::PLANET_RADIUS,
+            Vec3::X * terra_geometry::sphere::PLANET_RADIUS,
             Vec3::Z,
             1.0 / 60.0,
-            shared::sphere::PLANET_RADIUS,
+            terra_geometry::sphere::PLANET_RADIUS,
         );
         assert!(
             detached

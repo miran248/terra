@@ -238,8 +238,8 @@ fn each_settlement_has_its_kind_specific_structures_inside_its_footprint() {
                 })
                 .collect::<Vec<_>>();
             let mut adjacency = std::collections::BTreeMap::<
-                crate::topology::CellId,
-                std::collections::BTreeSet<crate::topology::CellId>,
+                terra_geometry::topology::CellId,
+                std::collections::BTreeSet<terra_geometry::topology::CellId>,
             >::new();
             for road in &internal_paths {
                 for pair in road.cells.windows(2) {

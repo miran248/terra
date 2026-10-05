@@ -1,6 +1,6 @@
 use bevy::prelude::*;
-use shared::planet::PlanetMesh;
-use shared::roads::{
+use terra_geometry::planet::PlanetMesh;
+use terra_geometry::roads::{
     SurfaceRoadSample, build_surface_road_ribbon, build_terrain_following_road_ribbon,
     projected_surface_ribbon_width,
 };
@@ -645,18 +645,18 @@ mod tests {
 
         let edge_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
         let expected = edge_normal.dot(triangle[0]) / edge_normal.dot(direction);
-        let actual = ground.facet_radius(direction, shared::sphere::PLANET_RADIUS);
+        let actual = ground.facet_radius(direction, terra_geometry::sphere::PLANET_RADIUS);
         let road_projection =
-            ground.facet_radius_for_road_projection(direction, shared::sphere::PLANET_RADIUS);
+            ground.facet_radius_for_road_projection(direction, terra_geometry::sphere::PLANET_RADIUS);
 
-        assert_eq!(actual, shared::sphere::PLANET_RADIUS);
+        assert_eq!(actual, terra_geometry::sphere::PLANET_RADIUS);
         assert!((road_projection - expected).abs() < 0.01);
     }
 
     #[test]
     fn bridge_highlight_stays_at_its_sampled_deck_height() {
-        let ground = shared::planet::PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
-        let terrain_radius = ground.facet_radius(Vec3::Y, shared::sphere::PLANET_RADIUS);
+        let ground = terra_geometry::planet::PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
+        let terrain_radius = ground.facet_radius(Vec3::Y, terra_geometry::sphere::PLANET_RADIUS);
         let deck_radius = terrain_radius + ROAD_SURFACE_LIFT_METERS + 5.0;
         let samples = [-10.0, 10.0].map(|z| SurfaceRoadSample {
             center: Vec3::Y * deck_radius + Vec3::Z * z,
@@ -688,7 +688,7 @@ mod tests {
             .map(|vertex| {
                 let point = Vec3::from_array(*vertex);
                 point.length()
-                    - ground.facet_radius(point.normalize(), shared::sphere::PLANET_RADIUS)
+                    - ground.facet_radius(point.normalize(), terra_geometry::sphere::PLANET_RADIUS)
             })
             .fold(f32::INFINITY, f32::min);
         assert!(minimum_deck_clearance > 4.0);
@@ -720,7 +720,7 @@ mod tests {
 
     fn road_job_fixture_paths() -> RoadHighlightPaths {
         let make_path = |index: usize| {
-            let center = Vec3::Y * shared::sphere::PLANET_RADIUS + Vec3::X * (index as f32 * 4.0);
+            let center = Vec3::Y * terra_geometry::sphere::PLANET_RADIUS + Vec3::X * (index as f32 * 4.0);
             vec![
                 SurfaceRoadSample {
                     center: center - Vec3::Z * 8.0,
@@ -913,11 +913,11 @@ mod tests {
     #[test]
     fn first_road_geometry_commit_attaches_only_a_nonempty_mesh() {
         let paths = road_job_fixture_paths();
-        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let ground = PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let epoch = crate::map::WorldEpoch::new(6);
         let widths = road_job_fixture_widths(&paths, 4.0, 5.0);
         let camera_transform =
-            Transform::from_translation(Vec3::Y * (shared::sphere::PLANET_RADIUS + 1_000.0))
+            Transform::from_translation(Vec3::Y * (terra_geometry::sphere::PLANET_RADIUS + 1_000.0))
                 .looking_at(Vec3::ZERO, Vec3::Z);
         let (mut app, _, highlight, placeholder) = app_for_road_geometry_refresh(
             paths,
@@ -962,7 +962,7 @@ mod tests {
     #[test]
     fn road_mesh_attributes_are_prepared_before_the_atomic_asset_swap() {
         let paths = road_job_fixture_paths();
-        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let ground = PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let epoch = crate::map::WorldEpoch::new(20);
         let old_widths = road_job_fixture_widths(&paths, 4.0, 5.0);
         let old_triangles = build_highlight_triangles(&paths, &ground, &old_widths);
@@ -973,7 +973,7 @@ mod tests {
         let old_attributes = test_mesh_attributes(&old_mesh);
 
         let camera_transform =
-            Transform::from_translation(Vec3::Z * (shared::sphere::PLANET_RADIUS + 10_000.0))
+            Transform::from_translation(Vec3::Z * (terra_geometry::sphere::PLANET_RADIUS + 10_000.0))
                 .looking_at(Vec3::ZERO, Vec3::Y);
         let perspective = PerspectiveProjection {
             far: 20_000_000.0,
@@ -1044,7 +1044,7 @@ mod tests {
     #[test]
     fn road_geometry_job_is_bounded_atomic_and_coalesces_camera_reversals() {
         let paths = road_job_fixture_paths();
-        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let ground = PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let epoch = crate::map::WorldEpoch::new(7);
         let original_widths = road_job_fixture_widths(&paths, 4.0, 5.0);
         let first_camera_widths = road_job_fixture_widths(&paths, 8.0, 9.0);
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn road_geometry_job_discards_partial_and_staged_work_on_cancel_or_epoch_change() {
         let paths = road_job_fixture_paths();
-        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let ground = PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let epoch = crate::map::WorldEpoch::new(11);
         let widths = road_job_fixture_widths(&paths, 4.0, 4.0);
         let mut refresh = RoadMeshRefresh::default();
@@ -1142,7 +1142,7 @@ mod tests {
                 .collect(),
             bridges: paths.bridges,
         };
-        let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
+        let ground = PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let epoch = crate::map::WorldEpoch::new(21);
         let old_widths = road_job_fixture_widths(&paths, 4.0, 5.0);
         let old_triangles = build_highlight_triangles(&paths, &ground, &old_widths);
@@ -1153,7 +1153,7 @@ mod tests {
         let old_positions = test_mesh_positions(&old_mesh);
 
         let mut camera_transform =
-            Transform::from_translation(Vec3::Z * (shared::sphere::PLANET_RADIUS + 10_000.0))
+            Transform::from_translation(Vec3::Z * (terra_geometry::sphere::PLANET_RADIUS + 10_000.0))
                 .looking_at(Vec3::ZERO, Vec3::Y);
         let perspective = PerspectiveProjection {
             far: 20_000_000.0,
