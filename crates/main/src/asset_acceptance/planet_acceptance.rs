@@ -43,6 +43,9 @@ const ROUTES: [Route; 4] = [
 const WARMUP_SECONDS: f64 = 60.0;
 const MEASURE_SECONDS: f64 = 60.0;
 const REPEATS: u8 = 3;
+const VEHICLE_LOCAL_PLACEMENT_RADIUS_M: f32 = 30.0;
+const VEHICLE_SETUP_SETTLE_SECONDS: f64 = 0.3;
+const VEHICLE_SETUP_TIMEOUT_SECONDS: f64 = 20.0;
 const WORK_TRACE_ENV: &str = "TERRA_PLANET_WORK_TRACE";
 const STALL_LIMIT_MS: f64 = 1000.0 / 30.0;
 pub(super) const MIN_MEASURED_BODY_PATH_M: f64 = 10.0;
@@ -135,6 +138,7 @@ impl Route {
 struct PlanetAcceptance {
     directory: PathBuf,
     phase: Phase,
+    vehicle_anchor: Option<PlayerAnchor>,
     errors: Vec<String>,
     counts: ResidentCounts,
     counts_at: f64,
@@ -177,6 +181,7 @@ enum Phase {
         started_at: f64,
         actions: RouteActions,
     },
+    PreparingVehicle(VehiclePreparation),
     Measuring {
         route: Route,
         repeat: u8,
@@ -188,6 +193,38 @@ enum Phase {
         started_at: f64,
     },
     Done,
+}
+
+#[derive(Clone, Copy)]
+struct PlayerAnchor {
+    position: Vec3,
+    heading: Vec3,
+}
+
+#[derive(Clone, Copy)]
+enum VehiclePreparationNext {
+    Warmup,
+    Measurement(u8),
+}
+
+#[derive(Clone, Copy, Debug)]
+enum VehiclePreparationStep {
+    CloseView,
+    RequestTeleport,
+    AwaitTeleport,
+    OpenSelector,
+    ProbeMap,
+    ChooseCar,
+    AwaitSummon,
+}
+
+struct VehiclePreparation {
+    next: VehiclePreparationNext,
+    started_at: f64,
+    step: VehiclePreparationStep,
+    settled_since: Option<f64>,
+    map_probe_sent: bool,
+    succeeded: bool,
 }
 
 #[derive(Default)]
@@ -387,6 +424,7 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
     app.insert_resource(PlanetAcceptance {
         directory,
         phase: Phase::WaitingForWorld,
+        vehicle_anchor: None,
         errors: Vec::new(),
         counts: ResidentCounts::default(),
         counts_at: 0.0,
@@ -464,13 +502,18 @@ fn drive_planet_acceptance(world: &mut World) {
     let phase = std::mem::replace(&mut run.phase, Phase::WaitingForWorld);
     run.phase = match phase {
         Phase::WaitingForWorld => {
-            initialize_output(world, &mut run);
-            info!("Planet acceptance primary-window run started");
-            Phase::Capturing {
-                index: 0,
-                prepared: false,
-                prepared_at: now,
-                screenshot_at: None,
+            if let Some(anchor) = validated_player_anchor(world) {
+                run.vehicle_anchor = Some(anchor);
+                initialize_output(world, &mut run);
+                info!("Planet acceptance primary-window run started");
+                Phase::Capturing {
+                    index: 0,
+                    prepared: false,
+                    prepared_at: now,
+                    screenshot_at: None,
+                }
+            } else {
+                Phase::WaitingForWorld
             }
         }
         Phase::Capturing {
@@ -501,10 +544,14 @@ fn drive_planet_acceptance(world: &mut World) {
                     route = ROUTES[0].name(),
                     "Planet acceptance warm-up started"
                 );
-                Phase::Warmup {
-                    route: ROUTES[0],
-                    started_at: now,
-                    actions: RouteActions::default(),
+                if ROUTES[0] == Route::FollowVehicleRecovery {
+                    begin_vehicle_preparation(VehiclePreparationNext::Warmup, now)
+                } else {
+                    Phase::Warmup {
+                        route: ROUTES[0],
+                        started_at: now,
+                        actions: RouteActions::default(),
+                    }
                 }
             }
         }
@@ -517,14 +564,17 @@ fn drive_planet_acceptance(world: &mut World) {
             drive_route(world, route, elapsed, true, &mut actions, &mut run);
             if elapsed >= WARMUP_SECONDS {
                 info!(route = route.name(), "Planet acceptance warm-up completed");
-                let measuring_actions = RouteActions::default();
-                start_measurement_traces(world, now, route.name(), 1);
-                Phase::Measuring {
-                    route,
-                    repeat: 1,
-                    started_at: now,
-                    actions: measuring_actions,
-                    samples: Vec::with_capacity(4_000),
+                if route == Route::FollowVehicleRecovery {
+                    begin_vehicle_preparation(VehiclePreparationNext::Measurement(1), now)
+                } else {
+                    start_measurement_traces(world, now, route.name(), 1);
+                    Phase::Measuring {
+                        route,
+                        repeat: 1,
+                        started_at: now,
+                        actions: RouteActions::default(),
+                        samples: Vec::with_capacity(4_000),
+                    }
                 }
             } else {
                 Phase::Warmup {
@@ -532,6 +582,38 @@ fn drive_planet_acceptance(world: &mut World) {
                     started_at,
                     actions,
                 }
+            }
+        }
+        Phase::PreparingVehicle(mut preparation) => {
+            if advance_vehicle_preparation(world, &mut run, &mut preparation, now) {
+                if !preparation.succeeded {
+                    Phase::Finishing { started_at: now }
+                } else {
+                    match preparation.next {
+                        VehiclePreparationNext::Warmup => Phase::Warmup {
+                            route: Route::FollowVehicleRecovery,
+                            started_at: now,
+                            actions: RouteActions::default(),
+                        },
+                        VehiclePreparationNext::Measurement(repeat) => {
+                            start_measurement_traces(
+                                world,
+                                now,
+                                Route::FollowVehicleRecovery.name(),
+                                repeat,
+                            );
+                            Phase::Measuring {
+                                route: Route::FollowVehicleRecovery,
+                                repeat,
+                                started_at: now,
+                                actions: RouteActions::default(),
+                                samples: Vec::with_capacity(4_000),
+                            }
+                        }
+                    }
+                }
+            } else {
+                Phase::PreparingVehicle(preparation)
             }
         }
         Phase::Measuring {
@@ -547,24 +629,34 @@ fn drive_planet_acceptance(world: &mut World) {
                 finish_repeat(world, &mut run, route, repeat, &samples);
                 stop_measurement_traces(world, route.name(), repeat);
                 if repeat < REPEATS {
-                    let next_actions = RouteActions::default();
-                    start_measurement_traces(world, now, route.name(), repeat + 1);
-                    Phase::Measuring {
-                        route,
-                        repeat: repeat + 1,
-                        started_at: now,
-                        actions: next_actions,
-                        samples: Vec::with_capacity(4_000),
+                    if route == Route::FollowVehicleRecovery {
+                        begin_vehicle_preparation(
+                            VehiclePreparationNext::Measurement(repeat + 1),
+                            now,
+                        )
+                    } else {
+                        start_measurement_traces(world, now, route.name(), repeat + 1);
+                        Phase::Measuring {
+                            route,
+                            repeat: repeat + 1,
+                            started_at: now,
+                            actions: RouteActions::default(),
+                            samples: Vec::with_capacity(4_000),
+                        }
                     }
                 } else if let Some(next) = ROUTES.get(route_index(route) + 1).copied() {
                     if trace_sidecars_enabled() {
                         run.trace_flush_route = Some(route);
                     }
                     info!(route = next.name(), "Planet acceptance warm-up started");
-                    Phase::Warmup {
-                        route: next,
-                        started_at: now,
-                        actions: RouteActions::default(),
+                    if next == Route::FollowVehicleRecovery {
+                        begin_vehicle_preparation(VehiclePreparationNext::Warmup, now)
+                    } else {
+                        Phase::Warmup {
+                            route: next,
+                            started_at: now,
+                            actions: RouteActions::default(),
+                        }
                     }
                 } else {
                     if trace_sidecars_enabled() {
@@ -594,6 +686,175 @@ fn drive_planet_acceptance(world: &mut World) {
     };
 
     world.insert_resource(run);
+}
+
+fn validated_player_anchor(world: &mut World) -> Option<PlayerAnchor> {
+    let (entity, position, velocity) = player_motion(world)?;
+    if !position.is_finite() || velocity.length() > 0.5 {
+        return None;
+    }
+    let contacts = world.get::<avian3d::prelude::CollidingEntities>(entity)?;
+    if !contacts
+        .iter()
+        .any(|entity| world.get::<crate::map::Ground>(*entity).is_some())
+    {
+        return None;
+    }
+    let (_, heading) = player_pose(world)?;
+    Some(PlayerAnchor { position, heading })
+}
+
+fn begin_vehicle_preparation(next: VehiclePreparationNext, now: f64) -> Phase {
+    Phase::PreparingVehicle(VehiclePreparation {
+        next,
+        started_at: now,
+        step: VehiclePreparationStep::CloseView,
+        settled_since: None,
+        map_probe_sent: false,
+        succeeded: false,
+    })
+}
+
+/// Restore the same live, safely validated starting area without charging setup
+/// to a measured window. The route still performs its ordinary timed V/C actions.
+fn advance_vehicle_preparation(
+    world: &mut World,
+    run: &mut PlanetAcceptance,
+    preparation: &mut VehiclePreparation,
+    now: f64,
+) -> bool {
+    for key in [
+        KeyCode::KeyW,
+        KeyCode::KeyS,
+        KeyCode::KeyA,
+        KeyCode::KeyD,
+        KeyCode::KeyR,
+        KeyCode::KeyV,
+        KeyCode::KeyC,
+        KeyCode::KeyM,
+        KeyCode::KeyE,
+        KeyCode::Escape,
+        KeyCode::Space,
+        KeyCode::ShiftLeft,
+        KeyCode::ShiftRight,
+        KeyCode::ControlLeft,
+        KeyCode::ControlRight,
+    ] {
+        set_key(world, key, false);
+    }
+    if now - preparation.started_at > VEHICLE_SETUP_TIMEOUT_SECONDS {
+        record_error(
+            run,
+            format!(
+                "vehicle preparation timed out at {:?} before safe teleport/summon completed",
+                preparation.step
+            ),
+        );
+        return true;
+    }
+    let Some(anchor) = run.vehicle_anchor else {
+        record_error(
+            run,
+            "vehicle preparation has no grounded starting anchor".into(),
+        );
+        return true;
+    };
+    world
+        .resource_mut::<Exploration>()
+        .set_planet_view_open(false);
+    match preparation.step {
+        VehiclePreparationStep::CloseView => {
+            let state = world.resource::<Exploration>();
+            if state.is_vehicle_selector_open() {
+                set_key(world, KeyCode::Escape, true);
+            } else if state.is_in_vehicle() {
+                // The preceding route normally exits. If it has not, use the
+                // same safe exit action rather than relocating an occupied car.
+                world
+                    .resource_mut::<Exploration>()
+                    .request(Action::Interact);
+            } else if !state.is_planet_view_active() {
+                preparation.step = VehiclePreparationStep::RequestTeleport;
+            }
+        }
+        VehiclePreparationStep::RequestTeleport => {
+            world
+                .resource_mut::<Exploration>()
+                .request(Action::Teleport(anchor.position));
+            preparation.step = VehiclePreparationStep::AwaitTeleport;
+        }
+        VehiclePreparationStep::AwaitTeleport => {
+            let pending = world
+                .resource::<Exploration>()
+                .action_pending(Action::Teleport(anchor.position));
+            let settled = !pending
+                && validated_player_anchor(world)
+                    .is_some_and(|current| current.position.distance(anchor.position) < 1.0);
+            if settled {
+                let since = preparation.settled_since.get_or_insert(now);
+                if now - *since >= VEHICLE_SETUP_SETTLE_SECONDS {
+                    // Restore only the heading; position and physics remain the
+                    // outcome of the ordinary safe teleport and live settling.
+                    if let Some(mut player) = world.query::<&mut Player>().iter_mut(world).next() {
+                        player.heading = anchor.heading;
+                    }
+                    preparation.step = VehiclePreparationStep::OpenSelector;
+                }
+            } else {
+                preparation.settled_since = None;
+            }
+        }
+        VehiclePreparationStep::OpenSelector => {
+            set_key(world, KeyCode::KeyV, true);
+            preparation.step = VehiclePreparationStep::ProbeMap;
+        }
+        VehiclePreparationStep::ProbeMap => {
+            let state = world.resource::<Exploration>();
+            if state.is_vehicle_selector_open() && world.resource::<Time<Virtual>>().is_paused() {
+                run.coverage.selector_opened = true;
+                if preparation.map_probe_sent {
+                    if !state.is_planet_view_active() {
+                        run.coverage.selector_priority_when_open = true;
+                        preparation.step = VehiclePreparationStep::ChooseCar;
+                    }
+                } else {
+                    set_key(world, KeyCode::KeyM, true);
+                    preparation.map_probe_sent = true;
+                }
+            }
+        }
+        VehiclePreparationStep::ChooseCar => {
+            set_key(world, KeyCode::KeyC, true);
+            preparation.step = VehiclePreparationStep::AwaitSummon;
+        }
+        VehiclePreparationStep::AwaitSummon => {
+            let state = world.resource::<Exploration>();
+            if !state.is_vehicle_selector_open()
+                && !world.resource::<Time<Virtual>>().is_paused()
+                && state.vehicle_summon_ready(Kind::Car)
+            {
+                let car = state
+                    .vehicle_entity(Kind::Car)
+                    .and_then(|entity| world.get::<Position>(entity))
+                    .map(|position| position.0);
+                if car.is_some_and(|position| {
+                    position.distance(anchor.position) <= VEHICLE_LOCAL_PLACEMENT_RADIUS_M
+                }) {
+                    run.coverage.selector_closed_unpaused = true;
+                    run.current_route = Some(Route::FollowVehicleRecovery);
+                    record_event(
+                        run,
+                        0.0,
+                        "vehicle-setup",
+                        "validated-fixed-anchor-and-local-car-before-clock",
+                    );
+                    preparation.succeeded = true;
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 fn capture_and_measure_planet_acceptance(world: &mut World) {
@@ -806,7 +1067,7 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
         "asset-review"
     };
     let configuration = format!(
-        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures={features}\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\nschedule_span_trace={schedule_trace}\nschedule_trace_alignment=frame-clock CSV pairs Time<Real> route elapsed with monotonic route elapsed\nschedule_trace_semantics=per-span wall duration; nested schedule and render spans overlap and are not additive\nprofile_measurement_caveat={profile_caveat}\n",
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nvehicle_route_anchor=initial-live-grounded-player-pose\nvehicle_setup=normal-safe-teleport-and-selector-summon-before-route-clocks\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures={features}\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\nschedule_span_trace={schedule_trace}\nschedule_trace_alignment=frame-clock CSV pairs Time<Real> route elapsed with monotonic route elapsed\nschedule_trace_semantics=per-span wall duration; nested schedule and render spans overlap and are not additive\nprofile_measurement_caveat={profile_caveat}\n",
         window.unwrap_or_else(|| "not-yet-available".into()),
         MEASURE_SECONDS * 0.5,
     );
@@ -1329,7 +1590,14 @@ fn drive_vehicle_route(
         record_event(run, elapsed, "vehicle-handoff", "entered-car");
     }
 
-    if actions.vehicle_summon_requested && car_entity.is_some() && !actions.vehicle_summoned {
+    if actions.vehicle_summon_requested
+        && actions.vehicle_selector_closed_observed
+        && world
+            .resource::<Exploration>()
+            .vehicle_summon_ready(Kind::Car)
+        && distance <= VEHICLE_LOCAL_PLACEMENT_RADIUS_M
+        && !actions.vehicle_summoned
+    {
         actions.vehicle_summoned = true;
         record_event(run, elapsed, "vehicle-handoff", "car-summoned-by-selector");
     }
@@ -2268,11 +2536,69 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
 #[cfg(test)]
 mod tests {
     use super::{
-        CaptureView, FrameSample, Motion, ResidentCounts, Route, SUN_TILT, SolarPhase,
-        continuous_body_path, due_orbit_inputs, maximum_sun_elevation_degrees,
-        physics_advanced_while_moving, sun_angle_for_elevation,
+        CaptureView, CrossFeatureCoverage, FrameSample, Motion, Phase, PlanetAcceptance,
+        ResidentCounts, Route, RouteActions, SUN_TILT, SolarPhase, VehiclePreparationNext,
+        begin_vehicle_preparation, continuous_body_path, drive_planet_acceptance,
+        drive_vehicle_route, due_orbit_inputs, maximum_sun_elevation_degrees,
+        physics_advanced_while_moving, sun_angle_for_elevation, validated_player_anchor,
     };
-    use bevy::prelude::Vec3;
+    use crate::exploration::{Action, Exploration, Kind};
+    use avian3d::prelude::Position;
+    use bevy::{
+        ecs::schedule::IntoScheduleConfigs,
+        prelude::{App, PreUpdate, Time, Transform, Vec3, With},
+        time::Real,
+        window::PrimaryWindow,
+    };
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    fn test_output_directory() -> PathBuf {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "terra-planet-acceptance-test-{}-{}",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    fn test_acceptance(directory: PathBuf) -> PlanetAcceptance {
+        PlanetAcceptance {
+            directory,
+            phase: super::Phase::Done,
+            vehicle_anchor: None,
+            errors: Vec::new(),
+            counts: ResidentCounts::default(),
+            counts_at: 0.0,
+            measured_stalls: Vec::new(),
+            event_log: Vec::new(),
+            current_route: Some(Route::FollowVehicleRecovery),
+            trace_flush_route: None,
+            coverage: CrossFeatureCoverage::default(),
+        }
+    }
+
+    fn summon_car(app: &mut App) -> bevy::prelude::Entity {
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(Action::Summon(Kind::Car));
+        for _ in 0..8 {
+            app.update();
+            if let Some(car) = app
+                .world()
+                .resource::<Exploration>()
+                .vehicle_entity(Kind::Car)
+            {
+                return car;
+            }
+        }
+        panic!("the fixture's clear ground should accept a car summon");
+    }
 
     fn solar_elevation_degrees(anchor: Vec3, angle: f32) -> f32 {
         let up = anchor.normalize_or(Vec3::Y);
@@ -2419,5 +2745,207 @@ mod tests {
             moved[0].csv_row(Route::EntryReversal).split(',').count(),
             44
         );
+    }
+
+    #[test]
+    fn vehicle_route_does_not_accept_a_stale_nearby_car_after_c() {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        let car = summon_car(&mut app);
+        let player = app
+            .world_mut()
+            .query_filtered::<&Position, With<crate::map::Player>>()
+            .single(app.world())
+            .unwrap()
+            .0;
+        assert!(
+            app.world().get::<Position>(car).unwrap().0.distance(player) < 30.0,
+            "the stale vehicle starts inside the summon area"
+        );
+        app.world_mut().spawn((
+            avian3d::prelude::RigidBody::Static,
+            avian3d::prelude::Collider::cuboid(32.0, 3.0, 12.0),
+            bevy::prelude::Transform::from_xyz(-13.0, 2000.0, -10.0),
+        ));
+        app.update();
+
+        let directory = test_output_directory();
+        let mut run = test_acceptance(directory.clone());
+        let mut actions = RouteActions::default();
+        drive_vehicle_route(app.world_mut(), 2.0, &mut actions, &mut run);
+        app.update();
+        app.world_mut()
+            .resource_mut::<bevy::input::ButtonInput<bevy::prelude::KeyCode>>()
+            .clear_just_pressed(bevy::prelude::KeyCode::KeyV);
+        drive_vehicle_route(app.world_mut(), 2.8, &mut actions, &mut run);
+
+        assert!(actions.vehicle_summon_requested);
+        assert!(
+            !actions.vehicle_summoned,
+            "an existing nearby car is not success while the new sliced V/C summon is unresolved"
+        );
+        assert!(app.world().get::<Position>(car).unwrap().0.distance(player) < 30.0);
+        app.update();
+        drive_vehicle_route(app.world_mut(), 2.81, &mut actions, &mut run);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .action_pending(Action::Summon(Kind::Car))
+        );
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .vehicle_summon_ready(Kind::Car)
+        );
+        assert!(
+            !actions.vehicle_summoned,
+            "a stale nearby car must remain unaccepted while candidate search is pending"
+        );
+
+        for step in 0..12 {
+            app.update();
+            drive_vehicle_route(
+                app.world_mut(),
+                2.82 + f64::from(step) / 60.0,
+                &mut actions,
+                &mut run,
+            );
+            if actions.vehicle_summoned {
+                break;
+            }
+        }
+        assert!(
+            actions.vehicle_summoned,
+            "the completed safe summon is accepted"
+        );
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .vehicle_summon_ready(Kind::Car)
+        );
+        assert!(app.world().get::<Position>(car).unwrap().0.distance(player) <= 30.0);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn vehicle_preparation_restores_anchor_before_measurement_starts() {
+        let (mut app, player) = crate::exploration::tests::fixture();
+        // The Exploration fixture has zero gravity, so seat its freshly
+        // spawned body on the support collider before asking the production
+        // anchor validator to observe real Avian contact state.
+        app.world_mut().get_mut::<Position>(player).unwrap().0.y -= 0.2;
+        for _ in 0..3 {
+            app.update();
+        }
+        let anchor = validated_player_anchor(app.world_mut())
+            .expect("the settled fixture player has live ground support");
+        let drift_target = anchor.position + Vec3::X * 20.0;
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(Action::Teleport(drift_target));
+        for _ in 0..8 {
+            app.update();
+            if !app
+                .world()
+                .resource::<Exploration>()
+                .action_pending(Action::Teleport(drift_target))
+            {
+                break;
+            }
+        }
+        let drifted_position = app.world().get::<Position>(player).unwrap().0;
+        assert!(
+            drifted_position.distance(anchor.position) > 10.0,
+            "the fixture must begin preparation away from its validated anchor"
+        );
+
+        app.world_mut()
+            .spawn((crate::map::MainCamera, Transform::default()));
+        app.world_mut().spawn(PrimaryWindow);
+        let directory = test_output_directory();
+        let mut run = test_acceptance(directory.clone());
+        run.vehicle_anchor = Some(anchor);
+        let now = app.world().resource::<Time<Real>>().elapsed_secs_f64();
+        run.phase = begin_vehicle_preparation(VehiclePreparationNext::Measurement(1), now);
+        app.world_mut().insert_resource(run);
+        app.add_systems(
+            PreUpdate,
+            drive_planet_acceptance.before(crate::exploration::ExplorationInput),
+        );
+
+        let mut measurement_started = false;
+        for _ in 0..240 {
+            app.update();
+            let run = app.world().resource::<PlanetAcceptance>();
+            match &run.phase {
+                Phase::PreparingVehicle(_) => {
+                    assert!(run.errors.is_empty(), "{:?}", run.errors);
+                    assert!(
+                        !app.world()
+                            .resource::<Exploration>()
+                            .vehicle_summon_ready(Kind::Car)
+                            || app
+                                .world()
+                                .resource::<Exploration>()
+                                .vehicle_entity(Kind::Car)
+                                .and_then(|entity| app.world().get::<Position>(entity))
+                                .is_some_and(|position| {
+                                    position.0.distance(anchor.position)
+                                        <= super::VEHICLE_LOCAL_PLACEMENT_RADIUS_M
+                                }),
+                        "preparation must not accept a stale remote vehicle"
+                    );
+                }
+                Phase::Measuring {
+                    route,
+                    repeat,
+                    started_at,
+                    ..
+                } => {
+                    assert_eq!(*route, Route::FollowVehicleRecovery);
+                    assert_eq!(*repeat, 1);
+                    assert!(run.event_log.iter().any(|event| {
+                        event.contains("validated-fixed-anchor-and-local-car-before-clock")
+                    }));
+                    let state = app.world().resource::<Exploration>();
+                    assert!(state.vehicle_summon_ready(Kind::Car));
+                    assert!(!state.is_vehicle_selector_open());
+                    assert!(
+                        !app.world()
+                            .resource::<Time<bevy::prelude::Virtual>>()
+                            .is_paused()
+                    );
+                    let car = state.vehicle_entity(Kind::Car).unwrap();
+                    assert!(
+                        app.world()
+                            .get::<Position>(car)
+                            .unwrap()
+                            .0
+                            .distance(anchor.position)
+                            <= super::VEHICLE_LOCAL_PLACEMENT_RADIUS_M
+                    );
+                    assert!(
+                        app.world()
+                            .get::<Position>(player)
+                            .unwrap()
+                            .0
+                            .distance(anchor.position)
+                            < 1.0,
+                        "the accepted measurement anchor is restored by live teleport"
+                    );
+                    assert!(*started_at >= now);
+                    measurement_started = true;
+                    break;
+                }
+                _ => panic!("preparation entered an unexpected phase"),
+            }
+            app.world_mut()
+                .resource_mut::<bevy::prelude::ButtonInput<bevy::prelude::KeyCode>>()
+                .clear();
+        }
+        assert!(
+            measurement_started,
+            "preparation never reached a valid measurement"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 }
