@@ -1,9 +1,12 @@
-use super::{background_capture_description, diagnostic_screenshot};
+use super::{
+    background_capture_description, diagnostic_screenshot,
+    planet_acceptance::{count_collision_colliders, csv},
+    transition_diagnostic::DiagnosticWorldWarmup,
+};
 use crate::{
     exploration::{Exploration, Kind},
     ui::{Sidebar, SidebarAction, SidebarActionControl, SidebarReadoutSlot, SidebarScrollArea},
 };
-use avian3d::prelude::Collider;
 use bevy::{
     app::AppExit,
     input::{
@@ -18,9 +21,8 @@ use bevy::{
 };
 use std::{collections::HashSet, fs, path::PathBuf};
 
-const WARMUP_COLLIDERS: usize = 100;
-const WARMUP_STABLE_FRAMES: u8 = 30;
 const PHASE_TIMEOUT: f64 = 18.0;
+const RECOVERY_REQUIRED_HOLD_SECONDS: f64 = 1.0;
 const REQUIRED_CAPTURES: [&str; 7] = [
     "sidebar-entry.png",
     "planet-context-target.png",
@@ -37,8 +39,7 @@ pub(super) struct SidebarDiagnostic {
     phase: Phase,
     phase_started_at: Option<f64>,
     started_at: Option<f64>,
-    last_collider_count: Option<usize>,
-    stable_world_frames: u8,
+    world_warmup: DiagnosticWorldWarmup,
     pending_click_release: bool,
     hold_started_at: Option<f64>,
     captures: HashSet<String>,
@@ -56,6 +57,7 @@ pub(super) struct SidebarDiagnostic {
     mouse_view_close: bool,
     recovery_early_cancelled: bool,
     recovery_completed: bool,
+    successful_recovery_hold_s: Option<f64>,
     finished: bool,
 }
 
@@ -117,8 +119,7 @@ impl SidebarDiagnostic {
             phase: Phase::Warmup,
             phase_started_at: None,
             started_at: None,
-            last_collider_count: None,
-            stable_world_frames: 0,
+            world_warmup: DiagnosticWorldWarmup::default(),
             pending_click_release: false,
             hold_started_at: None,
             captures: HashSet::new(),
@@ -136,6 +137,7 @@ impl SidebarDiagnostic {
             mouse_view_close: false,
             recovery_early_cancelled: false,
             recovery_completed: false,
+            successful_recovery_hold_s: None,
             finished: false,
         }
     }
@@ -602,9 +604,22 @@ impl SidebarDiagnostic {
                 if success_readout.contains("recovered")
                     || success_readout.contains("returned to safe ground")
                 {
-                    self.recovery_completed = true;
-                    self.record(world, now, "recovery-complete", text);
-                    self.capture(world, now, "sidebar-recovery-complete.png");
+                    let hold_elapsed_s = self.hold_started_at.map_or(0.0, |started| now - started);
+                    if hold_elapsed_s >= RECOVERY_REQUIRED_HOLD_SECONDS {
+                        self.recovery_completed = true;
+                        self.successful_recovery_hold_s = Some(hold_elapsed_s);
+                        self.record(
+                            world,
+                            now,
+                            "recovery-complete",
+                            format!("held_for={hold_elapsed_s:.3}s; {text}"),
+                        );
+                        self.capture(world, now, "sidebar-recovery-complete.png");
+                    } else {
+                        self.errors.push(format!(
+                            "recovery success appeared after only {hold_elapsed_s:.3}s"
+                        ));
+                    }
                     self.set_phase(Phase::RecoveryCompleteRelease, now);
                 } else if self
                     .hold_started_at
@@ -652,20 +667,7 @@ impl SidebarDiagnostic {
     }
 
     fn world_is_stable(&mut self, world: &mut World) -> bool {
-        let mut colliders = world.query_filtered::<Entity, With<Collider>>();
-        let count = colliders.iter(world).count();
-        if count < WARMUP_COLLIDERS {
-            self.last_collider_count = None;
-            self.stable_world_frames = 0;
-            return false;
-        }
-        if self.last_collider_count == Some(count) {
-            self.stable_world_frames = self.stable_world_frames.saturating_add(1);
-        } else {
-            self.last_collider_count = Some(count);
-            self.stable_world_frames = 1;
-        }
-        self.stable_world_frames >= WARMUP_STABLE_FRAMES
+        self.world_warmup.observe(count_collision_colliders(world))
     }
 
     fn click_action(&mut self, world: &mut World, now: f64, action: SidebarAction) -> bool {
@@ -741,10 +743,9 @@ impl SidebarDiagnostic {
 
     fn record(&mut self, world: &World, now: f64, event: &str, detail: impl std::fmt::Display) {
         let elapsed = self.started_at.map_or(0.0, |started| now - started);
-        self.events.push(format!(
-            "{elapsed:.3},{event},\"{}\"\n",
-            csv(&detail.to_string())
-        ));
+        let detail = detail.to_string().replace('\r', " ").replace('\n', " ");
+        self.events
+            .push(format!("{elapsed:.3},{},{}\n", csv(event), csv(&detail)));
         fs::write(self.directory.join("events.csv"), self.events.concat())
             .expect("write sidebar diagnostic events");
         let _ = background_capture_description(world);
@@ -779,7 +780,7 @@ impl SidebarDiagnostic {
         }
         self.record(world, now, "finish", self.status());
         let status = format!(
-            "{}\nselector_open_pauses={}\nselector_cancel_resumes={}\ncar_choice_resumes={}\nmouse_view_close={}\nfollow_toggled={}\nsidebar_wheel_no_zoom={}\nearly_recovery_cancels={}\nrecovery_completes={}\ncaptures={}\nerrors={}\n",
+            "{}\nselector_open_pauses={}\nselector_cancel_resumes={}\ncar_choice_resumes={}\nmouse_view_close={}\nfollow_toggled={}\nsidebar_wheel_no_zoom={}\nearly_recovery_cancels={}\nrecovery_completes={}\nrecovery_success_hold_s={}\ncaptures={}\nerrors={}\n",
             self.status(),
             self.selector_paused,
             self.cancel_resumed,
@@ -789,6 +790,8 @@ impl SidebarDiagnostic {
             self.no_zoom_proved,
             self.recovery_early_cancelled,
             self.recovery_completed,
+            self.successful_recovery_hold_s
+                .map_or_else(|| "missing".to_owned(), |held| format!("{held:.3}")),
             self.captures.len(),
             self.errors.join("; "),
         );
@@ -987,8 +990,4 @@ fn recovery_percent(world: &mut World) -> Option<u32> {
     let text = readout_text(world, SidebarReadoutSlot::RecoveryContext)?;
     let before_percent = text.split('%').next()?;
     before_percent.rsplit_once(':')?.1.trim().parse().ok()
-}
-
-fn csv(value: &str) -> String {
-    value.replace('"', "\"\"").replace('\n', " ")
 }

@@ -115,6 +115,7 @@ const OPENING_SECONDS: f32 = 1.4;
 const RETURN_SECONDS: f32 = 1.8;
 const EXTRA_FAR_RETURN_SECONDS: f32 = 0.6;
 const FOLLOW_REACQUIRE_ANGLE: f32 = 2.0_f32.to_radians();
+const FOLLOW_RECENTER_SECONDS: f32 = 1.0;
 // Small course changes can close directly without waiting at the transit shell.
 const DIRECT_RETURN_MAX_ANGLE: f32 = 45.0_f32.to_radians();
 const MOTION_RESET_LINEAR_SPEED: f32 = 50_000.0;
@@ -231,6 +232,8 @@ pub struct PlanetViewCamera {
     retain_orbit_target_on_open: bool,
     follow: bool,
     follow_recenter: bool,
+    follow_recenter_elapsed: f32,
+    follow_recenter_offset: Option<Quat>,
     requested_radius: f32,
     attained_radius: f32,
     detached_direction: Vec3,
@@ -253,6 +256,8 @@ impl Default for PlanetViewCamera {
             retain_orbit_target_on_open: false,
             follow: true,
             follow_recenter: false,
+            follow_recenter_elapsed: 0.0,
+            follow_recenter_offset: None,
             requested_radius: PLANET_VIEW_FAR_RADIUS,
             attained_radius: PLANET_RADIUS,
             detached_direction: Vec3::Y,
@@ -380,7 +385,19 @@ impl PlanetViewCamera {
     /// Start following the current controlled body's radial position.
     pub fn follow_body(&mut self) {
         self.follow = true;
+        self.start_follow_recenter();
+    }
+
+    fn start_follow_recenter(&mut self) {
         self.follow_recenter = true;
+        self.follow_recenter_elapsed = 0.0;
+        self.follow_recenter_offset = None;
+    }
+
+    fn cancel_follow_recenter(&mut self) {
+        self.follow_recenter = false;
+        self.follow_recenter_elapsed = 0.0;
+        self.follow_recenter_offset = None;
     }
 
     /// Toggle body tracking while preserving the attained camera pose when
@@ -392,7 +409,7 @@ impl PlanetViewCamera {
                 .translation
                 .normalize_or(self.detached_direction.normalize_or(Vec3::Y));
             self.follow = false;
-            self.follow_recenter = false;
+            self.cancel_follow_recenter();
             self.detached_direction = direction;
             self.detached_heading = tangent_heading(current.rotation * Vec3::Y, direction);
         } else {
@@ -403,7 +420,7 @@ impl PlanetViewCamera {
     /// Preserve the current view direction while the body moves.
     pub fn detach(&mut self, current_direction: Vec3) {
         self.follow = false;
-        self.follow_recenter = false;
+        self.cancel_follow_recenter();
         if current_direction.is_finite() && current_direction.length_squared() > 1e-8 {
             self.detached_direction = current_direction.normalize();
             self.detached_heading = tangent_heading(self.detached_heading, self.detached_direction);
@@ -419,7 +436,7 @@ impl PlanetViewCamera {
         self.detached_direction = direction;
         self.detached_heading = tangent_heading(rotation * self.detached_heading, direction);
         self.follow = false;
-        self.follow_recenter = false;
+        self.cancel_follow_recenter();
         if self.is_active() && !self.requested_open {
             self.requested_open = true;
             self.resume_on_open = true;
@@ -493,7 +510,7 @@ impl PlanetViewCamera {
         self.detached_direction = direction;
         self.detached_heading = tangent_heading(rotation * heading, direction);
         self.follow = false;
-        self.follow_recenter = false;
+        self.cancel_follow_recenter();
         if self.phase == Phase::Chase {
             self.requested_radius = PLANET_VIEW_FAR_RADIUS;
         }
@@ -598,7 +615,7 @@ impl PlanetViewCamera {
             self.detached_direction = focus;
             self.detached_heading = tangent_heading(controlled_heading, focus);
         }
-        let direction = if self.follow {
+        let mut direction = if self.follow {
             focus
         } else {
             self.detached_direction.normalize_or(focus)
@@ -614,7 +631,21 @@ impl PlanetViewCamera {
                 .angle_between(direction)
                 > FOLLOW_REACQUIRE_ANGLE
         {
-            self.follow_recenter = true;
+            self.start_follow_recenter();
+        }
+        if self.follow && self.follow_recenter && self.transition.is_none() {
+            let current_direction = current.translation.normalize_or(direction);
+            let offset = *self
+                .follow_recenter_offset
+                .get_or_insert_with(|| Quat::from_rotation_arc(direction, current_direction));
+            self.follow_recenter_elapsed = (self.follow_recenter_elapsed + delta_seconds.max(0.0))
+                .min(FOLLOW_RECENTER_SECONDS);
+            let progress = smoothstep(self.follow_recenter_elapsed / FOLLOW_RECENTER_SECONDS);
+            direction = (offset.slerp(Quat::IDENTITY, progress) * direction).normalize_or(focus);
+            if self.follow_recenter_elapsed >= FOLLOW_RECENTER_SECONDS {
+                self.cancel_follow_recenter();
+                direction = focus;
+            }
         }
 
         let result = if let Some(mut transition) = self.transition {
@@ -726,6 +757,14 @@ impl PlanetViewCamera {
                     rotation: current.rotation.slerp(target.rotation, response),
                     ..default()
                 }
+            } else if self.follow && self.follow_recenter {
+                let radius = lerp(current.translation.length(), requested_radius, response)
+                    .max(minimum_radius);
+                Transform {
+                    translation: direction * radius,
+                    rotation: current.rotation.slerp(target.rotation, response),
+                    ..default()
+                }
             } else {
                 smooth_planet_pose(
                     current,
@@ -739,17 +778,6 @@ impl PlanetViewCamera {
             self.attained_radius = chase.translation.length();
             chase
         };
-
-        if self.follow
-            && self.follow_recenter
-            && result
-                .translation
-                .normalize_or(direction)
-                .angle_between(direction)
-                < 0.0001
-        {
-            self.follow_recenter = false;
-        }
 
         self.attained_radius = result.translation.length();
         result
@@ -1392,7 +1420,7 @@ mod tests {
         let mut current = chase;
         let mut camera = PlanetViewCamera::default();
         camera.toggle();
-        for _ in 0..120 {
+        for _ in 0..180 {
             current = camera.update(
                 current,
                 chase,
@@ -1402,8 +1430,20 @@ mod tests {
                 PLANET_RADIUS,
             );
             camera.finish_transition_if_ready();
+            if camera.transition.is_none()
+                && !camera.follow_recenter
+                && current.translation.normalize().dot(Vec3::Y) > 0.999
+            {
+                break;
+            }
         }
-        assert!(current.translation.normalize().dot(Vec3::Y) > 0.999);
+        assert!(
+            current.translation.normalize().dot(Vec3::Y) > 0.999,
+            "attained direction {:?}, recenter={}, requested_open={}",
+            current.translation.normalize(),
+            camera.follow_recenter,
+            camera.requested_open
+        );
         assert!(camera.follows_body());
 
         let before_orbit = current;
@@ -1597,6 +1637,64 @@ mod tests {
                 < 0.0001,
             "follow should track without trailing once the smooth recenter completes"
         );
+    }
+
+    #[test]
+    fn follow_recenter_finishes_while_the_controlled_body_keeps_moving() {
+        let dt = 1.0 / 60.0;
+        let angular_speed = 0.04;
+        let mut current = planet_pose(Vec3::Y, PLANET_VIEW_NEAR_RADIUS + 800.0, Vec3::NEG_Z);
+        let chase =
+            Transform::from_xyz(0.0, PLANET_RADIUS + 5.0, -5.0).looking_at(Vec3::ZERO, Vec3::Y);
+        let mut policy = PlanetViewCamera {
+            phase: Phase::Browsing,
+            requested_open: true,
+            requested_radius: PLANET_VIEW_NEAR_RADIUS + 800.0,
+            attained_radius: PLANET_VIEW_NEAR_RADIUS + 800.0,
+            follow: false,
+            detached_direction: Vec3::Y,
+            detached_heading: Vec3::NEG_Z,
+            ..default()
+        };
+        policy.follow_body();
+
+        let mut recenter_finished_at = None;
+        let mut previous = current;
+        let initial_body_direction = Quat::from_rotation_z(0.05) * Vec3::Y;
+        for frame in 0..180 {
+            let elapsed = (frame + 1) as f32 * dt;
+            let body_position = Quat::from_rotation_z(angular_speed * elapsed)
+                * initial_body_direction
+                * PLANET_RADIUS;
+            current = policy.update(current, chase, body_position, Vec3::Z, dt, PLANET_RADIUS);
+
+            if !policy.follow_recenter && recenter_finished_at.is_none() {
+                recenter_finished_at = Some(frame);
+            }
+            if recenter_finished_at.is_some() {
+                assert!(
+                    current
+                        .translation
+                        .normalize()
+                        .angle_between(body_position.normalize())
+                        < 0.0001,
+                    "completed follow should track a moving body exactly"
+                );
+            }
+            if frame > 0 {
+                assert!(
+                    current.translation.distance(previous.translation) < 100.0,
+                    "finite recenter should move smoothly at frame {frame}"
+                );
+            }
+            previous = current;
+        }
+
+        assert!(
+            recenter_finished_at.is_some_and(|frame| frame < 90),
+            "recenter should finish within 1.5 s while the controlled body continues moving"
+        );
+        assert!((current.translation.length() - policy.requested_radius()).abs() < 0.1);
     }
 
     #[test]

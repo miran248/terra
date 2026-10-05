@@ -73,15 +73,6 @@ pub(crate) fn opposite_side_drag(
     Some(frames)
 }
 
-pub(crate) fn sample_drag_frame(
-    frames: &[DragInputFrame],
-    fraction: f32,
-) -> Option<DragInputFrame> {
-    let last = frames.len().checked_sub(1)?;
-    let index = (fraction.clamp(0.0, 1.0) * last as f32).round() as usize;
-    frames.get(index.min(last)).copied()
-}
-
 pub(crate) fn surface_drag_toward_direction(
     start: Transform,
     target_direction: Vec3,
