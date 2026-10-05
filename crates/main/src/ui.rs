@@ -5,17 +5,20 @@ use crate::map::{
 };
 // use crate::wave::WaveManager;
 use bevy::color::Alpha;
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
+use bevy::ui::FocusPolicy;
+use bevy::window::PrimaryWindow;
 use shared::items::Recipe;
 use shared::level::RegionKind;
 use shared::planet::PlanetMesh;
-use shared::planet_view_interface::GameplayHudElement;
 use shared::terrain::Terrain;
 use shared::theme;
 use shared::upgrades::Upgrade;
 
 const MAX_REGION_ROW_CHARS: usize = 56;
+const SIDEBAR_WIDTH: f32 = 280.0;
+const SIDEBAR_SCROLL_STEP: f32 = 48.0;
 
 #[derive(Resource, Default)]
 pub struct UpgradeLevels {
@@ -26,7 +29,55 @@ pub struct UpgradeLevels {
 pub struct UiFont(pub Handle<Font>);
 
 #[derive(Component)]
-struct Sidebar;
+pub(crate) struct Sidebar;
+
+#[derive(Component)]
+pub(crate) struct SidebarScrollArea;
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarSection {
+    Environment,
+    Location,
+    Movement,
+    View,
+    Context,
+    Actions,
+}
+
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SidebarReadoutSlot {
+    Clock,
+    Weather,
+    Temperature,
+    Terrain,
+    Elevation,
+    Settlement,
+    Region,
+    Road,
+    Movement,
+    View,
+    Actions,
+}
+
+#[derive(Component)]
+pub(crate) struct SidebarWorldReadout;
+
+#[derive(Component)]
+pub(crate) struct SidebarExplorationReadout;
+
+type SidebarWorldRows<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static mut Text,
+        &'static mut TextColor,
+        &'static SidebarReadoutSlot,
+    ),
+    (
+        With<SidebarWorldReadout>,
+        Without<SidebarExplorationReadout>,
+    ),
+>;
 
 #[derive(Component)]
 struct ScrollArea;
@@ -43,9 +94,6 @@ struct ShopButton {
 struct CraftButton {
     recipe: usize,
 }
-
-#[derive(Component)]
-struct TerrainHud;
 
 #[derive(Resource)]
 struct TerrainHudTimer(Timer);
@@ -65,19 +113,25 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<UpgradeLevels>()
             .init_resource::<TerrainHudTimer>()
-            .add_systems(Startup, (load_font, spawn_terrain_hud).chain())
+            .add_systems(Startup, load_font)
             .add_systems(
                 OnEnter(shared::state::AppState::Playing),
                 reset_upgrade_buttons,
             )
             .add_systems(
+                PreUpdate,
+                scroll_sidebar
+                    .after(bevy::input::InputSystems)
+                    .before(crate::exploration::ExplorationInput)
+                    .run_if(in_state(shared::state::AppState::Playing)),
+            )
+            .add_systems(
                 Update,
                 (
                     // update_stats,
-                    update_terrain_hud,
+                    update_sidebar_world_readout,
                     // handle_upgrade_clicks,
                     // apply_upgrades,
-                    scroll_upgrades,
                     // handle_craft_clicks,
                     // update_craft_status,
                 )
@@ -98,98 +152,192 @@ fn text_font(font: &UiFont, size: f32) -> TextFont {
     }
 }
 
-#[expect(dead_code, reason = "sidebar UI is intentionally dormant")]
-fn setup_sidebar(mut commands: Commands, font: Res<UiFont>) {
+pub(crate) fn spawn_sidebar(commands: &mut Commands, font: &UiFont) {
     commands
         .spawn((
             Node {
                 position_type: PositionType::Absolute,
                 left: Val::Px(0.0),
                 top: Val::Px(0.0),
-                width: Val::Px(200.0),
+                width: Val::Px(SIDEBAR_WIDTH),
                 height: Val::Percent(100.0),
                 display: Display::Flex,
                 flex_direction: FlexDirection::Column,
-                padding: UiRect::all(Val::Px(8.0)),
-                row_gap: Val::Px(4.0),
+                padding: UiRect::all(Val::Px(10.0)),
                 ..default()
             },
-            BackgroundColor(theme::PANEL_BG),
-            GlobalZIndex(10),
+            BackgroundColor(theme::PANEL_BG.with_alpha(0.84)),
+            GlobalZIndex(20),
+            FocusPolicy::Block,
             Sidebar,
         ))
         .with_children(|parent| {
-            parent.spawn((
-                Text::new("Scrap: 0\nWave: 1\nHP: 500\n\nDPS: 0.0\nAPS: 0.0"),
-                text_font(&font, 14.0),
-                TextColor(theme::INK),
-                Node {
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                StatsText,
-            ));
-
-            parent.spawn((
-                Node {
-                    width: Val::Percent(100.0),
-                    height: Val::Px(1.0),
-                    flex_shrink: 0.0,
-                    ..default()
-                },
-                BackgroundColor(theme::BORDER),
-            ));
-
             parent
                 .spawn((
                     Node {
                         width: Val::Percent(100.0),
+                        height: Val::Percent(100.0),
+                        min_height: Val::Px(0.0),
                         flex_grow: 1.0,
                         flex_shrink: 1.0,
-                        min_height: Val::Px(0.0),
                         overflow: Overflow::scroll(),
                         display: Display::Flex,
                         flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(4.0),
+                        row_gap: Val::Px(12.0),
                         ..default()
                     },
                     ScrollPosition::default(),
-                    ScrollArea,
+                    SidebarScrollArea,
                 ))
                 .with_children(|scroll| {
-                    for upgrade in &Upgrade::ALL {
-                        let lvl0 = upgrade.value(0);
-                        let cur = upgrade.format_value(lvl0);
-                        let nxt = upgrade.format_value(upgrade.value(1));
-                        let label = format!(
-                            "{} Lv.0\n{} -> {} (+{:.0}%)\nCost: {}",
-                            upgrade.name(),
-                            cur,
-                            nxt,
-                            upgrade.value(1) / upgrade.value(0) * 100.0 - 100.0,
-                            upgrade.cost(0),
-                        );
-
-                        scroll
-                            .spawn((
-                                Button,
-                                Node {
-                                    padding: UiRect::all(Val::Px(6.0)),
-                                    flex_shrink: 0.0,
-                                    ..default()
-                                },
-                                BorderColor::all(theme::PRIMARY),
-                                BackgroundColor(theme::SURFACE),
-                                ShopButton { upgrade: *upgrade },
-                            ))
-                            .with_child((
-                                Text::new(label),
-                                text_font(&font, 11.0),
-                                TextColor(theme::INK),
+                    scroll
+                        .spawn(sidebar_section(SidebarSection::Environment))
+                        .with_children(|section| {
+                            section.spawn(sidebar_title("ENVIRONMENT", font));
+                            section.spawn(sidebar_world_row(
+                                "Clock: —",
+                                SidebarReadoutSlot::Clock,
+                                font,
                             ));
-                    }
+                            section.spawn(sidebar_world_row(
+                                "Weather: —",
+                                SidebarReadoutSlot::Weather,
+                                font,
+                            ));
+                            section.spawn(sidebar_world_row(
+                                "Temperature: —",
+                                SidebarReadoutSlot::Temperature,
+                                font,
+                            ));
+                        });
+
+                    scroll
+                        .spawn(sidebar_section(SidebarSection::Location))
+                        .with_children(|section| {
+                            section.spawn(sidebar_title("LOCATION", font));
+                            section.spawn(sidebar_world_row(
+                                "Terrain: —",
+                                SidebarReadoutSlot::Terrain,
+                                font,
+                            ));
+                            section.spawn(sidebar_world_row(
+                                "Elevation: —",
+                                SidebarReadoutSlot::Elevation,
+                                font,
+                            ));
+                            section.spawn(sidebar_world_row(
+                                "Settlement: —",
+                                SidebarReadoutSlot::Settlement,
+                                font,
+                            ));
+                            section.spawn(sidebar_world_row(
+                                "Region: —",
+                                SidebarReadoutSlot::Region,
+                                font,
+                            ));
+                            section.spawn(sidebar_world_row(
+                                "Road / bridge: —",
+                                SidebarReadoutSlot::Road,
+                                font,
+                            ));
+                        });
+
+                    scroll
+                        .spawn(sidebar_section(SidebarSection::Movement))
+                        .with_children(|section| {
+                            section.spawn(sidebar_title("MOVEMENT", font));
+                            section.spawn(sidebar_exploration_row(
+                                "Travel mode: On foot",
+                                SidebarReadoutSlot::Movement,
+                                font,
+                            ));
+                        });
+
+                    scroll
+                        .spawn(sidebar_section(SidebarSection::View))
+                        .with_children(|section| {
+                            section.spawn(sidebar_title("VIEW", font));
+                            section.spawn(sidebar_exploration_row(
+                                "Planet view: M to open · drag to orbit · wheel to zoom",
+                                SidebarReadoutSlot::View,
+                                font,
+                            ));
+                        });
+
+                    scroll
+                        .spawn(sidebar_section(SidebarSection::Context))
+                        .with_children(|section| {
+                            section.spawn(sidebar_title("CONTEXT", font));
+                        });
+
+                    scroll
+                        .spawn(sidebar_section(SidebarSection::Actions))
+                        .with_children(|section| {
+                            section.spawn(sidebar_title("ACTIONS", font));
+                            section.spawn(sidebar_exploration_row(
+                                "Recover: Hold R · 0%",
+                                SidebarReadoutSlot::Actions,
+                                font,
+                            ));
+                        });
                 });
         });
+}
+
+fn sidebar_section(section: SidebarSection) -> (Node, SidebarSection) {
+    (
+        Node {
+            width: Val::Percent(100.0),
+            display: Display::Flex,
+            flex_direction: FlexDirection::Column,
+            row_gap: Val::Px(4.0),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        section,
+    )
+}
+
+fn sidebar_title(title: &str, font: &UiFont) -> impl Bundle {
+    (
+        Text::new(title),
+        text_font(font, 12.0),
+        TextColor(theme::ACCENT),
+        Node {
+            flex_shrink: 0.0,
+            ..default()
+        },
+    )
+}
+
+fn sidebar_world_row(text: &str, slot: SidebarReadoutSlot, font: &UiFont) -> impl Bundle {
+    (
+        Text::new(text),
+        text_font(font, 12.0),
+        TextColor(theme::INK),
+        Node {
+            width: Val::Percent(100.0),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        slot,
+        SidebarWorldReadout,
+    )
+}
+
+fn sidebar_exploration_row(text: &str, slot: SidebarReadoutSlot, font: &UiFont) -> impl Bundle {
+    (
+        Text::new(text),
+        text_font(font, 12.0),
+        TextColor(theme::INK),
+        Node {
+            width: Val::Percent(100.0),
+            flex_shrink: 0.0,
+            ..default()
+        },
+        slot,
+        SidebarExplorationReadout,
+    )
 }
 
 // ponytail: module refs disabled
@@ -494,37 +642,50 @@ fn reset_upgrade_buttons(buttons: Query<(&ShopButton, &Children)>, mut text_q: Q
 //     }
 // }
 
-// ---- terrain HUD ----
+// ---- shared gameplay and Planet view sidebar ----
 
-fn spawn_terrain_hud(mut commands: Commands, font: Res<UiFont>) {
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                right: Val::Px(8.0),
-                top: Val::Px(8.0),
-                width: Val::Px(340.0),
-                padding: UiRect::all(Val::Px(6.0)),
-                ..default()
-            },
-            BackgroundColor(theme::PANEL_BG),
-            GlobalZIndex(10),
-            GameplayHudElement::default(),
-            TerrainHud,
-        ))
-        .with_child((
-            Text::new(""),
-            text_font(&font, 12.0),
-            TextColor(theme::INK),
-            GameplayHudElement::default(),
-        ));
+pub(crate) fn scroll_sidebar(
+    mut wheels: bevy::ecs::message::MessageReader<MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    sidebar: Query<(&ComputedNode, &UiGlobalTransform), With<Sidebar>>,
+    mut scroll_areas: Query<(&mut ScrollPosition, &ComputedNode), With<SidebarScrollArea>>,
+    exploration: Option<Res<crate::exploration::Exploration>>,
+) {
+    let scroll_delta = wheels
+        .read()
+        .map(|wheel| match wheel.unit {
+            MouseScrollUnit::Line => wheel.y * SIDEBAR_SCROLL_STEP,
+            MouseScrollUnit::Pixel => wheel.y,
+        })
+        .sum::<f32>();
+    if scroll_delta == 0.0 || exploration.is_some_and(|state| state.is_vehicle_selector_open()) {
+        return;
+    }
+    let Some(cursor) = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position)
+    else {
+        return;
+    };
+    if !sidebar
+        .iter()
+        .any(|(node, transform)| node.contains_point(*transform, cursor))
+    {
+        return;
+    }
+
+    for (mut position, node) in &mut scroll_areas {
+        let max_scroll = (node.content_size().y - node.size().y).max(0.0);
+        position.0.y = (position.0.y - scroll_delta).clamp(0.0, max_scroll);
+    }
 }
 
 #[allow(
     clippy::too_many_arguments,
     reason = "Bevy injects independent ECS system parameters"
 )]
-fn update_terrain_hud(
+fn update_sidebar_world_readout(
     player_q: Query<&Transform, With<Player>>,
     terrain: Option<Res<shared::terrain::TerrainGen>>,
     planet: Option<Res<PlanetMesh>>,
@@ -542,12 +703,8 @@ fn update_terrain_hud(
     ),
     landform_r: Option<Res<crate::map::LevelLandform>>,
     road_mat: Option<Res<crate::map::LevelRoadMaterial>>,
-    hud_q: Query<&Children, With<TerrainHud>>,
-    mut text_q: Query<(&mut Text, &mut TextColor, &mut GameplayHudElement)>,
-    presentation: (
-        Res<Time<Real>>,
-        Option<Res<crate::exploration::Exploration>>,
-    ),
+    time: Res<Time<Real>>,
+    mut text_q: SidebarWorldRows<'_, '_>,
     // Combined into one tuple param to stay within Bevy's 16-param system limit.
     sky: (
         Option<Res<crate::map::TimeOfDay>>,
@@ -556,28 +713,40 @@ fn update_terrain_hud(
     mut timer: ResMut<TerrainHudTimer>,
 ) {
     let (tod, weather) = sky;
-    let (time, exploration) = presentation;
     let (water_depth, water_phase) = water;
     let (face_types, face_corner_types) = terrain_faces;
-    let Ok(children) = hud_q.single() else { return };
-    let Some(child) = children.first() else {
-        return;
-    };
-    let Ok((mut text, mut color, mut fade)) = text_q.get_mut(*child) else {
-        return;
-    };
-    let Some(terrain) = terrain else {
-        text.0.clear();
-        return;
-    };
-    let Ok(tf) = player_q.single() else {
-        text.0.clear();
-        return;
-    };
-
     if !timer.0.tick(time.delta()).just_finished() {
         return;
     }
+    let mut values = Vec::new();
+    let Some(terrain) = terrain else {
+        values.extend([
+            (SidebarReadoutSlot::Clock, "Clock: —".to_owned()),
+            (SidebarReadoutSlot::Weather, "Weather: —".to_owned()),
+            (SidebarReadoutSlot::Temperature, "Temperature: —".to_owned()),
+            (SidebarReadoutSlot::Terrain, "Terrain: —".to_owned()),
+            (SidebarReadoutSlot::Elevation, "Elevation: —".to_owned()),
+            (SidebarReadoutSlot::Settlement, "Settlement: —".to_owned()),
+            (SidebarReadoutSlot::Region, "Region: —".to_owned()),
+            (SidebarReadoutSlot::Road, "Road / bridge: —".to_owned()),
+        ]);
+        write_sidebar_world_rows(&mut text_q, &values, Color::WHITE);
+        return;
+    };
+    let Ok(tf) = player_q.single() else {
+        values.extend([
+            (SidebarReadoutSlot::Clock, "Clock: —".to_owned()),
+            (SidebarReadoutSlot::Weather, "Weather: —".to_owned()),
+            (SidebarReadoutSlot::Temperature, "Temperature: —".to_owned()),
+            (SidebarReadoutSlot::Terrain, "Terrain: —".to_owned()),
+            (SidebarReadoutSlot::Elevation, "Elevation: —".to_owned()),
+            (SidebarReadoutSlot::Settlement, "Settlement: —".to_owned()),
+            (SidebarReadoutSlot::Region, "Region: —".to_owned()),
+            (SidebarReadoutSlot::Road, "Road / bridge: —".to_owned()),
+        ]);
+        write_sidebar_world_rows(&mut text_q, &values, Color::WHITE);
+        return;
+    };
     let pos = shared::sphere::SpherePos::new(tf.translation);
     // Read precomputed face type from level data — guaranteed to match terrain colors.
     let tile = if let (Some(planet), Some(ft), Some(corners)) = (
@@ -655,7 +824,11 @@ fn update_terrain_hud(
         _ => format!("{terrain:?}"),
     };
     let mut tile_line = tile_name(tile);
-    let mut region_text = String::new();
+    let mut location_values = [
+        (SidebarReadoutSlot::Settlement, "Settlement: —".to_owned()),
+        (SidebarReadoutSlot::Region, "Region: —".to_owned()),
+        (SidebarReadoutSlot::Road, "Road / bridge: —".to_owned()),
+    ];
     if let Some(planet) = planet
         && let Some(fi) = planet.face_at(tf.translation.normalize())
     {
@@ -672,8 +845,10 @@ fn update_terrain_hud(
                 None => format!("{} + {}", tile_name(tile), tile_name(other)),
             };
         }
-        if let Some(tags) = tags {
-            for &tag in &tags.0[fi] {
+        if let Some(tags) = tags
+            && let Some(face_tags) = tags.0.get(fi)
+        {
+            for &tag in face_tags {
                 tile_line.push_str("  ");
                 tile_line.push_str(tag.name());
                 if tag == shared::level::FaceTag::Road
@@ -688,33 +863,85 @@ fn update_terrain_hud(
             }
         }
         if let Some(regions) = regions {
-            region_text = format_region_lines(fi, &regions, tf.translation)
-                .iter()
-                .map(|line| truncate_region_row(line, MAX_REGION_ROW_CHARS))
-                .collect::<Vec<_>>()
-                .join("\n");
+            for line in format_region_lines(fi, &regions, tf.translation) {
+                let row = if let Some(value) = line.strip_prefix("Geography: ") {
+                    Some((1, "Region", value))
+                } else if let Some(value) = line.strip_prefix("Settlement: ") {
+                    Some((0, "Settlement", value))
+                } else if let Some(value) = line.strip_prefix("Roads: ") {
+                    Some((2, "Road / bridge", value))
+                } else if let Some(value) = line.strip_prefix("Bridge: ") {
+                    let previous = location_values[2]
+                        .1
+                        .strip_prefix("Road / bridge: ")
+                        .unwrap();
+                    let combined = if previous == "—" {
+                        format!("Bridge: {value}")
+                    } else {
+                        format!("{previous} · Bridge: {value}")
+                    };
+                    location_values[2].1 = truncate_region_row(
+                        &format!("Road / bridge: {combined}"),
+                        MAX_REGION_ROW_CHARS,
+                    );
+                    None
+                } else {
+                    None
+                };
+                if let Some((index, label, value)) = row {
+                    location_values[index].1 =
+                        truncate_region_row(&format!("{label}: {value}"), MAX_REGION_ROW_CHARS);
+                }
+            }
         }
-    }
-    if !region_text.is_empty() {
-        region_text.insert(0, '\n');
     }
     if hab {
         tile_line.push_str("  Habitable");
     }
 
-    let sky_line = format!(
-        "\n{}  {}",
-        clock_string(tod.as_deref(), tf.translation.normalize()),
-        weather_label(weather.as_deref(), temp),
-    );
+    let clock = clock_string(tod.as_deref(), tf.translation.normalize());
+    let weather = weather_label(weather.as_deref(), temp);
+    values.extend([
+        (
+            SidebarReadoutSlot::Clock,
+            format!("Clock: {}", if clock.is_empty() { "—" } else { &clock }),
+        ),
+        (
+            SidebarReadoutSlot::Weather,
+            format!(
+                "Weather: {}",
+                if weather.is_empty() { "—" } else { &weather }
+            ),
+        ),
+        (
+            SidebarReadoutSlot::Temperature,
+            format!("Temperature: {temp:.0} °C"),
+        ),
+        (SidebarReadoutSlot::Terrain, format!("Terrain: {tile_line}")),
+        (
+            SidebarReadoutSlot::Elevation,
+            format!("Elevation: {altitude:.0} m · {landform}"),
+        ),
+    ]);
+    values.extend(location_values);
+    write_sidebar_world_rows(&mut text_q, &values, hud_tile_color(tile));
+}
 
-    *text = Text::new(format!(
-        "{tile_line}{region_text}\nTerrain elevation: {altitude:.0}m  {landform}  Temp: {temp:.0}°C{sky_line}",
-    ));
-    let base_color = hud_tile_color(tile);
-    fade.set_text_color(base_color);
-    let opacity = exploration.map_or(1.0, |state| state.gameplay_hud_opacity());
-    *color = TextColor(base_color.with_alpha(base_color.alpha() * opacity));
+fn write_sidebar_world_rows(
+    rows: &mut SidebarWorldRows<'_, '_>,
+    values: &[(SidebarReadoutSlot, String)],
+    terrain_color: Color,
+) {
+    for (mut text, mut color, slot) in rows.iter_mut() {
+        if let Some((_, value)) = values.iter().find(|(candidate, _)| candidate == slot) {
+            if text.0 != *value {
+                *text = Text::new(value.clone());
+            }
+            if *slot == SidebarReadoutSlot::Terrain {
+                *color = TextColor(terrain_color);
+            }
+        }
+    }
 }
 
 fn format_region_lines(face: usize, regions: &LevelRegions, player_position: Vec3) -> Vec<String> {
