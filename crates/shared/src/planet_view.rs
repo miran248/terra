@@ -6,7 +6,7 @@
 
 use bevy::prelude::*;
 
-use crate::sphere::PLANET_RADIUS;
+use crate::sphere::{PLANET_RADIUS, tangent_heading};
 
 /// Nearest requested camera radius for settlement-scale inspection.
 pub const PLANET_VIEW_NEAR_RADIUS: f32 = PLANET_RADIUS + 24.0;
@@ -626,15 +626,6 @@ fn smooth_planet_pose(from: Transform, to: Transform, amount: f32, inner_radius:
 
 fn response(rate: f32, delta_seconds: f32) -> f32 {
     (1.0 - (-rate * delta_seconds.max(0.0)).exp()).clamp(0.0, 1.0)
-}
-
-fn tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
-    let projected = heading - up * heading.dot(up);
-    if projected.length_squared() > 1e-8 {
-        projected.normalize()
-    } else {
-        up.any_orthonormal_vector()
-    }
 }
 
 fn radial_slerp(from: Vec3, to: Vec3, amount: f32) -> Vec3 {

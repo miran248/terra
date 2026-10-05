@@ -20,6 +20,7 @@ use shared::{
     planet::PlanetMesh,
     planet_view::PlanetViewCamera,
     planet_view_interface::{GameplayHudElement, PlanetViewPointer, PlanetViewPresentation},
+    sphere::tangent_heading as tangent,
     state::AppState,
 };
 
@@ -308,9 +309,13 @@ struct PendingSummonSearch {
     poses_tested_last_update: usize,
     #[cfg(test)]
     poses_tested_total: usize,
+    pose_budget_remaining: usize,
 }
 
 const SUMMON_POSE_BUDGET_PER_UPDATE: usize = 32;
+// A moving body may replace an old cursor, but repeated restarts cannot consume
+// unbounded work or keep later exploration actions queued forever.
+const SUMMON_SEARCH_PASSES_PER_REQUEST: usize = 2;
 
 impl Exploration {
     pub fn request(&mut self, action: Action) {
@@ -638,15 +643,6 @@ impl Plugin for ExplorationPlugin {
 pub fn on_foot(state: Option<Res<Exploration>>) -> bool {
     state.is_none_or(|s| s.occupied.is_none() && !s.selector && !s.suppress_input)
 }
-fn tangent(heading: Vec3, up: Vec3) -> Vec3 {
-    let projected = heading - up * heading.dot(up);
-    if projected.length_squared() > 1e-8 {
-        projected.normalize()
-    } else {
-        up.any_orthonormal_vector()
-    }
-}
-
 fn facing(heading: Vec3, up: Vec3) -> Quat {
     Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading))
 }
@@ -1056,12 +1052,24 @@ fn process_summon_action(
     });
     if restart {
         let prior = state.pending_summon.take();
-        let same_request = prior
-            .as_ref()
-            .is_some_and(|pending| pending.kind == kind && pending.existing == existing);
+        let same_request = prior.as_ref().is_some_and(|pending| {
+            pending.kind == kind
+                && pending.existing == existing
+                && pending.world_epoch == current_epoch
+        });
         let excluded = existing.into_iter().collect::<Vec<_>>();
         let preferred = origin + tangent(heading, origin.normalize()) * 8.0;
         let radius = kind.summon_search_radius();
+        let candidates =
+            shared::placement::PlacementCandidateSearch::vehicle(preferred, heading, radius);
+        let pose_budget_remaining = prior.as_ref().filter(|_| same_request).map_or_else(
+            || {
+                candidates
+                    .len()
+                    .saturating_mul(SUMMON_SEARCH_PASSES_PER_REQUEST)
+            },
+            |pending| pending.pose_budget_remaining,
+        );
         let mut locate_ms = prior
             .as_ref()
             .filter(|_| same_request)
@@ -1078,9 +1086,7 @@ fn process_summon_action(
             existing,
             excluded,
             shape,
-            candidates: shared::placement::PlacementCandidateSearch::vehicle(
-                preferred, heading, radius,
-            ),
+            candidates,
             locate_ms,
             dispatch_ms: prior
                 .as_ref()
@@ -1113,6 +1119,7 @@ fn process_summon_action(
                 .as_ref()
                 .filter(|_| same_request)
                 .map_or(current_world_ready, |pending| pending.world_ready_before),
+            pose_budget_remaining,
             #[cfg(test)]
             poses_tested_last_update: 0,
             #[cfg(test)]
@@ -1132,10 +1139,12 @@ fn process_summon_action(
     }
     let locate_started = tracing.then(std::time::Instant::now);
     let mut found = None;
-    for _ in 0..SUMMON_POSE_BUDGET_PER_UPDATE {
+    let pose_budget = SUMMON_POSE_BUDGET_PER_UPDATE.min(pending.pose_budget_remaining);
+    for _ in 0..pose_budget {
         let Some((candidate, candidate_heading)) = pending.candidates.next() else {
             break;
         };
+        pending.pose_budget_remaining -= 1;
         #[cfg(test)]
         {
             pending.poses_tested_last_update += 1;
@@ -1160,7 +1169,8 @@ fn process_summon_action(
         *dispatch_ms += started.elapsed().as_secs_f64() * 1000.0;
     }
 
-    let exhausted = found.is_none() && pending.candidates.len() == 0;
+    let budget_exhausted = pending.pose_budget_remaining == 0;
+    let exhausted = found.is_none() && (pending.candidates.len() == 0 || budget_exhausted);
     if found.is_none() && !exhausted {
         return;
     }
@@ -1200,7 +1210,11 @@ fn process_summon_action(
         state.message = format!("{} ready — approach and press E", kind.name());
         new_position = Some(position);
     } else {
-        state.message = "No clear dry ground with enough room / takeoff run nearby".into();
+        state.message = if budget_exhausted {
+            "Summoning cancelled after repeated movement — try again nearby".into()
+        } else {
+            "No clear dry ground with enough room / takeoff run nearby".into()
+        };
     }
 
     if tracing && let Some(trace) = work_trace.as_deref_mut() {
@@ -5097,6 +5111,64 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn vehicle_selector_v_then_c_runs_the_sliced_summon_path() {
+        let (mut app, _) = fixture();
+        block_initial_summon_poses(&mut app);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        assert!(app.world().resource::<Exploration>().selector);
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyV);
+            keys.release(KeyCode::KeyV);
+            keys.press(KeyCode::KeyC);
+        }
+        app.update();
+
+        {
+            let state = app.world().resource::<Exploration>();
+            assert!(!state.selector);
+            assert!(matches!(
+                state.actions.front(),
+                Some(Action::Summon(Kind::Car))
+            ));
+            assert_eq!(
+                state
+                    .pending_summon
+                    .as_ref()
+                    .map(|pending| pending.poses_tested_last_update),
+                Some(SUMMON_POSE_BUDGET_PER_UPDATE),
+                "selector input must enter the same bounded search as direct summon requests"
+            );
+            assert!(state.vehicles[Kind::Car.index()].is_none());
+        }
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.clear_just_pressed(KeyCode::KeyC);
+            keys.release(KeyCode::KeyC);
+        }
+        for _ in 0..4 {
+            if app.world().resource::<Exploration>().actions.is_empty() {
+                break;
+            }
+            app.update();
+        }
+
+        let state = app.world().resource::<Exploration>();
+        assert!(state.actions.is_empty());
+        let car = state.vehicles[Kind::Car.index()].expect("C summons the selected car");
+        assert!(app.world().get::<Vehicle>(car).is_some());
+        assert!(state.message.starts_with("Car ready"));
+    }
+
+    #[test]
     fn summon_search_keeps_its_candidate_order_during_ordinary_walking() {
         let (mut app, explorer) = fixture();
         act(&mut app, Action::Summon(Kind::Car));
@@ -5206,6 +5278,83 @@ pub(crate) mod tests {
         assert!(
             car_position.distance(relocated) < Kind::Car.summon_radius(),
             "material movement should restart locally instead of parking the vehicle at an old candidate"
+        );
+    }
+
+    #[test]
+    fn sustained_movement_cannot_starve_queued_teleport_behind_vehicle_summoning() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+
+        // Keep every nearby candidate blocked so only finite request work can
+        // release the queued action; no successful placement can hide starvation.
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(600.0, 20.0, 600.0),
+            Transform::from_xyz(0.0, 2000.0, 0.0),
+        ));
+        for _ in 0..3 {
+            app.update();
+        }
+        let origin = app.world().get::<Position>(explorer).unwrap().0;
+        let heading = app.world().get::<Player>(explorer).unwrap().heading;
+        let synchronous_result = {
+            let mut system = bevy::ecs::system::SystemState::<Placement>::new(app.world_mut());
+            let placement = system.get(app.world()).unwrap();
+            placement.locate(
+                origin,
+                heading,
+                Some(Kind::Car),
+                &[car],
+                Kind::Car.summon_search_radius(),
+            )
+        };
+        assert!(
+            synchronous_result.is_none(),
+            "the fixture must keep the synchronous search from finding a fit"
+        );
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(Action::Summon(Kind::Car));
+        app.update();
+        let teleport_target =
+            Vec3::new(420.0, (2000.6_f32.powi(2) - 420.0_f32.powi(2)).sqrt(), 0.0);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(Action::Teleport(teleport_target));
+
+        let mut saw_movement_cancellation = false;
+        for _ in 0..80 {
+            let position = app.world().get::<Position>(explorer).unwrap().0;
+            app.world_mut()
+                .entity_mut(explorer)
+                .insert(Position(position + Vec3::X * 0.12));
+            app.update();
+            let state = app.world().resource::<Exploration>();
+            if matches!(state.actions.front(), Some(Action::Teleport(_))) {
+                assert!(state.message.contains("repeated movement"));
+                saw_movement_cancellation = true;
+            }
+            if app.world().resource::<Exploration>().actions.is_empty() {
+                break;
+            }
+        }
+
+        let state = app.world().resource::<Exploration>();
+        assert!(saw_movement_cancellation);
+        assert!(
+            state.actions.is_empty(),
+            "ongoing movement must not leave Summon ahead of later actions forever"
+        );
+        assert!(state.pending_summon.is_none());
+        assert!(state.occupied.is_none());
+        assert_eq!(state.message, "Returned to safe ground");
+        let final_position = app.world().get::<Position>(explorer).unwrap().0;
+        assert!(
+            final_position.distance(teleport_target) < 100.0,
+            "the queued teleport should execute after the bounded summon failure"
         );
     }
 

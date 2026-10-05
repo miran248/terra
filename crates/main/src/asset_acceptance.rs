@@ -12,6 +12,20 @@ mod diagnostic_drag;
 mod planet_acceptance;
 mod transition_diagnostic;
 
+#[cfg(feature = "asset-review-schedule-trace")]
+mod phase_trace;
+#[cfg(not(feature = "asset-review-schedule-trace"))]
+mod phase_trace {
+    pub(super) fn enabled() -> bool {
+        false
+    }
+}
+
+#[cfg(feature = "asset-review-schedule-trace")]
+pub(crate) fn schedule_trace_layer(app: &mut App) -> Option<bevy::log::BoxedLayer> {
+    phase_trace::install_layer(app)
+}
+
 pub struct AssetAcceptancePlugin;
 impl Plugin for AssetAcceptancePlugin {
     fn build(&self, app: &mut App) {

@@ -1,5 +1,7 @@
 use bevy::prelude::*;
 
+use crate::sphere::tangent_heading;
+
 const SEARCH_RINGS: usize = 6;
 const RING_SECTORS: usize = 16;
 const VEHICLE_HEADINGS: usize = 8;
@@ -81,15 +83,6 @@ impl Iterator for PlacementCandidateSearch {
 
 impl ExactSizeIterator for PlacementCandidateSearch {}
 impl std::iter::FusedIterator for PlacementCandidateSearch {}
-
-fn tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
-    let projected = heading - up * heading.dot(up);
-    if projected.length_squared() > 1e-8 {
-        projected.normalize()
-    } else {
-        up.any_orthonormal_vector()
-    }
-}
 
 #[cfg(test)]
 mod tests {

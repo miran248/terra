@@ -7,6 +7,19 @@ pub const METER: f32 = 1.0;
 /// small enough that terrain relief is visible and f32 precision stays comfortable.
 pub const PLANET_RADIUS: f32 = 2000.0 * METER;
 
+/// Project a heading onto the tangent plane at `up` and normalize it.
+///
+/// If the heading is parallel to the surface normal, choose a stable
+/// orthonormal tangent direction instead.
+pub fn tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
+    let projected = heading - up * heading.dot(up);
+    if projected.length_squared() > 1e-8 {
+        projected.normalize()
+    } else {
+        up.any_orthonormal_vector()
+    }
+}
+
 /// An actor's position on the planet: a unit vector from the sphere center.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SpherePos(pub Vec3);
@@ -128,6 +141,15 @@ mod tests {
         assert!(e.dot(p.0).abs() < 1e-4);
         assert!(n.dot(p.0).abs() < 1e-4);
         assert!(e.dot(n).abs() < 1e-4);
+    }
+
+    #[test]
+    fn tangent_heading_projects_and_handles_parallel_input() {
+        assert_eq!(tangent_heading(Vec3::X + Vec3::Y, Vec3::Y), Vec3::X);
+
+        let fallback = tangent_heading(Vec3::Y, Vec3::Y);
+        assert!((fallback.length() - 1.0).abs() < 1e-6);
+        assert!(fallback.dot(Vec3::Y).abs() < 1e-6);
     }
 
     #[test]

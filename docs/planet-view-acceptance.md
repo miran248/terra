@@ -44,6 +44,14 @@ these timestamps to align work with raw frame intervals, allowing for deferred
 render work in following frames. The sidecar does not change captures, route
 timing, warm-ups, repeats, or acceptance thresholds.
 
+For deeper phase attribution, also set `TERRA_PLANET_SCHEDULE_TRACE=1`. The runner
+selects the separate `asset-review-schedule-trace` feature and records a profile
+caveat alongside the exact build command. This collects native Bevy schedule spans,
+including fixed-step and render schedules, plus the existing `main_render_schedule`
+and `present_frames` spans. The latter distinguishes RenderGraph time from the
+remaining render submit and window-present path. Treat this as a diagnostic build
+and repeat final performance acceptance without schedule tracing.
+
 A short transition and precipitation diagnostic uses the same provenance runner:
 
 ```sh

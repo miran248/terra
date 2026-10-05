@@ -76,11 +76,16 @@ sw_vers > "$output/os.txt"
 system_profiler SPHardwareDataType SPDisplaysDataType > "$output/hardware-displays.txt"
 rustc --version --verbose > "$output/rustc.txt"
 # Build before querying metadata so any build failure preserves its exact status.
-cargo build --locked -p main --features asset-review > "$output/build.log" 2>&1
+capture_features=asset-review
+if [ "${TERRA_PLANET_SCHEDULE_TRACE+x}" = x ]; then
+  capture_features=asset-review-schedule-trace
+  printf '%s\n' 'Schedule tracing is diagnostic instrumentation; repeat final acceptance without it.' > "$output/profile-caveat.txt"
+fi
+cargo build --locked -p main --features "$capture_features" > "$output/build.log" 2>&1
 cargo --version > "$output/cargo.txt"
 cargo metadata --locked --no-deps --format-version 1 > "$output/cargo-metadata.json"
 target=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["target_directory"])' "$output/cargo-metadata.json")
-printf '%s\n' 'cargo build --locked -p main --features asset-review' > "$output/build-command.txt"
+printf '%s\n' "cargo build --locked -p main --features $capture_features" > "$output/build-command.txt"
 "$target/debug/main" > "$output/app.log" 2>&1
 if [ "$mode" = diagnostic ]; then
     python3 - "$output" <<'PYTHON'
