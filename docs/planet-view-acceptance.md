@@ -125,8 +125,10 @@ camera clearance, fades, and displaced-material prepass parity.
 
 ## Recorded outcome
 
-Acceptance remains incomplete because the final warmed run failed the frame-stall
-limit on every route. The unchanged, trace-free run is preserved at
+The twelve rendered captures and cross-feature behavior are complete. The final
+trace-free run failed the frame-stall limit on every route. The user chose to defer
+further performance work and accept current pacing for now; no timing pass is claimed.
+The unchanged run is preserved at
 /tmp/terra-spec-45/acceptance-57-visible-space-0104ff7, built from commit
 0104ff7d4c07b4f4870d000720eb6326194fa7f9. Its manifest, raw intervals,
 independent recalculation, application log, source hashes, and host sampler are in
@@ -149,12 +151,12 @@ roads, and labels remain coherent, with no new clipping or overlay defect. Fixed
 body/sun ambient values match between globe and opposite views at 86.6294 for noon
 and 35 for sunset and night. Static images do not establish motion or pacing.
 
-| Route | Slow intervals by repeat (>33.33 ms) | Repeats affected | p50 range (ms) | p95 range (ms) | Maximum (ms) |
+| Route | Slow intervals by repeat (>33.33 ms) | Repeats affected | p50 range (ms) | p95 range (ms) | p99 range (ms) | Maximum (ms) |
 | --- | --- | ---: | ---: | ---: | ---: |
-| entry-reversal | 39 / 1 / 0 | 2 of 3 | 8.320–8.337 | 9.108–10.371 | 1011.830 |
-| orbit-zoom | 0 / 3 / 7 | 2 of 3 | 8.335–8.363 | 9.344–9.874 | 88.823 |
-| follow-vehicle-recovery | 1 / 0 / 2 | 2 of 3 | 9.221–9.631 | 17.895–17.953 | 1070.265 |
-| return-reversal | 2 / 0 / 3 | 2 of 3 | 9.745–10.374 | 17.694–17.878 | 52.320 |
+| entry-reversal | 39 / 1 / 0 | 2 of 3 | 8.320–8.337 | 9.108–10.371 | 12.056–24.770 | 1011.830 |
+| orbit-zoom | 0 / 3 / 7 | 2 of 3 | 8.335–8.363 | 9.344–9.874 | 11.808–13.568 | 88.823 |
+| follow-vehicle-recovery | 1 / 0 / 2 | 2 of 3 | 9.221–9.631 | 17.895–17.953 | 18.920–19.510 | 1070.265 |
+| return-reversal | 2 / 0 / 3 | 2 of 3 | 9.745–10.374 | 17.694–17.878 | 19.100–19.218 | 52.320 |
 
 The configured rule rejects a route when at least two repeats contain any interval
 above 33.33 ms. Each route meets that rejection condition. The largest isolated
@@ -163,12 +165,22 @@ intervals occurred at 1011.830 ms in entry repeat 2 and 1070.265 ms in follow re
 sampled without per-row timestamps, so it cannot support precise host-memory/frame
 alignment.
 
+Repeat output is currently written synchronously after each measurement and before
+the next repeat starts. Since Time<Real> is refreshed before the acceptance Update
+system, the first interval of a following repeat may include the prior CSV write.
+Those intervals remain in the raw files and in the stall counts; no gameplay sample
+was filtered. This boundary effect is a known measurement limitation, but it does
+not explain the second-scale stalls observed inside repeats. No boundary change was
+made after the user chose to defer further performance work.
+
 Earlier fixes addressed the readout overlap, settlement framing, road-highlight
 continuity, camera transition motion, map precipitation visibility, and selector
 access while Planet view is active. The separate rendered transition/weather
 diagnostic at /tmp/terra-spec-45/diagnostic-57-camera-909b56f-fresh shows the
 opening and return framing, snow hidden while mapped and visible again afterward,
-and live body movement. These checks complement but do not replace the failed
-warmed performance run. Further profiling must distinguish renderer scheduling
-and surface waits from application system work before changing visual-detail
-budgets.
+and live body movement. A partial instrumented profile at
+/tmp/terra-spec-45/phase-profile-57-f998797-exact preserves exact frame-clock
+intervals and native spans for entry, orbit, and vehicle-follow routes; it stopped
+before the return route and is diagnostic evidence only. Entry stalls overlap both
+window-acquire waits and broader render/fixed work, so the remaining cause is not
+settled. These checks complement but do not replace the unmet timing gate.
