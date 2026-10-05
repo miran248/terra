@@ -281,11 +281,26 @@ pub(super) fn readout(
         With<crate::ui::SidebarExplorationReadout>,
     >,
 ) {
-    let (movement, view, actions) = if state.selector {
+    let (
+        movement,
+        view,
+        follow,
+        vehicle_action,
+        summon_vehicle_action,
+        teleport_action,
+        recovery_context,
+        recovery_action,
+    ) = if state.selector {
         (
             "Travel mode: Vehicle selection · simulation paused".to_owned(),
             "Planet view: unavailable during vehicle selection".to_owned(),
-            "Choose Car or Plane · Esc / V cancel".to_owned(),
+            "Follow body · F · unavailable during vehicle selection".to_owned(),
+            "Vehicle selection is open · V".to_owned(),
+            "Vehicle selection is open".to_owned(),
+            "Teleport to selected destination · T".to_owned(),
+            "Choose Car (C) or Plane (P). Click Cancel or press Esc / V. Gameplay simulation is paused."
+                .to_owned(),
+            "Recover · Hold 1s (R)".to_owned(),
         )
     } else {
         let movement = state
@@ -329,39 +344,63 @@ pub(super) fn readout(
                 })
             })
             .unwrap_or_else(|| "Travel mode: —".to_owned());
-        let view = if state.is_planet_view_active() {
-            format!(
-                "Planet view: Follow {} · drag to orbit · wheel to zoom",
-                if state.planet_view_follows_body() {
-                    "on"
-                } else {
-                    "off"
-                }
-            )
+        let view = if state.planet_camera.is_requested_open() {
+            "Close Planet view · M".to_owned()
         } else {
-            "Planet view: M to open".to_owned()
+            "Open Planet view · M".to_owned()
         };
-        let mut actions = format!(
-            "Recover: Hold R · {:.0}%\nPlanet view: M\n{}",
-            state.recovery.min(1.0) * 100.0,
-            if state.is_in_vehicle() {
-                "Exit vehicle: E"
+        let follow = format!(
+            "Follow body · F · {}",
+            if state.planet_view_follows_body() {
+                "on"
             } else {
-                "Vehicle selector: V"
+                "off"
             }
         );
+        let vehicle_action = if state.is_in_vehicle() {
+            "Exit vehicle · E".to_owned()
+        } else {
+            "Enter vehicle · E".to_owned()
+        };
+        let summon_vehicle_action = if state.is_in_vehicle() {
+            "Summon vehicle · V · on foot only".to_owned()
+        } else if state.planet_camera.is_active() {
+            "Summon vehicle · V · unavailable in Planet view".to_owned()
+        } else {
+            "Summon vehicle · V".to_owned()
+        };
+        let teleport_action = "Teleport to selected destination · T".to_owned();
+        let mut recovery_context = format!(
+            "Recovery hold: {:.0}% · hold Recover or R for 1 second.",
+            state.recovery.min(1.0) * 100.0,
+        );
         if !state.message.is_empty() {
-            actions.push('\n');
-            actions.push_str(&state.message);
+            recovery_context.push('\n');
+            recovery_context.push_str(&state.message);
         }
-        (movement, view, actions)
+        (
+            movement,
+            view,
+            follow,
+            vehicle_action,
+            summon_vehicle_action,
+            teleport_action,
+            recovery_context,
+            "Recover · Hold 1s (R)".to_owned(),
+        )
     };
 
     for (mut text, slot) in &mut texts {
         let value = match slot {
             crate::ui::SidebarReadoutSlot::Movement => &movement,
             crate::ui::SidebarReadoutSlot::View => &view,
-            crate::ui::SidebarReadoutSlot::Actions => &actions,
+            crate::ui::SidebarReadoutSlot::Follow => &follow,
+            crate::ui::SidebarReadoutSlot::VehicleAction => &vehicle_action,
+            crate::ui::SidebarReadoutSlot::SummonVehicleAction => &summon_vehicle_action,
+            crate::ui::SidebarReadoutSlot::TeleportAction => &teleport_action,
+            crate::ui::SidebarReadoutSlot::RecoveryContext => &recovery_context,
+            crate::ui::SidebarReadoutSlot::RecoveryAction => &recovery_action,
+            crate::ui::SidebarReadoutSlot::SelectorChoice => continue,
             _ => continue,
         };
         if text.0 != *value {

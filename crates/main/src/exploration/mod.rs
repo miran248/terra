@@ -263,6 +263,7 @@ pub struct Exploration {
     suppress_input: bool,
     recovery: f32,
     recover_latched: bool,
+    mouse_recovery_held: bool,
     target: Option<Entity>,
     message: String,
     actions: std::collections::VecDeque<Action>,
@@ -272,7 +273,7 @@ pub struct Exploration {
     planet_zoom_intent: f32,
     planet_presentation: PlanetViewPresentation,
     planet_pointer: PlanetViewPointer,
-    pressed_planet_control: Option<Entity>,
+    pressed_sidebar_action: Option<Entity>,
     planet_selection_click: Option<Vec2>,
     planet_teleport_requested: bool,
     selected_destination: Option<PlanetDestination>,
@@ -337,10 +338,16 @@ impl Exploration {
         self.planet_presentation.request_open(open);
         if !open {
             self.planet_pointer.cancel();
-            self.pressed_planet_control = None;
+            self.pressed_sidebar_action = None;
+            self.mouse_recovery_held = false;
             self.planet_selection_click = None;
             self.cancel_planet_teleport(PlanetTeleportCancellation::ViewClosed);
         }
+    }
+
+    pub(crate) fn toggle_planet_view(&mut self) {
+        let open = !self.planet_camera.is_requested_open();
+        self.set_planet_view_open(open);
     }
 
     pub fn is_planet_view_active(&self) -> bool {
@@ -618,6 +625,7 @@ impl Plugin for ExplorationPlugin {
                 (
                     input,
                     interface::pointer_input,
+                    update_recovery_hold,
                     crate::minimap::consume_planet_view_destination_click,
                     submit_planet_teleport,
                     world::residency,
@@ -644,6 +652,7 @@ impl Plugin for ExplorationPlugin {
                     sync_explorer,
                     track_safe,
                     interface::update_presentation,
+                    interface::update_action_hover,
                     view::tag_visuals,
                     view::camera,
                     view::animate,
@@ -671,6 +680,50 @@ fn initialize(mut state: ResMut<Exploration>, player: Query<&Position, With<Play
     }
 }
 
+pub(super) fn open_vehicle_selector(state: &mut Exploration, time: &mut Time<Virtual>) -> bool {
+    if state.planet_camera.is_active() {
+        return false;
+    }
+    if state.occupied.is_some() {
+        state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
+        return false;
+    }
+
+    state.selector = true;
+    state.planet_selection_click = None;
+    state.cancel_planet_teleport(PlanetTeleportCancellation::VehicleSelectorOpened);
+    state.recovery = 0.0;
+    state.recover_latched = false;
+    state.mouse_recovery_held = false;
+    time.pause();
+    true
+}
+
+pub(super) fn cancel_vehicle_selector(state: &mut Exploration, time: &mut Time<Virtual>) {
+    if !state.selector {
+        return;
+    }
+    state.selector = false;
+    time.unpause();
+    state.suppress_input = true;
+    state.recovery = 0.0;
+    state.recover_latched = false;
+    state.mouse_recovery_held = false;
+}
+
+pub(super) fn choose_vehicle(kind: Kind, state: &mut Exploration, time: &mut Time<Virtual>) {
+    if !state.selector {
+        return;
+    }
+    state.request(Action::Summon(kind));
+    state.selector = false;
+    time.unpause();
+    state.suppress_input = true;
+    state.recovery = 0.0;
+    state.recover_latched = false;
+    state.mouse_recovery_held = false;
+}
+
 fn submit_planet_teleport(
     mut state: ResMut<Exploration>,
     world_epoch: Res<crate::map::WorldEpoch>,
@@ -680,7 +733,6 @@ fn submit_planet_teleport(
 
 fn input(
     keys: Res<ButtonInput<KeyCode>>,
-    real: Res<Time<Real>>,
     mut time: ResMut<Time<Virtual>>,
     mut state: ResMut<Exploration>,
     cameras: Query<&Transform, With<MainCamera>>,
@@ -706,10 +758,7 @@ fn input(
         state.planet_selection_click = None;
         state.planet_teleport_requested = false;
         if keys.just_pressed(KeyCode::Escape) || keys.just_pressed(KeyCode::KeyV) {
-            state.selector = false;
-            time.unpause();
-            state.suppress_input = true;
-            state.recovery = 0.0;
+            cancel_vehicle_selector(&mut state, &mut time);
             return;
         }
         let kind = if keys.just_pressed(KeyCode::KeyC) {
@@ -720,32 +769,19 @@ fn input(
             None
         };
         if let Some(kind) = kind {
-            state.request(Action::Summon(kind));
-            state.selector = false;
-            time.unpause();
-            state.suppress_input = true;
+            choose_vehicle(kind, &mut state, &mut time);
+            return;
         }
         state.recovery = 0.0;
         return;
     }
     if keys.just_pressed(KeyCode::KeyV) {
-        if state.planet_camera.is_active() {
-            // Vehicle selection is reserved for ordinary exploration. Ignore
-            // the press for this frame so closing Planet view cannot defer it.
-        } else if state.occupied.is_some() {
-            state.message = "Stop and exit before summoning; hold R to recover if trapped".into();
-        } else {
-            state.selector = true;
-            state.planet_selection_click = None;
-            state.cancel_planet_teleport(PlanetTeleportCancellation::VehicleSelectorOpened);
-            time.pause();
-            state.recovery = 0.0;
+        if open_vehicle_selector(&mut state, &mut time) {
             return;
         }
     }
     if keys.just_pressed(KeyCode::KeyM) {
-        let open = !state.planet_camera.is_requested_open();
-        state.set_planet_view_open(open);
+        state.toggle_planet_view();
     }
     if keys.just_pressed(KeyCode::Escape) && state.planet_camera.is_requested_open() {
         state.set_planet_view_open(false);
@@ -761,13 +797,27 @@ fn input(
     if keys.just_pressed(KeyCode::KeyE) {
         state.request(Action::Interact);
     }
-    if keys.pressed(KeyCode::KeyR) && !state.recover_latched {
+}
+
+fn update_recovery_hold(
+    keys: Res<ButtonInput<KeyCode>>,
+    real: Res<Time<Real>>,
+    mut state: ResMut<Exploration>,
+) {
+    if state.selector {
+        state.recovery = 0.0;
+        state.recover_latched = false;
+        state.mouse_recovery_held = false;
+        return;
+    }
+    let held = keys.pressed(KeyCode::KeyR) || state.mouse_recovery_held;
+    if held && !state.recover_latched {
         state.recovery += real.delta_secs().min(0.1);
         if state.recovery >= 1.0 {
             state.request(Action::Recover);
             state.recover_latched = true;
         }
-    } else if !keys.pressed(KeyCode::KeyR) {
+    } else if !held {
         state.recovery = 0.0;
         state.recover_latched = false;
     }
@@ -2137,6 +2187,703 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn sidebar_presents_vehicle_and_teleport_actions_with_their_keyboard_shortcuts() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .insert_resource(crate::ui::UiFont(Handle::default()));
+        app.world_mut().run_system_once(view::setup).unwrap();
+        app.world_mut().run_system_once(interface::setup).unwrap();
+        app.update();
+
+        let mut texts = app.world_mut().query::<&Text>();
+        let rendered_text = texts
+            .iter(app.world())
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered_text.contains("Enter vehicle · E"),
+            "{rendered_text}"
+        );
+        assert!(
+            rendered_text.contains("Teleport to selected destination · T"),
+            "{rendered_text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_action_hover_uses_the_theme_accent_only_under_the_pointer() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::TogglePlanetView,
+            Vec2::new(100.0, 100.0),
+        );
+        app.update();
+
+        let action = {
+            let world = app.world_mut();
+            let mut query = world.query::<(Entity, &crate::ui::SidebarActionControl)>();
+            query
+                .iter(world)
+                .find(|(_, control)| control.0 == crate::ui::SidebarAction::TogglePlanetView)
+                .map(|(entity, _)| entity)
+                .unwrap()
+        };
+        assert_eq!(
+            app.world().get::<TextColor>(action).unwrap().0,
+            shared::theme::ACCENT
+        );
+
+        let window = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<bevy::window::PrimaryWindow>>();
+            query.iter(world).next().unwrap()
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(Vec2::new(400.0, 400.0)));
+        app.update();
+        assert_eq!(
+            app.world().get::<TextColor>(action).unwrap().0,
+            shared::theme::INK
+        );
+    }
+
+    #[test]
+    fn sidebar_view_and_follow_actions_match_m_and_f_transitions() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        spawn_planet_view_camera(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::TogglePlanetView,
+            Vec2::new(100.0, 100.0),
+        );
+        click_sidebar_action(&mut app);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open()
+        );
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_selection_click
+                .is_none(),
+            "opening the sidebar action must not select the scene behind it"
+        );
+
+        click_sidebar_action(&mut app);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
+            "the same sidebar action closes Planet view"
+        );
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_selection_click
+                .is_none(),
+            "closing from the sidebar must not select or drag the scene"
+        );
+        tap_key(&mut app, KeyCode::KeyM);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
+            "M opens the same view state controlled by the sidebar row"
+        );
+        for _ in 0..20 {
+            app.update();
+        }
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::ToggleFollow,
+            Vec2::new(100.0, 140.0),
+        );
+        click_sidebar_action(&mut app);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_view_follows_body()
+        );
+        tap_key(&mut app, KeyCode::KeyF);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_view_follows_body()
+        );
+    }
+
+    #[test]
+    fn sidebar_enter_and_exit_actions_interact_with_a_reachable_vehicle() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[Kind::Car.index()].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let car_position = app.world().get::<Position>(car).unwrap().0;
+        let side = app.world().get::<Rotation>(car).unwrap().0 * Vec3::X;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(car_position + side * 2.0));
+
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::Interact,
+            Vec2::new(100.0, 170.0),
+        );
+        click_sidebar_action(&mut app);
+        assert_eq!(
+            app.world().resource::<Exploration>().occupied,
+            Some(car),
+            "clicking Enter vehicle uses the normal reachable-vehicle transition"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        for _ in 0..45 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut().get_mut::<Vehicle>(car).unwrap().stable = 0.5;
+        app.world_mut().entity_mut(car).insert(LinearVelocity::ZERO);
+        click_sidebar_action(&mut app);
+        assert!(
+            app.world().resource::<Exploration>().occupied.is_none(),
+            "clicking Exit vehicle uses the normal safe-exit transition: {}",
+            app.world().resource::<Exploration>().message
+        );
+    }
+
+    #[test]
+    fn sidebar_vehicle_action_matches_e_when_no_vehicle_is_in_reach() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::Interact,
+            Vec2::new(100.0, 170.0),
+        );
+        click_sidebar_action(&mut app);
+        let mouse_feedback = rendered_sidebar_text(&mut app);
+        assert!(
+            mouse_feedback.contains("No stopped vehicle within reach"),
+            "{mouse_feedback}"
+        );
+
+        tap_key(&mut app, KeyCode::KeyE);
+        let keyboard_feedback = rendered_sidebar_text(&mut app);
+        assert!(
+            keyboard_feedback.contains("No stopped vehicle within reach"),
+            "{keyboard_feedback}"
+        );
+    }
+
+    #[test]
+    fn sidebar_summon_action_opens_the_paused_vehicle_selector() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::ToggleVehicleSelector,
+            Vec2::new(100.0, 180.0),
+        );
+
+        click_sidebar_action(&mut app);
+
+        let state = app.world().resource::<Exploration>();
+        assert!(state.selector, "the sidebar summon action opens selection");
+        assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    }
+
+    #[test]
+    fn sidebar_selector_choices_match_keyboard_selection_for_both_vehicles() {
+        for kind in [Kind::Car, Kind::Plane] {
+            let (mut mouse_app, _) = fixture();
+            setup_sidebar_pointer_fixture(&mut mouse_app);
+            block_initial_summon_poses(&mut mouse_app);
+            set_sidebar_action_hitbox(
+                &mut mouse_app,
+                crate::ui::SidebarAction::ToggleVehicleSelector,
+                Vec2::new(100.0, 180.0),
+            );
+            click_sidebar_action(&mut mouse_app);
+            assert!(
+                mouse_app.world().resource::<Exploration>().selector,
+                "mouse selector did not open for {kind:?}"
+            );
+            let selector_text = rendered_sidebar_text(&mut mouse_app);
+            assert!(selector_text.contains("Choose Car · C"), "{selector_text}");
+            assert!(
+                selector_text.contains("Choose Plane · P"),
+                "{selector_text}"
+            );
+            assert!(
+                selector_text.contains("Cancel · Esc / V"),
+                "{selector_text}"
+            );
+            assert!(sidebar_action_is_visible(
+                &mut mouse_app,
+                crate::ui::SidebarAction::SelectVehicle(Kind::Car)
+            ));
+            assert!(sidebar_action_is_visible(
+                &mut mouse_app,
+                crate::ui::SidebarAction::SelectVehicle(Kind::Plane)
+            ));
+            assert!(sidebar_action_is_visible(
+                &mut mouse_app,
+                crate::ui::SidebarAction::CancelVehicleSelector
+            ));
+            assert!(!sidebar_action_is_visible(
+                &mut mouse_app,
+                crate::ui::SidebarAction::ToggleVehicleSelector
+            ));
+            let choice = crate::ui::SidebarAction::SelectVehicle(kind);
+            set_sidebar_action_hitbox(&mut mouse_app, choice, Vec2::new(100.0, 500.0));
+            click_sidebar_action(&mut mouse_app);
+
+            let mouse_state = mouse_app.world().resource::<Exploration>();
+            assert!(!mouse_state.selector, "mouse selection closes the selector");
+            assert!(!mouse_app.world().resource::<Time<Virtual>>().is_paused());
+            let mouse_outcome = (
+                matches!(mouse_state.actions.front(), Some(Action::Summon(found)) if *found == kind),
+                mouse_state
+                    .pending_summon
+                    .as_ref()
+                    .map(|pending| pending.poses_tested_last_update),
+                mouse_state.vehicles[kind.index()].is_some(),
+            );
+            assert!(
+                mouse_outcome.0 || mouse_outcome.2,
+                "{kind:?} was neither queued nor summoned"
+            );
+
+            let (mut keyboard_app, _) = fixture();
+            block_initial_summon_poses(&mut keyboard_app);
+            tap_key(&mut keyboard_app, KeyCode::KeyV);
+            tap_key(
+                &mut keyboard_app,
+                if kind == Kind::Car {
+                    KeyCode::KeyC
+                } else {
+                    KeyCode::KeyP
+                },
+            );
+            let keyboard_state = keyboard_app.world().resource::<Exploration>();
+            let keyboard_outcome = (
+                matches!(keyboard_state.actions.front(), Some(Action::Summon(found)) if *found == kind),
+                keyboard_state
+                    .pending_summon
+                    .as_ref()
+                    .map(|pending| pending.poses_tested_last_update),
+                keyboard_state.vehicles[kind.index()].is_some(),
+            );
+            assert_eq!(
+                mouse_outcome, keyboard_outcome,
+                "mouse and keyboard {kind:?} outcomes"
+            );
+            assert!(!keyboard_app.world().resource::<Time<Virtual>>().is_paused());
+        }
+    }
+
+    #[test]
+    fn sidebar_selector_cancel_matches_escape_and_resumes_simulation() {
+        let (mut mouse_app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut mouse_app);
+        set_sidebar_action_hitbox(
+            &mut mouse_app,
+            crate::ui::SidebarAction::ToggleVehicleSelector,
+            Vec2::new(100.0, 180.0),
+        );
+        click_sidebar_action(&mut mouse_app);
+        set_sidebar_action_hitbox(
+            &mut mouse_app,
+            crate::ui::SidebarAction::CancelVehicleSelector,
+            Vec2::new(100.0, 500.0),
+        );
+        click_sidebar_action(&mut mouse_app);
+
+        assert!(!mouse_app.world().resource::<Exploration>().selector);
+        assert!(!mouse_app.world().resource::<Time<Virtual>>().is_paused());
+
+        let (mut keyboard_app, _) = fixture();
+        tap_key(&mut keyboard_app, KeyCode::KeyV);
+        tap_key(&mut keyboard_app, KeyCode::Escape);
+        assert!(!keyboard_app.world().resource::<Exploration>().selector);
+        assert!(!keyboard_app.world().resource::<Time<Virtual>>().is_paused());
+        assert!(
+            keyboard_app
+                .world()
+                .resource::<Exploration>()
+                .suppress_input
+        );
+    }
+
+    #[test]
+    fn sidebar_selector_obeys_planet_view_and_occupied_vehicle_gates() {
+        let (mut mouse_planet, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut mouse_planet);
+        mouse_planet
+            .world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        set_sidebar_action_hitbox(
+            &mut mouse_planet,
+            crate::ui::SidebarAction::ToggleVehicleSelector,
+            Vec2::new(100.0, 180.0),
+        );
+        click_sidebar_action(&mut mouse_planet);
+        assert!(!mouse_planet.world().resource::<Exploration>().selector);
+        assert!(!mouse_planet.world().resource::<Time<Virtual>>().is_paused());
+
+        let (mut keyboard_planet, _) = fixture();
+        keyboard_planet
+            .world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        tap_key(&mut keyboard_planet, KeyCode::KeyV);
+        assert!(!keyboard_planet.world().resource::<Exploration>().selector);
+        assert!(
+            !keyboard_planet
+                .world()
+                .resource::<Time<Virtual>>()
+                .is_paused()
+        );
+
+        let (mut mouse_occupied, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut mouse_occupied);
+        mouse_occupied
+            .world_mut()
+            .resource_mut::<Exploration>()
+            .occupied = Some(Entity::PLACEHOLDER);
+        set_sidebar_action_hitbox(
+            &mut mouse_occupied,
+            crate::ui::SidebarAction::ToggleVehicleSelector,
+            Vec2::new(100.0, 180.0),
+        );
+        click_sidebar_action(&mut mouse_occupied);
+        let mouse_message = mouse_occupied
+            .world()
+            .resource::<Exploration>()
+            .message
+            .clone();
+        let (mut keyboard_occupied, _) = fixture();
+        keyboard_occupied
+            .world_mut()
+            .resource_mut::<Exploration>()
+            .occupied = Some(Entity::PLACEHOLDER);
+        tap_key(&mut keyboard_occupied, KeyCode::KeyV);
+        assert_eq!(
+            mouse_message,
+            keyboard_occupied.world().resource::<Exploration>().message
+        );
+        assert!(!mouse_message.is_empty());
+    }
+
+    #[test]
+    fn sidebar_recovery_hold_reports_context_progress_and_cancels_early() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::HoldRecovery,
+            Vec2::new(100.0, 220.0),
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(MouseButton::Left);
+
+        for _ in 0..20 {
+            app.update();
+        }
+
+        let progress = app.world().resource::<Exploration>().recovery;
+        assert!(
+            progress > 0.2,
+            "held mouse recovery should advance: {progress}"
+        );
+        assert!(progress < 1.0, "a short hold cannot recover");
+        let text = rendered_sidebar_text(&mut app);
+        assert!(text.contains("Recovery hold:"), "{text}");
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .actions
+                .contains(&Action::Recover),
+            "an early hold must not submit recovery"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+        let state = app.world().resource::<Exploration>();
+        assert_eq!(state.recovery, 0.0, "release clears partial progress");
+        assert!(!state.actions.contains(&Action::Recover));
+    }
+
+    #[test]
+    fn sidebar_mouse_recovery_completes_on_foot_and_in_occupied_vehicles_once() {
+        let (mut explorer_app, explorer) = fixture();
+        setup_sidebar_pointer_fixture(&mut explorer_app);
+        let safe = explorer_app.world().get::<Position>(explorer).unwrap().0;
+        explorer_app.world_mut().resource_mut::<Exploration>().safe = Some(safe);
+        explorer_app.world_mut().entity_mut(explorer).insert((
+            Position(Vec3::new(800.0, 2000.6, 0.0)),
+            LinearVelocity::ZERO,
+        ));
+        set_sidebar_action_hitbox(
+            &mut explorer_app,
+            crate::ui::SidebarAction::HoldRecovery,
+            Vec2::new(100.0, 220.0),
+        );
+        hold_sidebar_action(&mut explorer_app);
+        for _ in 0..75 {
+            explorer_app.update();
+        }
+
+        let recovered = explorer_app.world().get::<Position>(explorer).unwrap().0;
+        assert!(
+            recovered.distance(safe) < 100.0,
+            "{recovered:?} vs {safe:?}"
+        );
+        assert!(
+            explorer_app
+                .world()
+                .resource::<Exploration>()
+                .recover_latched,
+            "one held gesture latches the single submitted recovery"
+        );
+        let message = explorer_app
+            .world()
+            .resource::<Exploration>()
+            .message
+            .clone();
+        for _ in 0..20 {
+            explorer_app.update();
+        }
+        assert_eq!(
+            explorer_app.world().resource::<Exploration>().message,
+            message
+        );
+        release_sidebar_action(&mut explorer_app);
+
+        for kind in [Kind::Car, Kind::Plane] {
+            let (mut vehicle_app, explorer) = fixture();
+            setup_sidebar_pointer_fixture(&mut vehicle_app);
+            act(&mut vehicle_app, Action::Summon(kind));
+            let vehicle =
+                vehicle_app.world().resource::<Exploration>().vehicles[kind.index()].unwrap();
+            for _ in 0..30 {
+                vehicle_app.update();
+            }
+            let p = vehicle_app.world().get::<Position>(vehicle).unwrap().0;
+            let side = vehicle_app.world().get::<Rotation>(vehicle).unwrap().0 * Vec3::X;
+            let width = if kind == Kind::Car { 2.0 } else { 4.8 };
+            vehicle_app
+                .world_mut()
+                .entity_mut(explorer)
+                .insert(Position(p + side * width));
+            act(&mut vehicle_app, Action::Interact);
+            assert_eq!(
+                vehicle_app.world().resource::<Exploration>().occupied,
+                Some(vehicle)
+            );
+            vehicle_app
+                .world_mut()
+                .get_mut::<Vehicle>(vehicle)
+                .unwrap()
+                .crashed = true;
+            vehicle_app
+                .world_mut()
+                .entity_mut(vehicle)
+                .remove::<LockedAxes>()
+                .insert((
+                    RigidBody::Static,
+                    Position(p + Vec3::Y * 20.0),
+                    Rotation(Quat::from_rotation_x(1.3)),
+                    LinearVelocity(Vec3::X * 5.0),
+                    AngularVelocity(Vec3::Y),
+                    Friction::new(0.6),
+                    LinearDamping(0.1),
+                    AngularDamping(1.5),
+                ));
+            set_sidebar_action_hitbox(
+                &mut vehicle_app,
+                crate::ui::SidebarAction::HoldRecovery,
+                Vec2::new(100.0, 220.0),
+            );
+            hold_sidebar_action(&mut vehicle_app);
+            for _ in 0..75 {
+                vehicle_app.update();
+            }
+
+            assert_eq!(
+                vehicle_app.world().resource::<Exploration>().occupied,
+                Some(vehicle)
+            );
+            let recovered = vehicle_app.world().get::<Vehicle>(vehicle).unwrap();
+            assert!(!recovered.crashed && !recovered.parked, "{kind:?}");
+            assert!(vehicle_app.world().get::<Position>(vehicle).unwrap().0.y < 2002.0);
+            assert!(vehicle_app.world().get::<Position>(explorer).unwrap().0.y < 2002.0);
+            assert!(
+                vehicle_app
+                    .world()
+                    .resource::<Exploration>()
+                    .recover_latched
+            );
+            release_sidebar_action(&mut vehicle_app);
+        }
+    }
+
+    #[test]
+    fn sidebar_recovery_hold_cancels_when_pointer_capture_is_lost() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        let center = Vec2::new(100.0, 220.0);
+        set_sidebar_action_hitbox(&mut app, crate::ui::SidebarAction::HoldRecovery, center);
+        hold_sidebar_action(&mut app);
+        for _ in 0..10 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().recovery > 0.0);
+
+        let window = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<bevy::window::PrimaryWindow>>();
+            query.iter(world).next().unwrap()
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(None);
+        app.update();
+        assert_eq!(app.world().resource::<Exploration>().recovery, 0.0);
+        assert!(!app.world().resource::<Exploration>().mouse_recovery_held);
+
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(center));
+        for _ in 0..20 {
+            app.update();
+        }
+        assert_eq!(app.world().resource::<Exploration>().recovery, 0.0);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .actions
+                .contains(&Action::Recover)
+        );
+        release_sidebar_action(&mut app);
+    }
+
+    #[test]
+    fn sidebar_context_shows_selector_instructions_and_recovery_status() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        app.update();
+        let idle = rendered_sidebar_text(&mut app);
+        assert!(idle.contains("Recovery hold: 0%"), "{idle}");
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyV);
+        app.update();
+        let selector = rendered_sidebar_text(&mut app);
+        assert!(selector.contains("Choose Car"), "{selector}");
+        assert!(selector.contains("simulation is paused"), "{selector}");
+    }
+
+    #[test]
+    fn sidebar_teleport_action_uses_t_readiness_and_duplicate_gates() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let destination = selected_surface(epoch, Vec3::new(40.0, 2000.0, 0.0));
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination.clone());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::Teleport,
+            Vec2::new(100.0, 200.0),
+        );
+
+        click_sidebar_action(&mut app);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none(),
+            "a selected destination still requires the view readiness gate"
+        );
+        tap_key(&mut app, KeyCode::KeyT);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none(),
+            "the keyboard path uses the same readiness gate"
+        );
+
+        open_planet_view(&mut app);
+        click_sidebar_action(&mut app);
+        assert!(matches!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                destination_id,
+                result: PlanetTeleportOutcomeKind::Succeeded { .. },
+                ..
+            }) if destination_id == destination.id
+        ));
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .selected_planet_destination()
+                .is_none(),
+            "a committed destination is cleared like the keyboard route"
+        );
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
+            "success returns from Planet view like the keyboard route"
+        );
+
+        tap_key(&mut app, KeyCode::KeyT);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn sidebar_wheel_and_pointer_gestures_are_captured_from_planet_view() {
         use bevy::{
             input::mouse::{MouseScrollUnit, MouseWheel},
@@ -2868,6 +3615,135 @@ pub(crate) mod tests {
         app.world_mut().resource_mut::<Exploration>().start = Some(Vec3::new(0.0, 2000.6, 0.0));
         (app, explorer)
     }
+    fn setup_sidebar_pointer_fixture(app: &mut App) -> Entity {
+        app.world_mut()
+            .insert_resource(crate::ui::UiFont(Handle::default()));
+        app.world_mut().run_system_once(view::setup).unwrap();
+        app.world_mut().run_system_once(interface::setup).unwrap();
+
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(100.0, 100.0)));
+        let window_entity = app
+            .world_mut()
+            .spawn((window, bevy::window::PrimaryWindow))
+            .id();
+
+        let sidebar = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<crate::ui::Sidebar>>();
+            query
+                .iter(world)
+                .next()
+                .expect("sidebar setup creates a root")
+        };
+        app.world_mut().entity_mut(sidebar).insert((
+            bevy::ui::ComputedNode {
+                size: Vec2::new(280.0, 600.0),
+                ..default()
+            },
+            bevy::ui::UiGlobalTransform::from_xy(140.0, 300.0),
+        ));
+        window_entity
+    }
+
+    fn set_sidebar_action_hitbox(app: &mut App, action: crate::ui::SidebarAction, center: Vec2) {
+        let existing = {
+            let world = app.world_mut();
+            let mut query = world.query::<(Entity, &crate::ui::SidebarActionControl)>();
+            query
+                .iter(world)
+                .find(|(_, control)| control.0 == action)
+                .map(|(entity, _)| entity)
+        };
+        let control = existing.unwrap_or_else(|| {
+            app.world_mut()
+                .spawn((
+                    Text::new("test sidebar action"),
+                    crate::ui::SidebarActionControl(action),
+                ))
+                .id()
+        });
+        app.world_mut().entity_mut(control).insert((
+            bevy::ui::ComputedNode {
+                size: Vec2::new(240.0, 28.0),
+                ..default()
+            },
+            bevy::ui::UiGlobalTransform::from_xy(center.x, center.y),
+        ));
+        let window = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<bevy::window::PrimaryWindow>>();
+            query
+                .iter(world)
+                .next()
+                .expect("pointer fixture has a primary window")
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(center));
+    }
+
+    fn sidebar_action_is_visible(app: &mut App, action: crate::ui::SidebarAction) -> bool {
+        let world = app.world_mut();
+        let mut query = world.query::<(&Node, &crate::ui::SidebarActionControl)>();
+        query
+            .iter(world)
+            .find(|(_, control)| control.0 == action)
+            .is_some_and(|(node, _)| node.display != Display::None)
+    }
+
+    fn click_sidebar_action(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+    }
+
+    fn hold_sidebar_action(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(MouseButton::Left);
+    }
+
+    fn release_sidebar_action(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+    }
+
+    fn tap_key(app: &mut App, key: KeyCode) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(key);
+        app.update();
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.clear_just_pressed(key);
+        keys.release(key);
+    }
+
+    fn rendered_sidebar_text(app: &mut App) -> String {
+        let world = app.world_mut();
+        let mut query = world.query::<&Text>();
+        query
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn act(app: &mut App, action: Action) {
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -3675,12 +4551,16 @@ pub(crate) mod tests {
 
     #[test]
     fn live_camera_intents_zoom_without_detaching_and_orbit_detaches() {
-        let (mut app, _) = fixture();
-        app.world_mut().spawn((
-            MainCamera,
-            Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
-            Projection::Perspective(PerspectiveProjection::default()),
-        ));
+        let (mut app, explorer) = fixture();
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, 2005.0, -5.0)
+                    .looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
         let far = shared::planet_view::PLANET_VIEW_FAR_RADIUS;
         {
             let mut state = app.world_mut().resource_mut::<Exploration>();
@@ -3695,6 +4575,13 @@ pub(crate) mod tests {
             assert!(state.planet_view_camera_radii().0 < far);
             assert!(state.planet_view_follows_body());
         }
+        let current = *app
+            .world()
+            .entity(camera)
+            .get::<Transform>()
+            .expect("main camera transform");
+        let start_direction = current.translation.normalize();
+        let screen_right = current.rotation * Vec3::X;
         assert!(
             app.world_mut()
                 .resource_mut::<Exploration>()
@@ -3706,6 +4593,12 @@ pub(crate) mod tests {
         let state = app.world().resource::<Exploration>();
         assert!(!state.planet_view_follows_body());
         assert!(state.planet_view_camera_radii().1.is_finite());
+        let controlled_position = app.world().get::<Position>(explorer).unwrap().0;
+        let target_direction = state.planet_camera.view_direction(controlled_position);
+        assert!(
+            (target_direction - start_direction).dot(screen_right) < 0.0,
+            "the runtime orbit intent should move the camera opposite a rightward screen drag"
+        );
     }
 
     #[test]
@@ -4057,14 +4950,13 @@ pub(crate) mod tests {
                 > planet_radius * 2.0
         );
 
-        let structure = app
-            .world_mut()
-            .spawn((
-                RigidBody::Static,
-                Collider::cuboid(20.0, 30.0, 20.0),
-                Transform::from_xyz(0.0, planet_radius + 80.0, 0.0),
-            ))
-            .id();
+        let mut collision = world::CollisionWorld::default();
+        collision.obstacles.push(world::Obstacle::new(
+            Vec3::Y * (planet_radius + 500.0),
+            Quat::IDENTITY,
+            Collider::cuboid(20.0, 30.0, 20.0),
+        ));
+        app.world_mut().insert_resource(collision);
         app.update();
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -4103,7 +4995,10 @@ pub(crate) mod tests {
             .normalized_attained_zoom();
         assert!(blocked_zoom > 0.01 && blocked_zoom < 0.1);
 
-        app.world_mut().despawn(structure);
+        app.world_mut()
+            .resource_mut::<world::CollisionWorld>()
+            .obstacles
+            .clear();
         app.update();
         let first_release_radius = app
             .world()
@@ -4199,11 +5094,13 @@ pub(crate) mod tests {
         let opposite_view = app.world().get::<Transform>(camera).unwrap();
         assert!(opposite_view.translation.normalize().dot(opposite) > 0.99);
 
-        app.world_mut().spawn((
-            RigidBody::Static,
+        let mut collision = world::CollisionWorld::default();
+        collision.obstacles.push(world::Obstacle::new(
+            opposite * (planet_radius + 500.0),
+            Quat::from_rotation_arc(Vec3::Y, opposite),
             Collider::cuboid(20.0, 30.0, 20.0),
-            Transform::from_translation(opposite * (planet_radius + 80.0)),
         ));
+        app.world_mut().insert_resource(collision);
         app.update();
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -4217,6 +5114,7 @@ pub(crate) mod tests {
             clearance_limited_view.translation.length()
                 > shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 50.0
         );
+        app.world_mut().remove_resource::<world::CollisionWorld>();
 
         app.world_mut()
             .resource_mut::<Exploration>()

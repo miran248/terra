@@ -1,33 +1,35 @@
 use super::*;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
-use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
 use shared::planet_view_interface::{
     GameplayHudElement, PlanetViewInterfaceElement, PointerCapture, PointerRelease,
 };
 
-const ORBIT_RADIANS_PER_LOGICAL_PIXEL: f32 = 0.004;
+const DEFAULT_LOGICAL_VIEWPORT_HEIGHT: f32 = 720.0;
 
-#[derive(Component)]
-pub(super) struct PlanetViewControls;
+fn vertical_fov(projection: Option<&Projection>) -> f32 {
+    match projection {
+        Some(Projection::Perspective(projection)) => projection.fov,
+        _ => PerspectiveProjection::default().fov,
+    }
+}
 
-#[derive(Component, Clone, Copy)]
-pub(super) enum PlanetViewControl {
-    ToggleFollow,
-    Return,
+fn orbit_gain(camera: Transform, projection: Option<&Projection>, viewport_height: f32) -> f32 {
+    shared::planet_view::orbit_radians_per_logical_pixel(
+        camera.translation.length(),
+        viewport_height,
+        vertical_fov(projection),
+    )
 }
 
 #[derive(Component)]
-pub(super) struct FollowStatus;
-
-#[derive(Component)]
-pub(super) struct VehicleSelectorPanel;
+pub(super) struct PlanetViewControls;
 
 #[derive(Component)]
 pub(super) struct DestinationDetails;
 
 #[derive(Component)]
-pub(super) struct VehicleSelectorChoice(Kind);
+pub(super) struct VehicleSelectorAction;
 
 pub(super) fn setup(
     mut commands: Commands,
@@ -48,6 +50,13 @@ pub(super) fn setup(
     else {
         return;
     };
+    let Some(actions_section) = sections
+        .iter()
+        .find(|(_, section)| **section == crate::ui::SidebarSection::Actions)
+        .map(|(entity, _)| entity)
+    else {
+        return;
+    };
 
     commands.entity(view_section).with_children(|section| {
         section
@@ -63,59 +72,12 @@ pub(super) fn setup(
                 PlanetViewControls,
             ))
             .with_children(|parent| {
-                parent
-                    .spawn((
-                        Button,
-                        Node {
-                            min_width: Val::Px(156.0),
-                            min_height: Val::Px(34.0),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
-                            ..default()
-                        },
-                        BackgroundColor(shared::theme::PANEL_BG),
-                        BorderColor::all(shared::theme::TEXT_WEAK),
-                        PlanetViewControl::ToggleFollow,
-                        PlanetViewInterfaceElement::default(),
-                    ))
-                    .with_child((
-                        Text::new("FOLLOW · ON"),
-                        TextFont {
-                            font: font.0.clone().into(),
-                            font_size: 14.0.into(),
-                            ..default()
-                        },
-                        TextColor(shared::theme::INK),
-                        PlanetViewInterfaceElement::default(),
-                        FollowStatus,
-                    ));
-                parent
-                    .spawn((
-                        Button,
-                        Node {
-                            min_width: Val::Px(156.0),
-                            min_height: Val::Px(34.0),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
-                            ..default()
-                        },
-                        BackgroundColor(shared::theme::PANEL_BG),
-                        BorderColor::all(shared::theme::TEXT_WEAK),
-                        PlanetViewControl::Return,
-                        PlanetViewInterfaceElement::default(),
-                    ))
-                    .with_child((
-                        Text::new("RETURN TO EXPLORER"),
-                        TextFont {
-                            font: font.0.clone().into(),
-                            font_size: 14.0.into(),
-                            ..default()
-                        },
-                        TextColor(shared::theme::INK),
-                        PlanetViewInterfaceElement::default(),
-                    ));
+                parent.spawn((crate::ui::sidebar_action_row(
+                    "Follow body · F · ON",
+                    crate::ui::SidebarReadoutSlot::Follow,
+                    crate::ui::SidebarAction::ToggleFollow,
+                    &font,
+                ),));
                 parent.spawn((
                     Text::new("DRAG · ORBIT     WHEEL · ZOOM"),
                     TextFont {
@@ -144,91 +106,54 @@ pub(super) fn setup(
             ..default()
         },
     ));
-
     commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(0.0),
-                right: Val::Px(0.0),
-                top: Val::Px(0.0),
-                bottom: Val::Px(0.0),
-                display: Display::None,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BackgroundColor(shared::theme::PANEL_BG.with_alpha(0.8)),
-            GlobalZIndex(200),
-            FocusPolicy::Block,
-            VehicleSelectorPanel,
-        ))
-        .with_children(|parent| {
-            parent
-                .spawn((
-                    Node {
-                        flex_direction: FlexDirection::Column,
-                        row_gap: Val::Px(10.0),
-                        min_width: Val::Px(280.0),
-                        padding: UiRect::all(Val::Px(20.0)),
-                        ..default()
-                    },
-                    BackgroundColor(shared::theme::PANEL_BG),
-                    BorderColor::all(shared::theme::ACCENT),
+        .entity(context_section)
+        .with_child(crate::ui::sidebar_exploration_row(
+            "Recovery hold: 0% · hold Recover or R for 1 second.",
+            crate::ui::SidebarReadoutSlot::RecoveryContext,
+            &font,
+        ));
+
+    commands.entity(actions_section).with_children(|section| {
+        for (kind, label) in [
+            (Kind::Car, "Choose Car · C"),
+            (Kind::Plane, "Choose Plane · P"),
+        ] {
+            section
+                .spawn(crate::ui::sidebar_action_row(
+                    label,
+                    crate::ui::SidebarReadoutSlot::SelectorChoice,
+                    crate::ui::SidebarAction::SelectVehicle(kind),
+                    &font,
                 ))
-                .with_children(|panel| {
-                    panel.spawn((
-                        Text::new("VEHICLE SELECTOR"),
-                        TextFont {
-                            font: font.0.clone().into(),
-                            font_size: 20.0.into(),
-                            ..default()
-                        },
-                        TextColor(shared::theme::INK),
-                    ));
-                    for (kind, key) in [(Kind::Car, "C  ·  CAR"), (Kind::Plane, "P  ·  PLANE")] {
-                        panel
-                            .spawn((
-                                Button,
-                                Node {
-                                    min_height: Val::Px(42.0),
-                                    justify_content: JustifyContent::Center,
-                                    align_items: AlignItems::Center,
-                                    ..default()
-                                },
-                                BackgroundColor(shared::theme::PANEL_BG),
-                                BorderColor::all(shared::theme::TEXT_WEAK),
-                                VehicleSelectorChoice(kind),
-                            ))
-                            .with_child((
-                                Text::new(key),
-                                TextFont {
-                                    font: font.0.clone().into(),
-                                    font_size: 16.0.into(),
-                                    ..default()
-                                },
-                                TextColor(shared::theme::INK),
-                            ));
-                    }
-                    panel.spawn((
-                        Text::new("ESC OR V TO CLOSE"),
-                        TextFont {
-                            font: font.0.clone().into(),
-                            font_size: 11.0.into(),
-                            ..default()
-                        },
-                        TextColor(shared::theme::TEXT_WEAK),
-                    ));
-                });
-        });
+                .insert(VehicleSelectorAction);
+        }
+        section
+            .spawn(crate::ui::sidebar_action_row(
+                "Cancel · Esc / V",
+                crate::ui::SidebarReadoutSlot::SelectorChoice,
+                crate::ui::SidebarAction::CancelVehicleSelector,
+                &font,
+            ))
+            .insert(VehicleSelectorAction);
+    });
 }
 
 #[allow(clippy::type_complexity)]
 pub(super) fn update_presentation(
     time: Res<Time<Real>>,
     mut state: ResMut<Exploration>,
-    mut panel: Query<&mut Node, (With<VehicleSelectorPanel>, Without<PlanetViewControls>)>,
-    mut controls_panel: Query<&mut Node, (With<PlanetViewControls>, Without<VehicleSelectorPanel>)>,
+    mut controls_panel: Query<
+        &mut Node,
+        (
+            With<PlanetViewControls>,
+            Without<crate::ui::SidebarActionControl>,
+        ),
+    >,
+    mut action_nodes: Query<
+        (&mut Node, Option<&VehicleSelectorAction>),
+        With<crate::ui::SidebarActionControl>,
+    >,
     mut fade_elements: Query<
         (
             Option<&mut BackgroundColor>,
@@ -238,7 +163,6 @@ pub(super) fn update_presentation(
             Option<&mut ImageNode>,
             Option<&mut PlanetViewInterfaceElement>,
             Option<&mut GameplayHudElement>,
-            Option<&FollowStatus>,
             Option<&DestinationDetails>,
         ),
         Or<(
@@ -264,8 +188,8 @@ pub(super) fn update_presentation(
             node.display = display;
         }
     }
-    for mut node in &mut panel {
-        let display = if state.selector {
+    for (mut node, selector_action) in &mut action_nodes {
+        let display = if state.selector == selector_action.is_some() {
             Display::Flex
         } else {
             Display::None
@@ -282,7 +206,6 @@ pub(super) fn update_presentation(
         image,
         interface,
         gameplay,
-        follow_status,
         destination_details,
     ) in &mut fade_elements
     {
@@ -291,18 +214,6 @@ pub(super) fn update_presentation(
         let mut text_color = text_color;
         let mut border = border;
         let mut image = image;
-        if follow_status.is_some()
-            && let Some(text) = label_text.as_deref_mut()
-        {
-            let label = if state.planet_view_follows_body() {
-                "FOLLOW · ON"
-            } else {
-                "FOLLOW · OFF"
-            };
-            if text.0 != label {
-                *text = Text::new(label);
-            }
-        }
         if destination_details.is_some()
             && let Some(text) = label_text.as_deref_mut()
         {
@@ -381,31 +292,31 @@ pub(super) fn pointer_input(
     mut wheels: MessageReader<MouseWheel>,
     mut virtual_time: ResMut<Time<Virtual>>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    cameras: Query<&Transform, With<MainCamera>>,
+    cameras: Query<(&Transform, Option<&Projection>), With<MainCamera>>,
     interface_nodes: Query<(&ComputedNode, &UiGlobalTransform), With<PlanetViewInterfaceElement>>,
     sidebar_nodes: Query<(&ComputedNode, &UiGlobalTransform), With<crate::ui::Sidebar>>,
-    controls: Query<(
+    action_controls: Query<(
         Entity,
         &ComputedNode,
         &UiGlobalTransform,
-        &PlanetViewControl,
-    )>,
-    selector_choices: Query<(
-        Entity,
-        &ComputedNode,
-        &UiGlobalTransform,
-        &VehicleSelectorChoice,
+        &crate::ui::SidebarActionControl,
     )>,
 ) {
     let orbit_intent = std::mem::take(&mut state.planet_orbit_intent);
     let zoom_intent = std::mem::take(&mut state.planet_zoom_intent);
     if !state.selector && state.planet_camera.is_active() {
         if orbit_intent != Vec2::ZERO
-            && let Some(camera) = cameras.iter().next()
+            && let Some((camera, projection)) = cameras.iter().next()
         {
-            state
-                .planet_camera
-                .orbit_from(*camera, orbit_intent * ORBIT_RADIANS_PER_LOGICAL_PIXEL);
+            let viewport_height = windows
+                .iter()
+                .next()
+                .map(Window::height)
+                .unwrap_or(DEFAULT_LOGICAL_VIEWPORT_HEIGHT);
+            state.planet_camera.orbit_from(
+                *camera,
+                orbit_intent * orbit_gain(*camera, projection, viewport_height),
+            );
             state.set_planet_view_open(true);
         }
         if zoom_intent != 0.0 {
@@ -417,7 +328,8 @@ pub(super) fn pointer_input(
     let Ok(window) = windows.single() else {
         let _ = wheels.read().count();
         state.planet_pointer.cancel();
-        state.pressed_planet_control = None;
+        state.pressed_sidebar_action = None;
+        state.mouse_recovery_held = false;
         return;
     };
     let scale_factor = window.scale_factor();
@@ -433,7 +345,8 @@ pub(super) fn pointer_input(
     if state.selector {
         if state.planet_pointer.capture() != Some(PointerCapture::Selector) {
             state.planet_pointer.cancel();
-            state.pressed_planet_control = None;
+            state.pressed_sidebar_action = None;
+            state.mouse_recovery_held = false;
         }
         if mouse.just_pressed(MouseButton::Left)
             && let Some(position) = cursor
@@ -441,32 +354,52 @@ pub(super) fn pointer_input(
             state
                 .planet_pointer
                 .press(position, scale_factor, PointerCapture::Selector);
+            state.pressed_sidebar_action = action_controls
+                .iter()
+                .find(|(_, node, transform, _)| node.contains_point(**transform, position))
+                .map(|(entity, _, _, _)| entity);
         }
     } else if mouse.just_pressed(MouseButton::Left)
         && let Some(position) = cursor
-        && state.planet_camera.is_active()
     {
-        let over_interface = sidebar_nodes
+        let over_sidebar = sidebar_nodes
             .iter()
-            .any(|(node, transform)| node.contains_point(*transform, position))
-            || (state.planet_presentation.interface_opacity() > 0.0
-                && interface_nodes
-                    .iter()
-                    .any(|(node, transform)| node.contains_point(*transform, position)));
-        let capture = if over_interface {
-            PointerCapture::Interface
-        } else {
-            PointerCapture::World
-        };
-        state.planet_pointer.press(position, scale_factor, capture);
-        state.pressed_planet_control = if capture == PointerCapture::Interface {
-            controls
+            .any(|(node, transform)| node.contains_point(*transform, position));
+        if over_sidebar {
+            state
+                .planet_pointer
+                .press(position, scale_factor, PointerCapture::Interface);
+            state.pressed_sidebar_action = action_controls
                 .iter()
                 .find(|(_, node, transform, _)| node.contains_point(**transform, position))
                 .map(|(entity, _, _, _)| entity)
-        } else {
-            None
-        };
+        } else if state.planet_camera.is_active() {
+            let over_interface = state.planet_presentation.interface_opacity() > 0.0
+                && interface_nodes
+                    .iter()
+                    .any(|(node, transform)| node.contains_point(*transform, position));
+            let capture = if over_interface {
+                PointerCapture::Interface
+            } else {
+                PointerCapture::World
+            };
+            state.planet_pointer.press(position, scale_factor, capture);
+            state.pressed_sidebar_action = if capture == PointerCapture::Interface {
+                action_controls
+                    .iter()
+                    .find(|(_, node, transform, _)| node.contains_point(**transform, position))
+                    .map(|(entity, _, _, _)| entity)
+            } else {
+                None
+            };
+        }
+    }
+
+    if mouse.just_pressed(MouseButton::Left) {
+        state.mouse_recovery_held = state
+            .pressed_sidebar_action
+            .and_then(|entity| action_controls.get(entity).ok())
+            .is_some_and(|(_, _, _, control)| control.0 == crate::ui::SidebarAction::HoldRecovery);
     }
 
     if state.planet_pointer.is_captured()
@@ -474,20 +407,44 @@ pub(super) fn pointer_input(
         && mouse.just_released(MouseButton::Left)
     {
         state.planet_pointer.cancel();
-        state.pressed_planet_control = None;
+        state.pressed_sidebar_action = None;
+        state.mouse_recovery_held = false;
     } else if state.planet_pointer.is_captured()
         && (mouse.pressed(MouseButton::Left) || mouse.just_released(MouseButton::Left))
         && let Some(position) = cursor
     {
         let motion = state.planet_pointer.move_to(position, scale_factor);
         if motion.dragging
-            && let Some(camera) = cameras.iter().next()
+            && let Some((camera, projection)) = cameras.iter().next()
             && state.planet_pointer.capture() == Some(PointerCapture::World)
         {
-            state.planet_camera.orbit_from(
+            let viewport = Vec2::new(window.width(), window.height());
+            let fov = vertical_fov(projection);
+            let previous_hit = shared::planet_view::planet_surface_hit_direction(
                 *camera,
-                motion.orbit_delta * ORBIT_RADIANS_PER_LOGICAL_PIXEL,
+                motion.previous_position,
+                viewport,
+                fov,
             );
+            let current_hit = shared::planet_view::planet_surface_hit_direction(
+                *camera,
+                motion.position,
+                viewport,
+                fov,
+            );
+            let anchored = previous_hit
+                .zip(current_hit)
+                .is_some_and(|(previous, current)| {
+                    state
+                        .planet_camera
+                        .orbit_from_surface_drag(*camera, previous, current)
+                });
+            if !anchored {
+                state.planet_camera.orbit_from_drag(
+                    *camera,
+                    motion.orbit_delta * orbit_gain(*camera, projection, viewport.y),
+                );
+            }
             state.set_planet_view_open(true);
         }
         if mouse.just_released(MouseButton::Left) {
@@ -497,26 +454,56 @@ pub(super) fn pointer_input(
                     state.request_planet_view_selection(position);
                 }
                 Some(PointerRelease::CapturedClick(PointerCapture::Interface, _)) => {
-                    if let Some(control_entity) = state.pressed_planet_control.take()
-                        && let Ok((_, node, transform, control)) = controls.get(control_entity)
+                    if let Some(control_entity) = state.pressed_sidebar_action.take()
+                        && let Ok((_, node, transform, control)) =
+                            action_controls.get(control_entity)
                         && node.contains_point(*transform, position)
                     {
-                        apply_planet_control(*control, &mut state, cameras.iter().next());
+                        apply_sidebar_action(
+                            control.0,
+                            &mut state,
+                            cameras.iter().next().map(|(camera, _)| camera),
+                            &mut virtual_time,
+                        );
                     }
                 }
                 Some(PointerRelease::CapturedClick(PointerCapture::Selector, _)) => {
+                    let pressed = state.pressed_sidebar_action.take();
                     if state.selector
-                        && let Some((_, _, _, choice)) =
-                            selector_choices.iter().find(|(_, node, transform, _)| {
-                                node.contains_point(**transform, position)
-                            })
+                        && let Some(control_entity) = pressed
+                        && let Ok((_, node, transform, control)) =
+                            action_controls.get(control_entity)
+                        && node.contains_point(*transform, position)
                     {
-                        choose_vehicle(choice.0, &mut state, &mut virtual_time);
+                        apply_sidebar_action(
+                            control.0,
+                            &mut state,
+                            cameras.iter().next().map(|(camera, _)| camera),
+                            &mut virtual_time,
+                        );
                     }
                 }
-                _ => state.pressed_planet_control = None,
+                _ => state.pressed_sidebar_action = None,
             }
         }
+    }
+
+    if mouse.just_released(MouseButton::Left) {
+        state.mouse_recovery_held = false;
+    }
+    let recovery_capture_lost = state.mouse_recovery_held
+        && (cursor.is_none()
+            || state.planet_pointer.capture() != Some(PointerCapture::Interface)
+            || state
+                .pressed_sidebar_action
+                .and_then(|entity| action_controls.get(entity).ok())
+                .is_none_or(|(_, _, _, control)| {
+                    control.0 != crate::ui::SidebarAction::HoldRecovery
+                }));
+    if recovery_capture_lost {
+        state.mouse_recovery_held = false;
+        state.planet_pointer.cancel();
+        state.pressed_sidebar_action = None;
     }
 
     let over_interface = cursor.is_some_and(|position| {
@@ -534,26 +521,60 @@ pub(super) fn pointer_input(
     }
 }
 
-fn apply_planet_control(
-    control: PlanetViewControl,
+fn apply_sidebar_action(
+    action: crate::ui::SidebarAction,
     state: &mut Exploration,
     camera: Option<&Transform>,
+    virtual_time: &mut Time<Virtual>,
 ) {
-    match control {
-        PlanetViewControl::ToggleFollow => {
-            if let Some(camera) = camera {
+    match action {
+        crate::ui::SidebarAction::TogglePlanetView => state.toggle_planet_view(),
+        crate::ui::SidebarAction::ToggleFollow => {
+            if state.planet_camera.is_requested_open()
+                && let Some(camera) = camera
+            {
                 state.toggle_planet_view_follow(*camera);
             }
         }
-        PlanetViewControl::Return => state.set_planet_view_open(false),
+        crate::ui::SidebarAction::Interact => state.request(Action::Interact),
+        crate::ui::SidebarAction::Teleport => {
+            state.request_planet_view_teleport();
+        }
+        crate::ui::SidebarAction::ToggleVehicleSelector => {
+            super::open_vehicle_selector(state, virtual_time);
+        }
+        crate::ui::SidebarAction::SelectVehicle(kind) => {
+            super::choose_vehicle(kind, state, virtual_time);
+        }
+        crate::ui::SidebarAction::CancelVehicleSelector => {
+            super::cancel_vehicle_selector(state, virtual_time);
+        }
+        crate::ui::SidebarAction::HoldRecovery => {}
     }
 }
 
-fn choose_vehicle(kind: Kind, state: &mut Exploration, virtual_time: &mut Time<Virtual>) {
-    state.request(Action::Summon(kind));
-    state.selector = false;
-    virtual_time.unpause();
-    state.suppress_input = true;
+pub(super) fn update_action_hover(
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut controls: Query<
+        (&ComputedNode, &UiGlobalTransform, &mut TextColor),
+        With<crate::ui::SidebarActionControl>,
+    >,
+) {
+    let cursor = windows
+        .single()
+        .ok()
+        .and_then(Window::physical_cursor_position);
+    for (node, transform, mut color) in &mut controls {
+        let hovered = cursor.is_some_and(|position| node.contains_point(*transform, position));
+        let target = if hovered {
+            shared::theme::ACCENT
+        } else {
+            shared::theme::INK
+        };
+        if color.0 != target {
+            color.0 = target;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -589,7 +610,12 @@ mod tests {
         );
         let attained = current;
 
-        apply_planet_control(PlanetViewControl::ToggleFollow, &mut state, Some(&attained));
+        apply_sidebar_action(
+            crate::ui::SidebarAction::ToggleFollow,
+            &mut state,
+            Some(&attained),
+            &mut Time::<Virtual>::default(),
+        );
         assert!(!state.planet_view_follows_body());
         let detached = state.planet_camera.update(
             attained,
