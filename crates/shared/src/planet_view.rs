@@ -749,15 +749,7 @@ impl PlanetViewCamera {
                     rotation: target.rotation,
                     ..default()
                 }
-            } else if self.follow && !self.follow_recenter {
-                let radius = lerp(current.translation.length(), requested_radius, response)
-                    .max(minimum_radius);
-                Transform {
-                    translation: direction * radius,
-                    rotation: current.rotation.slerp(target.rotation, response),
-                    ..default()
-                }
-            } else if self.follow && self.follow_recenter {
+            } else if self.follow {
                 let radius = lerp(current.translation.length(), requested_radius, response)
                     .max(minimum_radius);
                 Transform {

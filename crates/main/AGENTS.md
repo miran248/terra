@@ -10,7 +10,7 @@
 - Use meters for all world distances, sizes, and speeds (`shared::sphere::METER`).
 - Runtime consumes typed `LevelData`; terrain derivation, topology, pathfinding, and tag decoding stay offline.
 - Systems requiring map resources run only in `AppState::Playing`.
-- Avian3d owns physics-body state. Read synchronized transforms; teleports update Avian `Position` and velocity rather than moving `Transform` directly.
+- Avian3d owns physics-body state. Ordinary body and render consumers read synchronized transforms. For camera or overlay targeting that needs the current occupied-body position, read Avian `Position`; a seated `Player` proxy `Transform` can lag. Teleports update Avian `Position` and velocity rather than moving `Transform` directly.
 - Generated GLB scene, node, socket, material, and animation names are runtime API. Imported scenes are visual children and never own gameplay collision.
 - Preserve TAA depth/motion-vector prepass parity for vertex-displaced materials.
 
