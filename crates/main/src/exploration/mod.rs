@@ -272,7 +272,7 @@ pub struct Exploration {
     planet_zoom_intent: f32,
     planet_presentation: PlanetViewPresentation,
     planet_pointer: PlanetViewPointer,
-    pressed_planet_control: Option<Entity>,
+    pressed_sidebar_action: Option<Entity>,
     planet_selection_click: Option<Vec2>,
     planet_teleport_requested: bool,
     selected_destination: Option<PlanetDestination>,
@@ -337,10 +337,15 @@ impl Exploration {
         self.planet_presentation.request_open(open);
         if !open {
             self.planet_pointer.cancel();
-            self.pressed_planet_control = None;
+            self.pressed_sidebar_action = None;
             self.planet_selection_click = None;
             self.cancel_planet_teleport(PlanetTeleportCancellation::ViewClosed);
         }
+    }
+
+    pub(crate) fn toggle_planet_view(&mut self) {
+        let open = !self.planet_camera.is_requested_open();
+        self.set_planet_view_open(open);
     }
 
     pub fn is_planet_view_active(&self) -> bool {
@@ -644,6 +649,7 @@ impl Plugin for ExplorationPlugin {
                     sync_explorer,
                     track_safe,
                     interface::update_presentation,
+                    interface::update_action_hover,
                     view::tag_visuals,
                     view::camera,
                     view::animate,
@@ -744,8 +750,7 @@ fn input(
         }
     }
     if keys.just_pressed(KeyCode::KeyM) {
-        let open = !state.planet_camera.is_requested_open();
-        state.set_planet_view_open(open);
+        state.toggle_planet_view();
     }
     if keys.just_pressed(KeyCode::Escape) && state.planet_camera.is_requested_open() {
         state.set_planet_view_open(false);
@@ -2137,6 +2142,283 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn sidebar_presents_vehicle_and_teleport_actions_with_their_keyboard_shortcuts() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .insert_resource(crate::ui::UiFont(Handle::default()));
+        app.world_mut().run_system_once(view::setup).unwrap();
+        app.world_mut().run_system_once(interface::setup).unwrap();
+        app.update();
+
+        let mut texts = app.world_mut().query::<&Text>();
+        let rendered_text = texts
+            .iter(app.world())
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            rendered_text.contains("Enter vehicle · E"),
+            "{rendered_text}"
+        );
+        assert!(
+            rendered_text.contains("Teleport to selected destination · T"),
+            "{rendered_text}"
+        );
+    }
+
+    #[test]
+    fn sidebar_action_hover_uses_the_theme_accent_only_under_the_pointer() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::TogglePlanetView,
+            Vec2::new(100.0, 100.0),
+        );
+        app.update();
+
+        let action = {
+            let world = app.world_mut();
+            let mut query = world.query::<(Entity, &crate::ui::SidebarActionControl)>();
+            query
+                .iter(world)
+                .find(|(_, control)| control.0 == crate::ui::SidebarAction::TogglePlanetView)
+                .map(|(entity, _)| entity)
+                .unwrap()
+        };
+        assert_eq!(
+            app.world().get::<TextColor>(action).unwrap().0,
+            shared::theme::ACCENT
+        );
+
+        let window = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<bevy::window::PrimaryWindow>>();
+            query.iter(world).next().unwrap()
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(Vec2::new(400.0, 400.0)));
+        app.update();
+        assert_eq!(
+            app.world().get::<TextColor>(action).unwrap().0,
+            shared::theme::INK
+        );
+    }
+
+    #[test]
+    fn sidebar_view_and_follow_actions_match_m_and_f_transitions() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        spawn_planet_view_camera(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::TogglePlanetView,
+            Vec2::new(100.0, 100.0),
+        );
+        click_sidebar_action(&mut app);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open()
+        );
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_selection_click
+                .is_none(),
+            "opening the sidebar action must not select the scene behind it"
+        );
+
+        click_sidebar_action(&mut app);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
+            "the same sidebar action closes Planet view"
+        );
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_selection_click
+                .is_none(),
+            "closing from the sidebar must not select or drag the scene"
+        );
+        tap_key(&mut app, KeyCode::KeyM);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
+            "M opens the same view state controlled by the sidebar row"
+        );
+        for _ in 0..20 {
+            app.update();
+        }
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::ToggleFollow,
+            Vec2::new(100.0, 140.0),
+        );
+        click_sidebar_action(&mut app);
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_view_follows_body()
+        );
+        tap_key(&mut app, KeyCode::KeyF);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_view_follows_body()
+        );
+    }
+
+    #[test]
+    fn sidebar_enter_and_exit_actions_interact_with_a_reachable_vehicle() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[Kind::Car.index()].unwrap();
+        for _ in 0..30 {
+            app.update();
+        }
+        let car_position = app.world().get::<Position>(car).unwrap().0;
+        let side = app.world().get::<Rotation>(car).unwrap().0 * Vec3::X;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(car_position + side * 2.0));
+
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::Interact,
+            Vec2::new(100.0, 170.0),
+        );
+        click_sidebar_action(&mut app);
+        assert_eq!(
+            app.world().resource::<Exploration>().occupied,
+            Some(car),
+            "clicking Enter vehicle uses the normal reachable-vehicle transition"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyW);
+        for _ in 0..45 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .clear();
+        app.world_mut().get_mut::<Vehicle>(car).unwrap().stable = 0.5;
+        app.world_mut().entity_mut(car).insert(LinearVelocity::ZERO);
+        click_sidebar_action(&mut app);
+        assert!(
+            app.world().resource::<Exploration>().occupied.is_none(),
+            "clicking Exit vehicle uses the normal safe-exit transition: {}",
+            app.world().resource::<Exploration>().message
+        );
+    }
+
+    #[test]
+    fn sidebar_vehicle_action_matches_e_when_no_vehicle_is_in_reach() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::Interact,
+            Vec2::new(100.0, 170.0),
+        );
+        click_sidebar_action(&mut app);
+        let mouse_feedback = rendered_sidebar_text(&mut app);
+        assert!(
+            mouse_feedback.contains("No stopped vehicle within reach"),
+            "{mouse_feedback}"
+        );
+
+        tap_key(&mut app, KeyCode::KeyE);
+        let keyboard_feedback = rendered_sidebar_text(&mut app);
+        assert!(
+            keyboard_feedback.contains("No stopped vehicle within reach"),
+            "{keyboard_feedback}"
+        );
+    }
+
+    #[test]
+    fn sidebar_teleport_action_uses_t_readiness_and_duplicate_gates() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+        let epoch = *app.world().resource::<crate::map::WorldEpoch>();
+        let destination = selected_surface(epoch, Vec3::new(40.0, 2000.0, 0.0));
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .select_planet_destination(destination.clone());
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+        set_sidebar_action_hitbox(
+            &mut app,
+            crate::ui::SidebarAction::Teleport,
+            Vec2::new(100.0, 200.0),
+        );
+
+        click_sidebar_action(&mut app);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none(),
+            "a selected destination still requires the view readiness gate"
+        );
+        tap_key(&mut app, KeyCode::KeyT);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none(),
+            "the keyboard path uses the same readiness gate"
+        );
+
+        open_planet_view(&mut app);
+        click_sidebar_action(&mut app);
+        assert!(matches!(
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .take_planet_teleport_outcome(),
+            Some(PlanetTeleportOutcome {
+                destination_id,
+                result: PlanetTeleportOutcomeKind::Succeeded { .. },
+                ..
+            }) if destination_id == destination.id
+        ));
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .selected_planet_destination()
+                .is_none(),
+            "a committed destination is cleared like the keyboard route"
+        );
+        assert!(
+            !app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .is_requested_open(),
+            "success returns from Planet view like the keyboard route"
+        );
+
+        tap_key(&mut app, KeyCode::KeyT);
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_planet_teleport_request()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn sidebar_wheel_and_pointer_gestures_are_captured_from_planet_view() {
         use bevy::{
             input::mouse::{MouseScrollUnit, MouseWheel},
@@ -2868,6 +3150,102 @@ pub(crate) mod tests {
         app.world_mut().resource_mut::<Exploration>().start = Some(Vec3::new(0.0, 2000.6, 0.0));
         (app, explorer)
     }
+    fn setup_sidebar_pointer_fixture(app: &mut App) -> Entity {
+        app.world_mut()
+            .insert_resource(crate::ui::UiFont(Handle::default()));
+        app.world_mut().run_system_once(view::setup).unwrap();
+        app.world_mut().run_system_once(interface::setup).unwrap();
+
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(100.0, 100.0)));
+        let window_entity = app
+            .world_mut()
+            .spawn((window, bevy::window::PrimaryWindow))
+            .id();
+
+        let sidebar = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<crate::ui::Sidebar>>();
+            query
+                .iter(world)
+                .next()
+                .expect("sidebar setup creates a root")
+        };
+        app.world_mut().entity_mut(sidebar).insert((
+            bevy::ui::ComputedNode {
+                size: Vec2::new(280.0, 600.0),
+                ..default()
+            },
+            bevy::ui::UiGlobalTransform::from_xy(140.0, 300.0),
+        ));
+        window_entity
+    }
+
+    fn set_sidebar_action_hitbox(app: &mut App, action: crate::ui::SidebarAction, center: Vec2) {
+        let control = {
+            let world = app.world_mut();
+            let mut query = world.query::<(Entity, &crate::ui::SidebarActionControl)>();
+            query
+                .iter(world)
+                .find(|(_, control)| control.0 == action)
+                .map(|(entity, _)| entity)
+                .expect("sidebar setup creates the requested action row")
+        };
+        app.world_mut().entity_mut(control).insert((
+            bevy::ui::ComputedNode {
+                size: Vec2::new(240.0, 28.0),
+                ..default()
+            },
+            bevy::ui::UiGlobalTransform::from_xy(center.x, center.y),
+        ));
+        let window = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<Entity, With<bevy::window::PrimaryWindow>>();
+            query
+                .iter(world)
+                .next()
+                .expect("pointer fixture has a primary window")
+        };
+        app.world_mut()
+            .get_mut::<Window>(window)
+            .unwrap()
+            .set_cursor_position(Some(center));
+    }
+
+    fn click_sidebar_action(app: &mut App) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(MouseButton::Left);
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+    }
+
+    fn tap_key(app: &mut App, key: KeyCode) {
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(key);
+        app.update();
+        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+        keys.clear_just_pressed(key);
+        keys.release(key);
+    }
+
+    fn rendered_sidebar_text(app: &mut App) -> String {
+        let world = app.world_mut();
+        let mut query = world.query::<&Text>();
+        query
+            .iter(world)
+            .map(|text| text.0.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     fn act(app: &mut App, action: Action) {
         app.world_mut()
             .resource_mut::<Exploration>()
