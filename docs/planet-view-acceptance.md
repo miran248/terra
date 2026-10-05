@@ -80,6 +80,15 @@ This writes a camera trace, transition/storm captures, and `diagnostic-status.tx
 It checks continuous body motion with live physics and precipitation visibility,
 but does not replace the full capture matrix or warmed performance repeats.
 
+The diagnostic also exercises the production aircraft camera chooser during
+continuous powered flight. It alternates aircraft pitch and bank while switching
+through Facing, Movement, and Orientation, then returns to Planet view. Review
+`camera-follow-motion.csv` for actual plane velocity, heading, pitch, bank, mode,
+and camera pose at each post-camera-update sample; the three
+`camera-mode-*.png` captures show each selected mode. `diagnostic-status.txt`
+reports sample validity, mode coverage, and observed pitch/bank spans. This trace
+is motion evidence, while the captures still need visual inspection.
+
 For a visual diagnostic that must not show or focus an application window, add
 `--background`:
 

@@ -1,5 +1,9 @@
 use super::*;
 
+const MOVEMENT_FOLLOW_MIN_SPEED_SQUARED: f32 = 0.25;
+const MOVEMENT_FOLLOW_MIN_TANGENT_SPEED_SQUARED: f32 = 1e-4;
+const MOVEMENT_FOLLOW_MAX_PITCH: f32 = 1.25;
+
 fn stable_tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
     let finite_heading = if heading.is_finite() {
         heading
@@ -17,6 +21,8 @@ pub(super) struct Chase {
     offset: Vec3,
     distance: f32,
     rotation: Quat,
+    movement_heading: Option<Vec3>,
+    movement_pitch: f32,
 }
 #[derive(Component)]
 pub(super) struct FadeMaterial {
@@ -86,8 +92,8 @@ pub(super) fn camera(
     spatial: SpatialQuery,
     collision_world: Option<Res<world::CollisionWorld>>,
     surface: Option<Res<terra_worldgen::terrain::TerrainGen>>,
-    player: Query<(Entity, &Position, &Player), Without<MainCamera>>,
-    vehicles: Query<(&Position, &Vehicle), Without<MainCamera>>,
+    player: Query<(Entity, &Position, &Player, Option<&LinearVelocity>), Without<MainCamera>>,
+    vehicles: Query<(&Position, &Vehicle, Option<&LinearVelocity>), Without<MainCamera>>,
     mut cameras: Query<(&mut Transform, Option<&mut Projection>), With<MainCamera>>,
     mut visuals: Query<(
         Entity,
@@ -99,24 +105,59 @@ pub(super) fn camera(
     mut chase: Local<Chase>,
     mut original_far_plane: Local<Option<f32>>,
 ) {
-    let Ok((explorer, p, player)) = player.single() else {
+    let Ok((explorer, p, player, player_velocity)) = player.single() else {
         return;
     };
     let target = state.occupied.unwrap_or(explorer);
-    let (position, subject_heading, height, back, ahead, radius, aircraft_attitude) =
-        if let Some(e) = state.occupied {
-            let Ok((p, v)) = vehicles.get(e) else {
-                return;
-            };
-            let attitude = (v.kind == Kind::Plane).then_some(v.flight);
-            if v.kind == Kind::Car {
-                (p.0, v.flight.heading, 3.0, 8.0, 15.0, 0.2, attitude)
-            } else {
-                (p.0, v.flight.heading, 6.0, 18.0, 30.0, 0.3, attitude)
-            }
-        } else {
-            (p.0, player.heading, 2.0, 5.0, 10.0, 0.2, None)
+    let (
+        position,
+        subject_heading,
+        subject_velocity,
+        height,
+        back,
+        ahead,
+        radius,
+        aircraft_attitude,
+    ) = if let Some(e) = state.occupied {
+        let Ok((p, v, velocity)) = vehicles.get(e) else {
+            return;
         };
+        let attitude = (v.kind == Kind::Plane).then_some(v.flight);
+        if v.kind == Kind::Car {
+            (
+                p.0,
+                v.flight.heading,
+                velocity.map(|velocity| velocity.0),
+                3.0,
+                8.0,
+                15.0,
+                0.2,
+                attitude,
+            )
+        } else {
+            (
+                p.0,
+                v.flight.heading,
+                velocity.map(|velocity| velocity.0),
+                6.0,
+                18.0,
+                30.0,
+                0.3,
+                attitude,
+            )
+        }
+    } else {
+        (
+            p.0,
+            player.heading,
+            player_velocity.map(|velocity| velocity.0),
+            2.0,
+            5.0,
+            10.0,
+            0.2,
+            None,
+        )
+    };
     let Ok((mut camera, mut projection)) = cameras.single_mut() else {
         return;
     };
@@ -128,6 +169,40 @@ pub(super) fn camera(
         Vec3::Y
     };
     let heading = stable_tangent_heading(subject_heading, up);
+    if let Some(velocity) = subject_velocity.filter(|velocity| {
+        velocity.is_finite()
+            && velocity.length_squared().is_finite()
+            && velocity.length_squared() > MOVEMENT_FOLLOW_MIN_SPEED_SQUARED
+    }) {
+        let radial_speed = velocity.dot(up);
+        let tangent_velocity = velocity - up * radial_speed;
+        let tangent_speed = tangent_velocity.length();
+        if tangent_velocity.is_finite()
+            && tangent_velocity.length_squared() > MOVEMENT_FOLLOW_MIN_TANGENT_SPEED_SQUARED
+        {
+            chase.movement_heading = Some(tangent_velocity.normalize());
+        } else if chase.movement_heading.is_none() {
+            chase.movement_heading = Some(heading);
+        }
+        let pitch = radial_speed
+            .atan2(tangent_speed)
+            .clamp(-MOVEMENT_FOLLOW_MAX_PITCH, MOVEMENT_FOLLOW_MAX_PITCH);
+        if pitch.is_finite() {
+            chase.movement_pitch = pitch;
+        }
+    }
+    let movement_heading = chase
+        .movement_heading
+        .map(|last| stable_tangent_heading(last, up))
+        .unwrap_or(heading);
+    if chase.movement_heading.is_some() {
+        chase.movement_heading = Some(movement_heading);
+    }
+    let movement_pitch = if chase.movement_heading.is_some() {
+        chase.movement_pitch
+    } else {
+        0.0
+    };
     let mut aircraft = aircraft_attitude.unwrap_or_else(|| PlaneFlight::new(heading));
     aircraft.heading = heading;
     if !aircraft.pitch.is_finite() {
@@ -139,15 +214,24 @@ pub(super) fn camera(
     let orientation_rotation = aircraft.rotation(up);
     aircraft.bank = 0.0;
     let facing_rotation = aircraft.rotation(up);
+    let mut movement_aircraft = PlaneFlight::new(movement_heading);
+    movement_aircraft.pitch = movement_pitch;
+    let movement_rotation = movement_aircraft.rotation(up);
     let (camera_forward, camera_up) = match state.camera_follow_mode {
         CameraFollowMode::Facing => (facing_rotation * Vec3::NEG_Z, up),
+        CameraFollowMode::Movement => (movement_rotation * Vec3::NEG_Z, up),
         CameraFollowMode::Orientation if aircraft_attitude.is_some() => (
             orientation_rotation * Vec3::NEG_Z,
             orientation_rotation * Vec3::Y,
         ),
         CameraFollowMode::Orientation => (facing_rotation * Vec3::NEG_Z, up),
     };
-    let desired = up * height - heading * back;
+    let boom_heading = if state.camera_follow_mode == CameraFollowMode::Movement {
+        movement_heading
+    } else {
+        heading
+    };
+    let desired = up * height - boom_heading * back;
     let snap = !planet_view_active && (state.snap_camera || chase.target.is_none());
     if planet_view_active && state.snap_camera {
         state.snap_camera = false;
