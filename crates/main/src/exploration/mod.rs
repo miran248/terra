@@ -958,7 +958,25 @@ fn actions(
     catalog: Option<Res<crate::asset_catalog::AssetCatalog>>,
     world: Option<Res<world::CollisionWorld>>,
     world_epoch: Option<Res<crate::map::WorldEpoch>>,
+    real_time: Res<Time<Real>>,
+    fixed_time: Res<Time<bevy::time::Fixed>>,
+    mut work_trace: Option<ResMut<crate::chunks::PlanetWorkTrace>>,
 ) {
+    if let Some(trace) = work_trace.as_mut() {
+        trace.record_vehicle_followup(
+            real_time.elapsed_secs_f64(),
+            real_time.elapsed_secs_f64(),
+            fixed_time.elapsed_secs_f64(),
+            world.as_ref().map_or(0, |collision_world| {
+                collision_world.resident_obstacle_count()
+            }),
+            world
+                .as_ref()
+                .is_none_or(|collision_world| collision_world.ready),
+            state.actions.front().is_some(),
+        );
+    }
+
     let Ok((explorer, position, mut player)) = player.single_mut() else {
         return;
     };
@@ -992,46 +1010,98 @@ fn actions(
             .unwrap_or(player.heading);
         match action {
             Action::Summon(kind) => {
+                let tracing = work_trace.as_ref().is_some_and(|trace| trace.active());
+                let dispatch_started = tracing.then(std::time::Instant::now);
+                let fixed_elapsed_s_before = tracing
+                    .then(|| fixed_time.elapsed_secs_f64())
+                    .unwrap_or_default();
+                let resident_obstacles_before = if tracing {
+                    world.as_ref().map_or(0, |collision_world| {
+                        collision_world.resident_obstacle_count()
+                    })
+                } else {
+                    0
+                };
+                let world_ready_before = !tracing
+                    || world
+                        .as_ref()
+                        .is_none_or(|collision_world| collision_world.ready);
+                let existing = state.vehicles[kind.index()];
+                let old_position = tracing
+                    .then(|| {
+                        existing.and_then(|entity| {
+                            vehicles.get(entity).ok().map(|(_, old, _, _, _)| old.0)
+                        })
+                    })
+                    .flatten();
+                let mut locate_ms = None;
+                let mut new_position = None;
+                let mut scene_child_spawned = false;
                 if state.occupied.is_some() {
                     state.message = "Exit before summoning".into();
-                    continue;
+                } else {
+                    let excluded = existing.into_iter().collect::<Vec<_>>();
+                    let preferred = origin + tangent(heading, origin.normalize()) * 8.0;
+                    let radius = if kind == Kind::Car { 30.0 } else { 100.0 };
+                    let locate_started = tracing.then(std::time::Instant::now);
+                    let located =
+                        placement.locate(preferred, heading, Some(kind), &excluded, radius - 8.0);
+                    locate_ms =
+                        locate_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
+                    if let Some((p, h)) = located {
+                        let e = existing.unwrap_or_else(|| commands.spawn_empty().id());
+                        commands.entity(e).insert((
+                            Vehicle::new(kind, h),
+                            RigidBody::Static,
+                            kind.collider(),
+                            Mass(if kind == Kind::Car { 800.0 } else { 900.0 }),
+                            Position(p),
+                            Rotation(facing(h, p.normalize())),
+                            Transform::from_translation(p).with_rotation(facing(h, p.normalize())),
+                            Visibility::default(),
+                            SweptCcd::default(),
+                            CollidingEntities::default(),
+                            physics_reset(),
+                        ));
+                        scene_child_spawned = existing.is_none() && catalog.is_some();
+                        if scene_child_spawned && let Some(catalog) = catalog.as_ref() {
+                            commands.entity(e).with_child((
+                                WorldAssetRoot(catalog.scene(kind.asset())),
+                                Transform::from_translation(Vec3::NEG_Y * kind.height()),
+                                view::VehicleVisual,
+                            ));
+                        }
+                        state.vehicles[kind.index()] = Some(e);
+                        state.message = format!("{} ready — approach and press E", kind.name());
+                        new_position = Some(p);
+                    } else {
+                        state.message =
+                            "No clear dry ground with enough room / takeoff run nearby".into();
+                    }
                 }
-                let existing = state.vehicles[kind.index()];
-                let excluded = existing.into_iter().collect::<Vec<_>>();
-                let preferred = origin + tangent(heading, origin.normalize()) * 8.0;
-                let radius = if kind == Kind::Car { 30.0 } else { 100.0 };
-                let Some((p, h)) =
-                    placement.locate(preferred, heading, Some(kind), &excluded, radius - 8.0)
-                else {
-                    state.message =
-                        "No clear dry ground with enough room / takeoff run nearby".into();
-                    continue;
-                };
-                let e = existing.unwrap_or_else(|| commands.spawn_empty().id());
-                commands.entity(e).insert((
-                    Vehicle::new(kind, h),
-                    RigidBody::Static,
-                    kind.collider(),
-                    Mass(if kind == Kind::Car { 800.0 } else { 900.0 }),
-                    Position(p),
-                    Rotation(facing(h, p.normalize())),
-                    Transform::from_translation(p).with_rotation(facing(h, p.normalize())),
-                    Visibility::default(),
-                    SweptCcd::default(),
-                    CollidingEntities::default(),
-                    physics_reset(),
-                ));
-                if existing.is_none()
-                    && let Some(catalog) = catalog.as_ref()
-                {
-                    commands.entity(e).with_child((
-                        WorldAssetRoot(catalog.scene(kind.asset())),
-                        Transform::from_translation(Vec3::NEG_Y * kind.height()),
-                        view::VehicleVisual,
-                    ));
+                if tracing && let Some(trace) = work_trace.as_mut() {
+                    trace.record_vehicle_summon(
+                        real_time.elapsed_secs_f64(),
+                        real_time.elapsed_secs_f64(),
+                        crate::chunks::PlanetVehicleActionSample {
+                            kind: match kind {
+                                Kind::Car => "car",
+                                Kind::Plane => "plane",
+                            },
+                            existing_entity: existing.is_some(),
+                            old_position,
+                            new_position,
+                            locate_ms,
+                            dispatch_ms: dispatch_started
+                                .map_or(0.0, |started| started.elapsed().as_secs_f64() * 1000.0),
+                            scene_child_spawned,
+                            fixed_elapsed_s_before,
+                            fixed_elapsed_s_after: fixed_time.elapsed_secs_f64(),
+                            resident_obstacles_before,
+                            world_ready_before,
+                        },
+                    );
                 }
-                state.vehicles[kind.index()] = Some(e);
-                state.message = format!("{} ready — approach and press E", kind.name());
             }
             Action::Interact => {
                 if let Some(e) = state.occupied {

@@ -103,6 +103,13 @@ pub(super) struct CollisionWorld {
     pub last_action: Option<Action>,
 }
 impl CollisionWorld {
+    pub(super) fn resident_obstacle_count(&self) -> usize {
+        self.obstacles
+            .iter()
+            .filter(|obstacle| obstacle.resident.is_some())
+            .count()
+    }
+
     /// Sweep the camera against baked structure/scenery geometry without
     /// changing which obstacles own physics entities.
     pub(super) fn camera_sweep_hit(&self, start: Vec3, end: Vec3, radius: f32) -> Option<f32> {
