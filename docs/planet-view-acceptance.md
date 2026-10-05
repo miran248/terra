@@ -57,10 +57,16 @@ and repeat final performance acceptance without schedule tracing.
 `last_update()`, relative to the route repeat's monotonic clock. The late
 `wall_elapsed_s` sample remains available for comparison but is not an exact span
 join. Other named Bevy system spans are retained only at or above 1 ms, capped at
-10,000 rows per route repeat; `repeat-N-system-span-summary.csv` reports the
+50,000 rows per route repeat; `repeat-N-system-span-summary.csv` reports the
 threshold, cap, retained rows, and dropped rows. The existing named window-acquire
-and pipeline-queue probes remain unthresholded. Per-system span recording adds
-diagnostic overhead, so never use these traces as acceptance performance results.
+and pipeline-queue probes remain unthresholded. System spans may overlap their
+containing schedules and render spans, so per-span durations must not be summed.
+Per-system span recording adds diagnostic overhead, so never use these traces as
+acceptance performance results.
+
+At the measurement boundary, any still-open spans are clipped and closed before
+the trace sidecars are drained. Writing raw samples and summaries happens after
+the trace stop, outside the measured repeat.
 
 A short transition and precipitation diagnostic uses the same provenance runner:
 
