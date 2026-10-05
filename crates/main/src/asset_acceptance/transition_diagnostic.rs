@@ -47,6 +47,10 @@ const FOLLOW_PROBE_STEADY_WINDOW_SECONDS: f64 = 1.0;
 const FOLLOW_PROBE_MIN_STEADY_SAMPLE_COUNT: usize = 10;
 const FOLLOW_PROBE_MIN_STEADY_SPAN_SECONDS: f64 = 0.75;
 const CAMERA_MOTION_DURATION_SECONDS: f64 = 10.0;
+const CAMERA_MOTION_FRAMES_ENV: &str = "TERRA_CAMERA_MOTION_FRAMES";
+const CAMERA_MOTION_FRAME_INTERVAL_SECONDS: f64 = 0.1;
+const CAMERA_MOTION_FRAME_CAPTURE_COUNT: usize =
+    (CAMERA_MOTION_DURATION_SECONDS / CAMERA_MOTION_FRAME_INTERVAL_SECONDS) as usize;
 const FOLLOW_PROBE_RADIUS_TOLERANCE_M: f32 = 1.0;
 const FOLLOW_PROBE_MAX_RADIAL_LAG_RAD: f32 = 0.000_01;
 const FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX: f32 = 1.0;
@@ -228,6 +232,9 @@ struct PlanetTransitionDiagnostic {
     camera_motion_selection_phase: u8,
     camera_motion_samples: Vec<CameraMotionSample>,
     camera_motion_modes_seen: [bool; 3],
+    camera_motion_frames_enabled: bool,
+    camera_motion_frame_index: usize,
+    camera_motion_frame_trace: Vec<String>,
     storm_started: bool,
     route_timed_out: bool,
     requested_captures: HashSet<String>,
@@ -590,6 +597,10 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         camera_motion_selection_phase: 0,
         camera_motion_samples: Vec::with_capacity(600),
         camera_motion_modes_seen: [false; 3],
+        camera_motion_frames_enabled: std::env::var(CAMERA_MOTION_FRAMES_ENV)
+            .is_ok_and(|value| value == "1"),
+        camera_motion_frame_index: 0,
+        camera_motion_frame_trace: Vec::with_capacity(CAMERA_MOTION_FRAME_CAPTURE_COUNT),
         storm_started: false,
         route_timed_out: false,
         requested_captures: HashSet::new(),
@@ -968,7 +979,7 @@ fn write_transition_diagnostic_configuration(
         "precipitation intensity 0.85 with moving wind; production particle visibility";
     let weather_captures = "storm-hidden.png,storm-restored.png";
     let text = format!(
-        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\ncapture_target={}\nbackground_capture_is_performance_comparable=false\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\nreleased_multi_stroke_drag=all planned cursor/button frames replayed once at the exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nnear_follow_probe=on-foot,car,plane; nearest requested radius {PLANET_VIEW_NEAR_RADIUS:.1}m; two captures 250ms apart after attained radius is within {FOLLOW_PROBE_RADIUS_TOLERANCE_M:.1}m\nfollow_steady_acceptance=max radial lag {FOLLOW_PROBE_MAX_RADIAL_LAG_RAD:.5}rad; max overlay registration {FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX:.1} physical px\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
+        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\ncapture_target={}\nbackground_capture_is_performance_comparable=false\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\nreleased_multi_stroke_drag=all planned cursor/button frames replayed once at the exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nnear_follow_probe=on-foot,car,plane; nearest requested radius {PLANET_VIEW_NEAR_RADIUS:.1}m; two captures 250ms apart after attained radius is within {FOLLOW_PROBE_RADIUS_TOLERANCE_M:.1}m\nfollow_steady_acceptance=max radial lag {FOLLOW_PROBE_MAX_RADIAL_LAG_RAD:.5}rad; max overlay registration {FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX:.1} physical px\ncamera_motion_frames_enabled={}\ncamera_motion_frame_interval_s={CAMERA_MOTION_FRAME_INTERVAL_SECONDS:.1}\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
         mode,
         std::env::var("TERRA_SOURCE_REVISION").unwrap_or_else(|_| "unset".into()),
         std::env::var("TERRA_SOURCE_BRANCH").unwrap_or_else(|_| "unset".into()),
@@ -980,6 +991,7 @@ fn write_transition_diagnostic_configuration(
         map_schedule,
         entry_captures,
         return_captures,
+        diagnostic.camera_motion_frames_enabled,
         weather_fixture,
         weather_captures,
     );
@@ -1688,6 +1700,14 @@ fn camera_motion_capture_target(mode: CameraFollowMode) -> f64 {
     }
 }
 
+fn camera_motion_frame_name(index: usize) -> String {
+    format!("camera-motion-frame-{index:04}.png")
+}
+
+fn camera_motion_frame_target(index: usize) -> f64 {
+    index as f64 * CAMERA_MOTION_FRAME_INTERVAL_SECONDS
+}
+
 fn drive_camera_motion_controls(world: &mut World, elapsed: f64) {
     let cycle = elapsed.rem_euclid(4.0);
     set_key(world, KeyCode::ShiftLeft, true);
@@ -2160,6 +2180,13 @@ fn capture_transition_diagnostic(world: &mut World) {
     }
     if !screenshot_requested
         && diagnostic.follow_probe_stage == FollowProbeStage::CameraMotion
+        && diagnostic.camera_motion_frames_enabled
+        && diagnostic.camera_motion_frame_index < CAMERA_MOTION_FRAME_CAPTURE_COUNT
+    {
+        screenshot_requested = capture_camera_motion_frame(world, &mut diagnostic);
+    }
+    if !screenshot_requested
+        && diagnostic.follow_probe_stage == FollowProbeStage::CameraMotion
         && let Some(motion_started_at) = diagnostic.follow_probe_stage_started_at
         && let Some(camera_sample) = diagnostic.camera_motion_samples.last().copied()
         && camera_sample.mode == camera_motion_mode_at(camera_sample.motion_elapsed_s)
@@ -2459,6 +2486,33 @@ fn capture_once(
     true
 }
 
+fn capture_camera_motion_frame(
+    world: &mut World,
+    diagnostic: &mut PlanetTransitionDiagnostic,
+) -> bool {
+    let index = diagnostic.camera_motion_frame_index;
+    let target = camera_motion_frame_target(index);
+    let Some(sample) = diagnostic.camera_motion_samples.last().copied() else {
+        return false;
+    };
+    if sample.motion_elapsed_s < target {
+        return false;
+    }
+    let name = camera_motion_frame_name(index);
+    if !request_diagnostic_screenshot(world, diagnostic, &name) {
+        return false;
+    }
+    diagnostic.camera_motion_frame_trace.push(format!(
+        "{},{target:.5},{:.5},{:.5},{}\n",
+        csv(&name),
+        sample.elapsed,
+        sample.motion_elapsed_s,
+        camera_follow_mode_name(sample.mode),
+    ));
+    diagnostic.camera_motion_frame_index += 1;
+    true
+}
+
 fn record_capture_metadata(
     diagnostic: &mut PlanetTransitionDiagnostic,
     name: &str,
@@ -2496,6 +2550,20 @@ fn request_diagnostic_screenshot(
 }
 
 fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
+    if diagnostic.camera_motion_frames_enabled {
+        let trace = format!(
+            "frame,nominal_motion_elapsed_s,request_elapsed_s,motion_elapsed_s,mode\n{}",
+            diagnostic.camera_motion_frame_trace.concat()
+        );
+        if let Err(error) = fs::write(
+            diagnostic.directory.join("camera-motion-frame-trace.csv"),
+            trace,
+        ) {
+            diagnostic
+                .errors
+                .push(format!("write camera motion frame trace: {error}"));
+        }
+    }
     let mut trace = String::new();
     for sample in &diagnostic.samples {
         trace.push_str(&sample.csv_row());
@@ -2818,7 +2886,8 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     let missing_captures = missing_captures.join(";");
     let errors = diagnostic.errors.join(";");
     let report = format!(
-        "mode=visual-diagnostic\nacceptance_claim=none\nstatus={status}\nroute_timed_out={route_timed_out}\nm_events_sent={m_events_sent}\nm_event_elapsed_s={m_event_elapsed_s}\nroute_complete={route_complete}\ndrag_started_s={drag_started_s}\ndrag_released_s={drag_released_s}\ndrag_failed_s={drag_failed_s}\nopposite_pose_s={opposite_pose_s}\ndrag_input_frames={drag_input_frames}\ndrag_planned_frames={drag_planned_frames}\ndrag_opposite_dot={drag_opposite_dot:.5}\ndrag_start_camera_position={drag_start_camera_position}\ndrag_failure_camera_position={drag_failure_camera_position}\ndrag_start_cursor={drag_start_cursor}\ndrag_end_cursor={drag_end_cursor}\nrendered_pose_cases_passed={rendered_pose_cases_passed}\nrendered_pose_case_index={rendered_pose_case_index}\nrendered_pose_failed_cases={rendered_pose_failed_cases}\nrendered_pose_stage={rendered_pose_stage}\nbody_path_m={body_path_m:.4}\nmax_body_excursion_m={max_body_excursion_m:.4}\nmovement_started_s={movement_started_s}\nmovement_finished_s={movement_finished_s}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={collision_world_live_during_movement}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nnear_follow_on_foot_passed={on_foot_follow_passed}\nnear_follow_car_passed={car_follow_passed}\nnear_follow_plane_passed={plane_follow_passed}\nnear_follow_sample_count={near_follow_sample_count}\nnear_follow_steady_sample_count={near_follow_steady_sample_count}\nnear_follow_on_foot_steady_sample_count={on_foot_steady_sample_count}\nnear_follow_on_foot_steady_window_s={on_foot_steady_window_s:.3}\nnear_follow_car_steady_sample_count={car_steady_sample_count}\nnear_follow_car_steady_window_s={car_steady_window_s:.3}\nnear_follow_plane_steady_sample_count={plane_steady_sample_count}\nnear_follow_plane_steady_window_s={plane_steady_window_s:.3}\nmax_follow_radial_lag_rad={max_follow_radial_lag_rad:.6}\nmax_marker_registration_error_physical_px={max_registration_error_physical_px:.3}\nmax_marker_anchor_registration_error_physical_px={max_marker_anchor_registration_error_physical_px:.3}\ncamera_follow_motion_sample_count={camera_motion_sample_count}\ncamera_follow_motion_modes_seen={camera_motion_modes_seen}\ncamera_follow_motion_finite={camera_motion_finite}\ncamera_follow_motion_pitch_span={camera_pitch_span:.5}\ncamera_follow_motion_bank_span={camera_bank_span:.5}\ncamera_follow_motion_passed={camera_motion_passed}\nentry_capture_lateness_s={entry_capture_lateness_s}\nentry_captures_timely={entry_captures_timely}\ncapture_metadata_rows={capture_metadata_rows}\ncapture_metadata_valid={capture_metadata_valid}\nweather_kind_at_player={weather_kind_at_player}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={missing_captures}\nerrors={errors}\n",
+        "mode=visual-diagnostic\nacceptance_claim=none\nstatus={status}\nroute_timed_out={route_timed_out}\nm_events_sent={m_events_sent}\nm_event_elapsed_s={m_event_elapsed_s}\nroute_complete={route_complete}\ndrag_started_s={drag_started_s}\ndrag_released_s={drag_released_s}\ndrag_failed_s={drag_failed_s}\nopposite_pose_s={opposite_pose_s}\ndrag_input_frames={drag_input_frames}\ndrag_planned_frames={drag_planned_frames}\ndrag_opposite_dot={drag_opposite_dot:.5}\ndrag_start_camera_position={drag_start_camera_position}\ndrag_failure_camera_position={drag_failure_camera_position}\ndrag_start_cursor={drag_start_cursor}\ndrag_end_cursor={drag_end_cursor}\nrendered_pose_cases_passed={rendered_pose_cases_passed}\nrendered_pose_case_index={rendered_pose_case_index}\nrendered_pose_failed_cases={rendered_pose_failed_cases}\nrendered_pose_stage={rendered_pose_stage}\nbody_path_m={body_path_m:.4}\nmax_body_excursion_m={max_body_excursion_m:.4}\nmovement_started_s={movement_started_s}\nmovement_finished_s={movement_finished_s}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={collision_world_live_during_movement}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nnear_follow_on_foot_passed={on_foot_follow_passed}\nnear_follow_car_passed={car_follow_passed}\nnear_follow_plane_passed={plane_follow_passed}\nnear_follow_sample_count={near_follow_sample_count}\nnear_follow_steady_sample_count={near_follow_steady_sample_count}\nnear_follow_on_foot_steady_sample_count={on_foot_steady_sample_count}\nnear_follow_on_foot_steady_window_s={on_foot_steady_window_s:.3}\nnear_follow_car_steady_sample_count={car_steady_sample_count}\nnear_follow_car_steady_window_s={car_steady_window_s:.3}\nnear_follow_plane_steady_sample_count={plane_steady_sample_count}\nnear_follow_plane_steady_window_s={plane_steady_window_s:.3}\nmax_follow_radial_lag_rad={max_follow_radial_lag_rad:.6}\nmax_marker_registration_error_physical_px={max_registration_error_physical_px:.3}\nmax_marker_anchor_registration_error_physical_px={max_marker_anchor_registration_error_physical_px:.3}\ncamera_follow_motion_sample_count={camera_motion_sample_count}\ncamera_follow_motion_modes_seen={camera_motion_modes_seen}\ncamera_follow_motion_finite={camera_motion_finite}\ncamera_follow_motion_pitch_span={camera_pitch_span:.5}\ncamera_follow_motion_bank_span={camera_bank_span:.5}\ncamera_follow_motion_passed={camera_motion_passed}\ncamera_motion_frames_enabled={}\ncamera_motion_frame_count={}\nentry_capture_lateness_s={entry_capture_lateness_s}\nentry_captures_timely={entry_captures_timely}\ncapture_metadata_rows={capture_metadata_rows}\ncapture_metadata_valid={capture_metadata_valid}\nweather_kind_at_player={weather_kind_at_player}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={missing_captures}\nerrors={errors}\n",
+        diagnostic.camera_motion_frames_enabled, diagnostic.camera_motion_frame_index,
     );
     if let Err(error) = fs::write(diagnostic.directory.join("diagnostic-status.txt"), report) {
         diagnostic
@@ -2927,9 +2996,10 @@ fn capture_metadata_is_exactly_once(rows: &[String]) -> bool {
 #[cfg(test)]
 mod transition_diagnostic_tests {
     use super::{
-        CameraMotionSample, DIAGNOSTIC_CAPTURE_NAMES, DIAGNOSTIC_MINIMUM_COLLIDERS,
-        DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup, FollowProbeSample,
-        PlanetTransitionDiagnostic, camera_motion_mode_at, finish_transition_diagnostic,
+        CAMERA_MOTION_FRAME_CAPTURE_COUNT, CameraMotionSample, DIAGNOSTIC_CAPTURE_NAMES,
+        DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup,
+        FollowProbeSample, PlanetTransitionDiagnostic, camera_motion_frame_name,
+        camera_motion_frame_target, camera_motion_mode_at, finish_transition_diagnostic,
         radius_motion_flags, transition_action_due,
     };
     use bevy::{
@@ -3115,6 +3185,15 @@ mod transition_diagnostic_tests {
         assert!(follow_csv.contains(",0.7500,0.5000,1.5000,true\n"));
 
         std::fs::remove_dir_all(directory).expect("remove diagnostic output directory");
+    }
+
+    #[test]
+    fn optional_camera_motion_frames_are_named_at_ten_hertz_for_ten_seconds() {
+        assert_eq!(CAMERA_MOTION_FRAME_CAPTURE_COUNT, 100);
+        assert_eq!(camera_motion_frame_name(0), "camera-motion-frame-0000.png");
+        assert_eq!(camera_motion_frame_name(99), "camera-motion-frame-0099.png");
+        assert_eq!(camera_motion_frame_target(0), 0.0);
+        assert!((camera_motion_frame_target(99) - 9.9).abs() < 1e-9);
     }
 
     #[test]
