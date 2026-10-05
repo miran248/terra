@@ -2,8 +2,11 @@
 use crate::map::{Player, SunLock, TimeOfDay};
 use avian3d::prelude::*;
 use bevy::{
+    camera::{ImageRenderTarget, RenderTarget},
     prelude::*,
+    render::render_resource::TextureFormat,
     render::view::screenshot::{Screenshot, save_to_disk},
+    window::PrimaryWindow,
 };
 use shared::{level::LevelData, sphere::SpherePos, state::AppState, terrain::Terrain};
 use std::path::PathBuf;
@@ -29,6 +32,14 @@ pub(crate) fn schedule_trace_layer(app: &mut App) -> Option<bevy::log::BoxedLaye
 pub struct AssetAcceptancePlugin;
 impl Plugin for AssetAcceptancePlugin {
     fn build(&self, app: &mut App) {
+        if background_capture_enabled() {
+            assert!(
+                std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC").is_some()
+                    && std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE").is_none(),
+                "background capture is restricted to the transition diagnostic"
+            );
+            app.add_systems(PreUpdate, configure_background_capture_target);
+        }
         if let Some(directory) = std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC") {
             assert!(
                 [
@@ -61,6 +72,161 @@ impl Plugin for AssetAcceptancePlugin {
         if std::env::var_os("TERRA_PRODUCTION_CAPTURE").is_some() {
             app.add_systems(Update, capture.run_if(in_state(AppState::Playing)));
         }
+    }
+}
+
+pub(crate) fn background_capture_enabled() -> bool {
+    std::env::var("TERRA_PLANET_CAPTURE_BACKGROUND").is_ok_and(|value| value == "1")
+}
+
+pub(crate) fn window_plugin(background_capture: bool) -> bevy::window::WindowPlugin {
+    let mut plugin = bevy::window::WindowPlugin::default();
+    if background_capture && let Some(window) = &mut plugin.primary_window {
+        window.focused = false;
+        window.visible = false;
+    }
+    plugin
+}
+
+#[derive(Resource, Clone)]
+pub(super) struct BackgroundCaptureTarget {
+    pub image: Handle<Image>,
+    pub physical_size: UVec2,
+    pub logical_size: Vec2,
+    pub scale_factor: f32,
+}
+
+fn configure_background_capture_target(
+    mut commands: Commands,
+    mut images: ResMut<Assets<Image>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    cameras: Query<Entity, With<crate::map::MainCamera>>,
+    target: Option<Res<BackgroundCaptureTarget>>,
+    mut configured: Local<bool>,
+) {
+    if *configured || target.is_some() {
+        return;
+    }
+    let (Ok(window), Ok(camera)) = (windows.single(), cameras.single()) else {
+        return;
+    };
+    let (physical_size, logical_size, scale_factor) = background_target_layout(window);
+    if physical_size.min_element() == 0 {
+        return;
+    }
+    let handle = images.add(Image::new_target_texture(
+        physical_size.x,
+        physical_size.y,
+        TextureFormat::Rgba8Unorm,
+        Some(TextureFormat::Rgba8UnormSrgb),
+    ));
+    commands.entity(camera).insert((
+        RenderTarget::Image(ImageRenderTarget {
+            handle: handle.clone(),
+            scale_factor,
+        }),
+        bevy::ui::IsDefaultUiCamera,
+    ));
+    commands.insert_resource(BackgroundCaptureTarget {
+        image: handle,
+        physical_size,
+        logical_size,
+        scale_factor,
+    });
+    *configured = true;
+}
+
+fn background_target_layout(window: &Window) -> (UVec2, Vec2, f32) {
+    (
+        UVec2::new(window.physical_width(), window.physical_height()),
+        Vec2::new(window.width(), window.height()),
+        window.scale_factor().max(f32::EPSILON),
+    )
+}
+
+pub(super) fn diagnostic_screenshot(world: &World) -> Option<Screenshot> {
+    if background_capture_enabled() {
+        world
+            .get_resource::<BackgroundCaptureTarget>()
+            .map(background_screenshot)
+    } else {
+        Some(Screenshot::primary_window())
+    }
+}
+
+fn background_screenshot(target: &BackgroundCaptureTarget) -> Screenshot {
+    Screenshot(RenderTarget::Image(ImageRenderTarget {
+        handle: target.image.clone(),
+        scale_factor: target.scale_factor,
+    }))
+}
+
+pub(super) fn background_capture_description(world: &World) -> String {
+    match world.get_resource::<BackgroundCaptureTarget>() {
+        Some(target) => format!(
+            "image={}x{} logical={:.1}x{:.1} scale_factor={} visible_window=false update=continuous",
+            target.physical_size.x,
+            target.physical_size.y,
+            target.logical_size.x,
+            target.logical_size.y,
+            target.scale_factor,
+        ),
+        None if background_capture_enabled() => "image=not-ready visible_window=false".into(),
+        None => "primary-window".into(),
+    }
+}
+
+#[cfg(test)]
+mod background_capture_tests {
+    use bevy::{
+        camera::{ImageRenderTarget, RenderTarget},
+        math::{UVec2, Vec2},
+        prelude::{Handle, Image},
+        window::Window,
+    };
+
+    #[test]
+    fn background_runner_creates_an_unfocused_hidden_primary_window() {
+        let background = super::window_plugin(true)
+            .primary_window
+            .expect("asset review keeps a primary window for synthetic input");
+        assert!(!background.visible);
+        assert!(!background.focused);
+
+        let normal = super::window_plugin(false)
+            .primary_window
+            .expect("normal runner keeps its primary window");
+        assert!(normal.visible);
+        assert!(normal.focused);
+    }
+
+    #[test]
+    fn offscreen_target_keeps_primary_window_physical_size_and_scale() {
+        let mut window = Window::default();
+        window.resolution.set_scale_factor_override(Some(2.0));
+        window.resolution.set(320.0, 180.0);
+
+        let (physical, logical, scale_factor) = super::background_target_layout(&window);
+        assert_eq!(logical, Vec2::new(320.0, 180.0));
+        assert_eq!(physical, UVec2::new(640, 360));
+        assert_eq!(scale_factor, 2.0);
+    }
+
+    #[test]
+    fn screenshot_uses_the_same_normalized_image_target_as_the_main_camera() {
+        let target = super::BackgroundCaptureTarget {
+            image: Handle::<Image>::default(),
+            physical_size: UVec2::new(640, 360),
+            logical_size: Vec2::new(320.0, 180.0),
+            scale_factor: 2.0,
+        };
+        let camera_target = RenderTarget::Image(ImageRenderTarget {
+            handle: target.image.clone(),
+            scale_factor: target.scale_factor,
+        });
+        let screenshot = super::background_screenshot(&target);
+
+        assert_eq!(screenshot.0.normalize(None), camera_target.normalize(None));
     }
 }
 struct Stop {

@@ -571,13 +571,15 @@ fn write_transition_diagnostic_configuration(
 ) {
     let window = primary_window(world).map(|window| {
         format!(
-            "physical={}x{} logical={}x{} scale_factor={} present_mode={:?}",
+            "physical={}x{} logical={}x{} scale_factor={} present_mode={:?} visible={} focused={}",
             window.physical_width(),
             window.physical_height(),
             window.width(),
             window.height(),
             window.scale_factor(),
-            window.present_mode
+            window.present_mode,
+            window.visible,
+            window.focused,
         )
     });
     let drag = window
@@ -599,6 +601,7 @@ fn write_transition_diagnostic_configuration(
         })
         .unwrap_or_else(|| "unavailable".into());
     let mode = "visual-transition-diagnostic";
+    let capture_target = super::background_capture_description(world);
     let map_schedule = format!(
         "open after warmup+{DIAGNOSTIC_INITIAL_OPEN_DELAY_SECONDS:.2}s; reverse after each prior tap+{DIAGNOSTIC_REVERSAL_MINIMUM_GAP_SECONDS:.2}s while transition is partial; final return after {DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s movement at confirmed opposite pose; storm reopen after return+{DIAGNOSTIC_STORM_REOPEN_GAP_SECONDS:.2}s; close after {DIAGNOSTIC_STORM_CLOSE_GAP_SECONDS:.2}s hidden"
     );
@@ -608,7 +611,7 @@ fn write_transition_diagnostic_configuration(
         "precipitation intensity 0.85 with moving wind; production particle visibility";
     let weather_captures = "storm-hidden.png,storm-restored.png";
     let text = format!(
-        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\ncontinuous_left_drag={DIAGNOSTIC_DRAG_DURATION_SECONDS:.2}s after exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
+        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\ncapture_target={}\nbackground_capture_is_performance_comparable=false\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\ncontinuous_left_drag={DIAGNOSTIC_DRAG_DURATION_SECONDS:.2}s after exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
         mode,
         std::env::var("TERRA_SOURCE_REVISION").unwrap_or_else(|_| "unset".into()),
         std::env::var("TERRA_SOURCE_BRANCH").unwrap_or_else(|_| "unset".into()),
@@ -616,6 +619,7 @@ fn write_transition_diagnostic_configuration(
         std::env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| "cargo-default".into()),
         env!("CARGO_PKG_VERSION"),
         window.unwrap_or_else(|| "unavailable".into()),
+        capture_target,
         map_schedule,
         entry_captures,
         return_captures,
@@ -972,13 +976,15 @@ fn request_diagnostic_screenshot(
     diagnostic: &mut PlanetTransitionDiagnostic,
     name: &str,
 ) -> bool {
-    if !diagnostic.requested_captures.insert(name.to_owned()) {
+    if diagnostic.requested_captures.contains(name) {
         return false;
     }
+    let Some(screenshot) = super::diagnostic_screenshot(world) else {
+        return false;
+    };
+    diagnostic.requested_captures.insert(name.to_owned());
     let path = diagnostic.directory.join("captures").join(name);
-    world
-        .spawn(Screenshot::primary_window())
-        .observe(save_to_disk(path.clone()));
+    world.spawn(screenshot).observe(save_to_disk(path.clone()));
     info!(path = %path.display(), "Planet transition diagnostic screenshot requested");
     true
 }
