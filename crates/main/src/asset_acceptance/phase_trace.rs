@@ -49,6 +49,7 @@ struct OpenSchedule {
     label: String,
     profiled_system: bool,
     entered: Instant,
+    thread: std::thread::ThreadId,
     measurement: Option<Measurement>,
 }
 
@@ -383,6 +384,7 @@ impl<S: Subscriber> Layer<S> for ScheduleTraceLayer {
                 label: label.label,
                 profiled_system: label.profiled_system,
                 entered: Instant::now(),
+                thread: std::thread::current().id(),
                 measurement,
             },
         );
@@ -442,7 +444,7 @@ fn record_completed_span(
         route_elapsed_start_s: start_s,
         route_elapsed_end_s: end_s,
         duration_ms: duration.as_secs_f64() * 1_000.0,
-        thread: format!("{:?}", std::thread::current().id()),
+        thread: format!("{:?}", open.thread),
     });
 }
 
@@ -584,6 +586,50 @@ mod tests {
                 "late span exit must not append a row after the boundary drain"
             );
         });
+    }
+
+    #[test]
+    fn stopped_span_keeps_the_thread_that_entered_it() {
+        let recorder = ScheduleTraceRecorder::default();
+        recorder.start_repeat("orbit-zoom", 1);
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::registry().with(
+                ScheduleTraceLayer {
+                    recorder: recorder.clone(),
+                }
+                .with_filter(tracing_subscriber::filter::filter_fn(selected_span)),
+            ),
+        );
+        let span = tracing::dispatcher::with_default(&dispatch, || {
+            tracing::info_span!("system", name = "bevy_render::test_render_system")
+        });
+        assert_eq!(recorder.lock().labels.len(), 1, "span was selected");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker_span = span.clone();
+        let worker_dispatch = dispatch.clone();
+        let worker = std::thread::spawn(move || {
+            tracing::dispatcher::with_default(&worker_dispatch, || {
+                let entered = worker_span.enter();
+                entered_tx.send(std::thread::current().id()).unwrap();
+                release_rx.recv().unwrap();
+                drop(entered);
+            });
+        });
+
+        let entered_thread = entered_rx.recv().expect("render thread entered span");
+        assert_ne!(entered_thread, std::thread::current().id());
+        std::thread::sleep(Duration::from_millis(2));
+        recorder.stop_repeat("orbit-zoom", 1);
+        let csv = recorder.take_repeat_csv("orbit-zoom", 1);
+        release_tx.send(()).unwrap();
+        worker.join().unwrap();
+
+        let row = csv.lines().nth(1).expect("open render span captured");
+        let thread_field = row.split(',').nth(6).expect("thread column");
+        assert_eq!(thread_field, csv_field(&format!("{entered_thread:?}")));
+
+        assert_eq!(recorder.take_repeat_csv("orbit-zoom", 1).lines().count(), 1);
     }
 
     #[test]
