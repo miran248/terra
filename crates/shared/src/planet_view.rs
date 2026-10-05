@@ -38,6 +38,7 @@ enum Phase {
 struct Transition {
     from: Transform,
     from_direction: Vec3,
+    opening_focus: Vec3,
     from_linear_velocity: Vec3,
     from_angular_velocity: Vec3,
     elapsed: f32,
@@ -298,7 +299,7 @@ impl PlanetViewCamera {
             && let Some(previous) = self.last_motion_pose
         {
             let translation_delta = current.translation - previous.translation;
-            let delta_rotation = previous.rotation.inverse() * current.rotation;
+            let delta_rotation = shortest_rotation_delta(previous.rotation, current.rotation);
             let (axis, angle) = delta_rotation.to_axis_angle();
             let position_speed = translation_delta.length() / delta_seconds;
             let angular_speed = angle / delta_seconds;
@@ -346,6 +347,11 @@ impl PlanetViewCamera {
             self.transition = Some(Transition {
                 from: current,
                 from_direction,
+                opening_focus: if opening {
+                    opening_surface_focus(current, surface_radius.max(PLANET_RADIUS))
+                } else {
+                    Vec3::ZERO
+                },
                 from_linear_velocity: self.last_linear_velocity,
                 from_angular_velocity: self.last_angular_velocity,
                 elapsed: 0.0,
@@ -400,9 +406,27 @@ impl PlanetViewCamera {
                     transition.elapsed,
                     surface_radius.max(PLANET_RADIUS) + CAMERA_CLEARANCE,
                 );
+                result.rotation = opening_rotation(
+                    result.translation,
+                    transition.opening_focus,
+                    transition.from.rotation * Vec3::NEG_Z,
+                    transition.from.rotation * Vec3::Y,
+                    tangent_heading(target_heading, result.translation.normalize_or(direction)),
+                    eased,
+                );
+                let path_angular_velocity = angular_velocity_between(
+                    transition.from.rotation,
+                    result.rotation,
+                    transition.elapsed,
+                );
+                let residual_angular_velocity =
+                    transition.from_angular_velocity - path_angular_velocity;
+                let local_residual = result.rotation.inverse()
+                    * transition.from.rotation
+                    * residual_angular_velocity;
                 result.rotation = carry_initial_angular_velocity(
                     result.rotation,
-                    transition.from_angular_velocity,
+                    local_residual,
                     transition.elapsed,
                 );
                 result
@@ -479,6 +503,83 @@ fn planet_rotation(direction: Vec3, heading: Vec3) -> Quat {
     Transform::from_translation(direction * PLANET_VIEW_FAR_RADIUS)
         .looking_at(Vec3::ZERO, heading)
         .rotation
+}
+
+fn opening_surface_focus(from: Transform, surface_radius: f32) -> Vec3 {
+    let forward = from.rotation * Vec3::NEG_Z;
+    let projected_origin = from.translation.dot(forward);
+    let radius = surface_radius.max(PLANET_RADIUS);
+    let discriminant =
+        projected_origin * projected_origin + radius * radius - from.translation.length_squared();
+    if discriminant >= 0.0 {
+        let distance = -projected_origin - discriminant.sqrt();
+        if distance >= 0.0 {
+            return from.translation + forward * distance;
+        }
+    }
+
+    from.translation + forward * radius
+}
+
+fn opening_rotation(
+    position: Vec3,
+    surface_focus: Vec3,
+    start_forward: Vec3,
+    start_up: Vec3,
+    target_up: Vec3,
+    progress: f32,
+) -> Quat {
+    let focus = surface_focus.lerp(Vec3::ZERO, progress);
+    let start_forward = start_forward.normalize_or(Vec3::NEG_Z);
+    let forward = (focus - position).normalize_or(start_forward);
+    let transported_up = rotate_direction(start_forward, forward, start_up) * start_up;
+    let transported_up = project_onto_view_plane(transported_up, forward)
+        .normalize_or(start_up.normalize_or(Vec3::Y));
+    let desired_up = project_onto_view_plane(target_up, forward).normalize_or(transported_up);
+    let roll = signed_angle(transported_up, desired_up, forward);
+    let up = Quat::from_axis_angle(forward, roll * progress.clamp(0.0, 1.0)) * transported_up;
+    Transform::from_translation(position)
+        .looking_at(focus, up)
+        .rotation
+}
+
+fn rotate_direction(from: Vec3, to: Vec3, preferred_axis: Vec3) -> Quat {
+    let from = from.normalize_or(Vec3::NEG_Z);
+    let to = to.normalize_or(from);
+    if from.dot(to) < -0.9999 {
+        let axis = project_onto_view_plane(preferred_axis, from)
+            .normalize_or(from.any_orthonormal_vector());
+        Quat::from_axis_angle(axis, std::f32::consts::PI)
+    } else {
+        Quat::from_rotation_arc(from, to)
+    }
+}
+
+fn project_onto_view_plane(vector: Vec3, forward: Vec3) -> Vec3 {
+    vector - forward * vector.dot(forward)
+}
+
+fn signed_angle(from: Vec3, to: Vec3, axis: Vec3) -> f32 {
+    let sine = axis.dot(from.cross(to));
+    let cosine = from.dot(to).clamp(-1.0, 1.0);
+    if sine.abs() <= 1e-6 && cosine < 0.0 {
+        std::f32::consts::PI
+    } else {
+        sine.atan2(cosine)
+    }
+}
+
+fn shortest_rotation_delta(from: Quat, to: Quat) -> Quat {
+    let delta = from.inverse() * to;
+    if delta.w < 0.0 { -delta } else { delta }
+}
+
+fn angular_velocity_between(from: Quat, to: Quat, elapsed: f32) -> Vec3 {
+    if elapsed <= 1e-6 {
+        return Vec3::ZERO;
+    }
+    let (axis, angle) = shortest_rotation_delta(from, to).to_axis_angle();
+    axis * (angle / elapsed)
 }
 
 fn orbit_transform(direction: Vec3, delta: Vec2) -> (Vec3, Quat) {

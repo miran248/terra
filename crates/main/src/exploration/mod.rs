@@ -2334,6 +2334,11 @@ pub(crate) mod tests {
         time: f32,
         pose: Transform,
         body: Vec3,
+        body_aim_degrees: f32,
+        planet_center_aim_degrees: f32,
+        screen_roll_degrees: f32,
+        max_angular_speed: f32,
+        max_screen_roll_speed: f32,
     }
 
     fn m_open_trace(hz: usize, move_body: bool) -> Vec<CameraMotionSample> {
@@ -2344,8 +2349,15 @@ pub(crate) mod tests {
             std::time::Duration::from_secs_f32(delta),
         ));
         let camera = spawn_planet_view_camera(&mut app);
+        // Let the production camera system establish its normal chase pose before
+        // starting the M-driven opening trace. The spawned transform is only a
+        // fixture placeholder and points back at the player.
+        app.update();
         let sample_stride = hz / 30;
         let mut trace = Vec::with_capacity(30);
+        let mut previous_pose = *app.world().get::<Transform>(camera).unwrap();
+        let mut max_angular_speed = 0.0_f32;
+        let mut max_screen_roll_speed = 0.0_f32;
 
         for frame in 0..hz {
             let time = (frame + 1) as f32 * delta;
@@ -2362,16 +2374,41 @@ pub(crate) mod tests {
                     .press(KeyCode::KeyM);
             }
             app.update();
+            let pose = *app.world().get::<Transform>(camera).unwrap();
+            max_angular_speed = max_angular_speed.max(
+                shortest_angular_velocity(previous_pose.rotation, pose.rotation, delta).length(),
+            );
+            max_screen_roll_speed =
+                max_screen_roll_speed.max(screen_roll_delta(previous_pose, pose) / delta);
+            previous_pose = pose;
             if frame == 0 {
                 let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
                 keys.clear_just_pressed(KeyCode::KeyM);
                 keys.release(KeyCode::KeyM);
             }
             if (frame + 1) % sample_stride == 0 {
+                let body = app.world().get::<Position>(explorer).unwrap().0;
+                let heading = app.world().get::<Player>(explorer).unwrap().heading;
+                let forward = pose.rotation * Vec3::NEG_Z;
+                let desired_screen_up =
+                    (heading - forward * heading.dot(forward)).normalize_or(Vec3::Y);
                 trace.push(CameraMotionSample {
                     time,
-                    pose: *app.world().get::<Transform>(camera).unwrap(),
-                    body: app.world().get::<Position>(explorer).unwrap().0,
+                    pose,
+                    body,
+                    body_aim_degrees: (body - pose.translation)
+                        .normalize()
+                        .angle_between(forward)
+                        .to_degrees(),
+                    planet_center_aim_degrees: (-pose.translation)
+                        .normalize()
+                        .angle_between(forward)
+                        .to_degrees(),
+                    screen_roll_degrees: (pose.rotation * Vec3::Y)
+                        .angle_between(desired_screen_up)
+                        .to_degrees(),
+                    max_angular_speed,
+                    max_screen_roll_speed,
                 });
             }
         }
@@ -2379,7 +2416,7 @@ pub(crate) mod tests {
         for tick in [12, 24, 30] {
             let sample = trace[tick - 1];
             println!(
-                "M_OPEN hz={hz} moving={move_body} t={:.3} pos=({:.1},{:.1},{:.1}) r={:.1} body=({:.1},{:.1},{:.1})",
+                "M_OPEN hz={hz} moving={move_body} t={:.3} pos=({:.1},{:.1},{:.1}) r={:.1} body=({:.1},{:.1},{:.1}) body_aim={:.2}deg planet_center_aim={:.2}deg screen_roll={:.2}deg max_angular_speed={:.2}rad/s max_screen_roll_speed={:.2}rad/s",
                 sample.time,
                 sample.pose.translation.x,
                 sample.pose.translation.y,
@@ -2388,6 +2425,11 @@ pub(crate) mod tests {
                 sample.body.x,
                 sample.body.y,
                 sample.body.z,
+                sample.body_aim_degrees,
+                sample.planet_center_aim_degrees,
+                sample.screen_roll_degrees,
+                sample.max_angular_speed,
+                sample.max_screen_roll_speed,
             );
         }
         trace
@@ -2420,6 +2462,38 @@ pub(crate) mod tests {
                     max_position_delta < 10.0 && max_rotation_delta < 0.03,
                     "M open framing depends on frame rate ({label} body): {rate} Hz differs from 30 Hz by {max_position_delta:.1} m and {:.1} degrees",
                     max_rotation_delta.to_degrees(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn m_open_keeps_the_planet_center_within_the_vertical_viewport() {
+        for hz in [30, 60, 120] {
+            let trace = m_open_trace(hz, false);
+            let half_vertical_fov = PerspectiveProjection::default().fov * 0.5;
+            for sample in &trace {
+                if sample.time >= 0.4 {
+                    assert!(
+                        sample.planet_center_aim_degrees.to_radians() < half_vertical_fov,
+                        "planet center is below the viewport at {hz} Hz, t={:.3}s, radius={:.1}m, aim error={:.1}deg, half FOV={:.1}deg",
+                        sample.time,
+                        sample.pose.translation.length(),
+                        sample.planet_center_aim_degrees,
+                        half_vertical_fov.to_degrees(),
+                    );
+                }
+                assert!(
+                    sample.screen_roll_degrees < 5.0,
+                    "opening roll diverged from the projected heading at {hz} Hz, t={:.3}s: {:.1}deg",
+                    sample.time,
+                    sample.screen_roll_degrees,
+                );
+                assert!(
+                    sample.max_screen_roll_speed < 2.0,
+                    "opening screen-up changed too quickly at {hz} Hz, t={:.3}s: {:.2}rad/s",
+                    sample.time,
+                    sample.max_screen_roll_speed,
                 );
             }
         }
@@ -2700,7 +2774,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn reversal_motion_velocity(hz: usize) -> (Vec3, Vec3, Vec3, Vec3) {
+    fn reversal_motion_velocity(hz: usize) -> (Vec3, Vec3, Vec3, Vec3, Vec3) {
         let (mut app, _) = fixture();
         let delta = 1.0 / hz as f32;
         app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
@@ -2748,9 +2822,8 @@ pub(crate) mod tests {
             app.update();
             let pose = *app.world().get::<Transform>(camera).unwrap();
             incoming_linear_velocity = (pose.translation - previous.translation) / delta;
-            let delta_rotation = previous.rotation.inverse() * pose.rotation;
-            let (axis, angle) = delta_rotation.to_axis_angle();
-            incoming_angular_velocity = axis * (angle / delta);
+            incoming_angular_velocity =
+                shortest_angular_velocity(previous.rotation, pose.rotation, delta);
             previous = pose;
         }
 
@@ -2765,30 +2838,75 @@ pub(crate) mod tests {
         }
         let after_reversal = *app.world().get::<Transform>(camera).unwrap();
         let outgoing_linear_velocity = (after_reversal.translation - previous.translation) / delta;
-        let delta_rotation = previous.rotation.inverse() * after_reversal.rotation;
-        let (axis, angle) = delta_rotation.to_axis_angle();
-        let outgoing_angular_velocity = axis * (angle / delta);
+        let outgoing_angular_velocity =
+            shortest_angular_velocity(previous.rotation, after_reversal.rotation, delta);
+        app.update();
+        let after_second_reopen_frame = *app.world().get::<Transform>(camera).unwrap();
+        let second_frame_angular_velocity = shortest_angular_velocity(
+            after_reversal.rotation,
+            after_second_reopen_frame.rotation,
+            delta,
+        );
         (
             incoming_linear_velocity,
             outgoing_linear_velocity,
             incoming_angular_velocity,
             outgoing_angular_velocity,
+            second_frame_angular_velocity,
         )
+    }
+
+    fn shortest_angular_velocity(from: Quat, to: Quat, delta_seconds: f32) -> Vec3 {
+        let delta = from.inverse() * to;
+        let delta = if delta.w < 0.0 { -delta } else { delta };
+        let (axis, angle) = delta.to_axis_angle();
+        axis * (angle / delta_seconds)
+    }
+
+    fn screen_roll_delta(previous: Transform, current: Transform) -> f32 {
+        let previous_forward = previous.rotation * Vec3::NEG_Z;
+        let current_forward = current.rotation * Vec3::NEG_Z;
+        let transport = Quat::from_rotation_arc(previous_forward, current_forward);
+        let transported_up = transport * (previous.rotation * Vec3::Y);
+        let transported_up = (transported_up
+            - current_forward * transported_up.dot(current_forward))
+        .normalize_or(Vec3::Y);
+        let current_up = current.rotation * Vec3::Y;
+        let current_up = (current_up - current_forward * current_up.dot(current_forward))
+            .normalize_or(transported_up);
+        current_forward
+            .dot(transported_up.cross(current_up))
+            .atan2(transported_up.dot(current_up))
+            .abs()
     }
 
     #[test]
     fn m_reversal_preserves_transition_velocity() {
         for hz in [30, 60, 120] {
-            let (incoming_linear, outgoing_linear, incoming_angular, outgoing_angular) =
-                reversal_motion_velocity(hz);
+            let (
+                incoming_linear,
+                outgoing_linear,
+                incoming_angular,
+                outgoing_angular,
+                second_frame_angular,
+            ) = reversal_motion_velocity(hz);
             let linear_delta = incoming_linear.distance(outgoing_linear);
             let angular_delta = incoming_angular.distance(outgoing_angular);
             println!(
-                "REVERSAL_SPEED hz={hz} linear={:.0}->{:.0}m/s angular={:.3}->{:.3}rad/s",
+                "REVERSAL_SPEED hz={hz} linear={:.0}->{:.0}m/s angular={:.3}->{:.3}->{:.3}rad/s",
                 incoming_linear.length(),
                 outgoing_linear.length(),
                 incoming_angular.length(),
                 outgoing_angular.length(),
+                second_frame_angular.length(),
+            );
+            assert!(
+                incoming_linear.is_finite()
+                    && outgoing_linear.is_finite()
+                    && incoming_angular.is_finite()
+                    && outgoing_angular.is_finite()
+                    && second_frame_angular.is_finite(),
+                "{hz} Hz M reversal produced a non-finite trajectory"
             );
             assert!(
                 incoming_angular.length() > 1.0,
@@ -2797,6 +2915,11 @@ pub(crate) mod tests {
             assert!(
                 angular_delta < 1.5,
                 "{hz} Hz M reversal snaps angular velocity by {angular_delta:.2} rad/s"
+            );
+            assert!(
+                second_frame_angular.length() < 8.0
+                    && second_frame_angular.distance(outgoing_angular) < 4.0,
+                "{hz} Hz M reversal angular velocity did not settle smoothly over the next frame"
             );
             assert!(
                 linear_delta < 5_500.0,
