@@ -4551,12 +4551,16 @@ pub(crate) mod tests {
 
     #[test]
     fn live_camera_intents_zoom_without_detaching_and_orbit_detaches() {
-        let (mut app, _) = fixture();
-        app.world_mut().spawn((
-            MainCamera,
-            Transform::from_xyz(0.0, 2005.0, -5.0).looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
-            Projection::Perspective(PerspectiveProjection::default()),
-        ));
+        let (mut app, explorer) = fixture();
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, 2005.0, -5.0)
+                    .looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
         let far = shared::planet_view::PLANET_VIEW_FAR_RADIUS;
         {
             let mut state = app.world_mut().resource_mut::<Exploration>();
@@ -4571,6 +4575,13 @@ pub(crate) mod tests {
             assert!(state.planet_view_camera_radii().0 < far);
             assert!(state.planet_view_follows_body());
         }
+        let current = *app
+            .world()
+            .entity(camera)
+            .get::<Transform>()
+            .expect("main camera transform");
+        let start_direction = current.translation.normalize();
+        let screen_right = current.rotation * Vec3::X;
         assert!(
             app.world_mut()
                 .resource_mut::<Exploration>()
@@ -4582,6 +4593,12 @@ pub(crate) mod tests {
         let state = app.world().resource::<Exploration>();
         assert!(!state.planet_view_follows_body());
         assert!(state.planet_view_camera_radii().1.is_finite());
+        let controlled_position = app.world().get::<Position>(explorer).unwrap().0;
+        let target_direction = state.planet_camera.view_direction(controlled_position);
+        assert!(
+            (target_direction - start_direction).dot(screen_right) < 0.0,
+            "the runtime orbit intent should move the camera opposite a rightward screen drag"
+        );
     }
 
     #[test]
@@ -4933,14 +4950,13 @@ pub(crate) mod tests {
                 > planet_radius * 2.0
         );
 
-        let structure = app
-            .world_mut()
-            .spawn((
-                RigidBody::Static,
-                Collider::cuboid(20.0, 30.0, 20.0),
-                Transform::from_xyz(0.0, planet_radius + 80.0, 0.0),
-            ))
-            .id();
+        let mut collision = world::CollisionWorld::default();
+        collision.obstacles.push(world::Obstacle::new(
+            Vec3::Y * (planet_radius + 500.0),
+            Quat::IDENTITY,
+            Collider::cuboid(20.0, 30.0, 20.0),
+        ));
+        app.world_mut().insert_resource(collision);
         app.update();
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -4979,7 +4995,10 @@ pub(crate) mod tests {
             .normalized_attained_zoom();
         assert!(blocked_zoom > 0.01 && blocked_zoom < 0.1);
 
-        app.world_mut().despawn(structure);
+        app.world_mut()
+            .resource_mut::<world::CollisionWorld>()
+            .obstacles
+            .clear();
         app.update();
         let first_release_radius = app
             .world()
@@ -5075,11 +5094,13 @@ pub(crate) mod tests {
         let opposite_view = app.world().get::<Transform>(camera).unwrap();
         assert!(opposite_view.translation.normalize().dot(opposite) > 0.99);
 
-        app.world_mut().spawn((
-            RigidBody::Static,
+        let mut collision = world::CollisionWorld::default();
+        collision.obstacles.push(world::Obstacle::new(
+            opposite * (planet_radius + 500.0),
+            Quat::from_rotation_arc(Vec3::Y, opposite),
             Collider::cuboid(20.0, 30.0, 20.0),
-            Transform::from_translation(opposite * (planet_radius + 80.0)),
         ));
+        app.world_mut().insert_resource(collision);
         app.update();
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -5093,6 +5114,7 @@ pub(crate) mod tests {
             clearance_limited_view.translation.length()
                 > shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 50.0
         );
+        app.world_mut().remove_resource::<world::CollisionWorld>();
 
         app.world_mut()
             .resource_mut::<Exploration>()

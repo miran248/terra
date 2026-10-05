@@ -184,6 +184,10 @@ pub struct PointerMotion {
     pub began_dragging: bool,
     /// Logical-pixel delta available to world orbit input.
     pub orbit_delta: Vec2,
+    /// Previous logical cursor position used for this drag update.
+    pub previous_position: Vec2,
+    /// Current logical cursor position used for this drag update.
+    pub position: Vec2,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +230,11 @@ impl PlanetViewPointer {
             gesture.dragging = true;
         }
         let began_dragging = gesture.dragging && !previously_dragging;
+        let previous_position = if began_dragging {
+            gesture.start
+        } else {
+            gesture.last
+        };
         let orbit_delta = if gesture.capture == PointerCapture::World && gesture.dragging {
             if began_dragging {
                 current - gesture.start
@@ -240,6 +249,8 @@ impl PlanetViewPointer {
             dragging: gesture.dragging,
             began_dragging,
             orbit_delta,
+            previous_position,
+            position: current,
         }
     }
 
@@ -344,6 +355,23 @@ mod tests {
                 Some(PointerRelease::WorldDrag)
             );
         }
+    }
+
+    #[test]
+    fn drag_motion_reports_logical_ray_endpoints_across_the_threshold() {
+        let mut pointer = PlanetViewPointer::default();
+        pointer.press(Vec2::new(100.0, 80.0), 2.0, PointerCapture::World);
+        let below_threshold = pointer.move_to(Vec2::new(106.0, 80.0), 2.0);
+        assert_eq!(below_threshold.position, Vec2::new(53.0, 40.0));
+
+        let crossed = pointer.move_to(Vec2::new(114.0, 84.0), 2.0);
+        assert!(crossed.began_dragging);
+        assert_eq!(crossed.previous_position, Vec2::new(50.0, 40.0));
+        assert_eq!(crossed.position, Vec2::new(57.0, 42.0));
+
+        let continued = pointer.move_to(Vec2::new(118.0, 82.0), 2.0);
+        assert_eq!(continued.previous_position, crossed.position);
+        assert_eq!(continued.position, Vec2::new(59.0, 41.0));
     }
 
     #[test]
