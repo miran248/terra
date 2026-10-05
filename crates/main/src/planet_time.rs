@@ -96,12 +96,21 @@ mod tests {
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
 
+    fn zoom_midpoint() -> f32 {
+        (shared::planet_view::PLANET_VIEW_NEAR_RADIUS + shared::planet_view::PLANET_VIEW_FAR_RADIUS)
+            * 0.5
+    }
+
     #[test]
     fn planet_view_rate_uses_attained_zoom_and_multiplies_the_base_rate() {
         let mut clock = PlanetSimulationClock::default();
         clock.set_base_rate(2.0);
 
-        for (radius, expected) in [(2024.0, 2.0), (4012.0, 1.5), (6000.0, 1.0)] {
+        for (radius, expected) in [
+            (shared::planet_view::PLANET_VIEW_NEAR_RADIUS, 2.0),
+            (zoom_midpoint(), 1.5),
+            (shared::planet_view::PLANET_VIEW_FAR_RADIUS, 1.0),
+        ] {
             clock.publish_planet_view(true, radius);
             assert_eq!(clock.effective_rate(), expected);
         }
@@ -112,14 +121,23 @@ mod tests {
         let mut clock = PlanetSimulationClock::default();
         clock.set_base_rate(2.0);
         let expected = [2.0, 1.84375, 1.5, 1.15625, 1.0];
+        let near = shared::planet_view::PLANET_VIEW_NEAR_RADIUS;
+        let far = shared::planet_view::PLANET_VIEW_FAR_RADIUS;
+        let interval = far - near;
 
-        let rates = [1000.0, 3018.0, 4012.0, 5006.0, 9000.0]
-            .into_iter()
-            .map(|radius| {
-                clock.publish_planet_view(true, radius);
-                clock.effective_rate()
-            })
-            .collect::<Vec<_>>();
+        let rates = [
+            near - 100.0,
+            near + interval * 0.25,
+            zoom_midpoint(),
+            near + interval * 0.75,
+            far + 100.0,
+        ]
+        .into_iter()
+        .map(|radius| {
+            clock.publish_planet_view(true, radius);
+            clock.effective_rate()
+        })
+        .collect::<Vec<_>>();
 
         assert_eq!(rates, expected);
         assert!(rates.windows(2).all(|pair| pair[0] > pair[1]));
@@ -141,7 +159,7 @@ mod tests {
         clock.publish_planet_view(true, camera.attained_radius());
         assert_eq!(clock.effective_rate(), 0.5);
 
-        camera.record_attained_radius(4012.0);
+        camera.record_attained_radius(zoom_midpoint());
         clock.publish_planet_view(true, camera.attained_radius());
         assert_eq!(clock.effective_rate(), 0.75);
         camera.record_attained_radius(shared::planet_view::PLANET_VIEW_NEAR_RADIUS);
@@ -155,15 +173,15 @@ mod tests {
     #[test]
     fn base_rate_changes_and_view_exit_do_not_compound_or_override_other_time() {
         let mut clock = PlanetSimulationClock::default();
-        clock.publish_planet_view(true, 6000.0);
+        clock.publish_planet_view(true, shared::planet_view::PLANET_VIEW_FAR_RADIUS);
         assert_eq!(clock.effective_rate(), 0.5);
 
         clock.set_base_rate(2.0);
         assert_eq!(clock.effective_rate(), 1.0);
-        clock.publish_planet_view(true, 6000.0);
+        clock.publish_planet_view(true, shared::planet_view::PLANET_VIEW_FAR_RADIUS);
         assert_eq!(clock.effective_rate(), 1.0);
 
-        clock.publish_planet_view(false, 6000.0);
+        clock.publish_planet_view(false, shared::planet_view::PLANET_VIEW_FAR_RADIUS);
         assert_eq!(clock.effective_rate(), 2.0);
     }
 
@@ -184,7 +202,7 @@ mod tests {
 
         app.world_mut()
             .resource_mut::<PlanetSimulationClock>()
-            .publish_planet_view(true, 4012.0);
+            .publish_planet_view(true, zoom_midpoint());
         app.update();
 
         assert_eq!(
@@ -205,8 +223,10 @@ mod tests {
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
                 100,
             )));
-        app.world_mut()
-            .spawn((MainCamera, Transform::from_translation(Vec3::Y * 4012.0)));
+        app.world_mut().spawn((
+            MainCamera,
+            Transform::from_translation(Vec3::Y * zoom_midpoint()),
+        ));
         app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(true);
@@ -249,7 +269,7 @@ mod tests {
 
         let mut clock = app.world_mut().resource_mut::<PlanetSimulationClock>();
         clock.set_base_rate(2.0);
-        clock.publish_planet_view(true, 4012.0);
+        clock.publish_planet_view(true, zoom_midpoint());
         drop(clock);
         app.update();
         app.update();
@@ -303,7 +323,14 @@ mod tests {
         )));
         app.world_mut()
             .resource_mut::<PlanetSimulationClock>()
-            .publish_planet_view(true, if zoom == 0.0 { 2024.0 } else { 6000.0 });
+            .publish_planet_view(
+                true,
+                if zoom == 0.0 {
+                    shared::planet_view::PLANET_VIEW_NEAR_RADIUS
+                } else {
+                    shared::planet_view::PLANET_VIEW_FAR_RADIUS
+                },
+            );
         let body = app
             .world_mut()
             .spawn((

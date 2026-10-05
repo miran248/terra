@@ -47,7 +47,7 @@ impl Bounds {
     }
 }
 
-struct Obstacle {
+pub(super) struct Obstacle {
     position: Vec3,
     rotation: Quat,
     collider: Collider,
@@ -55,7 +55,7 @@ struct Obstacle {
     resident: Option<Entity>,
 }
 impl Obstacle {
-    fn new(position: Vec3, rotation: Quat, collider: Collider) -> Self {
+    pub(super) fn new(position: Vec3, rotation: Quat, collider: Collider) -> Self {
         let bounds = Bounds::from_collider(&collider, position, rotation);
         Self {
             position,
@@ -101,7 +101,7 @@ impl Obstacle {
 
 #[derive(Resource, Default)]
 pub(super) struct CollisionWorld {
-    obstacles: Vec<Obstacle>,
+    pub(super) obstacles: Vec<Obstacle>,
     pub ready: bool,
     pub last_action: Option<Action>,
 }
@@ -349,7 +349,13 @@ mod tests {
             app.world().get::<Transform>(camera).unwrap().translation,
             None,
         );
-        assert!(camera_altitude < 100.0);
+        assert!(
+            (camera_altitude
+                - (shared::planet_view::PLANET_VIEW_NEAR_RADIUS - shared::sphere::PLANET_RADIUS))
+                .abs()
+                < 3.0,
+            "nearest Planet view zoom should attain the documented overview altitude, got {camera_altitude} m"
+        );
         assert_eq!(
             shared::planet_detail::desired_chunk_lod(1_800.0, camera_altitude, 1),
             1
