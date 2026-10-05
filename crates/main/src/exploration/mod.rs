@@ -19,7 +19,7 @@ use shared::{
     plane_prototype::{FlightInput, PlaneFlight, gentle_landing},
     planet::PlanetMesh,
     planet_view::PlanetViewCamera,
-    planet_view_interface::{GameplayHudElement, PlanetViewPointer, PlanetViewPresentation},
+    planet_view_interface::{PlanetViewPointer, PlanetViewPresentation},
     sphere::tangent_heading as tangent,
     state::AppState,
 };
@@ -1623,7 +1623,7 @@ fn track_safe(
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use bevy::{color::Alpha, ecs::system::RunSystemOnce};
+    use bevy::ecs::system::RunSystemOnce;
 
     #[test]
     fn planet_view_interface_visibility_excludes_the_selector_modal() {
@@ -1735,16 +1735,9 @@ pub(crate) mod tests {
             .world_mut()
             .spawn((
                 Node::default(),
-                interface::DestinationPanel,
-                shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+                Text::new("old UI"),
+                interface::DestinationDetails,
             ))
-            .with_children(|panel| {
-                panel.spawn((
-                    Text::new("old UI"),
-                    interface::DestinationDetails,
-                    shared::planet_view_interface::PlanetViewInterfaceElement::default(),
-                ));
-            })
             .id();
         app.update();
         let old_details = app
@@ -1756,20 +1749,13 @@ pub(crate) mod tests {
         assert!(old_details.0.contains("Exit your vehicle"));
 
         app.world_mut().despawn(details_entity);
-        let rebuilt_panel = app
+        let rebuilt_details_entity = app
             .world_mut()
             .spawn((
                 Node::default(),
-                interface::DestinationPanel,
-                shared::planet_view_interface::PlanetViewInterfaceElement::default(),
+                Text::new("fresh UI"),
+                interface::DestinationDetails,
             ))
-            .with_children(|panel| {
-                panel.spawn((
-                    Text::new("fresh UI"),
-                    interface::DestinationDetails,
-                    shared::planet_view_interface::PlanetViewInterfaceElement::default(),
-                ));
-            })
             .id();
         app.update();
         let rebuilt_details = app
@@ -1779,7 +1765,7 @@ pub(crate) mod tests {
             .expect("destination details are reconstructed");
         assert!(rebuilt_details.0.contains("Bridge deck · 12.4°N, 33.7°W"));
         assert!(rebuilt_details.0.contains("Exit your vehicle"));
-        assert_ne!(details_entity, rebuilt_panel);
+        assert_ne!(details_entity, rebuilt_details_entity);
 
         {
             let mut state = app.world_mut().resource_mut::<Exploration>();
@@ -1958,29 +1944,83 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn exploration_readout_fades_and_restores_through_the_live_presentation() {
+    fn exploration_sidebar_keeps_explorer_readouts_during_planet_view() {
         let (mut app, _) = fixture();
         app.world_mut()
             .insert_resource(crate::ui::UiFont(Handle::default()));
         app.world_mut().run_system_once(view::setup).unwrap();
+        app.world_mut().run_system_once(interface::setup).unwrap();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .selected_destination = Some(PlanetDestination {
+            id: PlanetDestinationId::surface(crate::map::WorldEpoch::new(63), Vec3::X * 2000.0),
+            position: Vec3::X * 2000.0,
+            surface: PlanetDestinationSurface::Terrain,
+            display: "Far shore · 0°N, 90°E".into(),
+        });
         app.update();
 
-        let readout = {
-            let world = app.world_mut();
-            let mut query = world.query_filtered::<Entity, With<view::Readout>>();
-            query.single(world).unwrap()
-        };
-        let first_text = app.world().get::<Text>(readout).unwrap().0.clone();
-        assert!(first_text.starts_with("On foot · WASD move"));
-        let original_text_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
-        let original_background_alpha = app
-            .world()
-            .get::<BackgroundColor>(readout)
-            .unwrap()
-            .0
-            .alpha();
-        assert!(original_text_alpha > 0.9);
-        assert!(original_background_alpha > 0.0);
+        fn rendered_text(world: &mut World) -> String {
+            let mut query = world.query::<&Text>();
+            query
+                .iter(world)
+                .map(|text| text.0.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        fn explorer_location_rows(text: &str) -> Vec<String> {
+            text.lines()
+                .filter(|line| {
+                    [
+                        "Clock:",
+                        "Weather:",
+                        "Temperature:",
+                        "Terrain:",
+                        "Elevation:",
+                        "Settlement:",
+                        "Region:",
+                        "Road / bridge:",
+                    ]
+                    .iter()
+                    .any(|field| line.starts_with(field))
+                })
+                .map(str::to_owned)
+                .collect()
+        }
+
+        let initial = rendered_text(app.world_mut());
+        let initial_normalized = initial.to_ascii_lowercase();
+        for section in [
+            "environment",
+            "location",
+            "movement",
+            "view",
+            "context",
+            "actions",
+        ] {
+            assert!(
+                initial_normalized.contains(section),
+                "missing {section} section: {initial}"
+            );
+        }
+        for field in [
+            "Clock:",
+            "Weather:",
+            "Temperature:",
+            "Terrain:",
+            "Elevation:",
+            "Settlement:",
+            "Region:",
+            "Road / bridge:",
+        ] {
+            assert!(initial.contains(field), "missing {field} row: {initial}");
+        }
+        assert!(
+            initial.contains("Travel mode: On foot"),
+            "wrong movement subject: {initial}"
+        );
+        let explorer_rows = explorer_location_rows(&initial);
 
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -1989,38 +2029,27 @@ pub(crate) mod tests {
             app.update();
         }
         assert!(app.world().resource::<Exploration>().planet_view_ready());
-        assert!(app.world().get::<TextColor>(readout).unwrap().0.alpha() < 0.01);
+        let browsing = rendered_text(app.world_mut());
+        let browsing_normalized = browsing.to_ascii_lowercase();
+        for section in [
+            "environment",
+            "location",
+            "movement",
+            "view",
+            "context",
+            "actions",
+        ] {
+            assert!(
+                browsing_normalized.contains(section),
+                "missing {section} while browsing: {browsing}"
+            );
+        }
+        assert!(browsing.contains("Travel mode: On foot"));
+        assert_eq!(explorer_location_rows(&browsing), explorer_rows);
         assert!(
-            app.world()
-                .get::<BackgroundColor>(readout)
-                .unwrap()
-                .0
-                .alpha()
-                < 0.01
+            browsing.contains("Selected destination: Far shore · 0°N, 90°E"),
+            "destination must be labeled in the sidebar context: {browsing}"
         );
-        assert_eq!(app.world().get::<Text>(readout).unwrap().0, first_text);
-
-        app.world_mut()
-            .resource_mut::<Exploration>()
-            .set_planet_view_open(false);
-        for _ in 0..5 {
-            app.update();
-        }
-        let partially_restored_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
-        assert!(partially_restored_alpha > 0.0 && partially_restored_alpha < original_text_alpha);
-
-        app.world_mut()
-            .resource_mut::<Exploration>()
-            .set_planet_view_open(true);
-        app.update();
-        let reversed_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
-        assert!(reversed_alpha < partially_restored_alpha);
-
-        for _ in 0..20 {
-            app.update();
-        }
-        assert!(app.world().resource::<Exploration>().planet_view_ready());
-        assert!(app.world().get::<TextColor>(readout).unwrap().0.alpha() < 0.01);
 
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -2028,22 +2057,8 @@ pub(crate) mod tests {
         for _ in 0..20 {
             app.update();
         }
-        let restored_text_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
-        let restored_background_alpha = app
-            .world()
-            .get::<BackgroundColor>(readout)
-            .unwrap()
-            .0
-            .alpha();
-        assert!((restored_text_alpha - original_text_alpha).abs() < 0.01);
-        assert!((restored_background_alpha - original_background_alpha).abs() < 0.01);
-        assert!(
-            app.world()
-                .get::<Text>(readout)
-                .unwrap()
-                .0
-                .starts_with("On foot · WASD move")
-        );
+        let returned = rendered_text(app.world_mut());
+        assert!(returned.contains("Travel mode: On foot"));
 
         app.world_mut()
             .resource_mut::<ButtonInput<KeyCode>>()
@@ -2053,17 +2068,7 @@ pub(crate) mod tests {
         assert!(state.selector);
         assert!(!state.planet_camera.is_requested_open());
         assert!(!state.planet_view_ready());
-        assert!(
-            app.world()
-                .get::<Text>(readout)
-                .unwrap()
-                .0
-                .starts_with("SUMMON VEHICLE")
-        );
-        assert!(
-            (app.world().get::<TextColor>(readout).unwrap().0.alpha() - original_text_alpha).abs()
-                < 0.01
-        );
+        assert!(rendered_text(app.world_mut()).contains("Vehicle selection"));
 
         {
             let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
@@ -2076,22 +2081,158 @@ pub(crate) mod tests {
         assert!(!state.selector);
         assert!(!state.planet_camera.is_requested_open());
         assert!(!state.planet_view_ready());
-        let post_selector_text_alpha = app.world().get::<TextColor>(readout).unwrap().0.alpha();
-        let post_selector_background_alpha = app
-            .world()
-            .get::<BackgroundColor>(readout)
-            .unwrap()
-            .0
-            .alpha();
-        assert!((post_selector_text_alpha - original_text_alpha).abs() < 0.01);
-        assert!((post_selector_background_alpha - original_background_alpha).abs() < 0.01);
+        assert!(rendered_text(app.world_mut()).contains("Travel mode: On foot"));
+    }
+
+    #[test]
+    fn exploration_sidebar_reports_the_active_travel_mode_and_measurements() {
+        let (mut app, _) = fixture();
+        app.world_mut()
+            .insert_resource(crate::ui::UiFont(Handle::default()));
+        app.world_mut().run_system_once(view::setup).unwrap();
+        app.update();
+
+        fn rendered_text(world: &mut World) -> String {
+            let mut query = world.query::<&Text>();
+            query
+                .iter(world)
+                .map(|text| text.0.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        let mut car = Vehicle::new(Kind::Car, Vec3::NEG_Z);
+        car.clearance = 1.7;
+        let car_entity = app
+            .world_mut()
+            .spawn((car, LinearVelocity(Vec3::X * 4.0)))
+            .id();
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(car_entity);
+        app.world_mut().run_system_once(view::readout).unwrap();
+        let car_readout = rendered_text(app.world_mut());
+        assert!(car_readout.contains("Travel mode: Car"), "{car_readout}");
+        assert!(car_readout.contains("Speed: 4.0 m/s"), "{car_readout}");
+        assert!(car_readout.contains("Clearance: 1.7 m"), "{car_readout}");
+        assert!(car_readout.contains("W/S drive · A/D steer · E exit"));
+
+        let mut plane = Vehicle::new(Kind::Plane, Vec3::NEG_Z);
+        plane.clearance = 12.5;
+        let plane_entity = app
+            .world_mut()
+            .spawn((plane, LinearVelocity(Vec3::X * 18.0)))
+            .id();
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(plane_entity);
+        app.world_mut().run_system_once(view::readout).unwrap();
+        let plane_readout = rendered_text(app.world_mut());
         assert!(
-            app.world()
-                .get::<Text>(readout)
-                .unwrap()
-                .0
-                .starts_with("On foot · WASD move")
+            plane_readout.contains("Travel mode: Plane"),
+            "{plane_readout}"
         );
+        assert!(plane_readout.contains("Speed: 18.0 m/s"), "{plane_readout}");
+        assert!(
+            plane_readout.contains("Clearance: 12.5 m"),
+            "{plane_readout}"
+        );
+        assert!(plane_readout.contains("W/S pitch · A/D roll · Shift thrust"));
+    }
+
+    #[test]
+    fn sidebar_wheel_and_pointer_gestures_are_captured_from_planet_view() {
+        use bevy::{
+            input::mouse::{MouseScrollUnit, MouseWheel},
+            input::touch::TouchPhase,
+            ui::{ComputedNode, ScrollPosition, UiGlobalTransform},
+            window::PrimaryWindow,
+        };
+
+        let (mut app, _) = fixture();
+        let mut window = Window::default();
+        window.set_cursor_position(Some(Vec2::new(80.0, 80.0)));
+        let window_entity = app.world_mut().spawn((window, PrimaryWindow)).id();
+        app.world_mut().spawn((
+            crate::ui::Sidebar,
+            ComputedNode {
+                size: Vec2::new(280.0, 600.0),
+                ..default()
+            },
+            UiGlobalTransform::from_xy(140.0, 300.0),
+        ));
+        let scroll_area = app
+            .world_mut()
+            .spawn((
+                crate::ui::SidebarScrollArea,
+                ScrollPosition::default(),
+                ComputedNode {
+                    size: Vec2::new(260.0, 500.0),
+                    content_size: Vec2::new(260.0, 1000.0),
+                    ..default()
+                },
+            ))
+            .id();
+        app.add_systems(
+            PreUpdate,
+            crate::ui::scroll_sidebar
+                .after(InputSystems)
+                .before(ExplorationInput),
+        );
+        spawn_planet_view_camera(&mut app);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..180 {
+            app.update();
+        }
+        let radius_before = app
+            .world()
+            .resource::<Exploration>()
+            .planet_camera
+            .requested_radius();
+
+        app.world_mut().write_message(MouseWheel {
+            unit: MouseScrollUnit::Line,
+            x: 0.0,
+            y: -1.0,
+            window: window_entity,
+            phase: TouchPhase::Moved,
+        });
+        app.update();
+        let scroll_position = app.world().get::<ScrollPosition>(scroll_area).unwrap();
+        assert_eq!(scroll_position.0.y, 48.0);
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_camera
+                .requested_radius(),
+            radius_before,
+            "sidebar wheel input must not zoom the planet"
+        );
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .planet_pointer
+                .capture(),
+            Some(shared::planet_view_interface::PointerCapture::Interface)
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .clear_just_pressed(MouseButton::Left);
+        app.world_mut()
+            .get_mut::<Window>(window_entity)
+            .unwrap()
+            .set_cursor_position(Some(Vec2::new(200.0, 160.0)));
+        app.update();
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .release(MouseButton::Left);
+        app.update();
+        let state = app.world().resource::<Exploration>();
+        assert!(state.planet_selection_click.is_none());
+        assert!(state.selected_destination.is_none());
     }
 
     #[test]
