@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use avian3d::prelude::Position;
 use bevy::camera::CameraUpdateSystems;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -733,7 +734,7 @@ fn update_planet_marker_overlay(
     mut hovered: ResMut<HoveredPlanetMarker>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &Transform), With<MainCamera>>,
-    explorer: Query<&Transform, With<Player>>,
+    explorer: Query<&Position, With<Player>>,
     mut ui: MarkerOverlayUi,
 ) {
     let visible = state.is_planet_view_active() && state.planet_view_interface_visible();
@@ -851,7 +852,7 @@ fn update_planet_marker_overlay(
         explorer
             .iter()
             .next()
-            .map(|transform| transform.translation)
+            .map(|position| position.0)
             .and_then(|position| {
                 project_anchor(camera, &camera_global, viewport, camera_position, position)
             })
@@ -1412,7 +1413,9 @@ fn set_dynamic_label(
 
 #[cfg(test)]
 mod tests {
+    use avian3d::prelude::{LinearVelocity, Position};
     use bevy::camera::{CameraProjection, RenderTargetInfo, Viewport};
+    use bevy::ecs::system::RunSystemOnce;
     use bevy::prelude::*;
     use bevy::state::app::{AppExtStates, StatesPlugin};
     use bevy::window::PrimaryWindow;
@@ -1426,7 +1429,7 @@ mod tests {
     };
     use crate::{
         exploration::{
-            Exploration, PlanetDestination, PlanetDestinationCollection, PlanetDestinationId,
+            Exploration, Kind, PlanetDestination, PlanetDestinationCollection, PlanetDestinationId,
             PlanetDestinationSurface,
         },
         map::{LevelRegions, MainCamera, WorldEpoch},
@@ -1651,6 +1654,141 @@ mod tests {
         app.update();
 
         assert!(app.world().contains_resource::<PlanetMarkerProjection>());
+    }
+
+    #[test]
+    fn explorer_dot_projects_the_synchronized_occupied_body_position() {
+        let (mut app, explorer) = crate::exploration::tests::fixture();
+        let car =
+            crate::exploration::tests::summon_and_enter_vehicle(&mut app, explorer, Kind::Car);
+        assert!(app.world().resource::<Exploration>().is_in_vehicle());
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .vehicle_entity(Kind::Car),
+            Some(car)
+        );
+
+        app.world_mut().spawn((PrimaryWindow, Window::default()));
+        let physical_size = UVec2::new(800, 600);
+        let scale_factor = 2.0;
+        let mut perspective = PerspectiveProjection {
+            far: 20_000.0,
+            ..default()
+        };
+        perspective.update(
+            physical_size.x as f32 / scale_factor,
+            physical_size.y as f32 / scale_factor,
+        );
+        let mut camera = Camera {
+            viewport: Some(Viewport {
+                physical_size,
+                ..default()
+            }),
+            ..default()
+        };
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size,
+            scale_factor,
+        });
+        camera.computed.clip_from_view = perspective.get_clip_from_view();
+        let initial_camera = Transform::from_xyz(0.0, 3_600.0, 0.0).looking_at(Vec3::ZERO, Vec3::Z);
+        app.world_mut().spawn((
+            MainCamera,
+            camera,
+            Projection::Perspective(perspective),
+            initial_camera,
+            GlobalTransform::from(initial_camera),
+        ));
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..24 {
+            app.update();
+        }
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .is_planet_view_active()
+        );
+
+        let body_position = Vec3::new(0.25, 0.968_245_8, 0.0) * shared::sphere::PLANET_RADIUS;
+        let stale_player_transform = Vec3::Y * shared::sphere::PLANET_RADIUS;
+        app.world_mut()
+            .entity_mut(car)
+            .insert((Position(body_position), LinearVelocity::ZERO));
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(body_position));
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Transform::from_translation(stale_player_transform));
+
+        let explorer_dot = app
+            .world_mut()
+            .spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    width: Val::Px(10.0),
+                    height: Val::Px(10.0),
+                    display: Display::None,
+                    ..default()
+                },
+                BackgroundColor(Color::WHITE),
+                super::ExplorerDot,
+            ))
+            .id();
+        app.world_mut().insert_resource(PlanetMarkerData::default());
+        app.world_mut()
+            .insert_resource(PlanetMarkerProjection::default());
+        app.world_mut()
+            .insert_resource(HoveredPlanetMarker::default());
+
+        app.world_mut()
+            .run_system_once(update_planet_marker_overlay)
+            .unwrap();
+
+        let (current_center, stale_center) = {
+            let world = app.world_mut();
+            let mut query = world.query_filtered::<(&Camera, &Transform), With<MainCamera>>();
+            let (camera, camera_transform) = query.iter(world).next().unwrap();
+            let viewport = camera.logical_viewport_rect().unwrap();
+            let camera_global = GlobalTransform::from(*camera_transform);
+            let current_center = super::project_anchor(
+                camera,
+                &camera_global,
+                viewport,
+                camera_transform.translation,
+                body_position,
+            )
+            .unwrap();
+            let stale_center = super::project_anchor(
+                camera,
+                &camera_global,
+                viewport,
+                camera_transform.translation,
+                stale_player_transform,
+            )
+            .unwrap();
+            (current_center, stale_center)
+        };
+        assert!(current_center.distance(stale_center) > 1.0);
+
+        let node = app.world().get::<Node>(explorer_dot).unwrap();
+        let actual_center = Vec2::new(
+            match node.left {
+                Val::Px(value) => value + 5.0,
+                other => panic!("expected pixel left, got {other:?}"),
+            },
+            match node.top {
+                Val::Px(value) => value + 5.0,
+                other => panic!("expected pixel top, got {other:?}"),
+            },
+        );
+        assert!(
+            actual_center.distance(current_center) <= 0.01,
+            "occupied explorer dot {actual_center:?} should follow current body projection {current_center:?}, not stale player transform {stale_center:?}"
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@ const DIAGNOSTIC_MAX_ENTRY_CAPTURE_LATE_SECONDS: f64 = 0.2;
 const DIAGNOSTIC_INITIAL_OPEN_DELAY_SECONDS: f64 = 0.1;
 const DIAGNOSTIC_REVERSAL_MINIMUM_GAP_SECONDS: f64 = 0.55;
 const DIAGNOSTIC_DRAG_READY_GAP_SECONDS: f64 = 0.2;
-const DIAGNOSTIC_DRAG_DURATION_SECONDS: f64 = 1.1;
+const DIAGNOSTIC_DRAG_CONFIRMATION_TIMEOUT_SECONDS: f64 = 2.0;
 const DIAGNOSTIC_OPPOSITE_DOT_THRESHOLD: f32 = -0.995;
 const DIAGNOSTIC_MOVEMENT_DURATION_SECONDS: f64 = 7.0;
 const DIAGNOSTIC_FINAL_RETURN_GAP_SECONDS: f64 = 0.15;
@@ -43,12 +43,18 @@ const DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS: f64 = 150.0;
 const FOLLOW_PROBE_MOVE_SECONDS: f64 = 3.0;
 const FOLLOW_PROBE_CAPTURE_DELAY_SECONDS: f64 = 0.75;
 const FOLLOW_PROBE_SECOND_CAPTURE_DELAY_SECONDS: f64 = 1.0;
-const FOLLOW_PROBE_NEAR_RADIUS_MARGIN_M: f32 = 900.0;
+const FOLLOW_PROBE_STEADY_WINDOW_SECONDS: f64 = 1.0;
+const FOLLOW_PROBE_MIN_STEADY_SAMPLE_COUNT: usize = 10;
+const FOLLOW_PROBE_MIN_STEADY_SPAN_SECONDS: f64 = 0.75;
+const FOLLOW_PROBE_RADIUS_TOLERANCE_M: f32 = 1.0;
+const FOLLOW_PROBE_MAX_RADIAL_LAG_RAD: f32 = 0.000_01;
+const FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX: f32 = 1.0;
+const RENDERED_POSE_CASE_TIMEOUT_SECONDS: f64 = 30.0;
 const DIAGNOSTIC_PARTIAL_VIEW_MIN_RADIUS_M: f32 = 2_050.0;
 const DIAGNOSTIC_EXTERIOR_READY_RADIUS_M: f32 = 5_800.0;
 const DIAGNOSTIC_RETURN_MIDPOINT_SECONDS: f64 = 1.2;
 const DIAGNOSTIC_RETURN_END_SECONDS: f64 = 2.6;
-const DIAGNOSTIC_CAPTURE_NAMES: [&str; 14] = [
+const DIAGNOSTIC_CAPTURE_NAMES: [&str; 20] = [
     "entry-0400ms.png",
     "entry-0800ms.png",
     "entry-1400ms.png",
@@ -63,7 +69,64 @@ const DIAGNOSTIC_CAPTURE_NAMES: [&str; 14] = [
     "near-follow-car-02.png",
     "near-follow-plane-01.png",
     "near-follow-plane-02.png",
+    "drag-far-oblique-before.png",
+    "drag-far-oblique-after.png",
+    "drag-mid-heading-before.png",
+    "drag-mid-heading-after.png",
+    "drag-near-polar-before.png",
+    "drag-near-polar-after.png",
 ];
+
+#[derive(Clone, Copy)]
+struct RenderedPoseCase {
+    name: &'static str,
+    before_capture: &'static str,
+    after_capture: &'static str,
+    target_radius: f32,
+    target_direction: Vec3,
+    start_cursor_offset: Vec2,
+}
+
+const RENDERED_POSE_CASES: [RenderedPoseCase; 3] = [
+    RenderedPoseCase {
+        name: "far-oblique",
+        before_capture: "drag-far-oblique-before.png",
+        after_capture: "drag-far-oblique-after.png",
+        target_radius: shared::planet_view::PLANET_VIEW_FAR_RADIUS,
+        target_direction: Vec3::new(0.44, 0.62, -0.64),
+        start_cursor_offset: Vec2::new(90.0, -55.0),
+    },
+    RenderedPoseCase {
+        name: "mid-heading",
+        before_capture: "drag-mid-heading-before.png",
+        after_capture: "drag-mid-heading-after.png",
+        target_radius: (shared::planet_view::PLANET_VIEW_NEAR_RADIUS
+            + shared::planet_view::PLANET_VIEW_FAR_RADIUS)
+            * 0.5,
+        target_direction: Vec3::new(-0.75, -0.3, 0.59),
+        start_cursor_offset: Vec2::new(-65.0, 35.0),
+    },
+    RenderedPoseCase {
+        name: "near-polar",
+        before_capture: "drag-near-polar-before.png",
+        after_capture: "drag-near-polar-after.png",
+        target_radius: shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 250.0,
+        target_direction: Vec3::new(0.07, 0.995, -0.05),
+        start_cursor_offset: Vec2::new(80.0, 45.0),
+    },
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RenderedPoseStage {
+    #[default]
+    Waiting,
+    Zooming,
+    WaitingForBeforeCapture,
+    Dragging,
+    WaitingForAfterCapture,
+    WaitingForAfterCaptureSave,
+    Complete,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FollowProbeMode {
@@ -123,12 +186,26 @@ struct PlanetTransitionDiagnostic {
     drag_started: bool,
     drag_started_at: Option<f64>,
     drag_input_frames: u16,
+    drag_frames: Vec<super::diagnostic_drag::DragInputFrame>,
+    drag_next_frame: usize,
     drag_finished: bool,
     drag_finished_at: Option<f64>,
+    drag_failed_at: Option<f64>,
     drag_start_direction: Vec3,
     drag_end_direction_dot: f32,
+    drag_start_camera: Option<Transform>,
+    drag_failure_camera: Option<Transform>,
+    drag_start_cursor: Option<Vec2>,
+    drag_end_cursor: Option<Vec2>,
     opposite_pose_confirmed: bool,
     opposite_pose_at: Option<f64>,
+    rendered_pose_stage: RenderedPoseStage,
+    rendered_pose_case_index: usize,
+    rendered_pose_failed_cases: usize,
+    rendered_pose_stage_started_at: Option<f64>,
+    rendered_pose_zoom_requested: bool,
+    rendered_pose_drag_frames: Vec<super::diagnostic_drag::DragInputFrame>,
+    rendered_pose_drag_next_frame: usize,
     movement_started: bool,
     movement_started_at: Option<f64>,
     movement_finished: bool,
@@ -152,13 +229,13 @@ struct PlanetTransitionDiagnostic {
 }
 
 #[derive(Default)]
-struct DiagnosticWorldWarmup {
+pub(super) struct DiagnosticWorldWarmup {
     last_collision_count: Option<usize>,
     stable_frames: u8,
 }
 
 impl DiagnosticWorldWarmup {
-    fn observe(&mut self, collision_count: usize) -> bool {
+    pub(super) fn observe(&mut self, collision_count: usize) -> bool {
         if collision_count < DIAGNOSTIC_MINIMUM_COLLIDERS {
             self.last_collision_count = None;
             self.stable_frames = 0;
@@ -185,6 +262,31 @@ fn transition_action_due(
 
 fn opposite_pose_reached(radial_dot: f32) -> bool {
     radial_dot.is_finite() && radial_dot <= DIAGNOSTIC_OPPOSITE_DOT_THRESHOLD
+}
+
+fn drag_confirmation_expired(
+    drag_finished_at: Option<f64>,
+    elapsed: f64,
+    opposite_pose_confirmed: bool,
+) -> bool {
+    !opposite_pose_confirmed
+        && drag_finished_at.is_some_and(|finished_at| {
+            elapsed - finished_at >= DIAGNOSTIC_DRAG_CONFIRMATION_TIMEOUT_SECONDS
+        })
+}
+
+fn drag_probe_ready(diagnostic: &PlanetTransitionDiagnostic) -> bool {
+    diagnostic.opposite_pose_confirmed || diagnostic.drag_failed_at.is_some()
+}
+
+fn drag_progress_at(diagnostic: &PlanetTransitionDiagnostic) -> Option<f64> {
+    diagnostic.opposite_pose_at.or(diagnostic.drag_failed_at)
+}
+
+fn rendered_pose_cases_passed(diagnostic: &PlanetTransitionDiagnostic) -> bool {
+    diagnostic.rendered_pose_stage == RenderedPoseStage::Complete
+        && diagnostic.rendered_pose_case_index == RENDERED_POSE_CASES.len()
+        && diagnostic.rendered_pose_failed_cases == 0
 }
 
 fn radius_motion_flags(
@@ -241,6 +343,7 @@ struct DiagnosticSample {
 #[derive(Clone, Copy, Default)]
 struct FollowProbeSample {
     elapsed: f64,
+    motion_elapsed_s: f64,
     mode: Option<FollowProbeMode>,
     view_active: bool,
     follows: bool,
@@ -251,6 +354,8 @@ struct FollowProbeSample {
     projected_center_logical: Vec2,
     marker_center_physical: Vec2,
     marker_size_physical: Vec2,
+    marker_anchor_body_separation_m: f32,
+    marker_anchor_registration_error_physical_px: f32,
     marker_visible: bool,
     registration_error_physical_px: f32,
 }
@@ -258,8 +363,9 @@ struct FollowProbeSample {
 impl FollowProbeSample {
     fn csv_row(self) -> String {
         format!(
-            "{:.5},{},{},{},{:.4},{:.4},{:.4},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{}\n",
+            "{:.5},{:.5},{},{},{},{:.4},{:.4},{:.4},{:.6},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{:.4},{}\n",
             self.elapsed,
+            self.motion_elapsed_s,
             self.mode.map_or("none", FollowProbeMode::name),
             self.view_active,
             self.follows,
@@ -273,6 +379,8 @@ impl FollowProbeSample {
             self.marker_center_physical.y,
             self.marker_size_physical.x,
             self.marker_size_physical.y,
+            self.marker_anchor_body_separation_m,
+            self.marker_anchor_registration_error_physical_px,
             self.registration_error_physical_px,
             self.marker_visible,
         )
@@ -361,7 +469,7 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         .expect("write Planet transition diagnostic event header");
     fs::write(
         directory.join("follow-probe.csv"),
-        "elapsed_s,mode,view_active,follow,requested_radius_m,attained_radius_m,body_speed_m_s,radial_lag_rad,projected_x_logical,projected_y_logical,marker_x_physical,marker_y_physical,marker_width_physical,marker_height_physical,registration_error_physical_px,marker_visible\n",
+        "elapsed_s,motion_elapsed_s,mode,view_active,follow,requested_radius_m,attained_radius_m,body_speed_m_s,radial_lag_rad,projected_x_logical,projected_y_logical,marker_x_physical,marker_y_physical,marker_width_physical,marker_height_physical,marker_anchor_body_separation_m,marker_anchor_registration_error_physical_px,registration_error_physical_px,marker_visible\n",
     )
     .expect("write Planet near-follow diagnostic header");
     app.insert_resource(PlanetTransitionDiagnostic {
@@ -373,12 +481,26 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         drag_started: false,
         drag_started_at: None,
         drag_input_frames: 0,
+        drag_frames: Vec::new(),
+        drag_next_frame: 0,
         drag_finished: false,
         drag_finished_at: None,
+        drag_failed_at: None,
         drag_start_direction: Vec3::Y,
         drag_end_direction_dot: f32::NAN,
+        drag_start_camera: None,
+        drag_failure_camera: None,
+        drag_start_cursor: None,
+        drag_end_cursor: None,
         opposite_pose_confirmed: false,
         opposite_pose_at: None,
+        rendered_pose_stage: RenderedPoseStage::Waiting,
+        rendered_pose_case_index: 0,
+        rendered_pose_failed_cases: 0,
+        rendered_pose_stage_started_at: None,
+        rendered_pose_zoom_requested: false,
+        rendered_pose_drag_frames: Vec::new(),
+        rendered_pose_drag_next_frame: 0,
         movement_started: false,
         movement_started_at: None,
         movement_finished: false,
@@ -412,6 +534,7 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         capture_transition_diagnostic
             .after(CameraUpdateSystems)
             .after(bevy::ui::UiSystems::PostLayout)
+            .after(bevy::transform::TransformSystems::Propagate)
             .run_if(in_state(AppState::Playing)),
     );
 }
@@ -520,7 +643,7 @@ fn drive_transition_diagnostic(world: &mut World) {
             DIAGNOSTIC_FINAL_RETURN_GAP_SECONDS,
             planet_active
                 && diagnostic.movement_finished
-                && diagnostic.opposite_pose_confirmed
+                && drag_probe_ready(&diagnostic)
                 && diagnostic.follow_probe_stage == FollowProbeStage::Complete,
         ),
         4 => transition_action_due(
@@ -570,6 +693,7 @@ fn drive_transition_diagnostic(world: &mut World) {
     {
         diagnostic.drag_started = true;
         diagnostic.drag_started_at = Some(elapsed);
+        diagnostic.drag_start_camera = main_camera_pose(world);
         write_diagnostic_event(
             &mut diagnostic,
             elapsed,
@@ -578,61 +702,69 @@ fn drive_transition_diagnostic(world: &mut World) {
         );
     }
     if diagnostic.drag_started && !diagnostic.drag_finished {
-        let drag_started_at = diagnostic
-            .drag_started_at
-            .expect("drag start time is set when drag begins");
-        let drag_elapsed = elapsed - drag_started_at;
-        if let Some(frames) = diagnostic_cursor_path(world, diagnostic.drag_start_direction) {
-            if drag_elapsed < DIAGNOSTIC_DRAG_DURATION_SECONDS {
-                let fraction =
-                    (drag_elapsed / DIAGNOSTIC_DRAG_DURATION_SECONDS).clamp(0.0, 1.0) as f32;
-                if let Some(frame) = sample_cursor_frame(&frames, fraction) {
-                    set_primary_cursor(world, frame.position);
-                    set_mouse_button(world, MouseButton::Left, frame.pressed);
-                    if frame.pressed {
-                        diagnostic.drag_input_frames =
-                            diagnostic.drag_input_frames.saturating_add(1);
-                    }
-                }
+        if diagnostic.drag_frames.is_empty() {
+            if let Some(frames) = diagnostic_cursor_path(world, diagnostic.drag_start_direction) {
+                diagnostic.drag_start_cursor = frames.first().map(|frame| frame.position);
+                diagnostic.drag_end_cursor = frames.last().map(|frame| frame.position);
+                diagnostic.drag_frames = frames;
             } else {
-                if let Some(end) = frames.last() {
-                    set_primary_cursor(world, end.position);
-                }
-                set_mouse_button(world, MouseButton::Left, false);
+                diagnostic.errors.push("could not construct the released multi-stroke drag route inside the logical viewport".into());
                 diagnostic.drag_finished = true;
                 diagnostic.drag_finished_at = Some(elapsed);
-                let drag_input_frames = diagnostic.drag_input_frames;
-                write_diagnostic_event(
-                    &mut diagnostic,
-                    elapsed,
-                    "production-pointer",
-                    format!(
-                        "released drag after {} pressed frames; waiting for measured opposite pose",
-                        drag_input_frames
-                    ),
-                );
             }
         }
-    } else {
+        if let Some(frame) = diagnostic
+            .drag_frames
+            .get(diagnostic.drag_next_frame)
+            .copied()
+        {
+            set_primary_cursor(world, frame.position);
+            set_mouse_button(world, MouseButton::Left, frame.pressed);
+            diagnostic.drag_next_frame += 1;
+            if frame.pressed {
+                diagnostic.drag_input_frames = diagnostic.drag_input_frames.saturating_add(1);
+            }
+        } else if diagnostic.drag_frames.is_empty() {
+            set_mouse_button(world, MouseButton::Left, false);
+        } else {
+            set_mouse_button(world, MouseButton::Left, false);
+            diagnostic.drag_finished = true;
+            diagnostic.drag_finished_at = Some(elapsed);
+            let drag_input_frames = diagnostic.drag_input_frames;
+            let planned_frames = diagnostic.drag_frames.len();
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "production-pointer",
+                format!(
+                    "released after replaying all {planned_frames} planned input frames ({drag_input_frames} pressed); waiting for measured opposite pose"
+                ),
+            );
+        }
+    } else if !diagnostic.drag_started {
         set_mouse_button(world, MouseButton::Left, false);
     }
+
+    drive_rendered_pose_probe(world, &mut diagnostic, elapsed, planet_active);
 
     if !diagnostic.movement_started
         && transition_action_due(
             elapsed,
-            diagnostic.opposite_pose_at,
+            drag_progress_at(&diagnostic),
             DIAGNOSTIC_DRAG_READY_GAP_SECONDS,
-            planet_active && diagnostic.opposite_pose_confirmed,
+            planet_active
+                && drag_probe_ready(&diagnostic)
+                && matches!(diagnostic.rendered_pose_stage, RenderedPoseStage::Complete),
         )
     {
         diagnostic.movement_started = true;
         diagnostic.movement_started_at = Some(elapsed);
-        write_diagnostic_event(
-            &mut diagnostic,
-            elapsed,
-            "physics-probe",
-            "began ordinary on-foot W with short steering input while Planet view is active at the opposite pose",
-        );
+        let movement_message = if diagnostic.opposite_pose_confirmed {
+            "began ordinary on-foot W with short steering input while Planet view is active at the opposite pose"
+        } else {
+            "began ordinary on-foot W to continue independent diagnostics after the antipode drag failed"
+        };
+        write_diagnostic_event(&mut diagnostic, elapsed, "physics-probe", movement_message);
     }
     if let Some(movement_started_at) = diagnostic.movement_started_at {
         let movement_elapsed = elapsed - movement_started_at;
@@ -751,7 +883,7 @@ fn write_transition_diagnostic_configuration(
     let mode = "visual-transition-diagnostic";
     let capture_target = super::background_capture_description(world);
     let map_schedule = format!(
-        "open after warmup+{DIAGNOSTIC_INITIAL_OPEN_DELAY_SECONDS:.2}s; reverse after each prior tap+{DIAGNOSTIC_REVERSAL_MINIMUM_GAP_SECONDS:.2}s while transition is partial; detached on-foot movement for {DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s; nearest-radius active-follow captures for on-foot, car, and plane; final return after these scenes; storm reopen after return+{DIAGNOSTIC_STORM_REOPEN_GAP_SECONDS:.2}s; close after {DIAGNOSTIC_STORM_CLOSE_GAP_SECONDS:.2}s hidden"
+        "open after warmup+{DIAGNOSTIC_INITIAL_OPEN_DELAY_SECONDS:.2}s; reverse after each prior tap+{DIAGNOSTIC_REVERSAL_MINIMUM_GAP_SECONDS:.2}s while transition is partial; detached on-foot movement for {DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s; rendered pointer-drag poses at far, middle, and near-polar headings; nearest-radius active-follow captures for on-foot, car, and plane; final return after these scenes; storm reopen after return+{DIAGNOSTIC_STORM_REOPEN_GAP_SECONDS:.2}s; close after {DIAGNOSTIC_STORM_CLOSE_GAP_SECONDS:.2}s hidden"
     );
     let entry_captures = "0.40,0.80,1.40 after initial M";
     let return_captures = "1.20,2.60 after final return M";
@@ -759,7 +891,7 @@ fn write_transition_diagnostic_configuration(
         "precipitation intensity 0.85 with moving wind; production particle visibility";
     let weather_captures = "storm-hidden.png,storm-restored.png";
     let text = format!(
-        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\ncapture_target={}\nbackground_capture_is_performance_comparable=false\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\nreleased_multi_stroke_drag={DIAGNOSTIC_DRAG_DURATION_SECONDS:.2}s after exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nnear_follow_probe=on-foot,car,plane; nearest requested radius {PLANET_VIEW_NEAR_RADIUS:.1}m; two captures 250ms apart after attained radius is within {FOLLOW_PROBE_NEAR_RADIUS_MARGIN_M:.1}m\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
+        "mode={}\nacceptance_claim=none\nsource_revision={}\nsource_branch={}\nasset_root={}\ncargo_target_dir={}\npackage_version={}\nwindow={}\ncapture_target={}\nbackground_capture_is_performance_comparable=false\nprewarm_minimum_physics_colliders={DIAGNOSTIC_MINIMUM_COLLIDERS}\nprewarm_stable_world_frames={DIAGNOSTIC_STABLE_WORLD_FRAMES}\nM_action_schedule={}\nentry_screenshots={}\nreturn_screenshots={}\nreleased_multi_stroke_drag=all planned cursor/button frames replayed once at the exterior-ready radius {DIAGNOSTIC_EXTERIOR_READY_RADIUS_M:.0}m\ndrag_path={drag}\non_foot_movement={DIAGNOSTIC_MOVEMENT_DURATION_SECONDS:.2}s after confirmed opposite pose\nnear_follow_probe=on-foot,car,plane; nearest requested radius {PLANET_VIEW_NEAR_RADIUS:.1}m; two captures 250ms apart after attained radius is within {FOLLOW_PROBE_RADIUS_TOLERANCE_M:.1}m\nfollow_steady_acceptance=max radial lag {FOLLOW_PROBE_MAX_RADIAL_LAG_RAD:.5}rad; max overlay registration {FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX:.1} physical px\nroute_timeout_s={DIAGNOSTIC_ROUTE_TIMEOUT_SECONDS:.0}\nweather_fixture={}\nweather_screenshots={}\ncapture_metadata=target_vs_actual_request_time_and_camera_pose\n",
         mode,
         std::env::var("TERRA_SOURCE_REVISION").unwrap_or_else(|_| "unset".into()),
         std::env::var("TERRA_SOURCE_BRANCH").unwrap_or_else(|_| "unset".into()),
@@ -795,13 +927,6 @@ fn diagnostic_cursor_path(
     )
 }
 
-fn sample_cursor_frame(
-    frames: &[super::diagnostic_drag::DragInputFrame],
-    fraction: f32,
-) -> Option<super::diagnostic_drag::DragInputFrame> {
-    super::diagnostic_drag::sample_drag_frame(frames, fraction)
-}
-
 fn set_primary_cursor(world: &mut World, position: Vec2) {
     let mut query = world.query_filtered::<&mut Window, With<PrimaryWindow>>();
     if let Ok(mut window) = query.single_mut(world) {
@@ -817,6 +942,300 @@ fn set_mouse_button(world: &mut World, button: MouseButton, pressed: bool) {
             mouse.release(button);
         }
     }
+}
+
+fn drive_rendered_pose_probe(
+    world: &mut World,
+    diagnostic: &mut PlanetTransitionDiagnostic,
+    elapsed: f64,
+    planet_active: bool,
+) {
+    if diagnostic.rendered_pose_stage == RenderedPoseStage::Waiting {
+        if !drag_probe_ready(diagnostic) {
+            return;
+        }
+        diagnostic.rendered_pose_stage = RenderedPoseStage::Zooming;
+        diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+        write_diagnostic_event(
+            diagnostic,
+            elapsed,
+            "rendered-pose-probe",
+            "began far-oblique, mid-heading, and near-polar pointer-drags",
+        );
+    }
+    if matches!(diagnostic.rendered_pose_stage, RenderedPoseStage::Complete) {
+        set_mouse_button(world, MouseButton::Left, false);
+        return;
+    }
+
+    let Some(case) = RENDERED_POSE_CASES
+        .get(diagnostic.rendered_pose_case_index)
+        .copied()
+    else {
+        diagnostic.rendered_pose_stage = RenderedPoseStage::Complete;
+        diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+        write_diagnostic_event(
+            diagnostic,
+            elapsed,
+            "rendered-pose-probe",
+            "all rendered heading and zoom cases completed",
+        );
+        set_mouse_button(world, MouseButton::Left, false);
+        return;
+    };
+    let stage_started_at = diagnostic.rendered_pose_stage_started_at.unwrap_or(elapsed);
+    if elapsed - stage_started_at > RENDERED_POSE_CASE_TIMEOUT_SECONDS {
+        let (requested, attained) = world.resource::<Exploration>().planet_view_camera_radii();
+        let direction_error = main_camera_pose(world).map_or(f32::NAN, |pose| {
+            pose.translation
+                .normalize_or(Vec3::Y)
+                .angle_between(case.target_direction.normalize_or(Vec3::Y))
+        });
+        fail_rendered_pose_probe(
+            diagnostic,
+            elapsed,
+            case,
+            &format!(
+                "timed out after {:.0}s (requested_radius_m={requested:.2}, attained_radius_m={attained:.2}, target_direction_error_rad={direction_error:.5})",
+                RENDERED_POSE_CASE_TIMEOUT_SECONDS
+            ),
+        );
+        set_mouse_button(world, MouseButton::Left, false);
+        return;
+    }
+
+    match diagnostic.rendered_pose_stage {
+        RenderedPoseStage::Waiting => unreachable!("waiting handled above"),
+        RenderedPoseStage::Zooming => {
+            set_mouse_button(world, MouseButton::Left, false);
+            if !diagnostic.rendered_pose_zoom_requested {
+                let (requested, _) = world.resource::<Exploration>().planet_view_camera_radii();
+                let wheel_delta = (requested / case.target_radius).ln();
+                if wheel_delta.abs() > 0.001
+                    && !world
+                        .resource_mut::<Exploration>()
+                        .request_planet_view_zoom(wheel_delta)
+                {
+                    fail_rendered_pose_probe(
+                        diagnostic,
+                        elapsed,
+                        case,
+                        "could not request camera zoom",
+                    );
+                    return;
+                }
+                diagnostic.rendered_pose_zoom_requested = true;
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "rendered-pose-probe",
+                    format!(
+                        "{} requested radius {:.1}m for rendered surface drag",
+                        case.name, case.target_radius
+                    ),
+                );
+            }
+            let (requested, attained) = world.resource::<Exploration>().planet_view_camera_radii();
+            if planet_active
+                && (requested - case.target_radius).abs() <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
+                && (attained - case.target_radius).abs() <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
+            {
+                if capture_once(world, diagnostic, case.before_capture, elapsed, |_| true) {
+                    let camera_pose = main_camera_pose(world).unwrap_or_default();
+                    let direction_error = camera_pose
+                        .translation
+                        .normalize_or(Vec3::Y)
+                        .angle_between(case.target_direction.normalize_or(Vec3::Y));
+                    write_diagnostic_event(
+                        diagnostic,
+                        elapsed,
+                        "rendered-pose-capture",
+                        format!(
+                            "{} before drag; requested_radius_m={requested:.2}; attained_radius_m={attained:.2}; target_direction_error_rad={direction_error:.5}",
+                            case.name
+                        ),
+                    );
+                    diagnostic.rendered_pose_stage = RenderedPoseStage::WaitingForBeforeCapture;
+                    diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+                }
+            }
+        }
+        RenderedPoseStage::WaitingForBeforeCapture => {
+            set_mouse_button(world, MouseButton::Left, false);
+            if file_is_nonempty(
+                &diagnostic
+                    .directory
+                    .join("captures")
+                    .join(case.before_capture),
+            ) {
+                let Some(window) = primary_window(world) else {
+                    fail_rendered_pose_probe(
+                        diagnostic,
+                        elapsed,
+                        case,
+                        "primary window missing before pointer drag",
+                    );
+                    return;
+                };
+                let Some(camera_pose) = main_camera_pose(world) else {
+                    fail_rendered_pose_probe(
+                        diagnostic,
+                        elapsed,
+                        case,
+                        "main camera missing before pointer drag",
+                    );
+                    return;
+                };
+                let Some(vertical_fov) = main_camera_vertical_fov(world) else {
+                    fail_rendered_pose_probe(
+                        diagnostic,
+                        elapsed,
+                        case,
+                        "perspective projection missing before pointer drag",
+                    );
+                    return;
+                };
+                let start_cursor =
+                    Vec2::new(window.width(), window.height()) * 0.5 + case.start_cursor_offset;
+                let Some(frames) = super::diagnostic_drag::surface_drag_toward_direction(
+                    camera_pose,
+                    case.target_direction,
+                    start_cursor,
+                    window.width(),
+                    window.height(),
+                    vertical_fov,
+                ) else {
+                    fail_rendered_pose_probe(
+                        diagnostic,
+                        elapsed,
+                        case,
+                        "could not construct a surface-grab route inside the logical viewport",
+                    );
+                    return;
+                };
+                let frame_count = frames.len();
+                diagnostic.rendered_pose_drag_frames = frames;
+                diagnostic.rendered_pose_drag_next_frame = 0;
+                diagnostic.rendered_pose_stage = RenderedPoseStage::Dragging;
+                diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "rendered-pose-probe",
+                    format!(
+                        "{} began production left-button surface drag with {frame_count} cursor frames",
+                        case.name
+                    ),
+                );
+            }
+        }
+        RenderedPoseStage::Dragging => {
+            if let Some(frame) = diagnostic
+                .rendered_pose_drag_frames
+                .get(diagnostic.rendered_pose_drag_next_frame)
+                .copied()
+            {
+                set_primary_cursor(world, frame.position);
+                set_mouse_button(world, MouseButton::Left, frame.pressed);
+                diagnostic.rendered_pose_drag_next_frame += 1;
+            } else {
+                set_mouse_button(world, MouseButton::Left, false);
+                diagnostic.rendered_pose_stage = RenderedPoseStage::WaitingForAfterCapture;
+                diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+            }
+        }
+        RenderedPoseStage::WaitingForAfterCapture => {
+            set_mouse_button(world, MouseButton::Left, false);
+            let (requested, attained) = world.resource::<Exploration>().planet_view_camera_radii();
+            let camera_pose = main_camera_pose(world).unwrap_or_default();
+            let direction_error = camera_pose
+                .translation
+                .normalize_or(Vec3::Y)
+                .angle_between(case.target_direction.normalize_or(Vec3::Y));
+            if planet_active
+                && direction_error <= 0.025
+                && (requested - case.target_radius).abs() <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
+                && (attained - case.target_radius).abs() <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
+                && elapsed - stage_started_at >= 0.05
+                && capture_once(world, diagnostic, case.after_capture, elapsed, |_| true)
+            {
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "rendered-pose-capture",
+                    format!(
+                        "{} after drag; requested_radius_m={requested:.2}; attained_radius_m={attained:.2}; target_direction_error_rad={direction_error:.5}",
+                        case.name
+                    ),
+                );
+                diagnostic.rendered_pose_stage = RenderedPoseStage::WaitingForAfterCaptureSave;
+                diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+            }
+        }
+        RenderedPoseStage::WaitingForAfterCaptureSave => {
+            set_mouse_button(world, MouseButton::Left, false);
+            if file_is_nonempty(
+                &diagnostic
+                    .directory
+                    .join("captures")
+                    .join(case.after_capture),
+            ) {
+                diagnostic.rendered_pose_case_index += 1;
+                diagnostic.rendered_pose_zoom_requested = false;
+                diagnostic.rendered_pose_drag_frames.clear();
+                diagnostic.rendered_pose_drag_next_frame = 0;
+                diagnostic.rendered_pose_stage =
+                    if diagnostic.rendered_pose_case_index == RENDERED_POSE_CASES.len() {
+                        RenderedPoseStage::Complete
+                    } else {
+                        RenderedPoseStage::Zooming
+                    };
+                diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "rendered-pose-probe",
+                    format!("{} surface drag capture pair saved", case.name),
+                );
+            }
+        }
+        RenderedPoseStage::Complete => {
+            set_mouse_button(world, MouseButton::Left, false);
+        }
+    }
+}
+
+fn main_camera_vertical_fov(world: &mut World) -> Option<f32> {
+    let mut projections = world.query_filtered::<&Projection, With<MainCamera>>();
+    projections
+        .iter(world)
+        .find_map(|projection| match projection {
+            Projection::Perspective(perspective) => Some(perspective.fov),
+            Projection::Orthographic(_) | Projection::Custom(_) => None,
+        })
+}
+
+fn fail_rendered_pose_probe(
+    diagnostic: &mut PlanetTransitionDiagnostic,
+    elapsed: f64,
+    case: RenderedPoseCase,
+    reason: &str,
+) {
+    let reason = format!("{}: {reason}", case.name);
+    diagnostic.rendered_pose_failed_cases += 1;
+    diagnostic.rendered_pose_case_index += 1;
+    diagnostic.rendered_pose_zoom_requested = false;
+    diagnostic.rendered_pose_drag_frames.clear();
+    diagnostic.rendered_pose_drag_next_frame = 0;
+    diagnostic.rendered_pose_stage =
+        if diagnostic.rendered_pose_case_index == RENDERED_POSE_CASES.len() {
+            RenderedPoseStage::Complete
+        } else {
+            RenderedPoseStage::Zooming
+        };
+    diagnostic.rendered_pose_stage_started_at = Some(elapsed);
+    diagnostic.errors.push(reason.clone());
+    write_diagnostic_event(diagnostic, elapsed, "rendered-pose-probe-failed", reason);
 }
 
 fn drive_diagnostic_movement(world: &mut World, elapsed: f64) {
@@ -1143,9 +1562,17 @@ fn drive_follow_probe_view(
         );
     }
 
+    let settled_radial_lag = controlled_body_motion(world)
+        .zip(main_camera_pose(world))
+        .map(|((body_position, _), camera_pose)| {
+            radial_angle(camera_pose.translation, body_position)
+        })
+        .unwrap_or(f32::INFINITY);
     let target_reached = ready
-        && requested <= PLANET_VIEW_NEAR_RADIUS + 1.0
-        && attained <= PLANET_VIEW_NEAR_RADIUS + FOLLOW_PROBE_NEAR_RADIUS_MARGIN_M;
+        && follows
+        && requested <= PLANET_VIEW_NEAR_RADIUS + FOLLOW_PROBE_RADIUS_TOLERANCE_M
+        && (attained - PLANET_VIEW_NEAR_RADIUS).abs() <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
+        && settled_radial_lag <= FOLLOW_PROBE_MAX_RADIAL_LAG_RAD;
     if target_reached {
         if diagnostic.follow_probe_motion_started_at.is_none() {
             diagnostic.follow_probe_motion_started_at = Some(elapsed);
@@ -1325,11 +1752,21 @@ fn capture_transition_diagnostic(world: &mut World) {
         _ => None,
     };
     if let Some(mode) = follow_probe_mode {
-        diagnostic
-            .follow_probe_samples
-            .push(follow_probe_sample(world, elapsed, mode));
+        let motion_elapsed_s = diagnostic
+            .follow_probe_motion_started_at
+            .map_or(f64::NAN, |motion_started_at| elapsed - motion_started_at);
+        diagnostic.follow_probe_samples.push(follow_probe_sample(
+            world,
+            elapsed,
+            motion_elapsed_s,
+            mode,
+        ));
     }
-    if diagnostic.drag_finished && !diagnostic.opposite_pose_confirmed && sample.planet_active {
+    if diagnostic.drag_finished
+        && !diagnostic.opposite_pose_confirmed
+        && diagnostic.drag_failed_at.is_none()
+        && sample.planet_active
+    {
         diagnostic.drag_end_direction_dot = sample
             .camera
             .translation
@@ -1347,6 +1784,47 @@ fn capture_transition_diagnostic(world: &mut World) {
                     "camera reached the opposite pose; radial dot with starting body={:.5}",
                     drag_end_direction_dot
                 ),
+            );
+        } else if drag_confirmation_expired(
+            diagnostic.drag_finished_at,
+            elapsed,
+            diagnostic.opposite_pose_confirmed,
+        ) {
+            diagnostic.drag_failed_at = Some(elapsed);
+            diagnostic.drag_failure_camera = Some(sample.camera);
+            let start_position = diagnostic
+                .drag_start_camera
+                .map_or(Vec3::splat(f32::NAN), |camera| camera.translation);
+            let failure_position = sample.camera.translation;
+            let start_cursor = diagnostic
+                .drag_start_cursor
+                .map_or(Vec2::splat(f32::NAN), |cursor| cursor);
+            let end_cursor = diagnostic
+                .drag_end_cursor
+                .map_or(Vec2::splat(f32::NAN), |cursor| cursor);
+            let planned_frames = diagnostic.drag_frames.len();
+            let reason = format!(
+                "antipode drag did not reach dot <= {DIAGNOSTIC_OPPOSITE_DOT_THRESHOLD:.3} within {DIAGNOSTIC_DRAG_CONFIRMATION_TIMEOUT_SECONDS:.1}s; dot={:.5}; frames={}/{}; start_cursor=({:.1},{:.1}); end_cursor=({:.1},{:.1}); start_camera=({:.2},{:.2},{:.2}); end_camera=({:.2},{:.2},{:.2})",
+                diagnostic.drag_end_direction_dot,
+                diagnostic.drag_input_frames,
+                planned_frames,
+                start_cursor.x,
+                start_cursor.y,
+                end_cursor.x,
+                end_cursor.y,
+                start_position.x,
+                start_position.y,
+                start_position.z,
+                failure_position.x,
+                failure_position.y,
+                failure_position.z,
+            );
+            diagnostic.errors.push(reason.clone());
+            write_diagnostic_event(
+                &mut diagnostic,
+                elapsed,
+                "production-pointer-failed",
+                reason,
             );
         }
     }
@@ -1423,7 +1901,8 @@ fn capture_transition_diagnostic(world: &mut World) {
         && sample.planet_active
         && sample.planet_ready
         && sample.follows
-        && sample.attained_radius <= PLANET_VIEW_NEAR_RADIUS + FOLLOW_PROBE_NEAR_RADIUS_MARGIN_M
+        && (sample.attained_radius - PLANET_VIEW_NEAR_RADIUS).abs()
+            <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
         && diagnostic
             .follow_probe_motion_start
             .zip(controlled_body_motion(world).map(|(position, _)| position))
@@ -1586,6 +2065,7 @@ fn diagnostic_sample(world: &mut World, elapsed: f64, movement_window: bool) -> 
 fn follow_probe_sample(
     world: &mut World,
     elapsed: f64,
+    motion_elapsed_s: f64,
     mode: FollowProbeMode,
 ) -> FollowProbeSample {
     let (view_active, follows, requested_radius, attained_radius) = {
@@ -1601,18 +2081,29 @@ fn follow_probe_sample(
     let (body_position, body_velocity) =
         controlled_body_motion(world).unwrap_or((Vec3::splat(f32::NAN), Vec3::splat(f32::NAN)));
     let camera_pose = main_camera_pose(world).unwrap_or_default();
-    let radial_lag_rad = camera_pose
-        .translation
-        .normalize_or(Vec3::Y)
-        .dot(body_position.normalize_or(Vec3::Y))
-        .clamp(-1.0, 1.0)
-        .acos();
-    let projected_center_logical = {
+    let camera_direction = camera_pose.translation.normalize_or(Vec3::Y);
+    let body_direction = body_position.normalize_or(Vec3::Y);
+    let radial_lag_rad = radial_angle(camera_direction, body_direction);
+    let marker_anchor_position = {
+        let mut players = world.query_filtered::<&Position, With<crate::map::Player>>();
+        players
+            .iter(world)
+            .next()
+            .map(|position| position.0)
+            .unwrap_or(Vec3::splat(f32::NAN))
+    };
+    let (projected_center_logical, projected_marker_anchor_logical) = {
         let mut cameras = world.query_filtered::<(&Camera, &GlobalTransform), With<MainCamera>>();
         cameras
             .iter(world)
-            .find_map(|(camera, transform)| camera.world_to_viewport(transform, body_position).ok())
-            .unwrap_or(Vec2::splat(f32::NAN))
+            .find_map(|(camera, transform)| {
+                let body = camera.world_to_viewport(transform, body_position).ok()?;
+                let anchor = camera
+                    .world_to_viewport(transform, marker_anchor_position)
+                    .unwrap_or(Vec2::splat(f32::NAN));
+                Some((body, anchor))
+            })
+            .unwrap_or((Vec2::splat(f32::NAN), Vec2::splat(f32::NAN)))
     };
     let scale_factor = primary_window(world).map_or(f32::NAN, |window| window.scale_factor());
     let marker = crate::planet_markers::explorer_marker_layout(world);
@@ -1621,11 +2112,21 @@ fn follow_probe_sample(
     let marker_size_physical = marker.map_or(Vec2::splat(f32::NAN), |layout| layout.physical_size);
     let marker_visible = marker.is_some_and(|layout| layout.visible);
     let expected_center_physical = projected_center_logical * scale_factor;
+    let expected_marker_anchor_physical = projected_marker_anchor_logical * scale_factor;
+    let marker_anchor_body_separation_m = marker_anchor_position.distance(body_position);
+    let marker_anchor_registration_error_physical_px = marker
+        .map(|layout| {
+            layout
+                .physical_center
+                .distance(expected_marker_anchor_physical)
+        })
+        .unwrap_or(f32::NAN);
     let registration_error_physical_px = marker
         .map(|layout| layout.physical_center.distance(expected_center_physical))
         .unwrap_or(f32::NAN);
     FollowProbeSample {
         elapsed,
+        motion_elapsed_s,
         mode: Some(mode),
         view_active,
         follows,
@@ -1636,9 +2137,17 @@ fn follow_probe_sample(
         projected_center_logical,
         marker_center_physical,
         marker_size_physical,
+        marker_anchor_body_separation_m,
+        marker_anchor_registration_error_physical_px,
         marker_visible,
         registration_error_physical_px,
     }
+}
+
+fn radial_angle(from: Vec3, to: Vec3) -> f32 {
+    let from = from.normalize_or(Vec3::Y);
+    let to = to.normalize_or(Vec3::Y);
+    from.cross(to).length().atan2(from.dot(to))
 }
 
 fn capture_once(
@@ -1714,7 +2223,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
             .push(format!("write camera transition trace: {error}"));
     }
     let follow_trace = format!(
-        "elapsed_s,mode,view_active,follow,requested_radius_m,attained_radius_m,body_speed_m_s,radial_lag_rad,projected_x_logical,projected_y_logical,marker_x_physical,marker_y_physical,marker_width_physical,marker_height_physical,registration_error_physical_px,marker_visible\n{}",
+        "elapsed_s,motion_elapsed_s,mode,view_active,follow,requested_radius_m,attained_radius_m,body_speed_m_s,radial_lag_rad,projected_x_logical,projected_y_logical,marker_x_physical,marker_y_physical,marker_width_physical,marker_height_physical,marker_anchor_body_separation_m,marker_anchor_registration_error_physical_px,registration_error_physical_px,marker_visible\n{}",
         diagnostic
             .follow_probe_samples
             .iter()
@@ -1804,35 +2313,40 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
         .entry_capture_lateness_s
         .iter()
         .all(|late| late.is_finite() && *late <= DIAGNOSTIC_MAX_ENTRY_CAPTURE_LATE_SECONDS);
-    let on_foot_follow_passed =
-        follow_probe_mode_passed(&diagnostic.follow_probe_samples, FollowProbeMode::OnFoot);
-    let car_follow_passed =
-        follow_probe_mode_passed(&diagnostic.follow_probe_samples, FollowProbeMode::Car);
-    let plane_follow_passed =
-        follow_probe_mode_passed(&diagnostic.follow_probe_samples, FollowProbeMode::Plane);
+    let on_foot_steady_samples =
+        steady_follow_probe_samples(&diagnostic.follow_probe_samples, FollowProbeMode::OnFoot);
+    let car_steady_samples =
+        steady_follow_probe_samples(&diagnostic.follow_probe_samples, FollowProbeMode::Car);
+    let plane_steady_samples =
+        steady_follow_probe_samples(&diagnostic.follow_probe_samples, FollowProbeMode::Plane);
+    let on_foot_follow_passed = follow_probe_window_passed(&on_foot_steady_samples);
+    let car_follow_passed = follow_probe_window_passed(&car_steady_samples);
+    let plane_follow_passed = follow_probe_window_passed(&plane_steady_samples);
     let follow_probes_passed = on_foot_follow_passed && car_follow_passed && plane_follow_passed;
-    let max_follow_radial_lag_rad = diagnostic
-        .follow_probe_samples
+    let rendered_pose_cases_passed = rendered_pose_cases_passed(diagnostic);
+    let steady_samples = on_foot_steady_samples
         .iter()
-        .filter(|sample| sample.mode.is_some() && sample.radial_lag_rad.is_finite())
-        .filter(|sample| {
-            sample.view_active
-                && sample.follows
-                && sample.requested_radius <= PLANET_VIEW_NEAR_RADIUS + 1.0
-        })
+        .chain(&car_steady_samples)
+        .chain(&plane_steady_samples)
+        .copied()
+        .collect::<Vec<_>>();
+    let near_follow_steady_sample_count = steady_samples.len();
+    let max_follow_radial_lag_rad = steady_samples
+        .iter()
         .map(|sample| sample.radial_lag_rad)
         .fold(0.0_f32, f32::max);
-    let max_registration_error_physical_px = diagnostic
-        .follow_probe_samples
+    let max_registration_error_physical_px = steady_samples
         .iter()
-        .filter(|sample| sample.mode.is_some() && sample.registration_error_physical_px.is_finite())
-        .filter(|sample| {
-            sample.view_active
-                && sample.follows
-                && sample.requested_radius <= PLANET_VIEW_NEAR_RADIUS + 1.0
-        })
         .map(|sample| sample.registration_error_physical_px)
         .fold(0.0_f32, f32::max);
+    let max_marker_anchor_registration_error_physical_px = steady_samples
+        .iter()
+        .map(|sample| sample.marker_anchor_registration_error_physical_px)
+        .fold(0.0_f32, f32::max);
+    let near_follow_sample_count = diagnostic.follow_probe_samples.len();
+    let on_foot_steady_window_s = follow_probe_window_span(&on_foot_steady_samples);
+    let car_steady_window_s = follow_probe_window_span(&car_steady_samples);
+    let plane_steady_window_s = follow_probe_window_span(&plane_steady_samples);
     let m_event_elapsed_s = diagnostic
         .m_event_times
         .iter()
@@ -1849,6 +2363,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
         && movement_passed
         && diagnostic.follow_probe_stage == FollowProbeStage::Complete
         && follow_probes_passed
+        && rendered_pose_cases_passed
         && diagnostic.samples.iter().any(|sample| sample.planet_active)
         && diagnostic
             .samples
@@ -1861,6 +2376,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
         && capture_metadata_valid
         && entry_captures_timely
         && drag_passed
+        && rendered_pose_cases_passed
         && movement_passed
         && follow_probes_passed
         && weather_hidden
@@ -1870,48 +2386,86 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     } else {
         "diagnostic-rejected"
     };
+    let route_timed_out = diagnostic.route_timed_out;
+    let m_events_sent = diagnostic
+        .m_events_sent
+        .iter()
+        .filter(|sent| **sent)
+        .count();
+    let drag_started_s = diagnostic
+        .drag_started_at
+        .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}"));
+    let drag_released_s = diagnostic
+        .drag_finished_at
+        .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}"));
+    let drag_failed_s = diagnostic
+        .drag_failed_at
+        .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}"));
+    let opposite_pose_s = diagnostic
+        .opposite_pose_at
+        .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}"));
+    let drag_input_frames = diagnostic.drag_input_frames;
+    let drag_planned_frames = diagnostic.drag_frames.len();
+    let drag_opposite_dot = diagnostic.drag_end_direction_dot;
+    let drag_start_camera_position = diagnostic.drag_start_camera.map_or_else(
+        || "missing".to_owned(),
+        |camera| {
+            format!(
+                "{:.2},{:.2},{:.2}",
+                camera.translation.x, camera.translation.y, camera.translation.z
+            )
+        },
+    );
+    let drag_failure_camera_position = diagnostic.drag_failure_camera.map_or_else(
+        || "missing".to_owned(),
+        |camera| {
+            format!(
+                "{:.2},{:.2},{:.2}",
+                camera.translation.x, camera.translation.y, camera.translation.z
+            )
+        },
+    );
+    let drag_start_cursor = diagnostic.drag_start_cursor.map_or_else(
+        || "missing".to_owned(),
+        |cursor| format!("{:.1},{:.1}", cursor.x, cursor.y),
+    );
+    let drag_end_cursor = diagnostic.drag_end_cursor.map_or_else(
+        || "missing".to_owned(),
+        |cursor| format!("{:.1},{:.1}", cursor.x, cursor.y),
+    );
+    let body_path_m = movement.traveled_m;
+    let max_body_excursion_m = movement.max_excursion_m;
+    let movement_started_s = diagnostic
+        .movement_started_at
+        .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}"));
+    let movement_finished_s = diagnostic
+        .movement_finished_at
+        .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}"));
+    let collision_world_live_during_movement = motion_samples
+        .iter()
+        .any(|sample| sample.collision_colliders > 0);
+    let entry_capture_lateness_s = diagnostic
+        .entry_capture_lateness_s
+        .into_iter()
+        .map(|late| format!("{late:.5}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let on_foot_steady_sample_count = on_foot_steady_samples.len();
+    let car_steady_sample_count = car_steady_samples.len();
+    let plane_steady_sample_count = plane_steady_samples.len();
+    let capture_metadata_rows = diagnostic.capture_metadata.len();
+    let rendered_pose_case_index = diagnostic.rendered_pose_case_index;
+    let rendered_pose_failed_cases = diagnostic.rendered_pose_failed_cases;
+    let rendered_pose_stage = format!("{:?}", diagnostic.rendered_pose_stage);
+    let weather_kind_at_player = diagnostic
+        .samples
+        .iter()
+        .find(|sample| sample.weather_intensity > 0.2)
+        .map_or("unknown", |sample| sample.weather_kind);
+    let missing_captures = missing_captures.join(";");
+    let errors = diagnostic.errors.join(";");
     let report = format!(
-        "mode=visual-diagnostic\nacceptance_claim=none\nstatus={status}\nroute_timed_out={}\nm_events_sent={}\nm_event_elapsed_s={m_event_elapsed_s}\nroute_complete={route_complete}\ndrag_started_s={}\ndrag_released_s={}\nopposite_pose_s={}\ndrag_input_frames={}\ndrag_opposite_dot={:.5}\nbody_path_m={:.4}\nmax_body_excursion_m={:.4}\nmovement_started_s={}\nmovement_finished_s={}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nnear_follow_on_foot_passed={on_foot_follow_passed}\nnear_follow_car_passed={car_follow_passed}\nnear_follow_plane_passed={plane_follow_passed}\nnear_follow_sample_count={}\nmax_follow_radial_lag_rad={max_follow_radial_lag_rad:.6}\nmax_marker_registration_error_physical_px={max_registration_error_physical_px:.3}\nentry_capture_lateness_s={:.5},{:.5},{:.5}\nentry_captures_timely={entry_captures_timely}\ncapture_metadata_rows={}\ncapture_metadata_valid={capture_metadata_valid}\nweather_kind_at_player={}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={}\nerrors={}\n",
-        diagnostic.route_timed_out,
-        diagnostic
-            .m_events_sent
-            .iter()
-            .filter(|sent| **sent)
-            .count(),
-        diagnostic
-            .drag_started_at
-            .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}")),
-        diagnostic
-            .drag_finished_at
-            .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}")),
-        diagnostic
-            .opposite_pose_at
-            .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}")),
-        diagnostic.drag_input_frames,
-        diagnostic.drag_end_direction_dot,
-        movement.traveled_m,
-        movement.max_excursion_m,
-        diagnostic
-            .movement_started_at
-            .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}")),
-        diagnostic
-            .movement_finished_at
-            .map_or_else(|| "missing".to_owned(), |at| format!("{at:.5}")),
-        motion_samples
-            .iter()
-            .any(|sample| sample.collision_colliders > 0),
-        diagnostic.entry_capture_lateness_s[0],
-        diagnostic.entry_capture_lateness_s[1],
-        diagnostic.entry_capture_lateness_s[2],
-        diagnostic.follow_probe_samples.len(),
-        diagnostic.capture_metadata.len(),
-        diagnostic
-            .samples
-            .iter()
-            .find(|sample| sample.weather_intensity > 0.2)
-            .map_or("unknown", |sample| sample.weather_kind),
-        missing_captures.join(";"),
-        diagnostic.errors.join(";"),
+        "mode=visual-diagnostic\nacceptance_claim=none\nstatus={status}\nroute_timed_out={route_timed_out}\nm_events_sent={m_events_sent}\nm_event_elapsed_s={m_event_elapsed_s}\nroute_complete={route_complete}\ndrag_started_s={drag_started_s}\ndrag_released_s={drag_released_s}\ndrag_failed_s={drag_failed_s}\nopposite_pose_s={opposite_pose_s}\ndrag_input_frames={drag_input_frames}\ndrag_planned_frames={drag_planned_frames}\ndrag_opposite_dot={drag_opposite_dot:.5}\ndrag_start_camera_position={drag_start_camera_position}\ndrag_failure_camera_position={drag_failure_camera_position}\ndrag_start_cursor={drag_start_cursor}\ndrag_end_cursor={drag_end_cursor}\nrendered_pose_cases_passed={rendered_pose_cases_passed}\nrendered_pose_case_index={rendered_pose_case_index}\nrendered_pose_failed_cases={rendered_pose_failed_cases}\nrendered_pose_stage={rendered_pose_stage}\nbody_path_m={body_path_m:.4}\nmax_body_excursion_m={max_body_excursion_m:.4}\nmovement_started_s={movement_started_s}\nmovement_finished_s={movement_finished_s}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={collision_world_live_during_movement}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nnear_follow_on_foot_passed={on_foot_follow_passed}\nnear_follow_car_passed={car_follow_passed}\nnear_follow_plane_passed={plane_follow_passed}\nnear_follow_sample_count={near_follow_sample_count}\nnear_follow_steady_sample_count={near_follow_steady_sample_count}\nnear_follow_on_foot_steady_sample_count={on_foot_steady_sample_count}\nnear_follow_on_foot_steady_window_s={on_foot_steady_window_s:.3}\nnear_follow_car_steady_sample_count={car_steady_sample_count}\nnear_follow_car_steady_window_s={car_steady_window_s:.3}\nnear_follow_plane_steady_sample_count={plane_steady_sample_count}\nnear_follow_plane_steady_window_s={plane_steady_window_s:.3}\nmax_follow_radial_lag_rad={max_follow_radial_lag_rad:.6}\nmax_marker_registration_error_physical_px={max_registration_error_physical_px:.3}\nmax_marker_anchor_registration_error_physical_px={max_marker_anchor_registration_error_physical_px:.3}\nentry_capture_lateness_s={entry_capture_lateness_s}\nentry_captures_timely={entry_captures_timely}\ncapture_metadata_rows={capture_metadata_rows}\ncapture_metadata_valid={capture_metadata_valid}\nweather_kind_at_player={weather_kind_at_player}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={missing_captures}\nerrors={errors}\n",
     );
     if let Err(error) = fs::write(diagnostic.directory.join("diagnostic-status.txt"), report) {
         diagnostic
@@ -1965,20 +2519,48 @@ fn return_captures_saved(diagnostic: &PlanetTransitionDiagnostic) -> bool {
         .all(|name| file_is_nonempty(&diagnostic.directory.join("captures").join(name)))
 }
 
-fn follow_probe_mode_passed(samples: &[FollowProbeSample], mode: FollowProbeMode) -> bool {
-    samples.iter().any(|sample| {
-        sample.mode == Some(mode)
-            && sample.view_active
-            && sample.follows
-            && sample.requested_radius <= PLANET_VIEW_NEAR_RADIUS + 1.0
-            && sample.attained_radius <= PLANET_VIEW_NEAR_RADIUS + FOLLOW_PROBE_NEAR_RADIUS_MARGIN_M
-            && sample.body_speed_m_s >= 0.5
-            && sample.radial_lag_rad.is_finite()
-            && sample.radial_lag_rad <= 0.01
-            && sample.marker_visible
-            && sample.registration_error_physical_px.is_finite()
-            && sample.registration_error_physical_px <= 4.0
-    })
+fn steady_follow_probe_samples(
+    samples: &[FollowProbeSample],
+    mode: FollowProbeMode,
+) -> Vec<&FollowProbeSample> {
+    let window_start = FOLLOW_PROBE_MOVE_SECONDS - FOLLOW_PROBE_STEADY_WINDOW_SECONDS;
+    samples
+        .iter()
+        .filter(|sample| {
+            sample.mode == Some(mode)
+                && sample.motion_elapsed_s >= window_start
+                && sample.motion_elapsed_s <= FOLLOW_PROBE_MOVE_SECONDS
+                && sample.view_active
+                && sample.follows
+                && sample.requested_radius
+                    <= PLANET_VIEW_NEAR_RADIUS + FOLLOW_PROBE_RADIUS_TOLERANCE_M
+                && (sample.attained_radius - PLANET_VIEW_NEAR_RADIUS).abs()
+                    <= FOLLOW_PROBE_RADIUS_TOLERANCE_M
+                && sample.body_speed_m_s >= 0.5
+                && sample.marker_visible
+                && sample.radial_lag_rad.is_finite()
+                && sample.registration_error_physical_px.is_finite()
+        })
+        .collect()
+}
+
+fn follow_probe_window_span(samples: &[&FollowProbeSample]) -> f64 {
+    samples
+        .first()
+        .zip(samples.last())
+        .map_or(0.0, |(first, last)| {
+            last.motion_elapsed_s - first.motion_elapsed_s
+        })
+}
+
+fn follow_probe_window_passed(samples: &[&FollowProbeSample]) -> bool {
+    samples.len() >= FOLLOW_PROBE_MIN_STEADY_SAMPLE_COUNT
+        && follow_probe_window_span(samples) >= FOLLOW_PROBE_MIN_STEADY_SPAN_SECONDS
+        && samples.iter().all(|sample| {
+            sample.radial_lag_rad <= FOLLOW_PROBE_MAX_RADIAL_LAG_RAD
+                && sample.registration_error_physical_px
+                    <= FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX
+        })
 }
 
 fn capture_metadata_is_exactly_once(rows: &[String]) -> bool {
@@ -1993,7 +2575,8 @@ fn capture_metadata_is_exactly_once(rows: &[String]) -> bool {
 mod transition_diagnostic_tests {
     use super::{
         DIAGNOSTIC_CAPTURE_NAMES, DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES,
-        DiagnosticWorldWarmup, radius_motion_flags, transition_action_due,
+        DiagnosticWorldWarmup, FollowProbeSample, PlanetTransitionDiagnostic,
+        finish_transition_diagnostic, radius_motion_flags, transition_action_due,
     };
     use bevy::{
         input::InputSystems,
@@ -2004,6 +2587,305 @@ mod transition_diagnostic_tests {
 
     use crate::{exploration::Exploration, map::MainCamera};
 
+    fn clear_mouse_edges(mut mouse: ResMut<ButtonInput<MouseButton>>) {
+        mouse.clear_just_pressed(MouseButton::Left);
+        mouse.clear_just_released(MouseButton::Left);
+    }
+
+    fn transition_driver_app() -> (App, Entity) {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        app.world_mut().spawn((
+            PrimaryWindow,
+            Window {
+                resolution: WindowResolution::new(2560, 1440).with_scale_factor_override(2.0),
+                ..default()
+            },
+        ));
+        let camera = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                Transform::from_xyz(0.0, 2005.0, -5.0)
+                    .looking_at(Vec3::new(0.0, 2000.6, 0.0), Vec3::Y),
+                Projection::Perspective(PerspectiveProjection::default()),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..180 {
+            app.update();
+        }
+        app.add_systems(PreUpdate, clear_mouse_edges.before(InputSystems));
+        app.add_systems(
+            PreUpdate,
+            super::drive_transition_diagnostic
+                .after(InputSystems)
+                .before(crate::exploration::ExplorationInput),
+        );
+        (app, camera)
+    }
+
+    fn diagnostic_test_directory(label: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time follows the Unix epoch")
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("terra-{label}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("create diagnostic output directory");
+        directory
+    }
+
+    #[test]
+    fn diagnostic_status_preserves_named_follow_and_capture_metrics() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time follows the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "terra-transition-status-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create diagnostic output directory");
+
+        let mut diagnostic = PlanetTransitionDiagnostic {
+            directory: directory.clone(),
+            entry_capture_lateness_s: [0.11, 0.22, 0.33],
+            capture_metadata: vec!["entry-a,0.0\n".into(), "entry-b,0.0\n".into()],
+            follow_probe_samples: {
+                let probe =
+                    |elapsed,
+                     motion_elapsed_s,
+                     attained_radius,
+                     body_speed_m_s,
+                     radial_lag_rad,
+                     registration_error_physical_px| FollowProbeSample {
+                        elapsed,
+                        motion_elapsed_s,
+                        mode: Some(super::FollowProbeMode::OnFoot),
+                        view_active: true,
+                        follows: true,
+                        requested_radius: super::PLANET_VIEW_NEAR_RADIUS,
+                        attained_radius,
+                        body_speed_m_s,
+                        radial_lag_rad,
+                        marker_visible: true,
+                        marker_anchor_body_separation_m: 0.75,
+                        marker_anchor_registration_error_physical_px: 0.5,
+                        registration_error_physical_px,
+                        ..default()
+                    };
+                vec![
+                    probe(9.0, 0.4, super::PLANET_VIEW_NEAR_RADIUS, 3.0, 0.9, 70.0),
+                    probe(
+                        10.0,
+                        2.1,
+                        super::PLANET_VIEW_NEAR_RADIUS + 500.0,
+                        3.0,
+                        0.8,
+                        80.0,
+                    ),
+                    probe(
+                        10.1,
+                        2.1,
+                        super::PLANET_VIEW_NEAR_RADIUS,
+                        3.0,
+                        0.000001,
+                        1.0,
+                    ),
+                    probe(10.3, 2.4, super::PLANET_VIEW_NEAR_RADIUS, 0.0, 0.7, 60.0),
+                    probe(
+                        10.5,
+                        2.6,
+                        super::PLANET_VIEW_NEAR_RADIUS,
+                        3.0,
+                        0.000001,
+                        1.5,
+                    ),
+                    probe(
+                        10.8,
+                        2.9,
+                        super::PLANET_VIEW_NEAR_RADIUS,
+                        3.0,
+                        0.000001,
+                        2.0,
+                    ),
+                ]
+            },
+            ..default()
+        };
+        finish_transition_diagnostic(&mut diagnostic);
+
+        let status = std::fs::read_to_string(directory.join("diagnostic-status.txt"))
+            .expect("read actual status report");
+        assert!(status.contains("near_follow_sample_count=6\n"), "{status}");
+        assert!(
+            status.contains("near_follow_steady_sample_count=3\n"),
+            "{status}"
+        );
+        assert!(
+            status.contains("near_follow_on_foot_steady_sample_count=3\n"),
+            "{status}"
+        );
+        assert!(
+            status.contains("near_follow_on_foot_steady_window_s=0.800\n"),
+            "{status}"
+        );
+        assert!(
+            status.contains("max_follow_radial_lag_rad=0.000001\n"),
+            "{status}"
+        );
+        assert!(
+            status.contains("max_marker_registration_error_physical_px=2.000\n"),
+            "{status}"
+        );
+        assert!(
+            status.contains("rendered_pose_cases_passed=false\n"),
+            "{status}"
+        );
+        assert!(status.contains("rendered_pose_case_index=0\n"), "{status}");
+        assert!(
+            status.contains("entry_capture_lateness_s=0.11000,0.22000,0.33000\n"),
+            "{status}"
+        );
+        assert!(status.contains("capture_metadata_rows=2\n"), "{status}");
+        assert!(
+            status.contains("max_marker_anchor_registration_error_physical_px=0.500\n"),
+            "{status}"
+        );
+        let follow_csv = std::fs::read_to_string(directory.join("follow-probe.csv"))
+            .expect("read actual follow probe CSV");
+        assert!(follow_csv.starts_with("elapsed_s,motion_elapsed_s,mode,"));
+        assert!(follow_csv.contains("10.50000,2.60000,on-foot"));
+        assert!(follow_csv.contains(",0.7500,0.5000,1.5000,true\n"));
+
+        std::fs::remove_dir_all(directory).expect("remove diagnostic output directory");
+    }
+
+    #[test]
+    fn steady_follow_window_requires_attained_zoom_tracking_and_pixel_rounding_bound() {
+        let sample = |motion_elapsed_s, attained_radius, radial_lag_rad, registration_error| {
+            FollowProbeSample {
+                motion_elapsed_s,
+                mode: Some(super::FollowProbeMode::OnFoot),
+                view_active: true,
+                follows: true,
+                requested_radius: super::PLANET_VIEW_NEAR_RADIUS,
+                attained_radius,
+                body_speed_m_s: 3.0,
+                radial_lag_rad,
+                marker_visible: true,
+                registration_error_physical_px: registration_error,
+                ..default()
+            }
+        };
+        let samples = (0..12)
+            .map(|index| {
+                let motion_elapsed_s = 2.0 + f64::from(index) * 0.08;
+                sample(
+                    motion_elapsed_s,
+                    super::PLANET_VIEW_NEAR_RADIUS + 0.5,
+                    0.000001,
+                    0.7,
+                )
+            })
+            .collect::<Vec<_>>();
+        let steady = super::steady_follow_probe_samples(&samples, super::FollowProbeMode::OnFoot);
+        assert!(super::follow_probe_window_passed(&steady));
+
+        let excessive_zoom_offset =
+            sample(2.5, super::PLANET_VIEW_NEAR_RADIUS + 1.1, 0.000001, 0.7);
+        let samples_with_unsettled_zoom = [samples.clone(), vec![excessive_zoom_offset]].concat();
+        assert_eq!(
+            super::steady_follow_probe_samples(
+                &samples_with_unsettled_zoom,
+                super::FollowProbeMode::OnFoot
+            )
+            .len(),
+            samples.len()
+        );
+
+        let mut excessive_lag = samples.clone();
+        excessive_lag[0].radial_lag_rad = 0.0001;
+        assert!(!super::follow_probe_window_passed(
+            &super::steady_follow_probe_samples(&excessive_lag, super::FollowProbeMode::OnFoot)
+        ));
+
+        let mut excessive_registration = samples.clone();
+        excessive_registration[0].registration_error_physical_px = 1.01;
+        assert!(!super::follow_probe_window_passed(
+            &super::steady_follow_probe_samples(
+                &excessive_registration,
+                super::FollowProbeMode::OnFoot
+            )
+        ));
+    }
+
+    #[test]
+    fn radial_angle_keeps_sub_milliradian_error_above_float_dot_precision_floor() {
+        let angle = 0.000_01_f32;
+        let from = Vec3::Y;
+        let to = Vec3::new(angle.sin(), angle.cos(), 0.0);
+
+        assert!((super::radial_angle(from, to) - angle).abs() < 1e-7);
+    }
+
+    #[test]
+    fn failed_rendered_pose_case_records_failure_and_advances_to_remaining_cases() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time follows the Unix epoch")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "terra-rendered-pose-failure-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).expect("create diagnostic output directory");
+        let mut diagnostic = PlanetTransitionDiagnostic {
+            directory: directory.clone(),
+            ..default()
+        };
+
+        super::fail_rendered_pose_probe(
+            &mut diagnostic,
+            10.0,
+            super::RENDERED_POSE_CASES[0],
+            "fixture failure",
+        );
+        assert_eq!(diagnostic.rendered_pose_case_index, 1);
+        assert_eq!(diagnostic.rendered_pose_failed_cases, 1);
+        assert_eq!(
+            diagnostic.rendered_pose_stage,
+            super::RenderedPoseStage::Zooming
+        );
+        assert!(!super::rendered_pose_cases_passed(&diagnostic));
+
+        super::fail_rendered_pose_probe(
+            &mut diagnostic,
+            20.0,
+            super::RENDERED_POSE_CASES[1],
+            "fixture failure",
+        );
+        super::fail_rendered_pose_probe(
+            &mut diagnostic,
+            30.0,
+            super::RENDERED_POSE_CASES[2],
+            "fixture failure",
+        );
+        assert_eq!(
+            diagnostic.rendered_pose_case_index,
+            super::RENDERED_POSE_CASES.len()
+        );
+        assert_eq!(diagnostic.rendered_pose_failed_cases, 3);
+        assert_eq!(
+            diagnostic.rendered_pose_stage,
+            super::RenderedPoseStage::Complete
+        );
+        assert!(!super::rendered_pose_cases_passed(&diagnostic));
+        std::fs::remove_dir_all(directory).expect("remove diagnostic output directory");
+    }
+
     #[test]
     fn opposite_pose_measurement_requires_the_strict_antipode_threshold() {
         assert!(super::opposite_pose_reached(-1.0));
@@ -2011,6 +2893,154 @@ mod transition_diagnostic_tests {
         assert!(!super::opposite_pose_reached(-0.9949));
         assert!(!super::opposite_pose_reached(-0.98399));
         assert!(!super::opposite_pose_reached(f32::NAN));
+    }
+
+    #[test]
+    fn failed_antipode_does_not_block_independent_pose_probes() {
+        let directory = diagnostic_test_directory("transition-driver-initial-drag");
+        let mut diagnostic = super::PlanetTransitionDiagnostic {
+            directory: directory.clone(),
+            ..default()
+        };
+        assert!(!super::drag_probe_ready(&diagnostic));
+        assert_eq!(super::drag_progress_at(&diagnostic), None);
+
+        diagnostic.drag_failed_at = Some(4.0);
+        assert!(super::drag_probe_ready(&diagnostic));
+        assert_eq!(super::drag_progress_at(&diagnostic), Some(4.0));
+
+        diagnostic.opposite_pose_confirmed = true;
+        diagnostic.opposite_pose_at = Some(3.5);
+        assert!(super::drag_probe_ready(&diagnostic));
+        assert_eq!(super::drag_progress_at(&diagnostic), Some(3.5));
+    }
+
+    #[test]
+    fn waiting_rendered_pose_probe_preserves_the_active_antipode_drag_button() {
+        let mut diagnostic = super::PlanetTransitionDiagnostic::default();
+        let mut world = World::new();
+        world.insert_resource(ButtonInput::<MouseButton>::default());
+        world
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+
+        super::drive_rendered_pose_probe(&mut world, &mut diagnostic, 2.5, true);
+
+        assert!(
+            world
+                .resource::<ButtonInput<MouseButton>>()
+                .pressed(MouseButton::Left)
+        );
+    }
+
+    #[test]
+    fn antipode_confirmation_timeout_is_bounded_and_only_applies_before_success() {
+        assert!(!super::drag_confirmation_expired(Some(2.0), 3.999, false));
+        assert!(super::drag_confirmation_expired(Some(2.0), 4.0, false));
+        assert!(!super::drag_confirmation_expired(Some(2.0), 4.0, true));
+        assert!(!super::drag_confirmation_expired(None, 100.0, false));
+    }
+
+    #[test]
+    fn full_transition_driver_leaves_the_initial_drag_button_owned_until_release() {
+        let (mut app, camera) = transition_driver_app();
+        let start_direction = app
+            .world()
+            .get::<Transform>(camera)
+            .expect("main camera transform")
+            .translation
+            .normalize();
+        let started_at = app.world().resource::<Time<Real>>().elapsed_secs_f64();
+        let drag_positions = [100.0, 160.0, 220.0, 280.0, 340.0, 400.0];
+        let directory = diagnostic_test_directory("transition-driver-initial-drag");
+        let mut diagnostic = super::PlanetTransitionDiagnostic {
+            directory: directory.clone(),
+            ..default()
+        };
+        diagnostic.started_at = Some(started_at);
+        diagnostic.drag_started = true;
+        diagnostic.drag_started_at = Some(0.0);
+        diagnostic.drag_start_direction = start_direction;
+        diagnostic.drag_frames = drag_positions
+            .into_iter()
+            .map(|y| super::super::diagnostic_drag::DragInputFrame {
+                position: Vec2::new(1272.0, y),
+                pressed: true,
+            })
+            .chain(std::iter::once(
+                super::super::diagnostic_drag::DragInputFrame {
+                    position: Vec2::new(1272.0, 400.0),
+                    pressed: false,
+                },
+            ))
+            .collect();
+        app.insert_resource(diagnostic);
+
+        for _ in 0..8 {
+            app.update();
+        }
+
+        let diagnostic = app.world().resource::<super::PlanetTransitionDiagnostic>();
+        assert!(
+            diagnostic.drag_finished,
+            "planned production drag did not release"
+        );
+        let end_direction = app
+            .world()
+            .get::<Transform>(camera)
+            .expect("main camera transform")
+            .translation
+            .normalize();
+        assert!(
+            start_direction.angle_between(end_direction) > 0.01,
+            "the full driver left the production camera fixed at {end_direction:?}"
+        );
+        std::fs::remove_dir_all(directory).expect("remove diagnostic output directory");
+    }
+
+    #[test]
+    fn full_transition_driver_does_not_repress_a_rendered_drag_each_frame() {
+        let (mut app, _) = transition_driver_app();
+        let started_at = app.world().resource::<Time<Real>>().elapsed_secs_f64();
+        let directory = diagnostic_test_directory("transition-driver-rendered-drag");
+        let mut diagnostic = super::PlanetTransitionDiagnostic {
+            directory: directory.clone(),
+            ..default()
+        };
+        diagnostic.started_at = Some(started_at);
+        diagnostic.drag_started = true;
+        diagnostic.drag_finished = true;
+        diagnostic.drag_finished_at = Some(started_at);
+        diagnostic.drag_frames = vec![super::super::diagnostic_drag::DragInputFrame {
+            position: Vec2::new(1272.0, 400.0),
+            pressed: false,
+        }];
+        diagnostic.rendered_pose_stage = super::RenderedPoseStage::Dragging;
+        diagnostic.rendered_pose_stage_started_at = Some(started_at);
+        diagnostic.rendered_pose_drag_frames = vec![
+            super::super::diagnostic_drag::DragInputFrame {
+                position: Vec2::new(700.0, 350.0),
+                pressed: true,
+            },
+            super::super::diagnostic_drag::DragInputFrame {
+                position: Vec2::new(740.0, 370.0),
+                pressed: true,
+            },
+        ];
+        app.world_mut()
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        app.insert_resource(diagnostic);
+
+        app.update();
+
+        let mouse = app.world().resource::<ButtonInput<MouseButton>>();
+        assert!(mouse.pressed(MouseButton::Left));
+        assert!(
+            !mouse.just_released(MouseButton::Left),
+            "the initial-drag owner released the rendered-pose button before pointer_input"
+        );
+        std::fs::remove_dir_all(directory).expect("remove diagnostic output directory");
     }
 
     #[test]
@@ -2083,6 +3113,20 @@ mod transition_diagnostic_tests {
             "near-follow-car-02.png",
             "near-follow-plane-01.png",
             "near-follow-plane-02.png",
+        ] {
+            assert!(super::DIAGNOSTIC_CAPTURE_NAMES.contains(&capture));
+        }
+    }
+
+    #[test]
+    fn diagnostic_capture_set_includes_before_and_after_frames_for_each_drag_pose() {
+        for capture in [
+            "drag-far-oblique-before.png",
+            "drag-far-oblique-after.png",
+            "drag-mid-heading-before.png",
+            "drag-mid-heading-after.png",
+            "drag-near-polar-before.png",
+            "drag-near-polar-after.png",
         ] {
             assert!(super::DIAGNOSTIC_CAPTURE_NAMES.contains(&capture));
         }
@@ -2166,6 +3210,16 @@ mod transition_diagnostic_tests {
         frames: Vec<super::super::diagnostic_drag::DragInputFrame>,
         start_direction: Vec3,
     ) -> f32 {
+        let end_direction =
+            production_pointer_drag_end_direction(frames, start_direction, PLANET_VIEW_FAR_RADIUS);
+        start_direction.normalize().dot(end_direction)
+    }
+
+    fn production_pointer_drag_end_direction(
+        frames: Vec<super::super::diagnostic_drag::DragInputFrame>,
+        start_direction: Vec3,
+        camera_radius: f32,
+    ) -> Vec3 {
         let (mut app, _) = crate::exploration::tests::fixture();
         app.world_mut().spawn((
             PrimaryWindow,
@@ -2186,13 +3240,21 @@ mod transition_diagnostic_tests {
         app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(true);
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request_planet_view_zoom((PLANET_VIEW_FAR_RADIUS / camera_radius).ln());
         for _ in 0..180 {
             app.update();
         }
 
         let start_direction = start_direction.normalize();
-        let start_pose = Transform::from_translation(start_direction * PLANET_VIEW_FAR_RADIUS)
-            .looking_at(Vec3::ZERO, Vec3::Y);
+        let world_up = if start_direction.dot(Vec3::Y).abs() > 0.95 {
+            Vec3::Z
+        } else {
+            Vec3::Y
+        };
+        let start_pose = Transform::from_translation(start_direction * camera_radius)
+            .looking_at(Vec3::ZERO, world_up);
         app.world_mut()
             .resource_mut::<Exploration>()
             .toggle_planet_view_follow(start_pose);
@@ -2210,7 +3272,10 @@ mod transition_diagnostic_tests {
             .expect("main camera transform")
             .translation
             .normalize();
-        assert!(actual_start.dot(start_direction) > 0.999);
+        assert!(
+            actual_start.dot(start_direction) > 0.999,
+            "fixture start camera was not seeded at the requested direction: {actual_start:?} vs {start_direction:?}"
+        );
 
         app.insert_resource(InjectedCursorPath { frames, next: 0 });
         app.add_systems(
@@ -2227,14 +3292,59 @@ mod transition_diagnostic_tests {
             app.update();
         }
 
-        let actual_end = app
-            .world()
+        app.world()
             .entity(camera)
             .get::<Transform>()
             .expect("main camera transform")
             .translation
-            .normalize();
-        actual_start.dot(actual_end)
+            .normalize()
+    }
+
+    #[test]
+    fn rendered_surface_drag_reaches_oblique_and_polar_headings_across_zoom_levels() {
+        let cases = [
+            (
+                PLANET_VIEW_FAR_RADIUS,
+                Vec3::new(-0.67, -0.73, 0.08).normalize(),
+                Vec3::new(0.25, 0.22, -0.94).normalize(),
+            ),
+            (
+                (shared::planet_view::PLANET_VIEW_NEAR_RADIUS + PLANET_VIEW_FAR_RADIUS) * 0.5,
+                Vec3::new(0.7, -0.2, -0.68).normalize(),
+                Vec3::new(-0.52, 0.55, 0.65).normalize(),
+            ),
+            (
+                shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 250.0,
+                Vec3::new(-0.6, 0.45, 0.66).normalize(),
+                Vec3::Y,
+            ),
+        ];
+        for (radius, start_direction, target_direction) in cases {
+            let viewport = Vec2::new(1280.0, 720.0);
+            let start_cursor = Vec2::new(710.0, 320.0);
+            let up = if start_direction.dot(Vec3::Y).abs() > 0.95 {
+                Vec3::Z
+            } else {
+                Vec3::Y
+            };
+            let start =
+                Transform::from_translation(start_direction * radius).looking_at(Vec3::ZERO, up);
+            let frames = super::super::diagnostic_drag::surface_drag_toward_direction(
+                start,
+                target_direction,
+                start_cursor,
+                viewport.x,
+                viewport.y,
+                PerspectiveProjection::default().fov,
+            )
+            .expect("viewport can contain the diagnostic surface drag");
+            let actual_end = production_pointer_drag_end_direction(frames, start_direction, radius);
+            let error_rad = actual_end.angle_between(target_direction);
+            assert!(
+                error_rad < 0.02,
+                "production drag missed target by {error_rad:.4}rad at radius {radius:.1}, actual={actual_end:?}, target={target_direction:?}"
+            );
+        }
     }
 
     #[test]

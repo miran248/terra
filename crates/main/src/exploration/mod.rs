@@ -4409,7 +4409,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn summon_and_enter_vehicle(app: &mut App, explorer: Entity, kind: Kind) -> Entity {
+    pub(crate) fn summon_and_enter_vehicle(app: &mut App, explorer: Entity, kind: Kind) -> Entity {
         act(app, Action::Summon(kind));
         let vehicle = app.world().resource::<Exploration>().vehicles[kind.index()].unwrap();
         for _ in 0..30 {
