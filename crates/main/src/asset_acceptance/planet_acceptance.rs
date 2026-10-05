@@ -3516,6 +3516,16 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
         if let Err(error) = fs::write(run.directory.join("chunk-stage-probe.csv"), probe.to_csv()) {
             record_error(run, format!("write chunk-stage probe: {error}"));
         }
+        if let Err(error) = fs::write(run.directory.join("road-stage-probe.csv"), probe.road_csv())
+        {
+            record_error(run, format!("write road-stage probe: {error}"));
+        }
+        if let Err(error) = fs::write(
+            run.directory.join("prop-cull-stage-probe.csv"),
+            probe.cull_csv(),
+        ) {
+            record_error(run, format!("write prop-cull stage probe: {error}"));
+        }
     }
     let mut missing = Vec::new();
     for index in 0..CAPTURE_VIEWS.len() * SOLAR_PHASES.len() {

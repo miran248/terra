@@ -46,6 +46,8 @@ use std::time::Instant;
 #[derive(Resource, Default)]
 pub struct ChunkStageProbe {
     rows: Vec<String>,
+    road_rows: Vec<String>,
+    cull_rows: Vec<String>,
 }
 
 impl ChunkStageProbe {
@@ -73,11 +75,65 @@ impl ChunkStageProbe {
         ));
     }
 
+    pub fn road(
+        &mut self,
+        real_elapsed_s: f64,
+        widths_ms: f64,
+        geometry_ms: f64,
+        mesh_build_ms: f64,
+        mesh_replace_ms: f64,
+        total_ms: f64,
+        cache_hit: bool,
+        epoch_changed: bool,
+        moved: bool,
+        terrain_samples: usize,
+        bridge_samples: usize,
+        triangles: usize,
+    ) {
+        self.road_rows.push(format!(
+            "{real_elapsed_s:.6},{widths_ms:.6},{geometry_ms:.6},{mesh_build_ms:.6},{mesh_replace_ms:.6},{total_ms:.6},{cache_hit},{epoch_changed},{moved},{terrain_samples},{bridge_samples},{triangles}\n"
+        ));
+    }
+
+    pub fn cull(
+        &mut self,
+        real_elapsed_s: f64,
+        resident_props: usize,
+        scanned_props: usize,
+        visibility_changes: usize,
+        stale_entities: usize,
+        duration_ms: f64,
+    ) {
+        self.cull_rows.push(format!(
+            "{real_elapsed_s:.6},{resident_props},{scanned_props},{visibility_changes},{stale_entities},{duration_ms:.6}\n"
+        ));
+    }
+
     pub fn to_csv(&self) -> String {
         let mut csv = String::from(
             "real_elapsed_s,stage,pending_chunks,pending_roots,resident_roots,structures_resident,large_resident,small_resident,cull_order_before,structures_removed,large_removed,small_removed,structures_spawned,large_spawned,small_spawned,cull_order_after,duration_ms\n",
         );
         for row in &self.rows {
+            csv.push_str(row);
+        }
+        csv
+    }
+
+    pub fn road_csv(&self) -> String {
+        let mut csv = String::from(
+            "real_elapsed_s,widths_ms,geometry_ms,mesh_build_ms,mesh_replace_ms,total_ms,cache_hit,epoch_changed,moved,terrain_samples,bridge_samples,triangles\n",
+        );
+        for row in &self.road_rows {
+            csv.push_str(row);
+        }
+        csv
+    }
+
+    pub fn cull_csv(&self) -> String {
+        let mut csv = String::from(
+            "real_elapsed_s,resident_props,scanned_props,visibility_changes,stale_entities,duration_ms\n",
+        );
+        for row in &self.cull_rows {
             csv.push_str(row);
         }
         csv

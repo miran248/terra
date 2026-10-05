@@ -6,6 +6,7 @@ use shared::roads::{
     SurfaceRoadSample, build_surface_road_ribbon, build_terrain_following_road_ribbon,
     projected_surface_ribbon_width,
 };
+use std::time::Instant;
 
 use crate::{
     exploration::{Exploration, ExplorationUpdate},
@@ -348,6 +349,7 @@ fn update_road_highlight_widths(
     highlight_mesh: Query<&Mesh3d, With<RoadHighlightMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut refresh: Local<RoadMeshRefresh>,
+    mut stage_probe: Option<ResMut<crate::chunks::ChunkStageProbe>>,
 ) {
     if !state.is_planet_view_active() || !layer.is_enabled() {
         return;
@@ -365,6 +367,8 @@ fn update_road_highlight_widths(
         return;
     }
 
+    let probe_enabled = stage_probe.is_some();
+    let system_started = probe_enabled.then(Instant::now);
     refresh.elapsed += time.delta_secs();
     let epoch_changed = refresh.last_world_epoch != Some(*world_epoch);
     let moved = refresh.last_camera_position.is_none_or(|last| {
@@ -383,6 +387,7 @@ fn update_road_highlight_widths(
         return;
     }
 
+    let widths_started = probe_enabled.then(Instant::now);
     let widths = road_highlight_widths(&paths, |sample| {
         let depth = perspective_camera_depth(*camera_transform, sample.center);
         projected_surface_ribbon_width(
@@ -399,21 +404,55 @@ fn update_road_highlight_widths(
         refresh.last_world_epoch = Some(*world_epoch);
         refresh.last_widths = Some(road_highlight_widths(&paths, |_| MIN_ROAD_WIDTH_METERS));
     }
-    if !refresh.geometry_is_current(*world_epoch, &widths) {
+    let widths_ms = widths_started.map_or(0.0, |started| started.elapsed().as_secs_f64() * 1_000.0);
+    let cache_hit = refresh.geometry_is_current(*world_epoch, &widths);
+    let mut geometry_ms = 0.0;
+    let mut mesh_build_ms = 0.0;
+    let mut mesh_replace_ms = 0.0;
+    let mut triangle_count = 0;
+    if !cache_hit {
+        let geometry_started = probe_enabled.then(Instant::now);
         let triangles = build_highlight_triangles(&paths, &ground.0, &widths);
+        triangle_count = triangles.len();
+        geometry_ms =
+            geometry_started.map_or(0.0, |started| started.elapsed().as_secs_f64() * 1_000.0);
+        let mesh_started = probe_enabled.then(Instant::now);
         let colors = vec![[[1.0, 1.0, 1.0, 1.0]; 3]; triangles.len()];
         let mesh = build_visual_mesh(&triangles, &colors);
+        mesh_build_ms =
+            mesh_started.map_or(0.0, |started| started.elapsed().as_secs_f64() * 1_000.0);
+        let replace_started = probe_enabled.then(Instant::now);
         if let Ok(handle) = highlight_mesh.single()
             && let Some(mut existing) = meshes.get_mut(&handle.0)
         {
             *existing = mesh;
         }
+        mesh_replace_ms =
+            replace_started.map_or(0.0, |started| started.elapsed().as_secs_f64() * 1_000.0);
         refresh.last_widths = Some(widths);
     }
     refresh.elapsed = 0.0;
     refresh.last_camera_position = Some(camera_transform.translation);
     refresh.last_viewport_height = Some(viewport_size.y);
     refresh.last_vertical_fov = Some(perspective.fov);
+    if let (Some(probe), Some(started)) = (stage_probe.as_mut(), system_started) {
+        let terrain_samples = paths.terrain.iter().map(Vec::len).sum();
+        let bridge_samples = paths.bridges.iter().map(Vec::len).sum();
+        probe.road(
+            time.elapsed_secs_f64(),
+            widths_ms,
+            geometry_ms,
+            mesh_build_ms,
+            mesh_replace_ms,
+            started.elapsed().as_secs_f64() * 1_000.0,
+            cache_hit,
+            epoch_changed,
+            moved,
+            terrain_samples,
+            bridge_samples,
+            triangle_count,
+        );
+    }
 }
 
 fn perspective_camera_depth(camera_transform: Transform, world_position: Vec3) -> f32 {
