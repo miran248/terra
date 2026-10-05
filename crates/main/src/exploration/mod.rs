@@ -3916,14 +3916,13 @@ pub(crate) mod tests {
                 > planet_radius * 2.0
         );
 
-        let structure = app
-            .world_mut()
-            .spawn((
-                RigidBody::Static,
-                Collider::cuboid(20.0, 30.0, 20.0),
-                Transform::from_xyz(0.0, planet_radius + 80.0, 0.0),
-            ))
-            .id();
+        let mut collision = world::CollisionWorld::default();
+        collision.obstacles.push(world::Obstacle::new(
+            Vec3::Y * (planet_radius + 500.0),
+            Quat::IDENTITY,
+            Collider::cuboid(20.0, 30.0, 20.0),
+        ));
+        app.world_mut().insert_resource(collision);
         app.update();
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -3962,7 +3961,10 @@ pub(crate) mod tests {
             .normalized_attained_zoom();
         assert!(blocked_zoom > 0.01 && blocked_zoom < 0.1);
 
-        app.world_mut().despawn(structure);
+        app.world_mut()
+            .resource_mut::<world::CollisionWorld>()
+            .obstacles
+            .clear();
         app.update();
         let first_release_radius = app
             .world()
@@ -4058,11 +4060,13 @@ pub(crate) mod tests {
         let opposite_view = app.world().get::<Transform>(camera).unwrap();
         assert!(opposite_view.translation.normalize().dot(opposite) > 0.99);
 
-        app.world_mut().spawn((
-            RigidBody::Static,
+        let mut collision = world::CollisionWorld::default();
+        collision.obstacles.push(world::Obstacle::new(
+            opposite * (planet_radius + 500.0),
+            Quat::from_rotation_arc(Vec3::Y, opposite),
             Collider::cuboid(20.0, 30.0, 20.0),
-            Transform::from_translation(opposite * (planet_radius + 80.0)),
         ));
+        app.world_mut().insert_resource(collision);
         app.update();
         app.world_mut()
             .resource_mut::<Exploration>()
@@ -4076,6 +4080,7 @@ pub(crate) mod tests {
             clearance_limited_view.translation.length()
                 > shared::planet_view::PLANET_VIEW_NEAR_RADIUS + 50.0
         );
+        app.world_mut().remove_resource::<world::CollisionWorld>();
 
         app.world_mut()
             .resource_mut::<Exploration>()
