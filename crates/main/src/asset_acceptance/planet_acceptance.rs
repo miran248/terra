@@ -141,6 +141,7 @@ struct PlanetAcceptance {
     measured_stalls: Vec<(Route, u8, usize)>,
     event_log: Vec<String>,
     current_route: Option<Route>,
+    trace_flush_route: Option<Route>,
     coverage: CrossFeatureCoverage,
 }
 
@@ -392,6 +393,7 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
         measured_stalls: Vec::new(),
         event_log: Vec::new(),
         current_route: None,
+        trace_flush_route: None,
         coverage: CrossFeatureCoverage::default(),
     })
     .add_systems(
@@ -421,6 +423,9 @@ fn drive_planet_acceptance(world: &mut World) {
     let Some(mut run) = world.remove_resource::<PlanetAcceptance>() else {
         return;
     };
+    if let Some(route) = run.trace_flush_route.take() {
+        flush_route_trace_sidecars(world, &mut run, route);
+    }
 
     let phase = std::mem::replace(&mut run.phase, Phase::WaitingForWorld);
     run.phase = match phase {
@@ -535,6 +540,9 @@ fn drive_planet_acceptance(world: &mut World) {
                         samples: Vec::with_capacity(4_000),
                     }
                 } else if let Some(next) = ROUTES.get(route_index(route) + 1).copied() {
+                    if work_trace_enabled() {
+                        run.trace_flush_route = Some(route);
+                    }
                     info!(route = next.name(), "Planet acceptance warm-up started");
                     Phase::Warmup {
                         route: next,
@@ -542,6 +550,9 @@ fn drive_planet_acceptance(world: &mut World) {
                         actions: RouteActions::default(),
                     }
                 } else {
+                    if work_trace_enabled() {
+                        run.trace_flush_route = Some(route);
+                    }
                     Phase::Finishing { started_at: now }
                 }
             } else {
@@ -1816,6 +1827,25 @@ fn finish_repeat(
         );
     }
     let _ = world;
+}
+
+fn flush_route_trace_sidecars(world: &World, run: &mut PlanetAcceptance, route: Route) {
+    let Some(trace) = world.get_resource::<crate::chunks::PlanetWorkTrace>() else {
+        return;
+    };
+    let directory = run.directory.join("performance").join(route.name());
+    for repeat in 1..=REPEATS {
+        let path = directory.join(format!("repeat-{repeat}-work-trace.csv"));
+        if let Err(error) = fs::write(&path, trace.repeat_csv(route.name(), repeat)) {
+            record_error(run, format!("write {}: {error}", path.display()));
+        }
+        if let Some(csv) = trace.vehicle_action_csv(route.name(), repeat) {
+            let path = directory.join(format!("repeat-{repeat}-action-trace.csv"));
+            if let Err(error) = fs::write(&path, csv) {
+                record_error(run, format!("write {}: {error}", path.display()));
+            }
+        }
+    }
 }
 
 #[derive(Default)]
