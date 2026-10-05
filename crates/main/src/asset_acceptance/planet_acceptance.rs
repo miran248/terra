@@ -626,8 +626,8 @@ fn drive_planet_acceptance(world: &mut World) {
             let elapsed = now - started_at;
             drive_route(world, route, elapsed, false, &mut actions, &mut run);
             if elapsed >= MEASURE_SECONDS {
-                finish_repeat(world, &mut run, route, repeat, &samples);
                 stop_measurement_traces(world, route.name(), repeat);
+                finish_repeat(world, &mut run, route, repeat, &samples);
                 if repeat < REPEATS {
                     if route == Route::FollowVehicleRecovery {
                         begin_vehicle_preparation(
@@ -1067,7 +1067,7 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
         "asset-review"
     };
     let configuration = format!(
-        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nvehicle_route_anchor=initial-live-grounded-player-pose\nvehicle_setup=normal-safe-teleport-and-selector-summon-before-route-clocks\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures={features}\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\nschedule_span_trace={schedule_trace}\nschedule_trace_alignment=frame-clock CSV pairs Time<Real> route elapsed with monotonic route elapsed\nschedule_trace_semantics=per-span wall duration; nested schedule and render spans overlap and are not additive\nprofile_measurement_caveat={profile_caveat}\n",
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nvehicle_route_anchor=initial-live-grounded-player-pose\nvehicle_setup=normal-safe-teleport-and-selector-summon-before-route-clocks\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures={features}\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\nschedule_span_trace={schedule_trace}\nschedule_trace_alignment=frame-clock CSV pairs Time<Real> route elapsed with monotonic route elapsed\nschedule_trace_semantics=per-span wall duration; schedule, render, and native system spans may overlap and are not additive; open spans clip at repeat stop\nprofile_measurement_caveat={profile_caveat}\n",
         window.unwrap_or_else(|| "not-yet-available".into()),
         MEASURE_SECONDS * 0.5,
     );

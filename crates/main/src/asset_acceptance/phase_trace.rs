@@ -21,7 +21,7 @@ use std::{
 
 pub(super) const ENV: &str = "TERRA_PLANET_SCHEDULE_TRACE";
 const NATIVE_SYSTEM_MIN_DURATION: Duration = Duration::from_millis(1);
-const NATIVE_SYSTEM_ROW_LIMIT: usize = 10_000;
+const NATIVE_SYSTEM_ROW_LIMIT: usize = 50_000;
 
 #[derive(Clone, Resource)]
 pub(super) struct ScheduleTraceRecorder {
@@ -126,13 +126,37 @@ impl ScheduleTraceRecorder {
 
     pub(super) fn stop_repeat(&self, route: &'static str, repeat: u8) {
         let mut state = self.lock();
-        if state
+        let stopped = Instant::now();
+        let Some(measurement) = state
             .active
-            .as_ref()
-            .is_some_and(|active| active.route == route && active.repeat == repeat)
-        {
-            state.active = None;
+            .clone()
+            .filter(|active| active.route == route && active.repeat == repeat)
+        else {
+            return;
+        };
+        let open_ids = state
+            .open
+            .iter()
+            .filter_map(|(id, open)| {
+                open.measurement
+                    .as_ref()
+                    .is_none_or(|open_measurement| {
+                        open_measurement.route == route && open_measurement.repeat == repeat
+                    })
+                    .then(|| id.clone())
+            })
+            .collect::<Vec<_>>();
+        for id in open_ids {
+            let Some(open) = state.open.remove(&id) else {
+                continue;
+            };
+            let span_measurement = open
+                .measurement
+                .clone()
+                .unwrap_or_else(|| measurement.clone());
+            record_completed_span(&mut state, open, span_measurement, stopped);
         }
+        state.active = None;
     }
 
     pub(super) fn record_frame_sample(
@@ -370,40 +394,10 @@ impl<S: Subscriber> Layer<S> for ScheduleTraceLayer {
         let Some(open) = state.open.remove(id) else {
             return;
         };
-        let Some(measurement) = open.measurement.or_else(|| state.active.clone()) else {
+        let Some(measurement) = open.measurement.clone().or_else(|| state.active.clone()) else {
             return;
         };
-        let start = open.entered.max(measurement.started);
-        if exited <= start {
-            return;
-        }
-        let start_s = start.duration_since(measurement.started).as_secs_f64();
-        let end_s = exited.duration_since(measurement.started).as_secs_f64();
-        let duration = exited.duration_since(start);
-        if open.profiled_system && duration < state.native_system_profile.minimum_duration {
-            return;
-        }
-        if open.profiled_system {
-            let row_limit = state.native_system_profile.row_limit;
-            let counts = state
-                .native_system_counts
-                .entry((measurement.route, measurement.repeat))
-                .or_default();
-            if counts.retained >= row_limit {
-                counts.dropped += 1;
-                return;
-            }
-            counts.retained += 1;
-        }
-        state.rows.push(ScheduleTraceRow {
-            route: measurement.route,
-            repeat: measurement.repeat,
-            span: open.label,
-            route_elapsed_start_s: start_s,
-            route_elapsed_end_s: end_s,
-            duration_ms: duration.as_secs_f64() * 1_000.0,
-            thread: format!("{:?}", std::thread::current().id()),
-        });
+        record_completed_span(&mut state, open, measurement, exited);
     }
 
     fn on_close(&self, id: tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
@@ -411,6 +405,45 @@ impl<S: Subscriber> Layer<S> for ScheduleTraceLayer {
         state.labels.remove(&id);
         state.open.remove(&id);
     }
+}
+
+fn record_completed_span(
+    state: &mut ScheduleTraceState,
+    open: OpenSchedule,
+    measurement: Measurement,
+    exited: Instant,
+) {
+    let start = open.entered.max(measurement.started);
+    if exited <= start {
+        return;
+    }
+    let start_s = start.duration_since(measurement.started).as_secs_f64();
+    let end_s = exited.duration_since(measurement.started).as_secs_f64();
+    let duration = exited.duration_since(start);
+    if open.profiled_system && duration < state.native_system_profile.minimum_duration {
+        return;
+    }
+    if open.profiled_system {
+        let row_limit = state.native_system_profile.row_limit;
+        let counts = state
+            .native_system_counts
+            .entry((measurement.route, measurement.repeat))
+            .or_default();
+        if counts.retained >= row_limit {
+            counts.dropped += 1;
+            return;
+        }
+        counts.retained += 1;
+    }
+    state.rows.push(ScheduleTraceRow {
+        route: measurement.route,
+        repeat: measurement.repeat,
+        span: open.label,
+        route_elapsed_start_s: start_s,
+        route_elapsed_end_s: end_s,
+        duration_ms: duration.as_secs_f64() * 1_000.0,
+        thread: format!("{:?}", std::thread::current().id()),
+    });
 }
 
 struct ScheduleNameVisitor<'a>(&'a mut Option<String>);
@@ -504,6 +537,53 @@ mod tests {
             .parse::<f64>()
             .expect("duration parses");
         assert!(duration_ms >= 1.0, "duration was {duration_ms} ms");
+    }
+
+    #[test]
+    fn stopping_a_repeat_clips_open_spans_before_drain_and_ignores_late_exit() {
+        let recorder = ScheduleTraceRecorder::default();
+        recorder.start_repeat("orbit-zoom", 1);
+        let repeat_start = recorder
+            .lock()
+            .active
+            .as_ref()
+            .expect("active repeat")
+            .started;
+        let subscriber = tracing_subscriber::registry().with(
+            ScheduleTraceLayer {
+                recorder: recorder.clone(),
+            }
+            .with_filter(tracing_subscriber::filter::filter_fn(selected_span)),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("schedule", name = ?"Render");
+            let entered = span.enter();
+            std::thread::sleep(Duration::from_millis(2));
+
+            let before_stop = Instant::now();
+            recorder.stop_repeat("orbit-zoom", 1);
+            let after_stop = Instant::now();
+            let csv = recorder.take_repeat_csv("orbit-zoom", 1);
+            let row = csv.lines().nth(1).expect("open span captured at stop");
+            let fields: Vec<_> = row.split(',').collect();
+            let end_s = fields[4].parse::<f64>().expect("span end time parses");
+            let stop_start_s = relative_seconds(repeat_start, before_stop);
+            let stop_end_s = relative_seconds(repeat_start, after_stop);
+            assert!(
+                end_s >= stop_start_s - 0.000002 && end_s <= stop_end_s + 0.000002,
+                "span end {end_s} must be clipped to stop window [{stop_start_s}, {stop_end_s}]"
+            );
+
+            std::thread::sleep(Duration::from_millis(5));
+            drop(entered);
+            let late_exit_csv = recorder.take_repeat_csv("orbit-zoom", 1);
+            assert_eq!(
+                late_exit_csv.lines().count(),
+                1,
+                "late span exit must not append a row after the boundary drain"
+            );
+        });
     }
 
     #[test]
