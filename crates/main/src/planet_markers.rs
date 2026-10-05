@@ -704,6 +704,26 @@ struct MarkerOverlayUi<'w, 's> {
             Without<DestinationLabel>,
         ),
     >,
+    sidebar_nodes: Query<
+        'w,
+        's,
+        (
+            &'static Node,
+            &'static ComputedNode,
+            &'static UiGlobalTransform,
+        ),
+        (
+            With<crate::ui::Sidebar>,
+            Without<PlanetMarkerOverlayRoot>,
+            Without<NamedMarkerDot>,
+            Without<NamedMarkerLabel>,
+            Without<ExplorerDot>,
+            Without<ExplorerLabel>,
+            Without<DestinationDot>,
+            Without<DestinationLabel>,
+            Without<CardinalLabel>,
+        ),
+    >,
 }
 
 fn update_planet_marker_overlay(
@@ -760,6 +780,23 @@ fn update_planet_marker_overlay(
             .physical_cursor_position()
             .map(|physical| physical / scale_factor.max(f32::EPSILON))
     });
+    let compass_viewport =
+        ui.sidebar_nodes
+            .iter()
+            .fold(viewport, |mut visible, (node, computed, transform)| {
+                if node.display == Display::None || computed.is_empty() {
+                    return visible;
+                }
+                let sidebar = ui_node_bounds_logical(*computed, *transform);
+                let covers_full_height =
+                    sidebar.min.y <= viewport.min.y && sidebar.max.y >= viewport.max.y;
+                let covers_left_edge =
+                    sidebar.min.x <= viewport.min.x && sidebar.max.x > viewport.min.x;
+                if covers_full_height && covers_left_edge {
+                    visible.min.x = visible.min.x.max(sidebar.max.x);
+                }
+                visible
+            });
 
     let mut screen_named = std::mem::take(&mut projection.screen_by_index);
     screen_named.resize(data.named.len(), None);
@@ -836,13 +873,20 @@ fn update_planet_marker_overlay(
             .flatten()
     });
     let cardinal_screens = if visible {
-        planet_compass_screen_labels(
-            camera,
-            &camera_global,
-            camera_position,
-            camera_transform.rotation,
-            viewport,
-        )
+        if compass_viewport.size().x >= COMPASS_LABEL_WIDTH + 2.0 * COMPASS_VIEWPORT_MARGIN
+            && compass_viewport.size().y >= COMPASS_LABEL_HEIGHT + 2.0 * COMPASS_VIEWPORT_MARGIN
+        {
+            planet_compass_screen_labels(
+                camera,
+                &camera_global,
+                camera_position,
+                camera_transform.rotation,
+                viewport,
+                compass_viewport,
+            )
+        } else {
+            [None; 4]
+        }
     } else {
         [None; 4]
     };
@@ -893,7 +937,7 @@ fn update_planet_marker_overlay(
     }
     for (index, screen) in cardinal_screens.iter().enumerate() {
         let Some(screen) = screen else { continue };
-        let Some(bounds) = compass_label_bounds(screen.center, viewport) else {
+        let Some(bounds) = compass_label_bounds(screen.center, compass_viewport) else {
             continue;
         };
         label_candidates.push(LabelCandidate {
@@ -1178,6 +1222,25 @@ fn marker_label_bounds(center: Vec2, label: &str, viewport: Rect) -> Option<Rect
         .then_some(bounds)
 }
 
+fn ui_node_bounds_logical(computed: ComputedNode, transform: UiGlobalTransform) -> Rect {
+    let half_size = computed.size / 2.0;
+    let affine = transform.affine();
+    let corners = [
+        Vec2::new(-half_size.x, -half_size.y),
+        Vec2::new(-half_size.x, half_size.y),
+        Vec2::new(half_size.x, -half_size.y),
+        Vec2::new(half_size.x, half_size.y),
+    ];
+    let (min, max) = corners
+        .into_iter()
+        .map(|corner| affine.transform_point2(corner) * computed.inverse_scale_factor)
+        .fold(
+            (Vec2::splat(f32::INFINITY), Vec2::splat(f32::NEG_INFINITY)),
+            |(min, max), corner| (min.min(corner), max.max(corner)),
+        );
+    Rect::from_corners(min, max)
+}
+
 fn compass_label_bounds(center: Vec2, viewport: Rect) -> Option<Rect> {
     let half_size = Vec2::new(COMPASS_LABEL_WIDTH, COMPASS_LABEL_HEIGHT) / 2.0;
     let bounds = Rect::from_corners(center - half_size, center + half_size);
@@ -1194,6 +1257,7 @@ fn planet_compass_screen_labels(
     camera_position: Vec3,
     camera_rotation: Quat,
     viewport: Rect,
+    placement_viewport: Rect,
 ) -> [Option<CompassLabelScreen>; 4] {
     let Some(orientation) = planet_compass_orientation(camera_position, camera_rotation) else {
         return [None; 4];
@@ -1230,7 +1294,8 @@ fn planet_compass_screen_labels(
         -orientation.east,
     ];
     directions.map(|direction| {
-        let max_rim_distance = distance_to_compass_viewport_edge(center, direction, viewport)?;
+        let max_rim_distance =
+            distance_to_compass_viewport_edge(center, direction, placement_viewport)?;
         let radius = (planet_screen_radius + COMPASS_RIM_GAP).min(max_rim_distance);
         Some(CompassLabelScreen {
             center: center + direction * radius,
@@ -1861,5 +1926,141 @@ mod tests {
             matches!(node.left, Val::Px(left) if (left - (second_center.x - 3.5)).abs() < 0.01)
         );
         assert!(matches!(node.top, Val::Px(top) if (top - (second_center.y - 3.5)).abs() < 0.01));
+    }
+
+    #[test]
+    fn planet_compass_nodes_stay_outside_the_full_height_sidebar_at_near_zoom() {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        let epoch = WorldEpoch::new(37);
+        app.world_mut().insert_resource(PlanetMarkerData {
+            world_epoch: Some(epoch),
+            named: Vec::new(),
+        });
+        app.world_mut()
+            .insert_resource(PlanetMarkerProjection::default());
+        app.world_mut()
+            .insert_resource(HoveredPlanetMarker::default());
+
+        let scale_factor = 2.0;
+        let physical_size = UVec2::new(2560, 1440);
+        let mut perspective = PerspectiveProjection {
+            far: 20_000.0,
+            ..default()
+        };
+        perspective.update(
+            physical_size.x as f32 / scale_factor,
+            physical_size.y as f32 / scale_factor,
+        );
+        let mut camera = Camera {
+            viewport: Some(Viewport {
+                physical_size,
+                ..default()
+            }),
+            ..default()
+        };
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size,
+            scale_factor,
+        });
+        camera.computed.clip_from_view = perspective.get_clip_from_view();
+        let camera_pose = Transform::from_xyz(0.0, 0.0, shared::sphere::PLANET_RADIUS + 400.0)
+            .looking_at(Vec3::ZERO, Vec3::Y);
+        let camera_entity = app
+            .world_mut()
+            .spawn((
+                MainCamera,
+                camera,
+                Projection::Perspective(perspective),
+                camera_pose,
+                GlobalTransform::from(camera_pose),
+            ))
+            .id();
+
+        app.world_mut().spawn((
+            crate::ui::Sidebar,
+            Node {
+                display: Display::Flex,
+                ..default()
+            },
+            ComputedNode {
+                size: Vec2::new(560.0, 1440.0),
+                inverse_scale_factor: 0.5,
+                ..default()
+            },
+            UiGlobalTransform::from_xy(280.0, 720.0),
+        ));
+        let labels = ["N", "S", "E", "W"].map(|letter| {
+            app.world_mut()
+                .spawn((
+                    Text::new(letter),
+                    Node {
+                        position_type: PositionType::Absolute,
+                        display: Display::None,
+                        ..default()
+                    },
+                    TextColor(Color::WHITE),
+                ))
+                .id()
+        });
+        for (index, entity) in labels.into_iter().enumerate() {
+            app.world_mut()
+                .entity_mut(entity)
+                .insert(super::CardinalLabel(index));
+        }
+        app.add_systems(
+            PostUpdate,
+            update_planet_marker_overlay
+                .after(CameraUpdateSystems)
+                .before(bevy::ui::UiSystems::Prepare)
+                .before(TransformSystems::Propagate),
+        );
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..24 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .insert_resource(State::new(shared::state::AppState::Loading));
+        app.world_mut()
+            .entity_mut(camera_entity)
+            .insert((camera_pose, GlobalTransform::from(camera_pose)));
+        app.update();
+
+        let mut lefts = [0.0; 4];
+        let mut tops = [0.0; 4];
+        for (index, entity) in labels.into_iter().enumerate() {
+            let node = app.world().get::<Node>(entity).unwrap();
+            assert_eq!(
+                node.display,
+                Display::Flex,
+                "{} remains visible",
+                ["N", "S", "E", "W"][index]
+            );
+            let Val::Px(left) = node.left else {
+                panic!(
+                    "{} has a computed horizontal placement",
+                    ["N", "S", "E", "W"][index]
+                );
+            };
+            let Val::Px(top) = node.top else {
+                panic!(
+                    "{} has a computed vertical placement",
+                    ["N", "S", "E", "W"][index]
+                );
+            };
+            lefts[index] = left;
+            tops[index] = top;
+            assert!(
+                left >= 280.0,
+                "{} text must not sit under the full-height sidebar: {:?}",
+                ["N", "S", "E", "W"][index],
+                node.left,
+            );
+        }
+        assert!(lefts[3] < lefts[2], "west remains left of east: {lefts:?}");
+        assert!(tops[0] < tops[1], "north remains above south: {tops:?}");
     }
 }
