@@ -141,6 +141,7 @@ pub(super) fn setup(
             .insert(VehicleSelectorAction);
         for (mode, label) in [
             (CameraFollowMode::Facing, "1 · Facing"),
+            (CameraFollowMode::Movement, "2 · Movement"),
             (CameraFollowMode::Orientation, "3 · Orientation"),
         ] {
             section
@@ -241,6 +242,7 @@ pub(super) fn update_presentation(
         if let crate::ui::SidebarAction::SelectCameraFollow(mode) = control.0 {
             let label = match mode {
                 CameraFollowMode::Facing => "1 · Facing",
+                CameraFollowMode::Movement => "2 · Movement",
                 CameraFollowMode::Orientation => "3 · Orientation",
             };
             let content = if mode == state.camera_follow_mode {

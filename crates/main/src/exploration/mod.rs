@@ -257,6 +257,7 @@ impl Vehicle {
 pub(crate) enum CameraFollowMode {
     #[default]
     Facing,
+    Movement,
     Orientation,
 }
 
@@ -370,6 +371,10 @@ impl Exploration {
 
     pub(crate) fn is_camera_selector_open(&self) -> bool {
         self.camera_selector
+    }
+
+    pub(crate) fn camera_follow_mode(&self) -> CameraFollowMode {
+        self.camera_follow_mode
     }
 
     /// Selection and teleport are enabled only after the interface fully opens.
@@ -595,6 +600,24 @@ impl Exploration {
     /// Existing reusable vehicle for this kind, if it has been summoned.
     pub fn vehicle_entity(&self, kind: Kind) -> Option<Entity> {
         self.vehicles[kind.index()]
+    }
+
+    #[cfg(feature = "asset-review")]
+    pub(crate) fn plane_motion_snapshot(
+        &self,
+        world: &World,
+    ) -> Option<(Vec3, Vec3, Vec3, f32, f32)> {
+        let plane = self.vehicle_entity(Kind::Plane)?;
+        let position = world.get::<Position>(plane)?.0;
+        let velocity = world.get::<LinearVelocity>(plane)?.0;
+        let flight = world.get::<Vehicle>(plane)?.flight;
+        Some((
+            position,
+            velocity,
+            flight.heading,
+            flight.pitch,
+            flight.bank,
+        ))
     }
 
     /// A successful current summon result for this vehicle kind.
@@ -847,6 +870,8 @@ fn input(
         }
         let mode = if keys.just_pressed(KeyCode::Digit1) {
             Some(CameraFollowMode::Facing)
+        } else if keys.just_pressed(KeyCode::Digit2) {
+            Some(CameraFollowMode::Movement)
         } else if keys.just_pressed(KeyCode::Digit3) {
             Some(CameraFollowMode::Orientation)
         } else {
@@ -2514,6 +2539,350 @@ pub(crate) mod tests {
         assert!(sidebar.contains("1 · Facing · SELECTED"), "{sidebar}");
         assert!(sidebar.contains("3 · Orientation"), "{sidebar}");
         assert!(sidebar.contains("Cancel · Esc / C"), "{sidebar}");
+    }
+
+    #[test]
+    fn camera_selector_exposes_movement_between_facing_and_orientation() {
+        let (mut app, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut app);
+
+        tap_key(&mut app, KeyCode::KeyC);
+        let choices = rendered_sidebar_text(&mut app);
+        assert!(choices.contains("1 · Facing"), "{choices}");
+        assert!(choices.contains("2 · Movement"), "{choices}");
+        assert!(choices.contains("3 · Orientation"), "{choices}");
+
+        tap_key(&mut app, KeyCode::Digit2);
+        tap_key(&mut app, KeyCode::KeyC);
+        let selected = rendered_sidebar_text(&mut app);
+        assert!(selected.contains("2 · Movement · SELECTED"), "{selected}");
+    }
+
+    #[test]
+    fn movement_row_and_digit_two_select_the_same_follow_mode() {
+        let (mut keyboard, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut keyboard);
+        tap_key(&mut keyboard, KeyCode::KeyC);
+        tap_key(&mut keyboard, KeyCode::Digit2);
+        tap_key(&mut keyboard, KeyCode::KeyC);
+        let keyboard_text = rendered_sidebar_text(&mut keyboard);
+        assert!(
+            keyboard_text.contains("2 · Movement · SELECTED"),
+            "{keyboard_text}"
+        );
+
+        let (mut mouse, _) = fixture();
+        setup_sidebar_pointer_fixture(&mut mouse);
+        set_sidebar_action_hitbox(
+            &mut mouse,
+            crate::ui::SidebarAction::ToggleCameraSelector,
+            Vec2::new(100.0, 180.0),
+        );
+        click_sidebar_action(&mut mouse);
+        set_sidebar_action_hitbox(
+            &mut mouse,
+            crate::ui::SidebarAction::SelectCameraFollow(CameraFollowMode::Movement),
+            Vec2::new(100.0, 500.0),
+        );
+        click_sidebar_action(&mut mouse);
+        tap_key(&mut mouse, KeyCode::KeyC);
+        let mouse_text = rendered_sidebar_text(&mut mouse);
+        assert!(
+            mouse_text.contains("2 · Movement · SELECTED"),
+            "{mouse_text}"
+        );
+    }
+
+    #[test]
+    fn movement_camera_follows_walking_and_reverse_car_travel_then_holds_when_stopped() {
+        for kind in [None, Some(Kind::Car)] {
+            let (mut app, explorer) = fixture();
+            app.world_mut().resource_mut::<Time<Virtual>>().pause();
+            let (subject, ahead) = if let Some(kind) = kind {
+                let car = app
+                    .world_mut()
+                    .spawn((
+                        Position(Vec3::new(0.0, 2000.6, 0.0)),
+                        LinearVelocity(Vec3::Z * 5.0),
+                        Vehicle::new(kind, Vec3::NEG_Z),
+                    ))
+                    .id();
+                app.world_mut().resource_mut::<Exploration>().occupied = Some(car);
+                (car, 15.0)
+            } else {
+                app.world_mut().get_mut::<Player>(explorer).unwrap().heading = Vec3::NEG_Z;
+                app.world_mut()
+                    .entity_mut(explorer)
+                    .insert(LinearVelocity(Vec3::Z * 3.0));
+                (explorer, 10.0)
+            };
+            app.world_mut()
+                .resource_mut::<Exploration>()
+                .camera_follow_mode = CameraFollowMode::Movement;
+            let camera = app
+                .world_mut()
+                .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+                .id();
+
+            for _ in 0..90 {
+                app.update();
+                let pose = app.world().get::<Transform>(camera).unwrap();
+                assert!(pose.translation.is_finite() && pose.rotation.is_finite());
+            }
+
+            let position = app.world().get::<Position>(subject).unwrap().0;
+            let pose = *app.world().get::<Transform>(camera).unwrap();
+            let movement_aim = position + Vec3::Z * ahead;
+            let movement_ray = (movement_aim - pose.translation).normalize();
+            assert!(
+                (pose.rotation * Vec3::NEG_Z).dot(movement_ray) > 0.99,
+                "Movement aims along reverse travel for {kind:?}: pose={pose:?}"
+            );
+            assert!(
+                (pose.translation - position).normalize().dot(Vec3::NEG_Z) > 0.7,
+                "the camera boom moves behind actual travel for {kind:?}"
+            );
+
+            app.world_mut()
+                .entity_mut(subject)
+                .insert(LinearVelocity(Vec3::X * 0.05));
+            for _ in 0..30 {
+                app.update();
+            }
+            let stopped = *app.world().get::<Transform>(camera).unwrap();
+            let stopped_position = app.world().get::<Position>(subject).unwrap().0;
+            let retained_ray =
+                (stopped_position + Vec3::Z * ahead - stopped.translation).normalize();
+            assert!(
+                (stopped.rotation * Vec3::NEG_Z).dot(retained_ray) > 0.99,
+                "near-zero noise must retain the last movement direction for {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn movement_camera_tracks_aircraft_velocity_with_a_level_horizon_and_retains_it_at_rest() {
+        let (mut app, _) = fixture();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        let position = Vec3::new(0.0, 2000.6, 0.0);
+        let velocity = Vec3::new(18.0, 7.0, 0.0);
+        let plane = app
+            .world_mut()
+            .spawn((
+                Position(position),
+                LinearVelocity(velocity),
+                Vehicle::new(Kind::Plane, Vec3::NEG_Z),
+            ))
+            .id();
+        {
+            let mut vehicle = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+            vehicle.flight.pitch = -0.35;
+            vehicle.flight.bank = 0.8;
+        }
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.occupied = Some(plane);
+            state.camera_follow_mode = CameraFollowMode::Movement;
+        }
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+            .id();
+
+        for _ in 0..90 {
+            app.update();
+        }
+
+        let pose = *app.world().get::<Transform>(camera).unwrap();
+        let up = position.normalize();
+        let movement_aim = position + velocity.normalize() * 30.0;
+        let movement_ray = (movement_aim - pose.translation).normalize();
+        let camera_forward = pose.rotation * Vec3::NEG_Z;
+        let camera_up = pose.rotation * Vec3::Y;
+        let horizon_up = (up - camera_forward * up.dot(camera_forward)).normalize();
+        assert!(
+            camera_forward.dot(movement_ray) > 0.99,
+            "Movement must follow aircraft velocity rather than its nose: {pose:?}"
+        );
+        assert!(
+            camera_up.dot(horizon_up) > 0.99,
+            "Movement keeps the local horizon level during aircraft bank"
+        );
+
+        app.world_mut()
+            .entity_mut(plane)
+            .insert(LinearVelocity::ZERO);
+        app.world_mut()
+            .get_mut::<Vehicle>(plane)
+            .unwrap()
+            .flight
+            .heading = Vec3::NEG_Z;
+        for _ in 0..45 {
+            app.update();
+        }
+        let stopped = *app.world().get::<Transform>(camera).unwrap();
+        let stopped_position = app.world().get::<Position>(plane).unwrap().0;
+        let retained_ray =
+            (stopped_position + velocity.normalize() * 30.0 - stopped.translation).normalize();
+        assert!(
+            (stopped.rotation * Vec3::NEG_Z).dot(retained_ray) > 0.99,
+            "stopping and nose rotation retain the last travel direction"
+        );
+        assert!(stopped.translation.is_finite() && stopped.rotation.is_finite());
+    }
+
+    #[test]
+    fn movement_uses_facing_before_motion_and_ignores_near_zero_or_invalid_velocity() {
+        let (mut app, explorer) = fixture();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .camera_follow_mode = CameraFollowMode::Movement;
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+            .id();
+
+        for _ in 0..60 {
+            app.update();
+        }
+        let before = *app.world().get::<Transform>(camera).unwrap();
+        let position = app.world().get::<Position>(explorer).unwrap().0;
+        let facing_target = position - Vec3::Z * 10.0;
+        let facing_ray = (facing_target - before.translation).normalize();
+        assert!((before.rotation * Vec3::NEG_Z).dot(facing_ray) > 0.99);
+
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(LinearVelocity(Vec3::X * 0.05));
+        for _ in 0..10 {
+            app.update();
+        }
+        let near_zero = *app.world().get::<Transform>(camera).unwrap();
+        assert!(near_zero.translation.is_finite() && near_zero.rotation.is_finite());
+        assert!(before.rotation.angle_between(near_zero.rotation) < 0.01);
+
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(LinearVelocity(Vec3::splat(f32::NAN)));
+        for _ in 0..4 {
+            app.update();
+        }
+        let invalid = app.world().get::<Transform>(camera).unwrap();
+        assert!(invalid.translation.is_finite() && invalid.rotation.is_finite());
+    }
+
+    #[test]
+    fn switching_to_movement_smoothly_turns_the_follow_boom() {
+        let (mut app, _) = fixture();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        let position = Vec3::new(0.0, 2000.6, 0.0);
+        let velocity = Vec3::new(18.0, 6.0, 0.0);
+        let plane = app
+            .world_mut()
+            .spawn((
+                Position(position),
+                LinearVelocity(velocity),
+                Vehicle::new(Kind::Plane, Vec3::NEG_Z),
+            ))
+            .id();
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(plane);
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+            .id();
+        for _ in 0..90 {
+            app.update();
+        }
+        let before = *app.world().get::<Transform>(camera).unwrap();
+
+        tap_key(&mut app, KeyCode::KeyC);
+        tap_key(&mut app, KeyCode::Digit2);
+        let first_step = *app.world().get::<Transform>(camera).unwrap();
+        for _ in 0..90 {
+            app.update();
+        }
+        let settled = *app.world().get::<Transform>(camera).unwrap();
+        let first_rotation = before.rotation.angle_between(first_step.rotation);
+        let total_rotation = before.rotation.angle_between(settled.rotation);
+        let first_translation = before.translation.distance(first_step.translation);
+        let total_translation = before.translation.distance(settled.translation);
+        assert!(first_rotation > 0.01 && first_rotation < total_rotation);
+        assert!(first_translation < total_translation);
+        assert!(settled.translation.is_finite() && settled.rotation.is_finite());
+        let movement_aim = position + velocity.normalize() * 30.0;
+        let movement_ray = (movement_aim - settled.translation).normalize();
+        assert!((settled.rotation * Vec3::NEG_Z).dot(movement_ray) > 0.99);
+    }
+
+    #[test]
+    fn movement_direction_survives_vehicle_handoff_and_planet_view_return() {
+        let (mut app, _) = fixture();
+        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        let position = Vec3::new(0.0, 2000.6, 0.0);
+        let car = app
+            .world_mut()
+            .spawn((
+                Position(position),
+                LinearVelocity(Vec3::X * 8.0),
+                Vehicle::new(Kind::Car, Vec3::NEG_Z),
+            ))
+            .id();
+        let plane = app
+            .world_mut()
+            .spawn((
+                Position(position),
+                LinearVelocity::ZERO,
+                Vehicle::new(Kind::Plane, Vec3::NEG_Z),
+            ))
+            .id();
+        {
+            let mut state = app.world_mut().resource_mut::<Exploration>();
+            state.occupied = Some(car);
+            state.camera_follow_mode = CameraFollowMode::Movement;
+        }
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_xyz(0.0, 2008.0, 20.0)))
+            .id();
+        for _ in 0..90 {
+            app.update();
+        }
+
+        app.world_mut().resource_mut::<Exploration>().occupied = Some(plane);
+        for _ in 0..90 {
+            app.update();
+        }
+        let plane_pose = *app.world().get::<Transform>(camera).unwrap();
+        let plane_position = app.world().get::<Position>(plane).unwrap().0;
+        let retained_ray = (plane_position + Vec3::X * 30.0 - plane_pose.translation).normalize();
+        assert!(
+            (plane_pose.rotation * Vec3::NEG_Z).dot(retained_ray) > 0.99,
+            "a stopped vehicle inherits the last travel direction through a handoff"
+        );
+
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..180 {
+            app.update();
+        }
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        for _ in 0..180 {
+            app.update();
+        }
+        let state = app.world().resource::<Exploration>();
+        assert_eq!(state.camera_follow_mode, CameraFollowMode::Movement);
+        assert!(!state.is_planet_view_active());
+        let returned = *app.world().get::<Transform>(camera).unwrap();
+        let plane_position = app.world().get::<Position>(plane).unwrap().0;
+        let retained_ray = (plane_position + Vec3::X * 30.0 - returned.translation).normalize();
+        assert!(
+            (returned.rotation * Vec3::NEG_Z).dot(retained_ray) > 0.99,
+            "Planet view return restores Movement following on the occupied body"
+        );
     }
 
     #[test]
