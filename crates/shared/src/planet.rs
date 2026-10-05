@@ -17,6 +17,114 @@ pub struct PlanetMesh {
     /// Finer buckets keep the high-volume surface-projection queries bounded while
     /// `grid` retains the historical candidate ordering used by `face_at`.
     facet_grid: Vec<Vec<u32>>,
+    /// Expanded bounds for contiguous ranges used after an indexed query misses.
+    ray_blocks: Vec<RayTriangleBlock>,
+}
+
+struct RayTriangleBlock {
+    start: usize,
+    end: usize,
+    min: Vec3,
+    max: Vec3,
+    barycentric_slack: Vec3,
+    roundoff_padding: f64,
+    bounded: bool,
+}
+
+impl RayTriangleBlock {
+    fn new(start: usize, triangles: &[[Vec3; 3]]) -> Self {
+        let mut min = Vec3::splat(f32::INFINITY);
+        let mut max = Vec3::splat(f32::NEG_INFINITY);
+        let mut barycentric_slack = Vec3::ZERO;
+        let mut coordinate_scale = 1.0_f64;
+        let mut bounded = true;
+
+        for [a, b, c] in triangles {
+            if !a.is_finite() || !b.is_finite() || !c.is_finite() {
+                bounded = false;
+                break;
+            }
+            min = min.min(*a).min(*b).min(*c);
+            max = max.max(*a).max(*b).max(*c);
+
+            let e1 = *b - *a;
+            let e2 = *c - *a;
+            if !e1.is_finite() || !e2.is_finite() {
+                bounded = false;
+                break;
+            }
+            // The road query permits u >= -epsilon and u + v <= 1 + epsilon.
+            // At u == -epsilon that admits v == 1 + 2*epsilon, so e2 can
+            // extend two epsilon-scaled edge lengths beyond the triangle.
+            let slack = e1.abs() + 2.0 * e2.abs();
+            if !slack.is_finite() {
+                bounded = false;
+                break;
+            }
+            barycentric_slack = barycentric_slack.max(slack);
+            coordinate_scale = coordinate_scale
+                .max(a.abs().max_element() as f64)
+                .max(b.abs().max_element() as f64)
+                .max(c.abs().max_element() as f64)
+                .max(e1.abs().max_element() as f64)
+                .max(e2.abs().max_element() as f64);
+        }
+
+        let roundoff_padding = (coordinate_scale * f32::EPSILON as f64 * RAY_BOUNDS_ROUNDOFF_ULPS)
+            .max(RAY_BOUNDS_MIN_PADDING);
+        Self {
+            start,
+            end: start + triangles.len(),
+            min,
+            max,
+            barycentric_slack,
+            roundoff_padding,
+            bounded,
+        }
+    }
+
+    /// Returns true when bounds or numeric tolerance cannot rule out a hit.
+    fn ray_may_hit(&self, dir: Vec3, barycentric_epsilon: f32) -> bool {
+        if !self.bounded || !dir.is_finite() || !barycentric_epsilon.is_finite() {
+            return true;
+        }
+
+        let direction = [dir.x as f64, dir.y as f64, dir.z as f64];
+        let minimum = [self.min.x as f64, self.min.y as f64, self.min.z as f64];
+        let maximum = [self.max.x as f64, self.max.y as f64, self.max.z as f64];
+        let slack = [
+            self.barycentric_slack.x as f64,
+            self.barycentric_slack.y as f64,
+            self.barycentric_slack.z as f64,
+        ];
+        let epsilon = barycentric_epsilon.max(0.0) as f64;
+        let mut near = 0.0_f64;
+        let mut far = f64::INFINITY;
+
+        for axis in 0..3 {
+            let padding = self.roundoff_padding + epsilon * slack[axis];
+            let lower = minimum[axis] - padding;
+            let upper = maximum[axis] + padding;
+            let component = direction[axis];
+
+            if component == 0.0 {
+                if 0.0 < lower || 0.0 > upper {
+                    return false;
+                }
+                continue;
+            }
+
+            let first = lower / component;
+            let second = upper / component;
+            near = near.max(first.min(second));
+            far = far.min(first.max(second));
+            if near > far {
+                return false;
+            }
+        }
+
+        far >= 0.0
+    }
 }
 
 const LAT_BUCKETS: usize = 64;
@@ -25,6 +133,14 @@ const FACET_LAT_BUCKETS: usize = 256;
 const FACET_LON_BUCKETS: usize = 512;
 const ROAD_PROJECTION_BARYCENTRIC_EPSILON: f32 = 1e-5;
 const ROAD_PROJECTION_HINT_EDGE_MARGIN: f32 = 1e-3;
+const RAY_TRIANGLE_BLOCK_SIZE: usize = 128;
+const RAY_BOUNDS_ROUNDOFF_ULPS: f64 = 32.0;
+const RAY_BOUNDS_MIN_PADDING: f64 = 1e-4;
+
+#[cfg(test)]
+std::thread_local! {
+    static FACET_RAY_TESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 #[derive(Default)]
 pub(crate) struct RoadProjectionHint {
@@ -68,14 +184,23 @@ fn build_grid(tris: &[[Vec3; 3]], lat_buckets: usize, lon_buckets: usize) -> Vec
     grid
 }
 
+fn build_ray_blocks(tris: &[[Vec3; 3]]) -> Vec<RayTriangleBlock> {
+    tris.chunks(RAY_TRIANGLE_BLOCK_SIZE)
+        .enumerate()
+        .map(|(block, triangles)| RayTriangleBlock::new(block * RAY_TRIANGLE_BLOCK_SIZE, triangles))
+        .collect()
+}
+
 impl PlanetMesh {
     pub fn new(tris: Vec<[Vec3; 3]>) -> Self {
         let grid = build_grid(&tris, LAT_BUCKETS, LON_BUCKETS);
         let facet_grid = build_grid(&tris, FACET_LAT_BUCKETS, FACET_LON_BUCKETS);
+        let ray_blocks = build_ray_blocks(&tris);
         Self {
             tris,
             grid,
             facet_grid,
+            ray_blocks,
         }
     }
 
@@ -203,10 +328,16 @@ impl PlanetMesh {
                 return Some((idx as usize, r));
             }
         }
-        for (index, triangle) in self.tris.iter().enumerate() {
-            if let Some(r) = ray_triangle_radius_with_tolerance(dir, triangle, barycentric_epsilon)
-            {
-                return Some((index, r));
+        for block in &self.ray_blocks {
+            if !block.ray_may_hit(dir, barycentric_epsilon) {
+                continue;
+            }
+            for index in block.start..block.end {
+                if let Some(r) =
+                    ray_triangle_radius_with_tolerance(dir, &self.tris[index], barycentric_epsilon)
+                {
+                    return Some((index, r));
+                }
             }
         }
         None
@@ -234,6 +365,8 @@ fn ray_triangle_radius_with_tolerance(
     triangle: &[Vec3; 3],
     barycentric_epsilon: f32,
 ) -> Option<f32> {
+    #[cfg(test)]
+    FACET_RAY_TESTS.with(|tests| tests.set(tests.get() + 1));
     road_projection_ray_hit_with_tolerance(dir, triangle, barycentric_epsilon).map(|hit| hit.radius)
 }
 
@@ -430,6 +563,183 @@ pub fn unit_icosphere_tris(subdivisions: usize) -> Vec<[Vec3; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn full_scan_radius(
+        triangles: &[[Vec3; 3]],
+        direction: Vec3,
+        barycentric_epsilon: f32,
+    ) -> Option<(usize, f32)> {
+        triangles.iter().enumerate().find_map(|(index, triangle)| {
+            ray_triangle_radius_with_tolerance(direction, triangle, barycentric_epsilon)
+                .map(|radius| (index, radius))
+        })
+    }
+
+    fn off_ray_triangle() -> [Vec3; 3] {
+        [
+            Vec3::new(100.0, -1.0, -1.0),
+            Vec3::new(100.0, 1.0, -1.0),
+            Vec3::new(100.0, 0.0, 1.0),
+        ]
+    }
+
+    fn triangle_around_ray(direction: Vec3, radius: f32) -> [Vec3; 3] {
+        let direction = direction.normalize();
+        let reference = if direction.y.abs() < 0.9 {
+            Vec3::Y
+        } else {
+            Vec3::X
+        };
+        let tangent = direction.cross(reference).normalize();
+        let bitangent = direction.cross(tangent).normalize();
+        let center = direction * radius;
+        [
+            center + tangent * -20.0 + bitangent * -20.0,
+            center + tangent * 100.0 + bitangent * -20.0,
+            center + tangent * -20.0 + bitangent * 100.0,
+        ]
+    }
+
+    #[test]
+    fn dry_facet_query_returns_fallback_without_scanning_the_mesh() {
+        let tris: Vec<_> = (0..4_096)
+            .map(|index| {
+                let x = index as f32 * 0.001;
+                [
+                    Vec3::new(x, 100.0, 0.0),
+                    Vec3::new(x + 0.5, 100.0, 0.0),
+                    Vec3::new(x + 0.25, 100.0, 0.5),
+                ]
+            })
+            .collect();
+        let mesh = PlanetMesh::new(tris);
+
+        FACET_RAY_TESTS.with(|tests| tests.set(0));
+        assert_eq!(mesh.facet_radius(Vec3::Z, -1.0), -1.0);
+        let checked = FACET_RAY_TESTS.with(std::cell::Cell::get);
+
+        assert!(
+            checked < mesh.triangle_count() / 8,
+            "dry miss tested {checked}/{} triangles",
+            mesh.triangle_count()
+        );
+    }
+
+    #[test]
+    fn fallback_keeps_the_first_intersection_in_triangle_order() {
+        let mut tris = vec![off_ray_triangle(); RAY_TRIANGLE_BLOCK_SIZE];
+        let first = triangle_around_ray(Vec3::Z, 30.0);
+        tris.push(first);
+        tris.extend(vec![off_ray_triangle(); RAY_TRIANGLE_BLOCK_SIZE - 1]);
+        tris.push(triangle_around_ray(Vec3::Z, 10.0));
+        let mesh = PlanetMesh::new(tris.clone());
+
+        FACET_RAY_TESTS.with(|tests| tests.set(0));
+        let actual = mesh.facet_radius(Vec3::Z, -1.0);
+        let checked = FACET_RAY_TESTS.with(std::cell::Cell::get);
+        let expected = full_scan_radius(&tris, Vec3::Z, 0.0).unwrap();
+
+        assert_eq!(expected.0, RAY_TRIANGLE_BLOCK_SIZE);
+        assert_eq!(actual.to_bits(), expected.1.to_bits());
+        assert!(actual > 20.0, "fallback must keep the earlier, farther hit");
+        assert!(
+            checked < RAY_TRIANGLE_BLOCK_SIZE,
+            "tested {checked} triangles"
+        );
+    }
+
+    #[test]
+    fn fallback_matches_full_scan_for_skinny_and_near_parallel_triangles() {
+        let direction = Vec3::Z;
+        for (radius, e2) in [
+            (15.0, Vec3::new(0.001, 1_000.0, 1.0)),
+            (30.0, Vec3::new(0.001, 1_000.0, 0.001)),
+        ] {
+            let e1 = Vec3::Y * 1_000.0;
+            let center = direction * radius;
+            let corner = center - e1 - e2;
+            let ill_conditioned = [corner, corner + e1 * 10.0, corner + e2 * 10.0];
+            let mut tris = vec![off_ray_triangle(); RAY_TRIANGLE_BLOCK_SIZE];
+            tris.push(ill_conditioned);
+            let mesh = PlanetMesh::new(tris.clone());
+
+            let expected_hit = full_scan_radius(&tris, direction, 0.0);
+            let actual_hit = mesh.facet_radius(direction, -1.0);
+            assert_eq!(
+                actual_hit.to_bits(),
+                expected_hit
+                    .map_or(-1.0_f32, |(_, radius)| radius)
+                    .to_bits()
+            );
+
+            let miss_direction = Vec3::Y;
+            let expected_miss = full_scan_radius(&tris, miss_direction, 0.0);
+            let actual_miss = mesh.facet_radius(miss_direction, -1.0);
+            assert_eq!(
+                actual_miss.to_bits(),
+                expected_miss
+                    .map_or(-1.0_f32, |(_, radius)| radius)
+                    .to_bits()
+            );
+        }
+    }
+
+    #[test]
+    fn fallback_matches_full_scan_at_poles_and_longitude_seam() {
+        for direction in [
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::new(-1.0, 0.0, 1e-6),
+            Vec3::new(-1.0, 0.0, -1e-6),
+        ] {
+            let mut tris = vec![off_ray_triangle(); RAY_TRIANGLE_BLOCK_SIZE];
+            tris.push(triangle_around_ray(direction, 30.0));
+            let mesh = PlanetMesh::new(tris.clone());
+            let expected = full_scan_radius(&tris, direction.normalize(), 0.0).unwrap();
+            let actual = mesh.facet_radius(direction, -1.0);
+
+            assert_eq!(
+                actual.to_bits(),
+                expected.1.to_bits(),
+                "direction {direction:?}"
+            );
+            assert!(
+                (actual - 30.0).abs() < 0.01,
+                "direction {direction:?}: {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn road_fallback_preserves_edge_tolerance_and_first_hit_order() {
+        let mut tris = vec![off_ray_triangle(); RAY_TRIANGLE_BLOCK_SIZE];
+        let tolerated_edge_hit = |radius: f32| {
+            let epsilon = ROAD_PROJECTION_BARYCENTRIC_EPSILON;
+            let e1 = Vec3::Y;
+            let e2 = Vec3::X * 1_000_000.0;
+            let a = e1 * epsilon - e2 * (1.0 + 2.0 * epsilon) + Vec3::Z * radius;
+            [a, a + e1, a + e2]
+        };
+        tris.push(tolerated_edge_hit(20.0));
+        tris.push(tolerated_edge_hit(10.0));
+        let mesh = PlanetMesh::new(tris.clone());
+        let direction = Vec3::Z;
+        let expected =
+            full_scan_radius(&tris, direction, ROAD_PROJECTION_BARYCENTRIC_EPSILON).unwrap();
+        let actual = mesh.facet_radius_for_road_projection(direction, -1.0);
+
+        assert_eq!(expected.0, RAY_TRIANGLE_BLOCK_SIZE);
+        assert_eq!(actual.to_bits(), expected.1.to_bits());
+        assert!(
+            (actual - 20.0).abs() < 0.01,
+            "the earlier tolerated hit must win: {actual}"
+        );
+        assert_eq!(
+            mesh.facet_radius(direction, -1.0),
+            -1.0,
+            "strict terrain queries must not inherit the road edge tolerance"
+        );
+    }
 
     #[test]
     fn facet_radius_matches_full_scan() {
