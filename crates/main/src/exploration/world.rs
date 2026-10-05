@@ -1,6 +1,9 @@
 //! Collision residency follows physics bodies and pending destinations, never render LOD.
 use super::*;
 use shared::art::AssetName;
+
+pub(super) const BODY_RESIDENCY_RADIUS: f32 = 200.0;
+
 #[derive(Clone, Copy)]
 struct Bounds {
     min: Vec3,
@@ -103,6 +106,13 @@ pub(super) struct CollisionWorld {
     pub last_action: Option<Action>,
 }
 impl CollisionWorld {
+    pub(super) fn resident_obstacle_count(&self) -> usize {
+        self.obstacles
+            .iter()
+            .filter(|obstacle| obstacle.resident.is_some())
+            .count()
+    }
+
     /// Sweep the camera against baked structure/scenery geometry without
     /// changing which obstacles own physics entities.
     pub(super) fn camera_sweep_hit(&self, start: Vec3, end: Vec3, radius: f32) -> Option<f32> {
@@ -193,7 +203,7 @@ pub(super) fn residency(
     });
     let mut centers: Vec<(Vec3, f32)> = bodies
         .iter()
-        .map(|(p, v)| (p.0, 200.0 + v.length() * 2.0))
+        .map(|(p, v)| (p.0, BODY_RESIDENCY_RADIUS + v.length() * 2.0))
         .collect();
     if let Some(p) = request {
         centers.push((p, 200.0));

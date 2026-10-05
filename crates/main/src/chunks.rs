@@ -49,6 +49,61 @@ pub(crate) struct PlanetWorkTrace {
     route: Option<&'static str>,
     repeat: u8,
     rows: Vec<PlanetWorkTraceRow>,
+    vehicle_action_rows: Vec<PlanetVehicleActionRow>,
+    next_vehicle_action_id: u32,
+    pending_vehicle_followup: Option<PendingVehicleFollowup>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct PlanetVehicleActionSample {
+    pub(crate) kind: &'static str,
+    pub(crate) existing_entity: bool,
+    pub(crate) old_position: Option<Vec3>,
+    pub(crate) new_position: Option<Vec3>,
+    pub(crate) locate_ms: Option<f64>,
+    pub(crate) dispatch_ms: f64,
+    pub(crate) scene_child_spawned: bool,
+    pub(crate) fixed_elapsed_s_before: f64,
+    pub(crate) fixed_elapsed_s_after: f64,
+    pub(crate) resident_obstacles_before: usize,
+    pub(crate) world_ready_before: bool,
+}
+
+#[derive(Clone, Copy)]
+struct PlanetVehicleActionRow {
+    route: &'static str,
+    repeat: u8,
+    elapsed_s: f64,
+    real_elapsed_s: f64,
+    event: &'static str,
+    action_id: u32,
+    kind: &'static str,
+    existing_entity: bool,
+    old_position: Option<Vec3>,
+    new_position: Option<Vec3>,
+    locate_ms: Option<f64>,
+    dispatch_ms: Option<f64>,
+    scene_child_spawned: Option<bool>,
+    fixed_elapsed_s_before: f64,
+    fixed_elapsed_s_after: f64,
+    resident_obstacles_before: usize,
+    resident_obstacles_after: usize,
+    fixed_delta_s: Option<f64>,
+    resident_delta: Option<isize>,
+    world_ready: bool,
+    actions_pending: Option<bool>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingVehicleFollowup {
+    route: &'static str,
+    repeat: u8,
+    measurement_start: f64,
+    action_id: u32,
+    kind: &'static str,
+    existing_entity: bool,
+    fixed_elapsed_s_before: f64,
+    resident_obstacles_before: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -75,6 +130,7 @@ impl PlanetWorkTrace {
         self.measurement_start = Some(elapsed_s);
         self.route = Some(route);
         self.repeat = repeat;
+        self.next_vehicle_action_id = 1;
     }
 
     pub(crate) fn stop_repeat(&mut self) {
@@ -111,11 +167,179 @@ impl PlanetWorkTrace {
         });
     }
 
+    pub(crate) fn record_vehicle_summon(
+        &mut self,
+        elapsed_s: f64,
+        real_elapsed_s: f64,
+        sample: PlanetVehicleActionSample,
+    ) {
+        let (Some(measurement_start), Some(route)) = (self.measurement_start, self.route) else {
+            return;
+        };
+        let action_id = self.next_vehicle_action_id;
+        self.next_vehicle_action_id = self.next_vehicle_action_id.saturating_add(1);
+        self.vehicle_action_rows.push(PlanetVehicleActionRow {
+            route,
+            repeat: self.repeat,
+            elapsed_s: elapsed_s - measurement_start,
+            real_elapsed_s,
+            event: "summon-dispatch",
+            action_id,
+            kind: sample.kind,
+            existing_entity: sample.existing_entity,
+            old_position: sample.old_position,
+            new_position: sample.new_position,
+            locate_ms: sample.locate_ms,
+            dispatch_ms: Some(sample.dispatch_ms),
+            scene_child_spawned: Some(sample.scene_child_spawned),
+            fixed_elapsed_s_before: sample.fixed_elapsed_s_before,
+            fixed_elapsed_s_after: sample.fixed_elapsed_s_after,
+            resident_obstacles_before: sample.resident_obstacles_before,
+            resident_obstacles_after: sample.resident_obstacles_before,
+            fixed_delta_s: None,
+            resident_delta: Some(0),
+            world_ready: sample.world_ready_before,
+            actions_pending: None,
+        });
+        self.pending_vehicle_followup = Some(PendingVehicleFollowup {
+            route,
+            repeat: self.repeat,
+            measurement_start,
+            action_id,
+            kind: sample.kind,
+            existing_entity: sample.existing_entity,
+            fixed_elapsed_s_before: sample.fixed_elapsed_s_before,
+            resident_obstacles_before: sample.resident_obstacles_before,
+        });
+    }
+
+    pub(crate) fn record_vehicle_followup(
+        &mut self,
+        elapsed_s: f64,
+        real_elapsed_s: f64,
+        fixed_elapsed_s: f64,
+        resident_obstacles: usize,
+        world_ready: bool,
+        actions_pending: bool,
+    ) {
+        let Some(pending) = self.pending_vehicle_followup.take() else {
+            return;
+        };
+        self.vehicle_action_rows.push(PlanetVehicleActionRow {
+            route: pending.route,
+            repeat: pending.repeat,
+            elapsed_s: elapsed_s - pending.measurement_start,
+            real_elapsed_s,
+            event: "first-following-update",
+            action_id: pending.action_id,
+            kind: pending.kind,
+            existing_entity: pending.existing_entity,
+            old_position: None,
+            new_position: None,
+            locate_ms: None,
+            dispatch_ms: None,
+            scene_child_spawned: None,
+            fixed_elapsed_s_before: pending.fixed_elapsed_s_before,
+            fixed_elapsed_s_after: fixed_elapsed_s,
+            resident_obstacles_before: pending.resident_obstacles_before,
+            resident_obstacles_after: resident_obstacles,
+            fixed_delta_s: Some(fixed_elapsed_s - pending.fixed_elapsed_s_before),
+            resident_delta: Some(
+                resident_obstacles as isize - pending.resident_obstacles_before as isize,
+            ),
+            world_ready,
+            actions_pending: Some(actions_pending),
+        });
+    }
+
     pub(crate) fn to_csv(&self) -> String {
         let mut csv = String::from(
             "route,repeat,elapsed_s,real_elapsed_s,stage,camera_radius_m,duration_ms,operation_a,operation_b,operation_c,operation_d\n",
         );
         for row in &self.rows {
+            csv.push_str(&format!(
+                "{},{},{:.6},{:.6},{},{:.3},{:.6},{},{},{},{}\n",
+                row.route,
+                row.repeat,
+                row.elapsed_s,
+                row.real_elapsed_s,
+                row.stage,
+                row.camera_radius_m,
+                row.duration_ms,
+                row.a,
+                row.b,
+                row.c,
+                row.d,
+            ));
+        }
+        csv
+    }
+
+    pub(crate) fn vehicle_action_csv(&self, route: &str, repeat: u8) -> Option<String> {
+        let rows = self
+            .vehicle_action_rows
+            .iter()
+            .filter(|row| row.route == route && row.repeat == repeat)
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            return None;
+        }
+        let mut csv = String::from(
+            "route,repeat,elapsed_s,real_elapsed_s,event,action_id,kind,existing_entity,old_x,old_y,old_z,new_x,new_y,new_z,locate_ms,dispatch_ms,scene_child_spawned,fixed_elapsed_s_before,fixed_elapsed_s_after,resident_obstacles_before,resident_obstacles_after,fixed_delta_s,resident_delta,world_ready,actions_pending\n",
+        );
+        for row in rows {
+            let position = |value: Option<Vec3>| {
+                value.map_or([String::new(), String::new(), String::new()], |position| {
+                    position
+                        .to_array()
+                        .map(|component| format!("{component:.4}"))
+                })
+            };
+            let optional = |value: Option<String>| value.unwrap_or_default();
+            let old = position(row.old_position);
+            let new = position(row.new_position);
+            let fields = [
+                row.route.to_owned(),
+                row.repeat.to_string(),
+                format!("{:.6}", row.elapsed_s),
+                format!("{:.6}", row.real_elapsed_s),
+                row.event.to_owned(),
+                row.action_id.to_string(),
+                row.kind.to_owned(),
+                row.existing_entity.to_string(),
+                old[0].clone(),
+                old[1].clone(),
+                old[2].clone(),
+                new[0].clone(),
+                new[1].clone(),
+                new[2].clone(),
+                optional(row.locate_ms.map(|value| format!("{value:.6}"))),
+                optional(row.dispatch_ms.map(|value| format!("{value:.6}"))),
+                optional(row.scene_child_spawned.map(|value| value.to_string())),
+                format!("{:.6}", row.fixed_elapsed_s_before),
+                format!("{:.6}", row.fixed_elapsed_s_after),
+                row.resident_obstacles_before.to_string(),
+                row.resident_obstacles_after.to_string(),
+                optional(row.fixed_delta_s.map(|value| format!("{value:.6}"))),
+                optional(row.resident_delta.map(|value| value.to_string())),
+                row.world_ready.to_string(),
+                optional(row.actions_pending.map(|value| value.to_string())),
+            ];
+            csv.push_str(&fields.join(","));
+            csv.push('\n');
+        }
+        Some(csv)
+    }
+
+    pub(crate) fn repeat_csv(&self, route: &str, repeat: u8) -> String {
+        let mut csv = String::from(
+            "route,repeat,elapsed_s,real_elapsed_s,stage,camera_radius_m,duration_ms,operation_a,operation_b,operation_c,operation_d\n",
+        );
+        for row in self
+            .rows
+            .iter()
+            .filter(|row| row.route == route && row.repeat == repeat)
+        {
             csv.push_str(&format!(
                 "{},{},{:.6},{:.6},{},{:.3},{:.6},{},{},{},{}\n",
                 row.route,
