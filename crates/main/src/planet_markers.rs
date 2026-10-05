@@ -12,6 +12,7 @@ use shared::planet_markers::{
     marker_clears_spherical_horizon, planet_marker_label_priority, planet_marker_label_visible,
     planet_marker_presentation, project_ndc_to_logical_viewport, same_surface_location,
 };
+use shared::planet_view::{planet_compass_color, planet_compass_orientation};
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
@@ -31,6 +32,10 @@ const SETTLEMENT_REGION_DEDUP_METERS: f32 = 90.0;
 const BRIDGE_REGION_DEDUP_METERS: f32 = 140.0;
 const MAX_MARKER_LABEL_CHARS: usize = 24;
 const LABEL_GRID_CELL_SIZE: f32 = 64.0;
+const COMPASS_RIM_GAP: f32 = 18.0;
+const COMPASS_LABEL_WIDTH: f32 = 12.0;
+const COMPASS_LABEL_HEIGHT: f32 = 14.0;
+const COMPASS_VIEWPORT_MARGIN: f32 = 10.0;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BridgeMarkerAnchor {
@@ -348,7 +353,7 @@ fn setup_planet_markers(
                     font_size: 11.0.into(),
                     ..default()
                 },
-                TextColor(shared::theme::INK),
+                TextColor(planet_compass_color(index == 0)),
                 FocusPolicy::Pass,
                 CardinalLabel(index),
             ));
@@ -524,6 +529,12 @@ struct ScreenNamedMarker {
     center: Vec2,
     label_bounds: Option<Rect>,
     color: Color,
+}
+
+#[derive(Clone, Copy)]
+struct CompassLabelScreen {
+    center: Vec2,
+    opacity: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -802,20 +813,17 @@ fn update_planet_marker_overlay(
             })
             .flatten()
     });
-    let cardinal_directions = [Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
-    let cardinal_screens = cardinal_directions.map(|direction| {
-        visible
-            .then(|| {
-                project_anchor(
-                    camera,
-                    &camera_global,
-                    viewport,
-                    camera_position,
-                    direction * PLANET_RADIUS,
-                )
-            })
-            .flatten()
-    });
+    let cardinal_screens = if visible {
+        planet_compass_screen_labels(
+            camera,
+            &camera_global,
+            camera_position,
+            camera_transform.rotation,
+            viewport,
+        )
+    } else {
+        [None; 4]
+    };
 
     let mut label_candidates = std::mem::take(&mut projection.label_candidates);
     label_candidates.clear();
@@ -862,9 +870,8 @@ fn update_planet_marker_overlay(
         });
     }
     for (index, screen) in cardinal_screens.iter().enumerate() {
-        let Some(center) = screen else { continue };
-        let Some(bounds) = marker_label_bounds(*center, ["N", "S", "E", "W"][index], viewport)
-        else {
+        let Some(screen) = screen else { continue };
+        let Some(bounds) = compass_label_bounds(screen.center, viewport) else {
             continue;
         };
         label_candidates.push(LabelCandidate {
@@ -991,6 +998,7 @@ fn update_planet_marker_overlay(
             accepted_labels.contains(&LabelTarget::Explorer),
             planet_marker_presentation(PlanetMarkerKind::Explorer).color,
             alpha,
+            MARKER_LABEL_OFFSET,
         );
     }
     for (node, color) in &mut ui.destination_dot {
@@ -1017,17 +1025,23 @@ fn update_planet_marker_overlay(
             accepted_labels.contains(&LabelTarget::Destination),
             planet_marker_presentation(PlanetMarkerKind::SelectedDestination).color,
             alpha,
+            MARKER_LABEL_OFFSET,
         );
     }
     for (node, color, cardinal) in &mut ui.cardinal_labels {
-        let screen = cardinal_screens[cardinal.0];
+        let compass_label = cardinal_screens[cardinal.0];
+        let screen = compass_label.map(|label| label.center);
+        let base_color = planet_compass_color(cardinal.0 == 0);
+        let base_color = base_color
+            .with_alpha(base_color.alpha() * compass_label.map_or(0.0, |label| label.opacity));
         set_dynamic_label(
             node,
             color,
             screen,
             accepted_labels.contains(&LabelTarget::Cardinal(cardinal.0)),
-            shared::theme::INK,
+            base_color,
             alpha,
+            Vec2::new(-COMPASS_LABEL_WIDTH / 2.0, -COMPASS_LABEL_HEIGHT / 2.0),
         );
     }
 
@@ -1142,6 +1156,93 @@ fn marker_label_bounds(center: Vec2, label: &str, viewport: Rect) -> Option<Rect
         .then_some(bounds)
 }
 
+fn compass_label_bounds(center: Vec2, viewport: Rect) -> Option<Rect> {
+    let half_size = Vec2::new(COMPASS_LABEL_WIDTH, COMPASS_LABEL_HEIGHT) / 2.0;
+    let bounds = Rect::from_corners(center - half_size, center + half_size);
+    (bounds.min.x >= viewport.min.x
+        && bounds.min.y >= viewport.min.y
+        && bounds.max.x <= viewport.max.x
+        && bounds.max.y <= viewport.max.y)
+        .then_some(bounds)
+}
+
+fn planet_compass_screen_labels(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    camera_position: Vec3,
+    camera_rotation: Quat,
+    viewport: Rect,
+) -> [Option<CompassLabelScreen>; 4] {
+    let Some(orientation) = planet_compass_orientation(camera_position, camera_rotation) else {
+        return [None; 4];
+    };
+    let Some(center_ndc) = camera.world_to_ndc(camera_transform, Vec3::ZERO) else {
+        return [None; 4];
+    };
+    let camera_distance = camera_position.length();
+    if camera_distance <= PLANET_RADIUS || !camera_distance.is_finite() {
+        return [None; 4];
+    }
+
+    let surface_up = camera_position / camera_distance;
+    let camera_right = camera_rotation * Vec3::X;
+    let tangent_right = (camera_right - surface_up * camera_right.dot(surface_up))
+        .normalize_or(surface_up.any_orthonormal_vector());
+    let radius_ratio = PLANET_RADIUS / camera_distance;
+    let tangent_radius = PLANET_RADIUS * (1.0 - radius_ratio * radius_ratio).sqrt();
+    let silhouette = surface_up * (PLANET_RADIUS * radius_ratio) + tangent_right * tangent_radius;
+    let Some(silhouette_ndc) = camera.world_to_ndc(camera_transform, silhouette) else {
+        return [None; 4];
+    };
+    let center = viewport_point_from_ndc(center_ndc, viewport);
+    let silhouette_point = viewport_point_from_ndc(silhouette_ndc, viewport);
+    let planet_screen_radius = center.distance(silhouette_point);
+    if !center.is_finite() || !planet_screen_radius.is_finite() {
+        return [None; 4];
+    }
+
+    let directions = [
+        orientation.north,
+        -orientation.north,
+        orientation.east,
+        -orientation.east,
+    ];
+    directions.map(|direction| {
+        let max_rim_distance = distance_to_compass_viewport_edge(center, direction, viewport)?;
+        let radius = (planet_screen_radius + COMPASS_RIM_GAP).min(max_rim_distance);
+        Some(CompassLabelScreen {
+            center: center + direction * radius,
+            opacity: orientation.opacity,
+        })
+    })
+}
+
+fn viewport_point_from_ndc(ndc: Vec3, viewport: Rect) -> Vec2 {
+    let normalized = Vec2::new((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5);
+    viewport.min + normalized * viewport.size()
+}
+
+fn distance_to_compass_viewport_edge(center: Vec2, direction: Vec2, viewport: Rect) -> Option<f32> {
+    let min = viewport.min + Vec2::splat(COMPASS_VIEWPORT_MARGIN);
+    let max = viewport.max - Vec2::splat(COMPASS_VIEWPORT_MARGIN);
+    let x = if direction.x > f32::EPSILON {
+        (max.x - center.x) / direction.x
+    } else if direction.x < -f32::EPSILON {
+        (min.x - center.x) / direction.x
+    } else {
+        f32::INFINITY
+    };
+    let y = if direction.y > f32::EPSILON {
+        (max.y - center.y) / direction.y
+    } else if direction.y < -f32::EPSILON {
+        (min.y - center.y) / direction.y
+    } else {
+        f32::INFINITY
+    };
+    let distance = x.min(y);
+    (distance.is_finite() && distance >= 0.0).then_some(distance)
+}
+
 fn rectangles_overlap(left: Rect, right: Rect) -> bool {
     left.min.x < right.max.x
         && left.max.x > right.min.x
@@ -1197,6 +1298,7 @@ fn set_dynamic_label(
     label_visible: bool,
     base_color: Color,
     alpha: f32,
+    offset: Vec2,
 ) {
     let Some(screen) = screen.filter(|_| label_visible) else {
         if node.display != Display::None {
@@ -1207,8 +1309,8 @@ fn set_dynamic_label(
     if node.display != Display::Flex {
         node.display = Display::Flex;
     }
-    let left = Val::Px(screen.x + MARKER_LABEL_OFFSET.x);
-    let top = Val::Px(screen.y + MARKER_LABEL_OFFSET.y);
+    let left = Val::Px(screen.x + offset.x);
+    let top = Val::Px(screen.y + offset.y);
     if node.left != left {
         node.left = left;
     }
