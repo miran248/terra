@@ -114,6 +114,28 @@ struct DestinationLabel;
 #[derive(Component)]
 struct CardinalLabel(usize);
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ExplorerMarkerLayout {
+    pub physical_center: Vec2,
+    pub physical_size: Vec2,
+    pub visible: bool,
+}
+
+/// Read the laid-out explorer dot as the UI renderer will draw it. The
+/// acceptance diagnostic compares this position with the camera projection
+/// from the same frame while following a moving body.
+pub(crate) fn explorer_marker_layout(world: &mut World) -> Option<ExplorerMarkerLayout> {
+    let mut query =
+        world.query_filtered::<(&Node, &ComputedNode, &UiGlobalTransform), With<ExplorerDot>>();
+    let (node, computed, transform) = query.iter(world).next()?;
+    let (_, _, physical_center) = transform.to_scale_angle_translation();
+    Some(ExplorerMarkerLayout {
+        physical_center,
+        physical_size: computed.size,
+        visible: node.display != Display::None,
+    })
+}
+
 pub(crate) struct PlanetMarkersPlugin;
 
 impl Plugin for PlanetMarkersPlugin {
