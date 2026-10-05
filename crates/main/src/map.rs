@@ -1100,6 +1100,17 @@ pub fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Me
         colors_out.push(color[2]);
     }
 
+    build_visual_mesh_from_attributes(positions, normals_out, colors_out)
+}
+
+pub(crate) fn build_visual_mesh_from_attributes(
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
+    colors: Vec<[f32; 4]>,
+) -> Mesh {
+    debug_assert_eq!(positions.len(), normals.len());
+    debug_assert_eq!(positions.len(), colors.len());
+
     let mut mesh = Mesh::new(
         bevy::render::mesh::PrimitiveTopology::TriangleList,
         Default::default(),
@@ -1110,11 +1121,11 @@ pub fn build_visual_mesh(tris: &[[[f32; 3]; 3]], colors: &[[[f32; 4]; 3]]) -> Me
     );
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_NORMAL,
-        VertexAttributeValues::Float32x3(normals_out),
+        VertexAttributeValues::Float32x3(normals),
     );
     mesh.insert_attribute(
         Mesh::ATTRIBUTE_COLOR,
-        VertexAttributeValues::Float32x4(colors_out),
+        VertexAttributeValues::Float32x4(colors),
     );
     mesh
 }
