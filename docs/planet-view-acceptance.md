@@ -131,10 +131,12 @@ further performance work and accept current pacing for now; no timing pass is cl
 The unchanged run is preserved at
 /tmp/terra-spec-45/acceptance-57-visible-space-0104ff7, built from commit
 0104ff7d4c07b4f4870d000720eb6326194fa7f9. Its manifest, raw intervals,
-independent recalculation, application log, source hashes, and host sampler are in
-that directory. The independent validator reports four recurring-stall failures;
-all 12 repeats passed continuous movement, live awake physics, advancing simulation,
-and daylight-progression checks.
+independent-performance-summary.csv, acceptance-status.txt, application log, source
+hashes, and copied host-vmstat.log are in that directory. The sampler's original
+file is /tmp/terra-spec-45/host-acceptance-57-visible-space-0104ff7-vmstat.log.
+Validator output is /tmp/terra-spec-45/visible-space-validation.txt; it reports
+four recurring-stall failures. All 12 repeats passed continuous movement, live
+awake physics, advancing simulation, and daylight-progression checks.
 
 The run used a 60-second warmup and three 60-second repeats per route, with the
 normal asset-review feature and no schedule or work tracing. It ran on an Apple M4
@@ -152,7 +154,7 @@ body/sun ambient values match between globe and opposite views at 86.6294 for no
 and 35 for sunset and night. Static images do not establish motion or pacing.
 
 | Route | Slow intervals by repeat (>33.33 ms) | Repeats affected | p50 range (ms) | p95 range (ms) | p99 range (ms) | Maximum (ms) |
-| --- | --- | ---: | ---: | ---: | ---: |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
 | entry-reversal | 39 / 1 / 0 | 2 of 3 | 8.320–8.337 | 9.108–10.371 | 12.056–24.770 | 1011.830 |
 | orbit-zoom | 0 / 3 / 7 | 2 of 3 | 8.335–8.363 | 9.344–9.874 | 11.808–13.568 | 88.823 |
 | follow-vehicle-recovery | 1 / 0 / 2 | 2 of 3 | 9.221–9.631 | 17.895–17.953 | 18.920–19.510 | 1070.265 |
