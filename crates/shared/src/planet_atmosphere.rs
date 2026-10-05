@@ -1,8 +1,8 @@
 //! Shared lighting policy for the live planet view.
 
 use crate::planet_view::PLANET_VIEW_FAR_RADIUS;
-use terra_geometry::sphere::PLANET_RADIUS;
 use bevy::prelude::Vec3;
+use terra_geometry::sphere::PLANET_RADIUS;
 
 /// The camera's ground-level distance-fog visibility.
 pub const GROUND_FOG_VISIBILITY: f32 = 1_700.0;

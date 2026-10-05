@@ -1,7 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use terra_geometry::planet::{PlanetMesh, ray_triangle_radius, unit_icosphere_tris};
 use terra_geometry::sphere::PLANET_RADIUS;
-use std::hint::black_box;
 
 /// Deterministic spread of query directions over the sphere.
 fn query_dirs(n: usize) -> Vec<bevy::prelude::Vec3> {

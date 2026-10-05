@@ -41,8 +41,8 @@ use bevy::light::atmosphere::ScatteringMedium;
 use bevy::pbr::AtmosphereSettings;
 use bevy::post_process::bloom::{Bloom, BloomPrefilter};
 use bevy::prelude::*;
-use terra_geometry::sphere::PLANET_RADIUS;
 use shared::state::AppState;
+use terra_geometry::sphere::PLANET_RADIUS;
 
 fn main() {
     let mut app = App::new();
