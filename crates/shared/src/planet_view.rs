@@ -121,6 +121,78 @@ const MOTION_RESET_LINEAR_SPEED: f32 = 50_000.0;
 const MOTION_RESET_ANGULAR_SPEED: f32 = 30.0;
 const INTERRUPTION_RELEASE_SECONDS: f32 = 0.3;
 const VIEW_RESPONSE: f32 = 12.0;
+const COMPASS_NORTH_FADE_START: f32 = 0.08;
+const COMPASS_NORTH_FADE_END: f32 = 0.25;
+
+/// Camera-relative directions and fade for the Planet view compass.
+///
+/// Directions use UI coordinates: positive X points right and positive Y
+/// points down. `opacity` fades all four letters as geographic north becomes
+/// ambiguous near either pole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanetCompassOrientation {
+    pub north: Vec2,
+    pub east: Vec2,
+    pub opacity: f32,
+}
+
+/// Project geographic north and east around the screen rim from the attained
+/// Planet view camera pose. This intentionally depends on the camera's own
+/// position and rotation, so detached browsing remains correctly oriented.
+pub fn planet_compass_orientation(
+    camera_position: Vec3,
+    camera_rotation: Quat,
+) -> Option<PlanetCompassOrientation> {
+    let camera_length_squared = camera_position.length_squared();
+    let rotation_length_squared = camera_rotation.length_squared();
+    if !camera_position.is_finite()
+        || !camera_rotation.is_finite()
+        || !camera_length_squared.is_finite()
+        || camera_length_squared <= f32::EPSILON
+        || !rotation_length_squared.is_finite()
+        || rotation_length_squared <= f32::EPSILON
+    {
+        return None;
+    }
+
+    let surface_up = camera_position.normalize();
+    let rotation = camera_rotation.normalize();
+    let camera_right = rotation * Vec3::X;
+    let camera_up = rotation * Vec3::Y;
+    let north_tangent = Vec3::Y - surface_up * surface_up.y;
+    let north_strength = north_tangent.length();
+    let fallback_north = camera_up - surface_up * camera_up.dot(surface_up);
+    let north = north_tangent
+        .normalize_or(fallback_north.normalize_or(surface_up.any_orthonormal_vector()));
+    let east_tangent = north.cross(surface_up);
+    let east = east_tangent.normalize_or(
+        (camera_right - surface_up * camera_right.dot(surface_up))
+            .normalize_or(surface_up.any_orthonormal_vector()),
+    );
+    let screen_direction = |direction: Vec3, fallback: Vec2| {
+        let projected = Vec2::new(direction.dot(camera_right), -direction.dot(camera_up));
+        projected.normalize_or(fallback)
+    };
+    let fade = ((north_strength - COMPASS_NORTH_FADE_START)
+        / (COMPASS_NORTH_FADE_END - COMPASS_NORTH_FADE_START))
+        .clamp(0.0, 1.0);
+
+    Some(PlanetCompassOrientation {
+        north: screen_direction(north, Vec2::NEG_Y),
+        east: screen_direction(east, Vec2::X),
+        opacity: fade * fade * (3.0 - 2.0 * fade),
+    })
+}
+
+/// Shared minimap palette for the Planet view compass: north is accented and
+/// the remaining directions are subdued.
+pub fn planet_compass_color(is_north: bool) -> Color {
+    if is_north {
+        crate::theme::PRIMARY
+    } else {
+        crate::theme::TEXT_WEAK
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
@@ -1056,6 +1128,58 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn planet_compass_follows_camera_orientation_in_detached_views() {
+        let camera = Transform::from_translation(Vec3::X * PLANET_VIEW_FAR_RADIUS)
+            .looking_at(Vec3::ZERO, Vec3::Y);
+        let north_up = planet_compass_orientation(camera.translation, camera.rotation).unwrap();
+        assert!(north_up.north.distance(Vec2::NEG_Y) < 1e-4);
+        assert!(north_up.east.distance(Vec2::X) < 1e-4);
+
+        let roll = Quat::from_axis_angle(Vec3::NEG_X, std::f32::consts::FRAC_PI_2);
+        let detached_camera = Transform {
+            rotation: roll * camera.rotation,
+            ..camera
+        };
+        let rolled =
+            planet_compass_orientation(detached_camera.translation, detached_camera.rotation)
+                .unwrap();
+        assert!(rolled.north.distance(Vec2::NEG_X) < 1e-4);
+        assert!(rolled.east.distance(Vec2::NEG_Y) < 1e-4);
+    }
+
+    #[test]
+    fn planet_compass_fades_ambiguous_directions_across_a_pole() {
+        let camera_at_latitude = |latitude_degrees: f32| {
+            let latitude = latitude_degrees.to_radians();
+            let surface_up = Vec3::new(latitude.cos(), latitude.sin(), 0.0);
+            Transform::from_translation(surface_up * PLANET_VIEW_FAR_RADIUS)
+                .looking_at(Vec3::ZERO, Vec3::Z)
+        };
+
+        let lower_latitude = camera_at_latitude(80.0);
+        let before_pole = camera_at_latitude(89.0);
+        let after_pole = camera_at_latitude(91.0);
+        let lower = planet_compass_orientation(lower_latitude.translation, lower_latitude.rotation)
+            .unwrap();
+        let before =
+            planet_compass_orientation(before_pole.translation, before_pole.rotation).unwrap();
+        let after =
+            planet_compass_orientation(after_pole.translation, after_pole.rotation).unwrap();
+
+        assert!(lower.opacity > 0.0 && lower.opacity < 1.0);
+        assert_eq!(before.opacity, 0.0);
+        assert_eq!(after.opacity, 0.0);
+        assert!(before.north.dot(after.north) < -0.99);
+        assert!(before.north.is_finite() && after.north.is_finite());
+    }
+
+    #[test]
+    fn planet_compass_highlights_north_with_the_minimap_palette() {
+        assert_eq!(planet_compass_color(true), crate::theme::PRIMARY);
+        assert_eq!(planet_compass_color(false), crate::theme::TEXT_WEAK);
     }
 
     #[test]

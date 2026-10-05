@@ -12,6 +12,10 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::text::LineHeight;
 use shared::level::RegionKind;
+use shared::planet_markers::{
+    PlanetMarkerKind, PlanetMarkerShape, planet_marker_label_visible, planet_marker_presentation,
+};
+use shared::planet_view::planet_compass_color;
 use shared::planet_view_interface::GameplayHudElement;
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
@@ -151,7 +155,42 @@ fn cursor_in_map(
 }
 
 fn map_label_default_visible(kind: RegionKind) -> bool {
-    kind == RegionKind::Settlement
+    planet_marker_label_visible(map_region_marker_kind(kind), false)
+}
+
+fn map_region_marker_kind(kind: RegionKind) -> PlanetMarkerKind {
+    PlanetMarkerKind::Region(kind)
+}
+
+fn map_marker_components(
+    point: Vec2,
+    size: f32,
+    kind: PlanetMarkerKind,
+) -> (Node, BackgroundColor, BorderColor) {
+    let presentation = planet_marker_presentation(kind);
+    let border_radius = match presentation.shape {
+        PlanetMarkerShape::Circle => BorderRadius::MAX,
+        PlanetMarkerShape::Square => BorderRadius::ZERO,
+    };
+    let border = if presentation.outlined {
+        UiRect::all(Val::Px(1.0))
+    } else {
+        UiRect::all(Val::Px(0.0))
+    };
+    (
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(point.x - size / 2.0),
+            top: Val::Px(point.y - size / 2.0),
+            width: Val::Px(size),
+            height: Val::Px(size),
+            border_radius,
+            border,
+            ..default()
+        },
+        BackgroundColor(presentation.color),
+        BorderColor::all(theme::INK),
+    )
 }
 
 fn nearest_hovered_label(cursor: Option<Vec2>, labels: &[MapLabel]) -> Option<usize> {
@@ -303,7 +342,6 @@ pub(crate) fn consume_planet_view_destination_click(
     terrain: Option<Res<TerrainGen>>,
     regions: Option<Res<LevelRegions>>,
     projection: Option<Res<crate::planet_markers::PlanetMarkerProjection>>,
-    marker_layers: Option<Res<crate::planet_markers::PlanetMarkerLayers>>,
     cameras: Query<(&Camera, &GlobalTransform), With<MainCamera>>,
 ) {
     let Some(cursor) = state.take_planet_view_selection() else {
@@ -317,16 +355,12 @@ pub(crate) fn consume_planet_view_destination_click(
     else {
         return;
     };
-    if let (Some(projection), Some(marker_layers)) =
-        (projection.as_deref(), marker_layers.as_deref())
-        && crate::planet_markers::select_named_marker_at(
-            &mut state,
-            *world_epoch,
-            Some(projection),
-            marker_layers,
-            cursor,
-        )
-    {
+    if crate::planet_markers::select_named_marker_at(
+        &mut state,
+        *world_epoch,
+        projection.as_deref(),
+        cursor,
+    ) {
         return;
     }
     let bridge_surfaces = regions
@@ -608,18 +642,13 @@ fn draw_overlay(
     let mut labels = Vec::new();
     let mut hover_labels = Vec::new();
     {
-        let mut dot = |p: Vec3, color: Color, s: f32| {
+        let mut dot = |p: Vec3, kind: PlanetMarkerKind, s: f32| {
             let Some(pt) = place(p) else { return };
+            let (node, color, border) = map_marker_components(pt, s, kind);
             commands.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(pt.x - s / 2.0),
-                    top: Val::Px(pt.y - s / 2.0),
-                    width: Val::Px(s),
-                    height: Val::Px(s),
-                    ..default()
-                },
-                BackgroundColor(color),
+                node,
+                color,
+                border,
                 ZIndex(1),
                 GameplayHudElement::default(),
                 MinimapDot,
@@ -641,7 +670,11 @@ fn draw_overlay(
         //         dot(tf.translation, theme::ERROR, DOT * marker_scale);
         //     }
         // }
-        dot(player_pos, theme::ACCENT, DOT * 2.0 * marker_scale);
+        dot(
+            player_pos,
+            PlanetMarkerKind::Explorer,
+            DOT * 2.0 * marker_scale,
+        );
     }
 
     for (tf, _) in &settlements {
@@ -649,18 +682,11 @@ fn draw_overlay(
             continue;
         };
         let s = 6.0 * marker_scale;
+        let (node, color, border) = map_marker_components(pt, s, PlanetMarkerKind::Settlement);
         commands.spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(pt.x - s / 2.0),
-                top: Val::Px(pt.y - s / 2.0),
-                width: Val::Px(s),
-                height: Val::Px(s),
-                border: UiRect::all(Val::Px(1.0)),
-                ..default()
-            },
-            BackgroundColor(theme::WARNING),
-            BorderColor::all(theme::INK),
+            node,
+            color,
+            border,
             ZIndex(1),
             GameplayHudElement::default(),
             MinimapDot,
@@ -681,17 +707,8 @@ fn draw_overlay(
             let Some(pt) = place(world_pos) else {
                 continue;
             };
-            let color = match region.kind {
-                RegionKind::Ocean | RegionKind::Lake | RegionKind::SaltLake | RegionKind::River => {
-                    theme::INFO
-                }
-                RegionKind::MountainRange | RegionKind::Volcano | RegionKind::Glacier => {
-                    theme::ACCENT
-                }
-                RegionKind::Settlement | RegionKind::Road => theme::WARNING,
-                RegionKind::Beach | RegionKind::Cliff => theme::PRIMARY,
-                _ => theme::INK,
-            };
+            let marker_kind = map_region_marker_kind(region.kind);
+            let presentation = planet_marker_presentation(marker_kind);
             let display_name = if region.kind == RegionKind::Settlement {
                 settlements
                     .iter()
@@ -703,17 +720,11 @@ fn draw_overlay(
                 region.name.as_str()
             };
             let s = 3.0 * marker_scale;
+            let (node, color, border) = map_marker_components(pt, s, marker_kind);
             commands.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(pt.x - s / 2.0),
-                    top: Val::Px(pt.y - s / 2.0),
-                    width: Val::Px(s),
-                    height: Val::Px(s),
-                    border_radius: BorderRadius::all(Val::Percent(50.0)),
-                    ..default()
-                },
-                BackgroundColor(color),
+                node,
+                color,
+                border,
                 ZIndex(1),
                 GameplayHudElement::default(),
                 MinimapDot,
@@ -722,7 +733,7 @@ fn draw_overlay(
             let label = MapLabel {
                 anchor: pt,
                 text: display_name.to_owned(),
-                color,
+                color: presentation.color,
                 font_size: 8.0 * marker_scale,
                 z_index: if map_label_default_visible(region.kind) {
                     2
@@ -730,9 +741,9 @@ fn draw_overlay(
                     3
                 },
             };
-            if map_label_default_visible(region.kind) {
+            if planet_marker_label_visible(marker_kind, false) {
                 labels.push(label);
-            } else {
+            } else if planet_marker_label_visible(marker_kind, true) {
                 hover_labels.push(label);
             }
         }
@@ -745,31 +756,28 @@ fn draw_overlay(
                 continue;
             };
             let s = 5.0 * marker_scale;
+            let presentation = planet_marker_presentation(PlanetMarkerKind::Bridge);
+            let (node, color, border) = map_marker_components(pt, s, PlanetMarkerKind::Bridge);
             commands.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(pt.x - s / 2.0),
-                    top: Val::Px(pt.y - s / 2.0),
-                    width: Val::Px(s),
-                    height: Val::Px(s),
-                    border: UiRect::all(Val::Px(1.0)),
-                    border_radius: BorderRadius::all(Val::Percent(50.0)),
-                    ..default()
-                },
-                BackgroundColor(theme::WARNING),
-                BorderColor::all(theme::INK),
+                node,
+                color,
+                border,
                 ZIndex(1),
                 GameplayHudElement::default(),
                 MinimapDot,
                 ChildOf(minimap_entity),
             ));
-            hover_labels.push(MapLabel {
-                anchor: pt,
-                text: name.clone(),
-                color: theme::WARNING,
-                font_size: 8.0 * marker_scale,
-                z_index: 3,
-            });
+            if !planet_marker_label_visible(PlanetMarkerKind::Bridge, false)
+                && planet_marker_label_visible(PlanetMarkerKind::Bridge, true)
+            {
+                hover_labels.push(MapLabel {
+                    anchor: pt,
+                    text: name.clone(),
+                    color: presentation.color,
+                    font_size: 8.0 * marker_scale,
+                    z_index: 3,
+                });
+            }
         }
     }
 
@@ -825,11 +833,7 @@ fn draw_overlay(
                 font_size: FontSize::Px(label_font_size),
                 ..default()
             },
-            TextColor(if i == 0 {
-                theme::PRIMARY
-            } else {
-                theme::TEXT_WEAK
-            }),
+            TextColor(planet_compass_color(i == 0)),
             GameplayHudElement::default(),
             ZIndex(1),
             Node {

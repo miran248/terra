@@ -8,18 +8,18 @@ use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
 use shared::level::RegionKind;
 use shared::planet_markers::{
-    PlanetMarkerLabelKind, cursor_hits_planet_marker, marker_clears_spherical_horizon,
-    planet_marker_label_priority, planet_marker_label_visible, project_ndc_to_logical_viewport,
-    same_surface_location,
+    PlanetMarkerKind, PlanetMarkerShape, cursor_hits_planet_marker,
+    marker_clears_spherical_horizon, planet_marker_label_priority, planet_marker_label_visible,
+    planet_marker_presentation, project_ndc_to_logical_viewport, same_surface_location,
 };
-use shared::planet_view_interface::PlanetViewInterfaceElement;
+use shared::planet_view::{planet_compass_color, planet_compass_orientation};
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
 
 use crate::exploration::{
-    Exploration, ExplorationUpdate, PlanetDestination, PlanetDestinationCollection,
-    PlanetDestinationId, PlanetDestinationSurface,
+    Exploration, PlanetDestination, PlanetDestinationCollection, PlanetDestinationId,
+    PlanetDestinationSurface,
 };
 use crate::map::{LevelRegions, MainCamera, Player, WorldEpoch};
 use crate::ui::UiFont;
@@ -32,48 +32,10 @@ const SETTLEMENT_REGION_DEDUP_METERS: f32 = 90.0;
 const BRIDGE_REGION_DEDUP_METERS: f32 = 140.0;
 const MAX_MARKER_LABEL_CHARS: usize = 24;
 const LABEL_GRID_CELL_SIZE: f32 = 64.0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum PlanetMarkerLayer {
-    Settlements,
-    Regions,
-    Bridges,
-}
-
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PlanetMarkerLayers {
-    settlements: bool,
-    regions: bool,
-    bridges: bool,
-}
-
-impl Default for PlanetMarkerLayers {
-    fn default() -> Self {
-        Self {
-            settlements: true,
-            regions: true,
-            bridges: true,
-        }
-    }
-}
-
-impl PlanetMarkerLayers {
-    pub(crate) fn is_enabled(self, layer: PlanetMarkerLayer) -> bool {
-        match layer {
-            PlanetMarkerLayer::Settlements => self.settlements,
-            PlanetMarkerLayer::Regions => self.regions,
-            PlanetMarkerLayer::Bridges => self.bridges,
-        }
-    }
-
-    fn toggle(&mut self, layer: PlanetMarkerLayer) {
-        match layer {
-            PlanetMarkerLayer::Settlements => self.settlements = !self.settlements,
-            PlanetMarkerLayer::Regions => self.regions = !self.regions,
-            PlanetMarkerLayer::Bridges => self.bridges = !self.bridges,
-        }
-    }
-}
+const COMPASS_RIM_GAP: f32 = 18.0;
+const COMPASS_LABEL_WIDTH: f32 = 12.0;
+const COMPASS_LABEL_HEIGHT: f32 = 14.0;
+const COMPASS_VIEWPORT_MARGIN: f32 = 10.0;
 
 #[derive(Clone, Debug)]
 pub(crate) struct BridgeMarkerAnchor {
@@ -93,8 +55,7 @@ pub(crate) struct PlanetMarkerAnchors {
 #[derive(Clone)]
 struct NamedPlaceMarker {
     destination: PlanetDestination,
-    layer: PlanetMarkerLayer,
-    label_kind: PlanetMarkerLabelKind,
+    kind: PlanetMarkerKind,
     label: String,
 }
 
@@ -108,7 +69,6 @@ struct PlanetMarkerData {
 pub(crate) struct ProjectedPlanetMarker {
     pub index: usize,
     pub destination: PlanetDestination,
-    pub layer: PlanetMarkerLayer,
     pub center: Vec2,
     pub label_bounds: Option<Rect>,
     pub priority: u8,
@@ -154,34 +114,17 @@ struct DestinationLabel;
 #[derive(Component)]
 struct CardinalLabel(usize);
 
-#[derive(Component)]
-struct MarkerLayerPanel;
-
-#[derive(Component)]
-struct MarkerLayerButton(PlanetMarkerLayer);
-
-#[derive(Component)]
-struct MarkerLayerButtonLabel(PlanetMarkerLayer);
-
 pub(crate) struct PlanetMarkersPlugin;
 
 impl Plugin for PlanetMarkersPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PlanetMarkerLayers>()
-            .init_resource::<PlanetMarkerProjection>()
+        app.init_resource::<PlanetMarkerProjection>()
             .init_resource::<HoveredPlanetMarker>()
             .add_systems(
                 OnEnter(AppState::Playing),
                 setup_planet_markers.after(crate::map::setup_map),
             )
             .add_systems(OnExit(AppState::Playing), cleanup_planet_markers)
-            .add_systems(
-                Update,
-                (handle_layer_buttons, update_layer_panel)
-                    .chain()
-                    .after(ExplorationUpdate)
-                    .run_if(in_state(AppState::Playing)),
-            )
             .add_systems(
                 PostUpdate,
                 update_planet_marker_overlay
@@ -199,7 +142,6 @@ pub(crate) fn select_named_marker_at(
     state: &mut Exploration,
     world_epoch: WorldEpoch,
     projection: Option<&PlanetMarkerProjection>,
-    layers: &PlanetMarkerLayers,
     physical_cursor: Vec2,
 ) -> bool {
     if !state.planet_view_ready() || !physical_cursor.is_finite() {
@@ -218,7 +160,6 @@ pub(crate) fn select_named_marker_at(
     let Some((_, marker)) = projection
         .markers
         .iter()
-        .filter(|marker| layers.is_enabled(marker.layer))
         .filter(|marker| {
             cursor_hits_planet_marker(
                 cursor,
@@ -248,7 +189,6 @@ fn setup_planet_markers(
     regions: Option<Res<LevelRegions>>,
     anchors: Option<Res<PlanetMarkerAnchors>>,
     terrain: Option<Res<TerrainGen>>,
-    layers: Res<PlanetMarkerLayers>,
     font: Res<UiFont>,
 ) {
     let marker_data = match (regions, anchors, terrain) {
@@ -282,17 +222,29 @@ fn setup_planet_markers(
 
     commands.entity(root).with_children(|overlay| {
         for (index, marker) in marker_data.named.iter().enumerate() {
-            let dot_size = marker_dot_size(marker.layer);
+            let presentation = planet_marker_presentation(marker.kind);
+            let dot_size = marker_dot_size(marker.kind);
+            let border = if presentation.outlined {
+                UiRect::all(Val::Px(1.0))
+            } else {
+                UiRect::all(Val::Px(0.0))
+            };
+            let border_radius = match presentation.shape {
+                PlanetMarkerShape::Circle => BorderRadius::MAX,
+                PlanetMarkerShape::Square => BorderRadius::ZERO,
+            };
             overlay.spawn((
                 Node {
                     position_type: PositionType::Absolute,
                     width: Val::Px(dot_size),
                     height: Val::Px(dot_size),
-                    border_radius: BorderRadius::MAX,
+                    border_radius,
+                    border,
                     display: Display::None,
                     ..default()
                 },
-                BackgroundColor(marker_color(marker.layer)),
+                BackgroundColor(presentation.color),
+                BorderColor::all(shared::theme::INK),
                 FocusPolicy::Pass,
                 NamedMarkerDot(index),
             ));
@@ -308,22 +260,26 @@ fn setup_planet_markers(
                     font_size: MARKER_LABEL_FONT_SIZE.into(),
                     ..default()
                 },
-                TextColor(marker_color(marker.layer)),
+                TextColor(presentation.color),
                 FocusPolicy::Pass,
                 NamedMarkerLabel(index),
             ));
         }
 
+        let explorer_presentation = planet_marker_presentation(PlanetMarkerKind::Explorer);
         overlay.spawn((
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Px(10.0),
                 height: Val::Px(10.0),
-                border_radius: BorderRadius::MAX,
+                border_radius: match explorer_presentation.shape {
+                    PlanetMarkerShape::Circle => BorderRadius::MAX,
+                    PlanetMarkerShape::Square => BorderRadius::ZERO,
+                },
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(Color::srgb(0.35, 1.0, 0.82)),
+            BackgroundColor(explorer_presentation.color),
             FocusPolicy::Pass,
             ExplorerDot,
         ));
@@ -339,20 +295,30 @@ fn setup_planet_markers(
                 font_size: MARKER_LABEL_FONT_SIZE.into(),
                 ..default()
             },
-            TextColor(Color::srgb(0.35, 1.0, 0.82)),
+            TextColor(explorer_presentation.color),
             FocusPolicy::Pass,
             ExplorerLabel,
         ));
+        let destination_presentation =
+            planet_marker_presentation(PlanetMarkerKind::SelectedDestination);
         overlay.spawn((
             Node {
                 position_type: PositionType::Absolute,
                 width: Val::Px(12.0),
                 height: Val::Px(12.0),
-                border_radius: BorderRadius::MAX,
+                border_radius: match destination_presentation.shape {
+                    PlanetMarkerShape::Circle => BorderRadius::MAX,
+                    PlanetMarkerShape::Square => BorderRadius::ZERO,
+                },
+                border: if destination_presentation.outlined {
+                    UiRect::all(Val::Px(1.0))
+                } else {
+                    UiRect::all(Val::Px(0.0))
+                },
                 display: Display::None,
                 ..default()
             },
-            BackgroundColor(shared::theme::ACCENT),
+            BackgroundColor(destination_presentation.color),
             BorderColor::all(shared::theme::INK),
             FocusPolicy::Pass,
             DestinationDot,
@@ -369,7 +335,7 @@ fn setup_planet_markers(
                 font_size: MARKER_LABEL_FONT_SIZE.into(),
                 ..default()
             },
-            TextColor(shared::theme::ACCENT),
+            TextColor(destination_presentation.color),
             FocusPolicy::Pass,
             DestinationLabel,
         ));
@@ -387,14 +353,13 @@ fn setup_planet_markers(
                     font_size: 11.0.into(),
                     ..default()
                 },
-                TextColor(shared::theme::INK),
+                TextColor(planet_compass_color(index == 0)),
                 FocusPolicy::Pass,
                 CardinalLabel(index),
             ));
         }
     });
 
-    setup_layer_panel(&mut commands, &font, *layers);
     commands.insert_resource(marker_data);
     commands.insert_resource(PlanetMarkerProjection {
         world_epoch: Some(*world_epoch),
@@ -404,66 +369,9 @@ fn setup_planet_markers(
     commands.insert_resource(HoveredPlanetMarker::default());
 }
 
-fn setup_layer_panel(commands: &mut Commands, font: &UiFont, layers: PlanetMarkerLayers) {
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(16.0),
-                top: Val::Px(66.0),
-                padding: UiRect::all(Val::Px(8.0)),
-                flex_direction: FlexDirection::Column,
-                row_gap: Val::Px(5.0),
-                display: Display::None,
-                ..default()
-            },
-            BackgroundColor(shared::theme::PANEL_BG),
-            BorderColor::all(shared::theme::TEXT_WEAK),
-            GlobalZIndex(100),
-            FocusPolicy::Pass,
-            PlanetViewInterfaceElement::default(),
-            MarkerLayerPanel,
-        ))
-        .with_children(|panel| {
-            for layer in [
-                PlanetMarkerLayer::Settlements,
-                PlanetMarkerLayer::Regions,
-                PlanetMarkerLayer::Bridges,
-            ] {
-                panel
-                    .spawn((
-                        Button,
-                        Node {
-                            min_width: Val::Px(164.0),
-                            min_height: Val::Px(30.0),
-                            padding: UiRect::axes(Val::Px(9.0), Val::Px(4.0)),
-                            justify_content: JustifyContent::Center,
-                            align_items: AlignItems::Center,
-                            ..default()
-                        },
-                        BackgroundColor(shared::theme::PANEL_BG),
-                        BorderColor::all(shared::theme::ACCENT),
-                        PlanetViewInterfaceElement::default(),
-                        MarkerLayerButton(layer),
-                    ))
-                    .with_child((
-                        Text::new(layer_label(layer, layers)),
-                        TextFont {
-                            font: font.0.clone().into(),
-                            font_size: 12.0.into(),
-                            ..default()
-                        },
-                        TextColor(shared::theme::INK),
-                        PlanetViewInterfaceElement::default(),
-                        MarkerLayerButtonLabel(layer),
-                    ));
-            }
-        });
-}
-
 fn cleanup_planet_markers(
     mut commands: Commands,
-    overlays: Query<Entity, Or<(With<PlanetMarkerOverlayRoot>, With<MarkerLayerPanel>)>>,
+    overlays: Query<Entity, With<PlanetMarkerOverlayRoot>>,
 ) {
     for entity in &overlays {
         commands.entity(entity).despawn();
@@ -472,54 +380,6 @@ fn cleanup_planet_markers(
     commands.remove_resource::<PlanetMarkerProjection>();
     commands.remove_resource::<PlanetMarkerAnchors>();
     commands.remove_resource::<HoveredPlanetMarker>();
-}
-
-fn handle_layer_buttons(
-    state: Res<Exploration>,
-    mut layers: ResMut<PlanetMarkerLayers>,
-    buttons: Query<(&Interaction, &MarkerLayerButton), Changed<Interaction>>,
-) {
-    if !state.is_planet_view_active() || !state.planet_view_interface_visible() {
-        return;
-    }
-    for (interaction, button) in &buttons {
-        if *interaction == Interaction::Pressed {
-            layers.toggle(button.0);
-        }
-    }
-}
-
-fn update_layer_panel(
-    state: Res<Exploration>,
-    layers: Res<PlanetMarkerLayers>,
-    mut panels: Query<&mut Node, With<MarkerLayerPanel>>,
-    mut labels: Query<(&mut Text, &MarkerLayerButtonLabel)>,
-) {
-    let display = if state.is_planet_view_active() && state.planet_view_interface_visible() {
-        Display::Flex
-    } else {
-        Display::None
-    };
-    for mut panel in &mut panels {
-        if panel.display != display {
-            panel.display = display;
-        }
-    }
-    for (mut text, label) in &mut labels {
-        let value = layer_label(label.0, *layers);
-        if text.0 != value {
-            text.0 = value;
-        }
-    }
-}
-
-fn layer_label(layer: PlanetMarkerLayer, layers: PlanetMarkerLayers) -> String {
-    let (name, enabled) = match layer {
-        PlanetMarkerLayer::Settlements => ("SETTLEMENTS", layers.is_enabled(layer)),
-        PlanetMarkerLayer::Regions => ("REGIONS", layers.is_enabled(layer)),
-        PlanetMarkerLayer::Bridges => ("NAMED BRIDGES", layers.is_enabled(layer)),
-    };
-    format!("{name} · {}", if enabled { "ON" } else { "OFF" })
 }
 
 fn build_named_markers(
@@ -555,8 +415,7 @@ fn build_named_markers(
                 surface: PlanetDestinationSurface::Terrain,
                 display: display.clone(),
             },
-            layer: PlanetMarkerLayer::Settlements,
-            label_kind: PlanetMarkerLabelKind::Settlement,
+            kind: PlanetMarkerKind::Settlement,
             label: truncate_marker_label(&display),
         });
     }
@@ -577,8 +436,7 @@ fn build_named_markers(
                 surface: PlanetDestinationSurface::BridgeDeck,
                 display,
             },
-            layer: PlanetMarkerLayer::Bridges,
-            label_kind: PlanetMarkerLabelKind::Bridge,
+            kind: PlanetMarkerKind::Bridge,
             label: truncate_marker_label(&bridge.name),
         });
     }
@@ -636,8 +494,7 @@ fn build_named_markers(
                 surface: PlanetDestinationSurface::Terrain,
                 display,
             },
-            layer: PlanetMarkerLayer::Regions,
-            label_kind: PlanetMarkerLabelKind::Region,
+            kind: PlanetMarkerKind::Region(region.kind),
             label: truncate_marker_label(&region.name),
         });
     }
@@ -672,6 +529,12 @@ struct ScreenNamedMarker {
     center: Vec2,
     label_bounds: Option<Rect>,
     color: Color,
+}
+
+#[derive(Clone, Copy)]
+struct CompassLabelScreen {
+    center: Vec2,
+    opacity: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -823,7 +686,6 @@ struct MarkerOverlayUi<'w, 's> {
 
 fn update_planet_marker_overlay(
     state: Res<Exploration>,
-    layers: Res<PlanetMarkerLayers>,
     data: Option<Res<PlanetMarkerData>>,
     mut projection: ResMut<PlanetMarkerProjection>,
     mut hovered: ResMut<HoveredPlanetMarker>,
@@ -869,7 +731,6 @@ fn update_planet_marker_overlay(
     // not propagate until after this frame's UI layout.
     let camera_global = GlobalTransform::from(*camera_transform);
     let camera_position = camera_transform.translation;
-    let camera_radius = camera_position.length();
     let alpha = state.planet_view_interface_opacity().clamp(0.0, 1.0);
     let scale_factor = camera.target_scaling_factor().unwrap_or(1.0);
     let cursor = windows.single().ok().and_then(|window| {
@@ -883,9 +744,6 @@ fn update_planet_marker_overlay(
     screen_named.fill(None);
     if visible {
         for (index, marker) in data.named.iter().enumerate() {
-            if !layers.is_enabled(marker.layer) {
-                continue;
-            }
             let Some(center) = project_anchor(
                 camera,
                 &camera_global,
@@ -899,7 +757,7 @@ fn update_planet_marker_overlay(
                 index,
                 center,
                 label_bounds: marker_label_bounds(center, &marker.label, viewport),
-                color: marker_color(marker.layer),
+                color: planet_marker_presentation(marker.kind).color,
             });
         }
     }
@@ -955,54 +813,54 @@ fn update_planet_marker_overlay(
             })
             .flatten()
     });
-    let cardinal_directions = [Vec3::Y, Vec3::NEG_Y, Vec3::Z, Vec3::NEG_Z];
-    let cardinal_screens = cardinal_directions.map(|direction| {
-        visible
-            .then(|| {
-                project_anchor(
-                    camera,
-                    &camera_global,
-                    viewport,
-                    camera_position,
-                    direction * PLANET_RADIUS,
-                )
-            })
-            .flatten()
-    });
+    let cardinal_screens = if visible {
+        planet_compass_screen_labels(
+            camera,
+            &camera_global,
+            camera_position,
+            camera_transform.rotation,
+            viewport,
+        )
+    } else {
+        [None; 4]
+    };
 
     let mut label_candidates = std::mem::take(&mut projection.label_candidates);
     label_candidates.clear();
-    let explorer_bounds =
-        player_screen.and_then(|center| marker_label_bounds(center, "YOU", viewport));
+    let explorer_kind = PlanetMarkerKind::Explorer;
+    let explorer_bounds = player_screen
+        .filter(|_| planet_marker_label_visible(explorer_kind, false))
+        .and_then(|center| marker_label_bounds(center, "YOU", viewport));
     if let Some(bounds) = explorer_bounds {
         label_candidates.push(LabelCandidate {
             target: LabelTarget::Explorer,
             bounds,
-            priority: 0,
+            priority: planet_marker_label_priority(explorer_kind, false).unwrap_or(0),
         });
     }
     let destination_text = selected.map(|destination| truncate_marker_label(&destination.display));
+    let destination_kind = PlanetMarkerKind::SelectedDestination;
     let destination_bounds = selection_screen
+        .filter(|_| planet_marker_label_visible(destination_kind, false))
         .zip(destination_text.as_deref())
         .and_then(|(center, text)| marker_label_bounds(center, text, viewport));
     if let Some(bounds) = destination_bounds {
         label_candidates.push(LabelCandidate {
             target: LabelTarget::Destination,
             bounds,
-            priority: 1,
+            priority: planet_marker_label_priority(destination_kind, false).unwrap_or(1),
         });
     }
     for screen in screen_named.iter().flatten() {
         let marker = &data.named[screen.index];
         let is_hovered = hovered.0 == Some(marker.destination.id);
-        if !planet_marker_label_visible(marker.label_kind, is_hovered, camera_radius, PLANET_RADIUS)
-        {
+        if !planet_marker_label_visible(marker.kind, is_hovered) {
             continue;
         }
         let Some(bounds) = screen.label_bounds else {
             continue;
         };
-        let Some(priority) = planet_marker_label_priority(marker.label_kind, is_hovered) else {
+        let Some(priority) = planet_marker_label_priority(marker.kind, is_hovered) else {
             continue;
         };
         label_candidates.push(LabelCandidate {
@@ -1012,9 +870,8 @@ fn update_planet_marker_overlay(
         });
     }
     for (index, screen) in cardinal_screens.iter().enumerate() {
-        let Some(center) = screen else { continue };
-        let Some(bounds) = marker_label_bounds(*center, ["N", "S", "E", "W"][index], viewport)
-        else {
+        let Some(screen) = screen else { continue };
+        let Some(bounds) = compass_label_bounds(screen.center, viewport) else {
             continue;
         };
         label_candidates.push(LabelCandidate {
@@ -1079,7 +936,7 @@ fn update_planet_marker_overlay(
         if node.display != display {
             node.display = display;
         }
-        let size = marker_dot_size(data.named[dot.0].layer);
+        let size = marker_dot_size(data.named[dot.0].kind);
         let left = Val::Px(screen.center.x - size / 2.0);
         let top = Val::Px(screen.center.y - size / 2.0);
         if node.left != left {
@@ -1117,7 +974,7 @@ fn update_planet_marker_overlay(
         if node.top != top {
             node.top = top;
         }
-        let marker_color = marker_color(marker.layer);
+        let marker_color = planet_marker_presentation(marker.kind).color;
         let marker_color = marker_color.with_alpha(marker_color.alpha() * alpha);
         if color.0 != marker_color {
             color.0 = marker_color;
@@ -1129,7 +986,7 @@ fn update_planet_marker_overlay(
             color,
             player_screen,
             10.0,
-            Color::srgb(0.35, 1.0, 0.82),
+            planet_marker_presentation(PlanetMarkerKind::Explorer).color,
             alpha,
         );
     }
@@ -1139,8 +996,9 @@ fn update_planet_marker_overlay(
             color,
             player_screen,
             accepted_labels.contains(&LabelTarget::Explorer),
-            Color::srgb(0.35, 1.0, 0.82),
+            planet_marker_presentation(PlanetMarkerKind::Explorer).color,
             alpha,
+            MARKER_LABEL_OFFSET,
         );
     }
     for (node, color) in &mut ui.destination_dot {
@@ -1149,7 +1007,7 @@ fn update_planet_marker_overlay(
             color,
             selection_screen,
             12.0,
-            shared::theme::ACCENT,
+            planet_marker_presentation(PlanetMarkerKind::SelectedDestination).color,
             alpha,
         );
     }
@@ -1165,19 +1023,25 @@ fn update_planet_marker_overlay(
             color,
             selection_screen,
             accepted_labels.contains(&LabelTarget::Destination),
-            shared::theme::ACCENT,
+            planet_marker_presentation(PlanetMarkerKind::SelectedDestination).color,
             alpha,
+            MARKER_LABEL_OFFSET,
         );
     }
     for (node, color, cardinal) in &mut ui.cardinal_labels {
-        let screen = cardinal_screens[cardinal.0];
+        let compass_label = cardinal_screens[cardinal.0];
+        let screen = compass_label.map(|label| label.center);
+        let base_color = planet_compass_color(cardinal.0 == 0);
+        let base_color = base_color
+            .with_alpha(base_color.alpha() * compass_label.map_or(0.0, |label| label.opacity));
         set_dynamic_label(
             node,
             color,
             screen,
             accepted_labels.contains(&LabelTarget::Cardinal(cardinal.0)),
-            shared::theme::INK,
+            base_color,
             alpha,
+            Vec2::new(-COMPASS_LABEL_WIDTH / 2.0, -COMPASS_LABEL_HEIGHT / 2.0),
         );
     }
 
@@ -1196,10 +1060,9 @@ fn update_planet_marker_overlay(
             ProjectedPlanetMarker {
                 index: screen.index,
                 destination: marker.destination.clone(),
-                layer: marker.layer,
                 center: screen.center,
                 label_bounds,
-                priority: planet_marker_label_priority(marker.label_kind, is_hovered).unwrap_or(4),
+                priority: planet_marker_label_priority(marker.kind, is_hovered).unwrap_or(4),
             }
         }));
     projection.screen_by_index = screen_named;
@@ -1293,6 +1156,93 @@ fn marker_label_bounds(center: Vec2, label: &str, viewport: Rect) -> Option<Rect
         .then_some(bounds)
 }
 
+fn compass_label_bounds(center: Vec2, viewport: Rect) -> Option<Rect> {
+    let half_size = Vec2::new(COMPASS_LABEL_WIDTH, COMPASS_LABEL_HEIGHT) / 2.0;
+    let bounds = Rect::from_corners(center - half_size, center + half_size);
+    (bounds.min.x >= viewport.min.x
+        && bounds.min.y >= viewport.min.y
+        && bounds.max.x <= viewport.max.x
+        && bounds.max.y <= viewport.max.y)
+        .then_some(bounds)
+}
+
+fn planet_compass_screen_labels(
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    camera_position: Vec3,
+    camera_rotation: Quat,
+    viewport: Rect,
+) -> [Option<CompassLabelScreen>; 4] {
+    let Some(orientation) = planet_compass_orientation(camera_position, camera_rotation) else {
+        return [None; 4];
+    };
+    let Some(center_ndc) = camera.world_to_ndc(camera_transform, Vec3::ZERO) else {
+        return [None; 4];
+    };
+    let camera_distance = camera_position.length();
+    if camera_distance <= PLANET_RADIUS || !camera_distance.is_finite() {
+        return [None; 4];
+    }
+
+    let surface_up = camera_position / camera_distance;
+    let camera_right = camera_rotation * Vec3::X;
+    let tangent_right = (camera_right - surface_up * camera_right.dot(surface_up))
+        .normalize_or(surface_up.any_orthonormal_vector());
+    let radius_ratio = PLANET_RADIUS / camera_distance;
+    let tangent_radius = PLANET_RADIUS * (1.0 - radius_ratio * radius_ratio).sqrt();
+    let silhouette = surface_up * (PLANET_RADIUS * radius_ratio) + tangent_right * tangent_radius;
+    let Some(silhouette_ndc) = camera.world_to_ndc(camera_transform, silhouette) else {
+        return [None; 4];
+    };
+    let center = viewport_point_from_ndc(center_ndc, viewport);
+    let silhouette_point = viewport_point_from_ndc(silhouette_ndc, viewport);
+    let planet_screen_radius = center.distance(silhouette_point);
+    if !center.is_finite() || !planet_screen_radius.is_finite() {
+        return [None; 4];
+    }
+
+    let directions = [
+        orientation.north,
+        -orientation.north,
+        orientation.east,
+        -orientation.east,
+    ];
+    directions.map(|direction| {
+        let max_rim_distance = distance_to_compass_viewport_edge(center, direction, viewport)?;
+        let radius = (planet_screen_radius + COMPASS_RIM_GAP).min(max_rim_distance);
+        Some(CompassLabelScreen {
+            center: center + direction * radius,
+            opacity: orientation.opacity,
+        })
+    })
+}
+
+fn viewport_point_from_ndc(ndc: Vec3, viewport: Rect) -> Vec2 {
+    let normalized = Vec2::new((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5);
+    viewport.min + normalized * viewport.size()
+}
+
+fn distance_to_compass_viewport_edge(center: Vec2, direction: Vec2, viewport: Rect) -> Option<f32> {
+    let min = viewport.min + Vec2::splat(COMPASS_VIEWPORT_MARGIN);
+    let max = viewport.max - Vec2::splat(COMPASS_VIEWPORT_MARGIN);
+    let x = if direction.x > f32::EPSILON {
+        (max.x - center.x) / direction.x
+    } else if direction.x < -f32::EPSILON {
+        (min.x - center.x) / direction.x
+    } else {
+        f32::INFINITY
+    };
+    let y = if direction.y > f32::EPSILON {
+        (max.y - center.y) / direction.y
+    } else if direction.y < -f32::EPSILON {
+        (min.y - center.y) / direction.y
+    } else {
+        f32::INFINITY
+    };
+    let distance = x.min(y);
+    (distance.is_finite() && distance >= 0.0).then_some(distance)
+}
+
 fn rectangles_overlap(left: Rect, right: Rect) -> bool {
     left.min.x < right.max.x
         && left.max.x > right.min.x
@@ -1300,19 +1250,13 @@ fn rectangles_overlap(left: Rect, right: Rect) -> bool {
         && left.max.y > right.min.y
 }
 
-fn marker_color(layer: PlanetMarkerLayer) -> Color {
-    match layer {
-        PlanetMarkerLayer::Settlements => Color::srgb(1.0, 0.78, 0.34),
-        PlanetMarkerLayer::Regions => Color::srgb(0.52, 0.82, 1.0),
-        PlanetMarkerLayer::Bridges => Color::srgb(1.0, 0.54, 0.18),
-    }
-}
-
-fn marker_dot_size(layer: PlanetMarkerLayer) -> f32 {
-    match layer {
-        PlanetMarkerLayer::Settlements => 7.0,
-        PlanetMarkerLayer::Regions => 5.0,
-        PlanetMarkerLayer::Bridges => 8.0,
+fn marker_dot_size(kind: PlanetMarkerKind) -> f32 {
+    match kind {
+        PlanetMarkerKind::Explorer => 10.0,
+        PlanetMarkerKind::SelectedDestination => 12.0,
+        PlanetMarkerKind::Settlement => 7.0,
+        PlanetMarkerKind::Region(_) => 5.0,
+        PlanetMarkerKind::Bridge => 8.0,
     }
 }
 
@@ -1354,6 +1298,7 @@ fn set_dynamic_label(
     label_visible: bool,
     base_color: Color,
     alpha: f32,
+    offset: Vec2,
 ) {
     let Some(screen) = screen.filter(|_| label_visible) else {
         if node.display != Display::None {
@@ -1364,8 +1309,8 @@ fn set_dynamic_label(
     if node.display != Display::Flex {
         node.display = Display::Flex;
     }
-    let left = Val::Px(screen.x + MARKER_LABEL_OFFSET.x);
-    let top = Val::Px(screen.y + MARKER_LABEL_OFFSET.y);
+    let left = Val::Px(screen.x + offset.x);
+    let top = Val::Px(screen.y + offset.y);
     if node.left != left {
         node.left = left;
     }
@@ -1389,9 +1334,8 @@ mod tests {
     use super::{
         BridgeMarkerAnchor, CameraUpdateSystems, HoveredPlanetMarker, NamedMarkerDot,
         NamedMarkerLabel, NamedPlaceMarker, PlanetMarkerAnchors, PlanetMarkerData,
-        PlanetMarkerLayer, PlanetMarkerLayers, PlanetMarkerProjection, ProjectedPlanetMarker,
-        TransformSystems, build_named_markers, select_named_marker_at,
-        update_planet_marker_overlay,
+        PlanetMarkerProjection, ProjectedPlanetMarker, TransformSystems, build_named_markers,
+        select_named_marker_at, update_planet_marker_overlay,
     };
     use crate::{
         exploration::{
@@ -1400,7 +1344,7 @@ mod tests {
         },
         map::{LevelRegions, MainCamera, WorldEpoch},
     };
-    use shared::planet_markers::PlanetMarkerLabelKind;
+    use shared::planet_markers::PlanetMarkerKind;
     fn level_regions(
         regions: Vec<RegionData>,
         settlements: &[(&str, SettlementKind)],
@@ -1414,21 +1358,6 @@ mod tests {
                 .collect(),
             bridge_top_surfaces_by_name: Default::default(),
         }
-    }
-
-    #[test]
-    fn named_place_layers_start_enabled_and_toggle_independently() {
-        let mut layers = PlanetMarkerLayers::default();
-
-        assert!(layers.is_enabled(PlanetMarkerLayer::Settlements));
-        assert!(layers.is_enabled(PlanetMarkerLayer::Regions));
-        assert!(layers.is_enabled(PlanetMarkerLayer::Bridges));
-
-        layers.toggle(PlanetMarkerLayer::Regions);
-
-        assert!(layers.is_enabled(PlanetMarkerLayer::Settlements));
-        assert!(!layers.is_enabled(PlanetMarkerLayer::Regions));
-        assert!(layers.is_enabled(PlanetMarkerLayer::Bridges));
     }
 
     #[test]
@@ -1564,7 +1493,6 @@ mod tests {
             markers: vec![ProjectedPlanetMarker {
                 index: 4,
                 destination: destination.clone(),
-                layer: PlanetMarkerLayer::Settlements,
                 center: Vec2::new(100.0, 80.0),
                 label_bounds: Some(Rect::from_corners(
                     Vec2::new(110.0, 72.0),
@@ -1578,7 +1506,6 @@ mod tests {
             &mut state,
             epoch,
             Some(&projection),
-            &PlanetMarkerLayers::default(),
             Vec2::new(280.0, 170.0),
         ));
         assert_eq!(
@@ -1592,12 +1519,11 @@ mod tests {
             &mut state,
             epoch,
             Some(&projection),
-            &PlanetMarkerLayers::default(),
             Vec2::new(280.0, 170.0),
         ));
         assert_eq!(state.selected_planet_destination(), Some(&destination));
 
-        assert!(!select_named_marker_at(
+        assert!(select_named_marker_at(
             &mut state,
             epoch,
             Some(&PlanetMarkerProjection {
@@ -1605,20 +1531,16 @@ mod tests {
                 scale_factor: 2.0,
                 markers: vec![ProjectedPlanetMarker {
                     index: 4,
-                    destination,
-                    layer: PlanetMarkerLayer::Settlements,
+                    destination: destination.clone(),
                     center: Vec2::new(100.0, 80.0),
                     label_bounds: None,
                     priority: 3,
                 }],
                 ..default()
             }),
-            &PlanetMarkerLayers {
-                settlements: false,
-                ..PlanetMarkerLayers::default()
-            },
             Vec2::new(200.0, 160.0),
         ));
+        assert_eq!(state.selected_planet_destination(), Some(&destination));
     }
 
     #[test]
@@ -1641,11 +1563,6 @@ mod tests {
         app.update();
         app.update();
 
-        assert!(
-            app.world()
-                .resource::<PlanetMarkerLayers>()
-                .is_enabled(PlanetMarkerLayer::Regions)
-        );
         assert!(app.world().contains_resource::<PlanetMarkerProjection>());
     }
 
@@ -1675,21 +1592,17 @@ mod tests {
             surface: PlanetDestinationSurface::Terrain,
             display: "Region · A faraway named region".into(),
         };
-        app.world_mut()
-            .insert_resource(PlanetMarkerLayers::default());
         app.world_mut().insert_resource(PlanetMarkerData {
             world_epoch: Some(epoch),
             named: vec![
                 NamedPlaceMarker {
                     destination: settlement,
-                    layer: PlanetMarkerLayer::Settlements,
-                    label_kind: PlanetMarkerLabelKind::Settlement,
+                    kind: PlanetMarkerKind::Settlement,
                     label: "S".into(),
                 },
                 NamedPlaceMarker {
                     destination: region,
-                    layer: PlanetMarkerLayer::Regions,
-                    label_kind: PlanetMarkerLabelKind::Region,
+                    kind: PlanetMarkerKind::Region(RegionKind::Forest),
                     label: "A faraway named region".into(),
                 },
             ],
@@ -1819,14 +1732,11 @@ mod tests {
             surface: PlanetDestinationSurface::Terrain,
             display: "Town · Center".into(),
         };
-        app.world_mut()
-            .insert_resource(PlanetMarkerLayers::default());
         app.world_mut().insert_resource(PlanetMarkerData {
             world_epoch: Some(epoch),
             named: vec![NamedPlaceMarker {
                 destination: marker,
-                layer: PlanetMarkerLayer::Settlements,
-                label_kind: PlanetMarkerLabelKind::Settlement,
+                kind: PlanetMarkerKind::Settlement,
                 label: "Town · Center".into(),
             }],
         });

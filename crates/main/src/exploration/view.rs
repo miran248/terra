@@ -1,8 +1,6 @@
 use super::*;
 #[derive(Component)]
 pub(super) struct VehicleVisual;
-#[derive(Component)]
-pub(super) struct Readout;
 #[derive(Default)]
 pub(super) struct Chase {
     target: Option<Entity>,
@@ -68,26 +66,7 @@ pub(super) fn tag_visuals(
 }
 
 pub(super) fn setup(mut commands: Commands, font: Res<crate::ui::UiFont>) {
-    commands.spawn((
-        Text::new(""),
-        TextFont {
-            font: font.0.clone().into(),
-            font_size: 16.0.into(),
-            ..default()
-        },
-        TextColor(shared::theme::INK),
-        BackgroundColor(shared::theme::PANEL_BG),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(20.0),
-            bottom: Val::Px(20.0),
-            max_width: Val::Percent(66.0),
-            padding: UiRect::all(Val::Px(10.0)),
-            ..default()
-        },
-        GameplayHudElement::default(),
-        Readout,
-    ));
+    crate::ui::spawn_sidebar(&mut commands, &font);
 }
 #[allow(clippy::too_many_arguments)]
 pub(super) fn camera(
@@ -295,58 +274,120 @@ pub(super) fn camera(
 }
 pub(super) fn readout(
     state: Res<Exploration>,
-    player: Query<&Position, With<Player>>,
+    player: Query<(&Position, &LinearVelocity), With<Player>>,
     vehicles: Query<(&Vehicle, &LinearVelocity)>,
-    mut texts: Query<&mut Text, With<Readout>>,
+    mut texts: Query<
+        (&mut Text, &crate::ui::SidebarReadoutSlot),
+        With<crate::ui::SidebarExplorationReadout>,
+    >,
 ) {
-    let Ok(mut text) = texts.single_mut() else {
-        return;
+    let (movement, view, follow, vehicle_action, teleport_action, actions) = if state.selector {
+        (
+            "Travel mode: Vehicle selection · simulation paused".to_owned(),
+            "Planet view: unavailable during vehicle selection".to_owned(),
+            "Follow body · F · unavailable during vehicle selection".to_owned(),
+            "Vehicle selection is open · V".to_owned(),
+            "Teleport to selected destination · T".to_owned(),
+            "Choose Car or Plane · Esc / V cancel".to_owned(),
+        )
+    } else {
+        let movement = state
+            .occupied
+            .and_then(|entity| vehicles.get(entity).ok())
+            .map(|(vehicle, velocity)| {
+                let altitude = player.single().map_or(0.0, |(position, _)| {
+                    position.0.length() - shared::sphere::PLANET_RADIUS
+                });
+                let condition = if vehicle.crashed {
+                    " · Crashed"
+                } else if vehicle.flight.stalled {
+                    " · Stall — lower nose + Shift"
+                } else {
+                    ""
+                };
+                let controls = if vehicle.kind == Kind::Car {
+                    "W/S drive · A/D steer · E exit"
+                } else {
+                    "W/S pitch · A/D roll · Shift thrust · Ctrl airbrake · E exit"
+                };
+                format!(
+                    "Travel mode: {}{condition}\nSpeed: {:.1} m/s\nAltitude: {altitude:.0} m · Clearance: {:.1} m\n{controls}",
+                    vehicle.kind.name(),
+                    velocity.length(),
+                    vehicle.clearance,
+                )
+            })
+            .or_else(|| {
+                player.single().ok().map(|(position, velocity)| {
+                    let up = position.0.normalize_or(Vec3::Y);
+                    let speed = (velocity.0 - up * velocity.0.dot(up)).length();
+                    format!(
+                        "Travel mode: On foot\nSpeed: {speed:.1} m/s\nWASD move · Shift sprint · Space jump{}",
+                        if state.target.is_some() {
+                            " · E enter nearby vehicle"
+                        } else {
+                            ""
+                        }
+                    )
+                })
+            })
+            .unwrap_or_else(|| "Travel mode: —".to_owned());
+        let view = if state.planet_camera.is_requested_open() {
+            "Close Planet view · M".to_owned()
+        } else {
+            "Open Planet view · M".to_owned()
+        };
+        let follow = format!(
+            "Follow body · F · {}",
+            if state.planet_view_follows_body() {
+                "on"
+            } else {
+                "off"
+            }
+        );
+        let vehicle_action = if state.is_in_vehicle() {
+            "Exit vehicle · E".to_owned()
+        } else {
+            "Enter vehicle · E".to_owned()
+        };
+        let teleport_action = "Teleport to selected destination · T".to_owned();
+        let mut actions = format!(
+            "Recover: Hold R · {:.0}%\n{}",
+            state.recovery.min(1.0) * 100.0,
+            if state.is_in_vehicle() {
+                "Exit vehicle: E"
+            } else {
+                "Vehicle selector: V"
+            }
+        );
+        if !state.message.is_empty() {
+            actions.push('\n');
+            actions.push_str(&state.message);
+        }
+        (
+            movement,
+            view,
+            follow,
+            vehicle_action,
+            teleport_action,
+            actions,
+        )
     };
-    if state.selector {
-        text.0 = "SUMMON VEHICLE — simulation paused\nC  Car    P  Plane    Esc / V  Cancel".into();
-        return;
+
+    for (mut text, slot) in &mut texts {
+        let value = match slot {
+            crate::ui::SidebarReadoutSlot::Movement => &movement,
+            crate::ui::SidebarReadoutSlot::View => &view,
+            crate::ui::SidebarReadoutSlot::Follow => &follow,
+            crate::ui::SidebarReadoutSlot::VehicleAction => &vehicle_action,
+            crate::ui::SidebarReadoutSlot::TeleportAction => &teleport_action,
+            crate::ui::SidebarReadoutSlot::Actions => &actions,
+            _ => continue,
+        };
+        if text.0 != *value {
+            *text = Text::new(value.clone());
+        }
     }
-    let status = state
-        .occupied
-        .and_then(|e| vehicles.get(e).ok())
-        .map(|(v, vel)| {
-            format!(
-                "{} {}  {:.1} m/s  Altitude ASL {:.1} m  Clearance {:.1} m\n{}",
-                v.kind.name(),
-                if v.crashed {
-                    "CRASHED"
-                } else if v.flight.stalled {
-                    "STALL — lower nose + Shift"
-                } else {
-                    ""
-                },
-                vel.length(),
-                player
-                    .single()
-                    .map_or(0.0, |p| p.length() - shared::sphere::PLANET_RADIUS),
-                v.clearance,
-                if v.kind == Kind::Car {
-                    "W/S drive/brake/reverse · A/D steer · E exit"
-                } else {
-                    "W/S pitch · A/D roll · Shift thrust · Ctrl airbrake · Space brake · E exit"
-                }
-            )
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "On foot · WASD move · Shift sprint · Space jump · V summon{}",
-                if state.target.is_some() {
-                    " · [E Enter nearby vehicle]"
-                } else {
-                    ""
-                }
-            )
-        });
-    text.0 = format!(
-        "{status}\nHold R to recover {:.0}% · M map\n{}",
-        state.recovery.min(1.0) * 100.0,
-        state.message
-    );
 }
 pub(super) fn animate(
     time: Res<Time>,

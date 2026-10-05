@@ -1,7 +1,5 @@
 use bevy::prelude::*;
-use bevy::ui::FocusPolicy;
 use shared::planet::PlanetMesh;
-use shared::planet_view_interface::PlanetViewInterfaceElement;
 use shared::roads::{
     SurfaceRoadSample, build_surface_road_ribbon, build_terrain_following_road_ribbon,
     projected_surface_ribbon_width,
@@ -11,7 +9,6 @@ use std::time::Instant;
 use crate::{
     exploration::{Exploration, ExplorationUpdate},
     map::MainCamera,
-    ui::UiFont,
 };
 
 const MIN_SCREEN_WIDTH_PX: f32 = 2.5;
@@ -34,27 +31,6 @@ struct RoadHighlightWidths {
     bridges: Vec<Vec<f32>>,
 }
 
-#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RoadHighlightLayer {
-    enabled: bool,
-}
-
-impl Default for RoadHighlightLayer {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
-impl RoadHighlightLayer {
-    fn toggle(&mut self) {
-        self.enabled = !self.enabled;
-    }
-
-    fn is_enabled(self) -> bool {
-        self.enabled
-    }
-}
-
 #[derive(Component)]
 struct RoadHighlightMesh {
     ready: bool,
@@ -62,15 +38,6 @@ struct RoadHighlightMesh {
 
 #[derive(Component)]
 struct RoadHighlightOpacity(u32);
-
-#[derive(Component)]
-struct RoadsLayerPanel;
-
-#[derive(Component)]
-struct RoadsLayerToggle;
-
-#[derive(Component)]
-struct RoadsLayerLabel;
 
 #[derive(Clone)]
 struct RoadGeometryRequest {
@@ -310,8 +277,7 @@ pub(crate) struct PlanetRoadsPlugin;
 
 impl Plugin for PlanetRoadsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<RoadHighlightLayer>()
-            .init_resource::<RoadMeshRefresh>()
+        app.init_resource::<RoadMeshRefresh>()
             .add_systems(
                 OnEnter(shared::state::AppState::Playing),
                 setup_road_highlight.after(crate::map::setup_map),
@@ -323,9 +289,8 @@ impl Plugin for PlanetRoadsPlugin {
             .add_systems(
                 Update,
                 (
-                    handle_roads_toggle,
                     update_road_highlight_widths,
-                    update_roads_layer_presentation,
+                    update_road_highlight_presentation,
                 )
                     .chain()
                     .after(ExplorationUpdate)
@@ -336,7 +301,6 @@ impl Plugin for PlanetRoadsPlugin {
 
 fn setup_road_highlight(
     mut commands: Commands,
-    font: Res<UiFont>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut refresh: ResMut<RoadMeshRefresh>,
 ) {
@@ -348,58 +312,11 @@ fn setup_road_highlight(
         RoadHighlightMesh { ready: false },
         RoadHighlightOpacity(u32::MAX),
     ));
-
-    commands
-        .spawn((
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(16.0),
-                top: Val::Px(16.0),
-                padding: UiRect::all(Val::Px(8.0)),
-                display: Display::None,
-                ..default()
-            },
-            BackgroundColor(shared::theme::PANEL_BG),
-            BorderColor::all(shared::theme::TEXT_WEAK),
-            GlobalZIndex(100),
-            FocusPolicy::Pass,
-            PlanetViewInterfaceElement::default(),
-            RoadsLayerPanel,
-        ))
-        .with_children(|panel| {
-            panel
-                .spawn((
-                    Button,
-                    Node {
-                        min_width: Val::Px(132.0),
-                        min_height: Val::Px(34.0),
-                        padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
-                        justify_content: JustifyContent::Center,
-                        align_items: AlignItems::Center,
-                        ..default()
-                    },
-                    BackgroundColor(shared::theme::PANEL_BG),
-                    BorderColor::all(shared::theme::ACCENT),
-                    PlanetViewInterfaceElement::default(),
-                    RoadsLayerToggle,
-                ))
-                .with_child((
-                    Text::new("ROADS · ON"),
-                    TextFont {
-                        font: font.0.clone().into(),
-                        font_size: 14.0.into(),
-                        ..default()
-                    },
-                    TextColor(shared::theme::INK),
-                    PlanetViewInterfaceElement::default(),
-                    RoadsLayerLabel,
-                ));
-        });
 }
 
 fn cleanup_road_highlight(
     mut commands: Commands,
-    entities: Query<Entity, Or<(With<RoadHighlightMesh>, With<RoadsLayerPanel>)>>,
+    entities: Query<Entity, With<RoadHighlightMesh>>,
     mut refresh: ResMut<RoadMeshRefresh>,
 ) {
     *refresh = RoadMeshRefresh::default();
@@ -408,30 +325,8 @@ fn cleanup_road_highlight(
     }
 }
 
-fn handle_roads_toggle(
+fn update_road_highlight_presentation(
     state: Res<Exploration>,
-    mut layer: ResMut<RoadHighlightLayer>,
-    toggles: Query<&Interaction, (With<RoadsLayerToggle>, Changed<Interaction>)>,
-) {
-    if !roads_layer_toggle_allowed(
-        state.is_planet_view_active(),
-        state.planet_view_interface_visible(),
-    ) {
-        return;
-    }
-    if toggles
-        .iter()
-        .any(|interaction| *interaction == Interaction::Pressed)
-    {
-        layer.toggle();
-    }
-}
-
-fn update_roads_layer_presentation(
-    state: Res<Exploration>,
-    layer: Res<RoadHighlightLayer>,
-    mut panel: Query<&mut Node, With<RoadsLayerPanel>>,
-    mut label: Query<&mut Text, With<RoadsLayerLabel>>,
     mut highlights: Query<
         (
             &mut Visibility,
@@ -445,25 +340,7 @@ fn update_roads_layer_presentation(
 ) {
     let opacity = state.planet_view_interface_opacity().clamp(0.0, 1.0);
     let view_active = state.is_planet_view_active();
-    let show_controls =
-        planet_roads_controls_display(view_active, state.planet_view_interface_visible());
-    let show_highlight = planet_roads_highlight_visible(view_active, layer.is_enabled(), opacity);
-
-    for mut node in &mut panel {
-        if node.display != show_controls {
-            node.display = show_controls;
-        }
-    }
-    let text = if layer.is_enabled() {
-        "ROADS · ON"
-    } else {
-        "ROADS · OFF"
-    };
-    for mut value in &mut label {
-        if value.0 != text {
-            value.0 = text.to_owned();
-        }
-    }
+    let show_highlight = planet_roads_highlight_visible(view_active, opacity);
     for (mut visibility, material_handle, mut applied_opacity, mesh_state) in &mut highlights {
         let desired_visibility = if show_highlight && mesh_state.ready {
             Visibility::Visible
@@ -493,20 +370,8 @@ fn road_highlight_material(opacity: f32) -> StandardMaterial {
     }
 }
 
-fn planet_roads_controls_display(view_active: bool, interface_visible: bool) -> Display {
-    if view_active && interface_visible {
-        Display::Flex
-    } else {
-        Display::None
-    }
-}
-
-fn roads_layer_toggle_allowed(view_active: bool, interface_visible: bool) -> bool {
-    view_active && interface_visible
-}
-
-fn planet_roads_highlight_visible(view_active: bool, layer_enabled: bool, opacity: f32) -> bool {
-    view_active && layer_enabled && opacity > 0.0
+fn planet_roads_highlight_visible(view_active: bool, opacity: f32) -> bool {
+    view_active && opacity > 0.0
 }
 
 #[cfg(test)]
@@ -556,7 +421,6 @@ fn update_road_highlight_widths(
     mut commands: Commands,
     time: Res<Time<Real>>,
     state: Res<Exploration>,
-    layer: Res<RoadHighlightLayer>,
     paths: Res<RoadHighlightPaths>,
     ground: Res<crate::map::CollisionTerrain>,
     world_epoch: Res<crate::map::WorldEpoch>,
@@ -582,7 +446,7 @@ fn update_road_highlight_widths(
         mesh_state.ready = false;
     }
 
-    if !state.is_planet_view_active() || !layer.is_enabled() {
+    if !state.is_planet_view_active() {
         refresh.cancel_uncommitted_work();
         return;
     }
@@ -703,7 +567,6 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()))
             .init_asset::<Mesh>()
             .init_asset::<StandardMaterial>()
-            .insert_resource(UiFont(Handle::default()))
             .insert_resource(RoadMeshRefresh::default())
             .add_systems(Update, setup_road_highlight);
 
@@ -731,33 +594,10 @@ mod tests {
     }
 
     #[test]
-    fn roads_control_has_no_target_when_the_planet_interface_is_hidden() {
-        assert_eq!(planet_roads_controls_display(true, false), Display::None);
-        assert_eq!(planet_roads_controls_display(true, true), Display::Flex);
-        assert_eq!(planet_roads_controls_display(false, true), Display::None);
-    }
-
-    #[test]
-    fn roads_layer_is_initially_enabled_and_remembers_its_choice_when_view_reopens() {
-        let mut layer = RoadHighlightLayer::default();
-        assert!(layer.is_enabled());
-        layer.toggle();
-        assert!(!layer.is_enabled());
-        let mut exploration = Exploration::default();
-        exploration.set_planet_view_open(true);
-        exploration.set_planet_view_open(false);
-        exploration.set_planet_view_open(true);
-        assert!(!layer.is_enabled());
-        layer.toggle();
-        assert!(layer.is_enabled());
-    }
-
-    #[test]
-    fn road_highlight_only_shows_for_an_enabled_planet_view_layer() {
-        assert!(!planet_roads_highlight_visible(false, true, 1.0));
-        assert!(!planet_roads_highlight_visible(true, false, 1.0));
-        assert!(!planet_roads_highlight_visible(true, true, 0.0));
-        assert!(planet_roads_highlight_visible(true, true, 0.5));
+    fn road_highlights_are_automatic_in_planet_view_and_follow_interface_fade() {
+        assert!(!planet_roads_highlight_visible(false, 0.5));
+        assert!(planet_roads_highlight_visible(true, 0.5));
+        assert!(!planet_roads_highlight_visible(true, 0.0));
     }
 
     #[test]
@@ -771,15 +611,6 @@ mod tests {
         assert!((color.green - 0.64).abs() < 0.001);
         assert!((color.blue - 0.18).abs() < 0.001);
         assert!((color.alpha - 0.4).abs() < 0.001);
-    }
-
-    #[test]
-    fn roads_control_is_hidden_and_cannot_toggle_while_the_selector_owns_interface() {
-        assert_eq!(planet_roads_controls_display(true, false), Display::None);
-        assert_eq!(planet_roads_controls_display(true, true), Display::Flex);
-        assert!(!roads_layer_toggle_allowed(true, false));
-        assert!(!roads_layer_toggle_allowed(false, true));
-        assert!(roads_layer_toggle_allowed(true, true));
     }
 
     #[test]
@@ -1014,7 +845,6 @@ mod tests {
                 state.set_planet_view_open(true);
                 state
             })
-            .insert_resource(RoadHighlightLayer::default())
             .insert_resource(RoadHighlightPaths {
                 terrain: paths.terrain,
                 bridges: paths.bridges,
@@ -1270,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn road_geometry_job_discards_partial_and_staged_work_on_disable_or_epoch_change() {
+    fn road_geometry_job_discards_partial_and_staged_work_on_cancel_or_epoch_change() {
         let paths = road_job_fixture_paths();
         let ground = PlanetMesh::new(shared::planet::unit_icosphere_tris(3));
         let epoch = crate::map::WorldEpoch::new(11);
@@ -1416,37 +1246,6 @@ mod tests {
 
         let committed_positions = current_positions;
         app.world_mut()
-            .resource_mut::<RoadHighlightLayer>()
-            .toggle();
-        app.update();
-        assert!(app.world().resource::<RoadMeshRefresh>().job.is_none());
-        assert!(
-            app.world()
-                .resource::<RoadMeshRefresh>()
-                .pending_request
-                .is_none()
-        );
-        assert!(
-            app.world()
-                .get::<RoadHighlightMesh>(highlight_entity)
-                .unwrap()
-                .ready
-        );
-        assert_eq!(
-            test_mesh_positions(
-                app.world()
-                    .resource::<Assets<Mesh>>()
-                    .get(&mesh_handle)
-                    .unwrap()
-            ),
-            committed_positions,
-            "disabling Roads cancels pending work without deleting its last committed mesh"
-        );
-
-        app.world_mut()
-            .resource_mut::<RoadHighlightLayer>()
-            .toggle();
-        app.world_mut()
             .resource_mut::<Exploration>()
             .set_planet_view_open(false);
         app.update();
@@ -1465,7 +1264,7 @@ mod tests {
                     .unwrap()
             ),
             committed_positions,
-            "leaving Planet view retains the visible mesh asset"
+            "leaving Planet view cancels unfinished work and retains its last mesh"
         );
 
         app.world_mut()

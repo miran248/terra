@@ -29,6 +29,32 @@ class PlanetCaptureScriptTests(test_capture_lighting.CaptureScriptTests):
         self.assertIn('revision=' + self.git('rev-parse', 'HEAD').stdout.strip(), log)
         self.assertTrue((output / 'source-hashes.txt').is_file())
 
+    def test_background_diagnostic_uses_offscreen_capture_and_records_provenance(self):
+        cargo = self.bin / 'cargo'
+        cargo.write_text(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "background=${TERRA_PLANET_CAPTURE_BACKGROUND-unset}" '
+            '"diagnostic=$TERRA_PLANET_TRANSITION_DIAGNOSTIC"\n'
+            'exit 97\n'
+        )
+        output = self.base / 'background-diagnostic'
+        result = subprocess.run(['sh', str(self.script), '--diagnostic', '--background', str(output)],
+                                cwd=self.repo, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 97, result.stderr)
+        log = (output / 'build.log').read_text()
+        self.assertIn('background=1', log)
+        self.assertIn(f'diagnostic={output}', log)
+        self.assertIn('capture_backend=offscreen-image; window_visible=false',
+                      (output / 'capture-mode.txt').read_text())
+
+    def test_background_flag_is_rejected_for_performance_acceptance(self):
+        output = self.base / 'background-acceptance'
+        result = subprocess.run(['sh', str(self.script), '--background', str(output)],
+                                cwd=self.repo, env=self.env, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('only supported for --diagnostic', result.stderr)
+        self.assertFalse(output.exists())
+
     def test_schedule_trace_uses_opt_in_feature(self):
         cargo = self.bin / "cargo"
         cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit 97\n')
