@@ -29,6 +29,26 @@ class PlanetCaptureScriptTests(test_capture_lighting.CaptureScriptTests):
         self.assertIn('revision=' + self.git('rev-parse', 'HEAD').stdout.strip(), log)
         self.assertTrue((output / 'source-hashes.txt').is_file())
 
+    def test_schedule_trace_uses_opt_in_feature(self):
+        cargo = self.bin / "cargo"
+        cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit 97\n')
+        self.env["TERRA_PLANET_SCHEDULE_TRACE"] = "1"
+        output = self.base / "schedule-trace"
+        result = self.capture(output)
+        self.assertEqual(result.returncode, 97, result.stderr)
+        self.assertIn("asset-review-schedule-trace", (output / "build.log").read_text())
+
+    def test_normal_capture_keeps_trace_free_feature(self):
+        cargo = self.bin / "cargo"
+        cargo.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\nexit 97\n')
+        self.env.pop("TERRA_PLANET_SCHEDULE_TRACE", None)
+        output = self.base / "normal-features"
+        result = self.capture(output)
+        self.assertEqual(result.returncode, 97, result.stderr)
+        args = (output / "build.log").read_text().splitlines()
+        self.assertIn("asset-review", args)
+        self.assertNotIn("asset-review-schedule-trace", args)
+
     def test_hashes_assets_inside_linked_model_directory(self):
         models = self.repo / "crates/main/assets/models"
         external = self.base / "models"

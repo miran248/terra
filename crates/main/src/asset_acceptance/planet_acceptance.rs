@@ -415,6 +415,40 @@ fn work_trace_enabled() -> bool {
     std::env::var_os(WORK_TRACE_ENV).is_some()
 }
 
+fn trace_sidecars_enabled() -> bool {
+    work_trace_enabled() || super::phase_trace::enabled()
+}
+
+fn start_measurement_traces(world: &mut World, elapsed_s: f64, route: &'static str, repeat: u8) {
+    if work_trace_enabled()
+        && let Some(mut probe) = world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
+    {
+        probe.start_repeat(elapsed_s, route, repeat);
+    }
+    #[cfg(feature = "asset-review-schedule-trace")]
+    if super::phase_trace::enabled()
+        && let Some(probe) = world.get_resource::<super::phase_trace::ScheduleTraceRecorder>()
+    {
+        probe.start_repeat(route, repeat);
+    }
+}
+
+fn stop_measurement_traces(world: &mut World, route: &'static str, repeat: u8) {
+    #[cfg(not(feature = "asset-review-schedule-trace"))]
+    let _ = (route, repeat);
+    if work_trace_enabled()
+        && let Some(mut probe) = world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
+    {
+        probe.stop_repeat();
+    }
+    #[cfg(feature = "asset-review-schedule-trace")]
+    if super::phase_trace::enabled()
+        && let Some(probe) = world.get_resource::<super::phase_trace::ScheduleTraceRecorder>()
+    {
+        probe.stop_repeat(route, repeat);
+    }
+}
+
 fn drive_planet_acceptance(world: &mut World) {
     if !acceptance_world_ready(world) {
         return;
@@ -484,13 +518,7 @@ fn drive_planet_acceptance(world: &mut World) {
             if elapsed >= WARMUP_SECONDS {
                 info!(route = route.name(), "Planet acceptance warm-up completed");
                 let measuring_actions = RouteActions::default();
-                if work_trace_enabled() {
-                    if let Some(mut probe) =
-                        world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
-                    {
-                        probe.start_repeat(now, route.name(), 1);
-                    }
-                }
+                start_measurement_traces(world, now, route.name(), 1);
                 Phase::Measuring {
                     route,
                     repeat: 1,
@@ -517,21 +545,10 @@ fn drive_planet_acceptance(world: &mut World) {
             drive_route(world, route, elapsed, false, &mut actions, &mut run);
             if elapsed >= MEASURE_SECONDS {
                 finish_repeat(world, &mut run, route, repeat, &samples);
-                if work_trace_enabled()
-                    && let Some(mut probe) =
-                        world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
-                {
-                    probe.stop_repeat();
-                }
+                stop_measurement_traces(world, route.name(), repeat);
                 if repeat < REPEATS {
                     let next_actions = RouteActions::default();
-                    if work_trace_enabled() {
-                        if let Some(mut probe) =
-                            world.get_resource_mut::<crate::chunks::PlanetWorkTrace>()
-                        {
-                            probe.start_repeat(now, route.name(), repeat + 1);
-                        }
-                    }
+                    start_measurement_traces(world, now, route.name(), repeat + 1);
                     Phase::Measuring {
                         route,
                         repeat: repeat + 1,
@@ -540,7 +557,7 @@ fn drive_planet_acceptance(world: &mut World) {
                         samples: Vec::with_capacity(4_000),
                     }
                 } else if let Some(next) = ROUTES.get(route_index(route) + 1).copied() {
-                    if work_trace_enabled() {
+                    if trace_sidecars_enabled() {
                         run.trace_flush_route = Some(route);
                     }
                     info!(route = next.name(), "Planet acceptance warm-up started");
@@ -550,7 +567,7 @@ fn drive_planet_acceptance(world: &mut World) {
                         actions: RouteActions::default(),
                     }
                 } else {
-                    if work_trace_enabled() {
+                    if trace_sidecars_enabled() {
                         run.trace_flush_route = Some(route);
                     }
                     Phase::Finishing { started_at: now }
@@ -773,8 +790,23 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
     } else {
         "disabled"
     };
+    let schedule_trace = if super::phase_trace::enabled() {
+        "enabled; Bevy schedule spans are captured for phase diagnosis only"
+    } else {
+        "disabled"
+    };
+    let profile_caveat = if super::phase_trace::enabled() {
+        "Bevy trace spans add diagnostic overhead; this run cannot establish clean acceptance performance"
+    } else {
+        "not applicable; schedule span tracing is disabled"
+    };
+    let features = if cfg!(feature = "asset-review-schedule-trace") {
+        "asset-review,asset-review-schedule-trace"
+    } else {
+        "asset-review"
+    };
     let configuration = format!(
-        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures=asset-review\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\n",
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures={features}\nshadows=normal-production-settings\nsystem_stage_trace={stage_trace}\nschedule_span_trace={schedule_trace}\nschedule_trace_alignment=frame-clock CSV pairs Time<Real> route elapsed with monotonic route elapsed\nschedule_trace_semantics=per-schedule wall duration; nested schedule spans overlap and are not additive\nprofile_measurement_caveat={profile_caveat}\n",
         window.unwrap_or_else(|| "not-yet-available".into()),
         MEASURE_SECONDS * 0.5,
     );
@@ -1533,8 +1565,15 @@ fn sample_frame(
     let virtual_rate = virtual_time.relative_speed();
     let virtual_paused = virtual_time.is_paused();
     let sun_angle = world.resource::<TimeOfDay>().angle;
+    let real_elapsed = real.elapsed_secs_f64() - started_at;
+    #[cfg(feature = "asset-review-schedule-trace")]
+    if super::phase_trace::enabled()
+        && let Some(trace) = world.get_resource::<super::phase_trace::ScheduleTraceRecorder>()
+    {
+        trace.record_frame_sample(real_elapsed);
+    }
     FrameSample {
-        real_elapsed: real.elapsed_secs_f64() - started_at,
+        real_elapsed,
         interval_ms: real.delta_secs_f64() * 1000.0,
         view_active,
         view_ready,
@@ -1830,19 +1869,51 @@ fn finish_repeat(
 }
 
 fn flush_route_trace_sidecars(world: &World, run: &mut PlanetAcceptance, route: Route) {
-    let Some(trace) = world.get_resource::<crate::chunks::PlanetWorkTrace>() else {
-        return;
-    };
     let directory = run.directory.join("performance").join(route.name());
     for repeat in 1..=REPEATS {
-        let path = directory.join(format!("repeat-{repeat}-work-trace.csv"));
-        if let Err(error) = fs::write(&path, trace.repeat_csv(route.name(), repeat)) {
-            record_error(run, format!("write {}: {error}", path.display()));
-        }
-        if let Some(csv) = trace.vehicle_action_csv(route.name(), repeat) {
-            let path = directory.join(format!("repeat-{repeat}-action-trace.csv"));
-            if let Err(error) = fs::write(&path, csv) {
+        if let Some(trace) = world.get_resource::<crate::chunks::PlanetWorkTrace>() {
+            let path = directory.join(format!("repeat-{repeat}-work-trace.csv"));
+            if let Err(error) = fs::write(&path, trace.repeat_csv(route.name(), repeat)) {
                 record_error(run, format!("write {}: {error}", path.display()));
+            }
+            if let Some(csv) = trace.vehicle_action_csv(route.name(), repeat) {
+                let path = directory.join(format!("repeat-{repeat}-action-trace.csv"));
+                if let Err(error) = fs::write(&path, csv) {
+                    record_error(run, format!("write {}: {error}", path.display()));
+                }
+            }
+        }
+        #[cfg(feature = "asset-review-schedule-trace")]
+        {
+            if let Some(trace) = world.get_resource::<super::phase_trace::ScheduleTraceRecorder>() {
+                let path = directory.join(format!("repeat-{repeat}-schedule-trace.csv"));
+                let csv = trace.take_repeat_csv(route.name(), repeat);
+                if csv.lines().count() < 2 {
+                    record_error(
+                        run,
+                        format!(
+                            "schedule trace has no spans for {} repeat {repeat}",
+                            route.name()
+                        ),
+                    );
+                }
+                if let Err(error) = fs::write(&path, csv) {
+                    record_error(run, format!("write {}: {error}", path.display()));
+                }
+                let path = directory.join(format!("repeat-{repeat}-frame-clock.csv"));
+                let csv = trace.take_frame_clock_csv(route.name(), repeat);
+                if csv.lines().count() < 2 {
+                    record_error(
+                        run,
+                        format!(
+                            "frame clock trace has no samples for {} repeat {repeat}",
+                            route.name()
+                        ),
+                    );
+                }
+                if let Err(error) = fs::write(&path, csv) {
+                    record_error(run, format!("write {}: {error}", path.display()));
+                }
             }
         }
     }

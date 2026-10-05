@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 asset-review = []
+asset-review-schedule-trace = ["asset-review", "bevy/trace"]
 
 [dependencies]
 bevy = { version = "0.19.1", features = ["mouse", "touch", "debug"] }

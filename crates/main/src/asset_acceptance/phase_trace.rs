@@ -1,0 +1,329 @@
+//! Opt-in wall-time capture for Bevy's native schedule spans.
+//!
+//! This is profiling evidence only. The `asset-review-schedule-trace` feature
+//! enables Bevy's schedule spans; the custom layer is installed only when
+//! `TERRA_PLANET_SCHEDULE_TRACE` is set.
+
+use bevy::{
+    app::App,
+    ecs::prelude::Resource,
+    log::{
+        BoxedLayer,
+        tracing::{self, Subscriber},
+        tracing_subscriber::{self, Layer},
+    },
+};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
+
+pub(super) const ENV: &str = "TERRA_PLANET_SCHEDULE_TRACE";
+
+#[derive(Clone, Resource)]
+pub(super) struct ScheduleTraceRecorder {
+    shared: Arc<Mutex<ScheduleTraceState>>,
+}
+
+struct ScheduleTraceState {
+    active: Option<Measurement>,
+    labels: HashMap<tracing::span::Id, String>,
+    open: HashMap<tracing::span::Id, OpenSchedule>,
+    rows: Vec<ScheduleTraceRow>,
+    frame_clocks: Vec<FrameClockSample>,
+}
+
+#[derive(Clone)]
+struct Measurement {
+    route: &'static str,
+    repeat: u8,
+    started: Instant,
+}
+
+struct OpenSchedule {
+    label: String,
+    entered: Instant,
+    measurement: Option<Measurement>,
+}
+
+struct ScheduleTraceRow {
+    route: &'static str,
+    repeat: u8,
+    schedule: String,
+    route_elapsed_start_s: f64,
+    route_elapsed_end_s: f64,
+    duration_ms: f64,
+    thread: String,
+}
+
+struct FrameClockSample {
+    route: &'static str,
+    repeat: u8,
+    real_elapsed_s: f64,
+    wall_elapsed_s: f64,
+}
+
+impl Default for ScheduleTraceRecorder {
+    fn default() -> Self {
+        Self {
+            shared: Arc::new(Mutex::new(ScheduleTraceState {
+                active: None,
+                labels: HashMap::new(),
+                open: HashMap::new(),
+                rows: Vec::new(),
+                frame_clocks: Vec::new(),
+            })),
+        }
+    }
+}
+
+impl ScheduleTraceRecorder {
+    pub(super) fn start_repeat(&self, route: &'static str, repeat: u8) {
+        let mut state = self.lock();
+        state.active = Some(Measurement {
+            route,
+            repeat,
+            started: Instant::now(),
+        });
+    }
+
+    pub(super) fn stop_repeat(&self, route: &'static str, repeat: u8) {
+        let mut state = self.lock();
+        if state
+            .active
+            .as_ref()
+            .is_some_and(|active| active.route == route && active.repeat == repeat)
+        {
+            state.active = None;
+        }
+    }
+
+    pub(super) fn record_frame_sample(&self, real_elapsed_s: f64) {
+        let wall_now = Instant::now();
+        let mut state = self.lock();
+        let Some(active) = state.active.as_ref() else {
+            return;
+        };
+        let route = active.route;
+        let repeat = active.repeat;
+        let started = active.started;
+        state.frame_clocks.push(FrameClockSample {
+            route,
+            repeat,
+            real_elapsed_s,
+            wall_elapsed_s: wall_now.duration_since(started).as_secs_f64(),
+        });
+    }
+
+    pub(super) fn take_repeat_csv(&self, route: &'static str, repeat: u8) -> String {
+        let mut state = self.lock();
+        let mut rows = Vec::new();
+        state.rows.retain(|row| {
+            if row.route == route && row.repeat == repeat {
+                rows.push(ScheduleTraceRow {
+                    route: row.route,
+                    repeat: row.repeat,
+                    schedule: row.schedule.clone(),
+                    route_elapsed_start_s: row.route_elapsed_start_s,
+                    route_elapsed_end_s: row.route_elapsed_end_s,
+                    duration_ms: row.duration_ms,
+                    thread: row.thread.clone(),
+                });
+                false
+            } else {
+                true
+            }
+        });
+        rows.sort_by(|left, right| {
+            left.route_elapsed_start_s
+                .total_cmp(&right.route_elapsed_start_s)
+        });
+
+        let mut csv = String::from(
+            "route,repeat,schedule,route_elapsed_start_s,route_elapsed_end_s,duration_ms,thread\n",
+        );
+        for row in rows {
+            csv.push_str(&format!(
+                "{},{},{},{:.6},{:.6},{:.6},{}\n",
+                csv_field(row.route),
+                row.repeat,
+                csv_field(&row.schedule),
+                row.route_elapsed_start_s,
+                row.route_elapsed_end_s,
+                row.duration_ms,
+                csv_field(&row.thread),
+            ));
+        }
+        csv
+    }
+
+    pub(super) fn take_frame_clock_csv(&self, route: &'static str, repeat: u8) -> String {
+        let mut state = self.lock();
+        let mut rows = Vec::new();
+        state.frame_clocks.retain(|sample| {
+            if sample.route == route && sample.repeat == repeat {
+                rows.push(FrameClockSample {
+                    route: sample.route,
+                    repeat: sample.repeat,
+                    real_elapsed_s: sample.real_elapsed_s,
+                    wall_elapsed_s: sample.wall_elapsed_s,
+                });
+                false
+            } else {
+                true
+            }
+        });
+        let mut csv = String::from("route,repeat,real_elapsed_s,wall_elapsed_s\n");
+        for sample in rows {
+            csv.push_str(&format!(
+                "{},{},{:.6},{:.6}\n",
+                csv_field(sample.route),
+                sample.repeat,
+                sample.real_elapsed_s,
+                sample.wall_elapsed_s,
+            ));
+        }
+        csv
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ScheduleTraceState> {
+        self.shared
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+pub(super) fn enabled() -> bool {
+    std::env::var_os(ENV).is_some()
+}
+
+pub(super) fn install_layer(app: &mut App) -> Option<BoxedLayer> {
+    if !enabled() {
+        return None;
+    }
+    let recorder = ScheduleTraceRecorder::default();
+    app.insert_resource(recorder.clone());
+    Some(Box::new(ScheduleTraceLayer { recorder }))
+}
+
+struct ScheduleTraceLayer {
+    recorder: ScheduleTraceRecorder,
+}
+
+impl<S: Subscriber> Layer<S> for ScheduleTraceLayer {
+    fn enabled(
+        &self,
+        metadata: &tracing::Metadata<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        metadata.name() == "schedule"
+    }
+
+    fn on_new_span(
+        &self,
+        attributes: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut schedule = None;
+        attributes.record(&mut ScheduleNameVisitor(&mut schedule));
+        if let Some(schedule) = schedule {
+            self.recorder.lock().labels.insert(id.clone(), schedule);
+        }
+    }
+
+    fn on_enter(&self, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let mut state = self.recorder.lock();
+        let Some(label) = state.labels.get(id).cloned() else {
+            return;
+        };
+        let measurement = state.active.clone();
+        state.open.insert(
+            id.clone(),
+            OpenSchedule {
+                label,
+                entered: Instant::now(),
+                measurement,
+            },
+        );
+    }
+
+    fn on_exit(&self, id: &tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let exited = Instant::now();
+        let mut state = self.recorder.lock();
+        let Some(open) = state.open.remove(id) else {
+            return;
+        };
+        let Some(measurement) = open.measurement.or_else(|| state.active.clone()) else {
+            return;
+        };
+        let start = open.entered.max(measurement.started);
+        if exited <= start {
+            return;
+        }
+        let start_s = start.duration_since(measurement.started).as_secs_f64();
+        let end_s = exited.duration_since(measurement.started).as_secs_f64();
+        state.rows.push(ScheduleTraceRow {
+            route: measurement.route,
+            repeat: measurement.repeat,
+            schedule: open.label,
+            route_elapsed_start_s: start_s,
+            route_elapsed_end_s: end_s,
+            duration_ms: (exited - start).as_secs_f64() * 1_000.0,
+            thread: format!("{:?}", std::thread::current().id()),
+        });
+    }
+
+    fn on_close(&self, id: tracing::span::Id, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        let mut state = self.recorder.lock();
+        state.labels.remove(&id);
+        state.open.remove(&id);
+    }
+}
+
+struct ScheduleNameVisitor<'a>(&'a mut Option<String>);
+
+impl tracing::field::Visit for ScheduleNameVisitor<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "name" {
+            *self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
+        }
+    }
+}
+
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::log::tracing_subscriber::prelude::*;
+
+    #[test]
+    fn records_named_schedule_spans_and_wall_duration() {
+        let recorder = ScheduleTraceRecorder::default();
+        recorder.start_repeat("orbit-zoom", 2);
+        let subscriber = tracing_subscriber::registry().with(ScheduleTraceLayer {
+            recorder: recorder.clone(),
+        });
+
+        tracing::subscriber::with_default(subscriber, || {
+            let span = tracing::info_span!("schedule", name = ?"PreUpdate");
+            let _entered = span.enter();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        });
+
+        let csv = recorder.take_repeat_csv("orbit-zoom", 2);
+        let row = csv.lines().nth(1).expect("captured schedule span");
+        assert!(row.contains("\"PreUpdate\""));
+        let duration_ms = row
+            .split(',')
+            .nth(5)
+            .expect("duration column")
+            .parse::<f64>()
+            .expect("duration parses");
+        assert!(duration_ms >= 1.0, "duration was {duration_ms} ms");
+    }
+}

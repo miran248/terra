@@ -46,8 +46,15 @@ use shared::state::AppState;
 
 fn main() {
     let mut app = App::new();
+    #[cfg(feature = "asset-review-schedule-trace")]
+    let default_plugins = DefaultPlugins.set(bevy::log::LogPlugin {
+        custom_layer: asset_acceptance::schedule_trace_layer,
+        ..default()
+    });
+    #[cfg(not(feature = "asset-review-schedule-trace"))]
+    let default_plugins = DefaultPlugins;
     app.add_plugins((
-        DefaultPlugins,
+        default_plugins,
         PhysicsPlugins::default()
             .build()
             .disable::<PhysicsInterpolationPlugin>(),
