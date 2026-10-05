@@ -23,6 +23,9 @@ use crate::exploration::{
     PlanetDestinationSurface,
 };
 use crate::map::{LevelRegions, MainCamera, Player, WorldEpoch};
+use crate::surface_labels::{
+    self, SurfaceGlyphAtlas, SurfaceLabelRibbon, SurfaceLabelView, SurfaceRibbonMesh,
+};
 use crate::ui::UiFont;
 
 const MARKER_DOT_HIT_RADIUS: f32 = 16.0;
@@ -206,13 +209,15 @@ pub(crate) fn select_named_marker_at(
     true
 }
 
-fn setup_planet_markers(
+pub(crate) fn setup_planet_markers(
     mut commands: Commands,
     world_epoch: Res<WorldEpoch>,
     regions: Option<Res<LevelRegions>>,
     anchors: Option<Res<PlanetMarkerAnchors>>,
     terrain: Option<Res<TerrainGen>>,
     font: Res<UiFont>,
+    images: Option<ResMut<Assets<Image>>>,
+    materials: Option<ResMut<Assets<StandardMaterial>>>,
 ) {
     let marker_data = match (regions, anchors, terrain) {
         (Some(regions), Some(anchors), Some(terrain)) => {
@@ -225,6 +230,39 @@ fn setup_planet_markers(
             named: Vec::new(),
         },
     };
+
+    if let (Some(mut images), Some(mut materials)) = (images, materials)
+        && let Some(atlas) = surface_labels::build_glyph_atlas(
+            marker_data
+                .named
+                .iter()
+                .filter(|marker| marker.kind == PlanetMarkerKind::Settlement)
+                .map(|marker| marker.label.as_str()),
+            &mut images,
+        )
+    {
+        let material = surface_labels::surface_label_material(
+            &atlas,
+            &mut materials,
+            planet_marker_presentation(PlanetMarkerKind::Settlement).color,
+        );
+        for (marker_index, marker) in marker_data.named.iter().enumerate() {
+            if marker.kind != PlanetMarkerKind::Settlement {
+                continue;
+            }
+            commands.spawn((
+                MeshMaterial3d(material.clone()),
+                Transform::default(),
+                Visibility::Hidden,
+                SurfaceLabelRibbon {
+                    marker_index,
+                    view: SurfaceLabelView::Planet,
+                    label: marker.label.clone(),
+                },
+            ));
+        }
+        commands.insert_resource(atlas);
+    }
 
     let root = commands
         .spawn((
@@ -395,14 +433,19 @@ fn setup_planet_markers(
 fn cleanup_planet_markers(
     mut commands: Commands,
     overlays: Query<Entity, With<PlanetMarkerOverlayRoot>>,
+    surface_labels: Query<Entity, With<SurfaceLabelRibbon>>,
 ) {
     for entity in &overlays {
+        commands.entity(entity).despawn();
+    }
+    for entity in &surface_labels {
         commands.entity(entity).despawn();
     }
     commands.remove_resource::<PlanetMarkerData>();
     commands.remove_resource::<PlanetMarkerProjection>();
     commands.remove_resource::<PlanetMarkerAnchors>();
     commands.remove_resource::<HoveredPlanetMarker>();
+    commands.remove_resource::<SurfaceGlyphAtlas>();
 }
 
 fn build_named_markers(
@@ -439,7 +482,7 @@ fn build_named_markers(
                 display: display.clone(),
             },
             kind: PlanetMarkerKind::Settlement,
-            label: truncate_marker_label(&display),
+            label: display.clone(),
         });
     }
 
@@ -627,6 +670,16 @@ struct MarkerOverlayUi<'w, 's> {
             Without<CardinalLabel>,
         ),
     >,
+    surface_labels: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static SurfaceLabelRibbon,
+            Option<&'static Mesh3d>,
+            &'static mut Visibility,
+        ),
+    >,
     explorer_dot: Query<
         'w,
         's,
@@ -728,8 +781,12 @@ struct MarkerOverlayUi<'w, 's> {
 }
 
 fn update_planet_marker_overlay(
+    mut commands: Commands,
     state: Res<Exploration>,
     data: Option<Res<PlanetMarkerData>>,
+    atlas: Option<Res<SurfaceGlyphAtlas>>,
+    terrain: Option<Res<TerrainGen>>,
+    mut meshes: Option<ResMut<Assets<Mesh>>>,
     mut projection: ResMut<PlanetMarkerProjection>,
     mut hovered: ResMut<HoveredPlanetMarker>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -802,6 +859,7 @@ fn update_planet_marker_overlay(
     let mut screen_named = std::mem::take(&mut projection.screen_by_index);
     screen_named.resize(data.named.len(), None);
     screen_named.fill(None);
+    let mut surface_layouts = (0..data.named.len()).map(|_| None).collect::<Vec<_>>();
     if visible {
         for (index, marker) in data.named.iter().enumerate() {
             let Some(center) = project_anchor(
@@ -813,10 +871,54 @@ fn update_planet_marker_overlay(
             ) else {
                 continue;
             };
+            let surface_layout = if marker.kind == PlanetMarkerKind::Settlement {
+                atlas.as_deref().map(|atlas| {
+                    let vertical_projection = camera.computed.clip_from_view.y_axis.y.abs();
+                    let distance = camera_position.distance(marker.destination.position);
+                    let world_per_logical_pixel = 2.0 * distance
+                        / (viewport.height() * vertical_projection).max(f32::EPSILON);
+                    let world_per_atlas_pixel = world_per_logical_pixel * MARKER_LABEL_FONT_SIZE
+                        / surface_labels::ATLAS_FONT_SIZE;
+                    surface_labels::build_surface_ribbon(
+                        atlas,
+                        &marker.label,
+                        marker.destination.position,
+                        camera_transform.rotation * Vec3::X,
+                        camera_transform.rotation * Vec3::Y,
+                        world_per_atlas_pixel,
+                        Vec2::new(MARKER_LABEL_OFFSET.x, -MARKER_LABEL_OFFSET.y)
+                            * (surface_labels::ATLAS_FONT_SIZE / MARKER_LABEL_FONT_SIZE),
+                        |direction| {
+                            terrain
+                                .as_deref()
+                                .map_or(marker.destination.position.length(), |terrain| {
+                                    terrain.surface_radius(SpherePos::new(direction))
+                                })
+                        },
+                        2.0,
+                    )
+                })
+            } else {
+                None
+            };
+            let label_bounds = if let Some(layout) = surface_layout.as_ref() {
+                surface_label_screen_bounds(
+                    layout,
+                    camera,
+                    &camera_global,
+                    camera_position,
+                    viewport,
+                )
+            } else if marker.kind == PlanetMarkerKind::Settlement {
+                surface_label_bounds(center, &marker.label, viewport)
+            } else {
+                marker_label_bounds(center, &marker.label, viewport)
+            };
+            surface_layouts[index] = surface_layout;
             screen_named[index] = Some(ScreenNamedMarker {
                 index,
                 center,
-                label_bounds: marker_label_bounds(center, &marker.label, viewport),
+                label_bounds,
                 color: planet_marker_presentation(marker.kind).color,
             });
         }
@@ -947,12 +1049,17 @@ fn update_planet_marker_overlay(
             priority: 5,
         });
     }
+    label_candidates.retain_mut(|candidate| {
+        let Some(bounds) = clip_label_bounds(candidate.bounds, viewport) else {
+            return false;
+        };
+        candidate.bounds = bounds;
+        true
+    });
     let mut accepted_labels = std::mem::take(&mut projection.accepted_labels);
     accepted_labels.clear();
     let mut accepted_bounds_by_cell = std::mem::take(&mut projection.accepted_bounds_by_cell);
-    for bounds in accepted_bounds_by_cell.values_mut() {
-        bounds.clear();
-    }
+    accepted_bounds_by_cell.clear();
     for priority in 0..=5 {
         for candidate in label_candidates
             .iter()
@@ -964,6 +1071,13 @@ fn update_planet_marker_overlay(
             let max_cell = (candidate.bounds.max / LABEL_GRID_CELL_SIZE)
                 .floor()
                 .as_ivec2();
+            let grid_limit =
+                (viewport.size() / LABEL_GRID_CELL_SIZE).ceil().as_ivec2() + IVec2::splat(2);
+            if max_cell.x - min_cell.x + 1 > grid_limit.x
+                || max_cell.y - min_cell.y + 1 > grid_limit.y
+            {
+                continue;
+            }
             let overlaps = (min_cell.y..=max_cell.y).any(|y| {
                 (min_cell.x..=max_cell.x).any(|x| {
                     accepted_bounds_by_cell.get(&(x, y)).is_some_and(|bounds| {
@@ -1025,7 +1139,11 @@ fn update_planet_marker_overlay(
             continue;
         };
         let marker = &data.named[label.0];
-        let display = if visible && accepted_labels.contains(&LabelTarget::Named(label.0)) {
+        let uses_surface_ribbon = marker.kind == PlanetMarkerKind::Settlement && atlas.is_some();
+        let display = if visible
+            && !uses_surface_ribbon
+            && accepted_labels.contains(&LabelTarget::Named(label.0))
+        {
             Display::Flex
         } else {
             Display::None
@@ -1045,6 +1163,36 @@ fn update_planet_marker_overlay(
         let marker_color = marker_color.with_alpha(marker_color.alpha() * alpha);
         if color.0 != marker_color {
             color.0 = marker_color;
+        }
+    }
+    for (entity, ribbon, mesh, mut visibility) in &mut ui.surface_labels {
+        if ribbon.view != SurfaceLabelView::Planet {
+            continue;
+        }
+        let Some(layout) = surface_layouts
+            .get(ribbon.marker_index)
+            .and_then(Option::as_ref)
+            .filter(|_| accepted_labels.contains(&LabelTarget::Named(ribbon.marker_index)))
+            .filter(|_| visible)
+        else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        let Some(meshes) = meshes.as_deref_mut() else {
+            *visibility = Visibility::Hidden;
+            continue;
+        };
+        if let Some(mesh) = mesh {
+            if let Some(mut mesh_asset) = meshes.get_mut(&mesh.0) {
+                surface_labels::write_ribbon_mesh(&mut mesh_asset, layout, alpha);
+                *visibility = Visibility::Visible;
+            } else {
+                *visibility = Visibility::Hidden;
+            }
+        } else {
+            let mesh = meshes.add(surface_labels::ribbon_mesh(layout, alpha));
+            commands.entity(entity).insert(Mesh3d(mesh));
+            *visibility = Visibility::Visible;
         }
     }
     for (node, color) in &mut ui.explorer_dot {
@@ -1196,6 +1344,11 @@ fn hide_all_marker_nodes(ui: &mut MarkerOverlayUi) {
             node.display = Display::None;
         }
     }
+    for (_, ribbon, _, mut visibility) in ui.surface_labels.iter_mut() {
+        if ribbon.view == SurfaceLabelView::Planet {
+            *visibility = Visibility::Hidden;
+        }
+    }
 }
 
 fn project_anchor(
@@ -1221,6 +1374,59 @@ fn marker_label_bounds(center: Vec2, label: &str, viewport: Rect) -> Option<Rect
         && bounds.max.x <= viewport.max.x
         && bounds.max.y <= viewport.max.y)
         .then_some(bounds)
+}
+
+fn surface_label_bounds(center: Vec2, label: &str, viewport: Rect) -> Option<Rect> {
+    let width = (label.chars().count() as f32 * MARKER_LABEL_FONT_SIZE * 0.62).max(8.0);
+    let min = center + MARKER_LABEL_OFFSET;
+    let bounds = Rect::from_corners(min, min + Vec2::new(width, MARKER_LABEL_HEIGHT));
+    let clipped = Rect::from_corners(bounds.min.max(viewport.min), bounds.max.min(viewport.max));
+    (clipped.min.x < clipped.max.x && clipped.min.y < clipped.max.y).then_some(clipped)
+}
+
+fn clip_label_bounds(bounds: Rect, viewport: Rect) -> Option<Rect> {
+    if !bounds.min.is_finite()
+        || !bounds.max.is_finite()
+        || !viewport.min.is_finite()
+        || !viewport.max.is_finite()
+        || viewport.width() <= 0.0
+        || viewport.height() <= 0.0
+    {
+        return None;
+    }
+    let clipped = Rect::from_corners(bounds.min.max(viewport.min), bounds.max.min(viewport.max));
+    (clipped.min.x < clipped.max.x && clipped.min.y < clipped.max.y).then_some(clipped)
+}
+
+fn surface_label_screen_bounds(
+    ribbon: &SurfaceRibbonMesh,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    camera_position: Vec3,
+    viewport: Rect,
+) -> Option<Rect> {
+    let mut min = Vec2::splat(f32::INFINITY);
+    let mut max = Vec2::splat(f32::NEG_INFINITY);
+    for (center, corners) in ribbon.glyph_centers.iter().zip(&ribbon.glyph_corners) {
+        if !marker_clears_spherical_horizon(camera_position, *center, PLANET_RADIUS) {
+            continue;
+        }
+        for corner in corners {
+            if !marker_clears_spherical_horizon(camera_position, *corner, PLANET_RADIUS) {
+                continue;
+            }
+            let Some(ndc) = camera.world_to_ndc(camera_transform, *corner) else {
+                continue;
+            };
+            let Some(screen) = project_ndc_to_logical_viewport(ndc, viewport) else {
+                continue;
+            };
+            min = min.min(screen);
+            max = max.max(screen);
+        }
+    }
+    let bounds = Rect::from_corners(min.max(viewport.min), max.min(viewport.max));
+    (bounds.min.x < bounds.max.x && bounds.min.y < bounds.max.y).then_some(bounds)
 }
 
 fn ui_node_bounds_logical(computed: ComputedNode, transform: UiGlobalTransform) -> Rect {
@@ -1478,6 +1684,24 @@ mod tests {
         );
         assert_eq!(markers.named[0].destination.position, Vec3::Y * 2100.0);
         assert_eq!(markers.named[1].destination.position, Vec3::X * 2100.0);
+    }
+
+    #[test]
+    fn settlement_surface_label_keeps_the_full_geographic_name() {
+        let name = "Observatory Above the Eastern Silver Coast";
+        let regions = level_regions(vec![], &[(name, SettlementKind::Town)]);
+        let anchors = PlanetMarkerAnchors {
+            settlements: vec![Vec3::Y],
+            bridges: vec![],
+        };
+
+        let markers = build_named_markers(WorldEpoch::new(30), &regions, &anchors, |_| 2100.0);
+
+        assert_eq!(
+            markers.named[0].label,
+            format!("Town · {name}"),
+            "surface lettering must not be shortened before viewport clipping"
+        );
     }
 
     #[test]
@@ -1789,6 +2013,232 @@ mod tests {
         assert!(
             actual_center.distance(current_center) <= 0.01,
             "occupied explorer dot {actual_center:?} should follow current body projection {current_center:?}, not stale player transform {stale_center:?}"
+        );
+    }
+
+    #[test]
+    fn settlement_label_remains_selectable_when_its_name_crosses_the_viewport_edge() {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..24 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .insert_resource(State::new(shared::state::AppState::Loading));
+
+        let epoch = WorldEpoch::new(37);
+        let label = "Town · Observatory Above the Eastern Silver Coast";
+        let destination = PlanetDestination {
+            id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 0),
+            position: Vec3::new(0.4_f32.sin(), 0.0, 0.4_f32.cos())
+                * terra_geometry::sphere::PLANET_RADIUS,
+            surface: PlanetDestinationSurface::Terrain,
+            display: label.into(),
+        };
+        app.world_mut().insert_resource(PlanetMarkerData {
+            world_epoch: Some(epoch),
+            named: vec![NamedPlaceMarker {
+                destination,
+                kind: PlanetMarkerKind::Settlement,
+                label: label.into(),
+            }],
+        });
+        app.world_mut()
+            .insert_resource(PlanetMarkerProjection::default());
+        app.world_mut()
+            .insert_resource(HoveredPlanetMarker::default());
+
+        app.world_mut().spawn((PrimaryWindow, Window::default()));
+        let size = UVec2::new(800, 600);
+        let mut perspective = PerspectiveProjection {
+            far: 20_000.0,
+            ..default()
+        };
+        perspective.update(size.x as f32, size.y as f32);
+        let mut camera = Camera {
+            viewport: Some(Viewport {
+                physical_size: size,
+                ..default()
+            }),
+            ..default()
+        };
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size: size,
+            scale_factor: 1.0,
+        });
+        camera.computed.clip_from_view = perspective.get_clip_from_view();
+        let camera_transform =
+            Transform::from_xyz(0.0, 0.0, 3_600.0).looking_at(Vec3::ZERO, Vec3::Y);
+        app.world_mut().spawn((
+            MainCamera,
+            camera,
+            Projection::Perspective(perspective),
+            camera_transform,
+            GlobalTransform::from(camera_transform),
+        ));
+        app.world_mut().spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(7.0),
+                height: Val::Px(7.0),
+                display: Display::None,
+                ..default()
+            },
+            BackgroundColor(Color::WHITE),
+            NamedMarkerDot(0),
+        ));
+        app.world_mut().spawn((
+            Text::new(label),
+            Node {
+                position_type: PositionType::Absolute,
+                display: Display::None,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+            NamedMarkerLabel(0),
+        ));
+        app.add_systems(
+            PostUpdate,
+            update_planet_marker_overlay
+                .after(CameraUpdateSystems)
+                .before(bevy::ui::UiSystems::Prepare)
+                .before(TransformSystems::Propagate),
+        );
+
+        app.update();
+
+        let projection = app.world().resource::<PlanetMarkerProjection>();
+        let bounds = projection.markers[0]
+            .label_bounds
+            .expect("the visible part of a long settlement label remains available");
+        let center = projection.markers[0].center;
+        assert_eq!(bounds.max.x, size.x as f32);
+        let cursor = Vec2::new(size.x as f32 - 2.0, bounds.center().y);
+        assert!(
+            cursor.x - center.x > super::MARKER_DOT_HIT_RADIUS,
+            "the edge point exercises the visible lettering rather than the settlement dot"
+        );
+
+        let selected = app.world_mut().resource_scope(|world, projection| {
+            select_named_marker_at(
+                &mut world.resource_mut::<Exploration>(),
+                epoch,
+                Some(&projection),
+                cursor,
+            )
+        });
+        assert!(selected);
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .selected_planet_destination()
+                .map(|selected| selected.display.as_str()),
+            Some(label),
+        );
+    }
+
+    #[test]
+    fn near_camera_extreme_settlement_label_bounds_stay_clipped_and_selectable() {
+        let (mut app, _) = crate::exploration::tests::fixture();
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(true);
+        for _ in 0..24 {
+            app.update();
+        }
+        assert!(app.world().resource::<Exploration>().planet_view_ready());
+        app.world_mut()
+            .insert_resource(State::new(shared::state::AppState::Loading));
+
+        let epoch = WorldEpoch::new(38);
+        let label = format!("Settlement · {}", "Near plane name ".repeat(4096));
+        let expected_label = label.clone();
+        let destination = PlanetDestination {
+            id: PlanetDestinationId::collection(epoch, PlanetDestinationCollection::Settlement, 0),
+            position: Vec3::Z * terra_geometry::sphere::PLANET_RADIUS,
+            surface: PlanetDestinationSurface::Terrain,
+            display: label.clone(),
+        };
+        app.world_mut().insert_resource(PlanetMarkerData {
+            world_epoch: Some(epoch),
+            named: vec![NamedPlaceMarker {
+                destination,
+                kind: PlanetMarkerKind::Settlement,
+                label,
+            }],
+        });
+        app.world_mut()
+            .insert_resource(PlanetMarkerProjection::default());
+        app.world_mut()
+            .insert_resource(HoveredPlanetMarker::default());
+
+        app.world_mut().spawn((PrimaryWindow, Window::default()));
+        let size = UVec2::new(800, 600);
+        let mut perspective = PerspectiveProjection {
+            far: 20_000.0,
+            ..default()
+        };
+        perspective.update(size.x as f32, size.y as f32);
+        let mut camera = Camera {
+            viewport: Some(Viewport {
+                physical_size: size,
+                ..default()
+            }),
+            ..default()
+        };
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size: size,
+            scale_factor: 1.0,
+        });
+        camera.computed.clip_from_view = perspective.get_clip_from_view();
+        let camera_transform =
+            Transform::from_xyz(0.0, 0.0, terra_geometry::sphere::PLANET_RADIUS + 0.5)
+                .looking_at(Vec3::ZERO, Vec3::Y);
+        app.world_mut().spawn((
+            MainCamera,
+            camera,
+            Projection::Perspective(perspective),
+            camera_transform,
+            GlobalTransform::from(camera_transform),
+        ));
+        app.add_systems(
+            PostUpdate,
+            update_planet_marker_overlay
+                .after(CameraUpdateSystems)
+                .before(bevy::ui::UiSystems::Prepare)
+                .before(TransformSystems::Propagate),
+        );
+
+        app.update();
+
+        let projection = app.world().resource::<PlanetMarkerProjection>();
+        let bounds = projection.markers[0]
+            .label_bounds
+            .expect("the visible part of a near-camera label has bounds");
+        assert!(bounds.min.is_finite() && bounds.max.is_finite());
+        assert!(bounds.min.x >= 0.0 && bounds.min.y >= 0.0);
+        assert!(bounds.max.x <= size.x as f32 && bounds.max.y <= size.y as f32);
+        assert!(bounds.min.x < bounds.max.x && bounds.min.y < bounds.max.y);
+
+        let cursor = bounds.center();
+        let selected = app.world_mut().resource_scope(|world, projection| {
+            select_named_marker_at(
+                &mut world.resource_mut::<Exploration>(),
+                epoch,
+                Some(&projection),
+                cursor,
+            )
+        });
+        assert!(selected, "clipped lettering remains immediately selectable");
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .selected_planet_destination()
+                .map(|selected| selected.display.as_str()),
+            Some(expected_label.as_str()),
         );
     }
 

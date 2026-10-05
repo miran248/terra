@@ -8,6 +8,7 @@ asset-review = []
 asset-review-schedule-trace = ["asset-review", "bevy/trace"]
 
 [dependencies]
+ab_glyph = "0.2.32"
 bevy = { version = "0.19.1", features = ["mouse", "touch", "debug"] }
 terra-geometry = { path = "../geometry" }
 terra-world = { path = "../world" }

@@ -3821,6 +3821,7 @@ dependencies = [
 name = "main"
 version = "0.1.0"
 dependencies = [
+ "ab_glyph",
  "avian3d",
  "bevy",
  "rand 0.10.3",

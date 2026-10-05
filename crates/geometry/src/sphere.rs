@@ -22,6 +22,22 @@ pub fn tangent_heading(heading: Vec3, up: Vec3) -> Vec3 {
     }
 }
 
+/// Return a point a great-circle arc distance from a unit surface direction.
+pub fn great_circle_point(origin: Vec3, tangent: Vec3, distance: f32, radius: f32) -> Vec3 {
+    if !origin.is_finite()
+        || !tangent.is_finite()
+        || !distance.is_finite()
+        || !radius.is_finite()
+        || radius <= 0.0
+    {
+        return Vec3::ZERO;
+    }
+    let origin = origin.normalize_or(Vec3::Y);
+    let tangent = tangent_heading(tangent, origin);
+    let angle = distance / radius;
+    (origin * angle.cos() + tangent * angle.sin()) * radius
+}
+
 /// An actor's position on the planet: a unit vector from the sphere center.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct SpherePos(pub Vec3);
@@ -152,6 +168,18 @@ mod tests {
         let fallback = tangent_heading(Vec3::Y, Vec3::Y);
         assert!((fallback.length() - 1.0).abs() < 1e-6);
         assert!(fallback.dot(Vec3::Y).abs() < 1e-6);
+    }
+
+    #[test]
+    fn great_circle_point_follows_a_quarter_circle() {
+        let radius = 2_000.0;
+        let actual = great_circle_point(Vec3::Z, Vec3::X, 500.0, radius);
+        let expected = Vec3::new(494.80792, 0.0, 1_937.824_8);
+
+        assert!(
+            (actual - expected).length() < 0.001,
+            "the expected point lies on a quarter-radian globe arc: {actual:?}"
+        );
     }
 
     #[test]
