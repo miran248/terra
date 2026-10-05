@@ -46,13 +46,21 @@ use shared::state::AppState;
 
 fn main() {
     let mut app = App::new();
+    #[cfg(feature = "asset-review")]
+    let background_capture = asset_acceptance::background_capture_enabled();
+    #[cfg(not(feature = "asset-review"))]
+    let background_capture = false;
+
+    #[cfg(feature = "asset-review")]
+    let window_plugin = asset_acceptance::window_plugin(background_capture);
+    #[cfg(not(feature = "asset-review"))]
+    let window_plugin = bevy::window::WindowPlugin::default();
+    let default_plugins = DefaultPlugins.set(window_plugin);
     #[cfg(feature = "asset-review-schedule-trace")]
-    let default_plugins = DefaultPlugins.set(bevy::log::LogPlugin {
+    let default_plugins = default_plugins.set(bevy::log::LogPlugin {
         custom_layer: asset_acceptance::schedule_trace_layer,
         ..default()
     });
-    #[cfg(not(feature = "asset-review-schedule-trace"))]
-    let default_plugins = DefaultPlugins;
     app.add_plugins((
         default_plugins,
         PhysicsPlugins::default()
@@ -66,6 +74,11 @@ fn main() {
         // Re-enable when debugging physics.
         // PhysicsDebugPlugin,
     ))
+    .insert_resource(if background_capture {
+        bevy::winit::WinitSettings::continuous()
+    } else {
+        bevy::winit::WinitSettings::default()
+    })
     .insert_resource(SubstepCount(12))
     .insert_resource(PhysicsDiagnosticsUiSettings {
         enabled: false,

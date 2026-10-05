@@ -3,9 +3,23 @@
 set -eu
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 mode=acceptance
-if [ "${1:-}" = --diagnostic ]; then
-    mode=diagnostic
+background=${TERRA_PLANET_CAPTURE_BACKGROUND:-0}
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --diagnostic) mode=diagnostic ;;
+        --background) background=1 ;;
+        --*) echo "Unknown option: $1" >&2; exit 2 ;;
+        *) break ;;
+    esac
     shift
+done
+if [ "$#" -gt 1 ]; then
+    echo "Usage: $0 [--diagnostic] [--background] [OUTPUT_DIRECTORY]" >&2
+    exit 2
+fi
+if [ "$background" = 1 ] && [ "$mode" != diagnostic ]; then
+    echo "--background is only supported for --diagnostic; it cannot establish window performance acceptance" >&2
+    exit 2
 fi
 output=${1:-/tmp/terra-planet-57}
 case "$output" in /*) ;; *) output="$PWD/$output" ;; esac
@@ -32,6 +46,17 @@ if [ "$mode" = diagnostic ]; then
     export TERRA_PLANET_TRANSITION_DIAGNOSTIC="$output"
 else
     export TERRA_PLANET_ACCEPTANCE_CAPTURE="$output"
+fi
+if [ "$background" = 1 ]; then
+    export TERRA_PLANET_CAPTURE_BACKGROUND=1
+    printf '%s\n' 'mode=background-visual-diagnostic' \
+        'capture_backend=offscreen-image; window_visible=false' \
+        'runner_window=hidden-and-unfocused-primary-window' \
+        'performance_comparable_to_window_acceptance=false' > "$output/capture-mode.txt"
+else
+    unset TERRA_PLANET_CAPTURE_BACKGROUND
+    printf '%s\n' "mode=$mode" 'capture_backend=primary-window' \
+        'performance_comparable_to_window_acceptance=only-for-normal-acceptance-mode' > "$output/capture-mode.txt"
 fi
 TERRA_SOURCE_REVISION=$(git rev-parse HEAD)
 TERRA_SOURCE_BRANCH=$(git branch --show-current)
