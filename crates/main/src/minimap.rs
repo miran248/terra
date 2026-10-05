@@ -15,6 +15,7 @@ use shared::level::RegionKind;
 use shared::planet_markers::{
     PlanetMarkerKind, PlanetMarkerShape, planet_marker_label_visible, planet_marker_presentation,
 };
+use shared::planet_view::planet_compass_color;
 use shared::planet_view_interface::GameplayHudElement;
 use shared::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
@@ -832,11 +833,7 @@ fn draw_overlay(
                 font_size: FontSize::Px(label_font_size),
                 ..default()
             },
-            TextColor(if i == 0 {
-                theme::PRIMARY
-            } else {
-                theme::TEXT_WEAK
-            }),
+            TextColor(planet_compass_color(i == 0)),
             GameplayHudElement::default(),
             ZIndex(1),
             Node {
