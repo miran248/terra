@@ -80,6 +80,24 @@ This writes a camera trace, transition/storm captures, and `diagnostic-status.tx
 It checks continuous body motion with live physics and precipitation visibility,
 but does not replace the full capture matrix or warmed performance repeats.
 
+For a visual diagnostic that must not show or focus an application window, add
+`--background`:
+
+```sh
+CARGO_TARGET_DIR=/tmp/terra-spec58/target61 \
+TERRA_PLANET_ASSET_ROOT=/Users/miran/projects/miran248/terra/crates/main \
+  scripts/capture_planet.sh --diagnostic --background \
+  /tmp/terra-spec58/diagnostic-background
+```
+
+This keeps a hidden, unfocused primary window for the diagnostic input fixture,
+renders the production main camera and UI into a same-size offscreen image, and
+uses continuous updates while unfocused. `capture-mode.txt` and
+`diagnostic-configuration.txt` record the backend, window visibility/focus,
+image size, scale factor, and source provenance. Background captures can support
+visual inspection only; they are not comparable to primary-window performance
+measurements and cannot satisfy the rendered acceptance matrix.
+
 ## Refinements during acceptance
 
 The user [refined the behavior](https://github.com/miran248/terra/issues/45#issuecomment-5983545954):
