@@ -118,22 +118,8 @@ impl ScheduleTraceRecorder {
 
     pub(super) fn take_repeat_csv(&self, route: &'static str, repeat: u8) -> String {
         let mut state = self.lock();
-        let mut rows = Vec::new();
-        state.rows.retain(|row| {
-            if row.route == route && row.repeat == repeat {
-                rows.push(ScheduleTraceRow {
-                    route: row.route,
-                    repeat: row.repeat,
-                    span: row.span.clone(),
-                    route_elapsed_start_s: row.route_elapsed_start_s,
-                    route_elapsed_end_s: row.route_elapsed_end_s,
-                    duration_ms: row.duration_ms,
-                    thread: row.thread.clone(),
-                });
-                false
-            } else {
-                true
-            }
+        let mut rows = drain_matching(&mut state.rows, |row| {
+            row.route == route && row.repeat == repeat
         });
         rows.sort_by(|left, right| {
             left.route_elapsed_start_s
@@ -160,19 +146,8 @@ impl ScheduleTraceRecorder {
 
     pub(super) fn take_frame_clock_csv(&self, route: &'static str, repeat: u8) -> String {
         let mut state = self.lock();
-        let mut rows = Vec::new();
-        state.frame_clocks.retain(|sample| {
-            if sample.route == route && sample.repeat == repeat {
-                rows.push(FrameClockSample {
-                    route: sample.route,
-                    repeat: sample.repeat,
-                    real_elapsed_s: sample.real_elapsed_s,
-                    wall_elapsed_s: sample.wall_elapsed_s,
-                });
-                false
-            } else {
-                true
-            }
+        let rows = drain_matching(&mut state.frame_clocks, |sample| {
+            sample.route == route && sample.repeat == repeat
         });
         let mut csv = String::from("route,repeat,real_elapsed_s,wall_elapsed_s\n");
         for sample in rows {
@@ -194,11 +169,38 @@ impl ScheduleTraceRecorder {
     }
 }
 
+fn drain_matching<T>(rows: &mut Vec<T>, mut matches: impl FnMut(&T) -> bool) -> Vec<T> {
+    let mut remaining = std::mem::take(rows);
+    let mut selected = Vec::new();
+    let mut retained = Vec::with_capacity(remaining.len());
+    for row in remaining.drain(..) {
+        if matches(&row) {
+            selected.push(row);
+        } else {
+            retained.push(row);
+        }
+    }
+    *rows = retained;
+    selected
+}
+
 fn selected_span(metadata: &tracing::Metadata<'_>) -> bool {
     matches!(
         metadata.name(),
-        "schedule" | "main_render_schedule" | "present_frames"
+        "schedule" | "main_render_schedule" | "present_frames" | "system"
     )
+}
+
+fn render_system_label(name: &str) -> Option<&'static str> {
+    if name == "prepare_windows" || name.ends_with("::prepare_windows") {
+        Some("render-system:prepare_windows")
+    } else if name == "process_pipeline_queue_system"
+        || name.ends_with("::process_pipeline_queue_system")
+    {
+        Some("render-system:process_pipeline_queue_system")
+    } else {
+        None
+    }
 }
 
 pub(super) fn enabled() -> bool {
@@ -236,6 +238,14 @@ impl<S: Subscriber> Layer<S> for ScheduleTraceLayer {
             }
             "main_render_schedule" | "present_frames" => {
                 Some(format!("render:{}", metadata.name()))
+            }
+            "system" => {
+                let mut system_name = None;
+                attributes.record(&mut ScheduleNameVisitor(&mut system_name));
+                system_name
+                    .as_deref()
+                    .and_then(render_system_label)
+                    .map(str::to_owned)
             }
             _ => None,
         };
@@ -296,6 +306,12 @@ impl<S: Subscriber> Layer<S> for ScheduleTraceLayer {
 struct ScheduleNameVisitor<'a>(&'a mut Option<String>);
 
 impl tracing::field::Visit for ScheduleNameVisitor<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "name" {
+            *self.0 = Some(value.to_owned());
+        }
+    }
+
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "name" {
             *self.0 = Some(format!("{value:?}").trim_matches('"').to_owned());
@@ -323,6 +339,32 @@ mod tests {
         ) {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn draining_a_repeat_preserves_other_route_samples() {
+        let mut rows = vec![
+            ("orbit-zoom", 1, "first"),
+            ("entry-reversal", 2, "other-route"),
+            ("orbit-zoom", 2, "other-repeat"),
+            ("orbit-zoom", 1, "second"),
+        ];
+
+        let selected = drain_matching(&mut rows, |(route, repeat, _)| {
+            *route == "orbit-zoom" && *repeat == 1
+        });
+
+        assert_eq!(
+            selected,
+            [("orbit-zoom", 1, "first"), ("orbit-zoom", 1, "second")]
+        );
+        assert_eq!(
+            rows,
+            [
+                ("entry-reversal", 2, "other-route"),
+                ("orbit-zoom", 2, "other-repeat"),
+            ]
+        );
     }
 
     #[test]
@@ -398,5 +440,37 @@ mod tests {
         let csv = recorder.take_repeat_csv("orbit-zoom", 1);
         assert!(csv.contains("\"render:main_render_schedule\""));
         assert!(csv.contains("\"render:present_frames\""));
+    }
+
+    #[test]
+    fn records_only_the_selected_native_render_system_spans() {
+        let recorder = ScheduleTraceRecorder::default();
+        recorder.start_repeat("orbit-zoom", 1);
+        let subscriber = tracing_subscriber::registry().with(
+            ScheduleTraceLayer {
+                recorder: recorder.clone(),
+            }
+            .with_filter(tracing_subscriber::filter::filter_fn(selected_span)),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            let prepare = tracing::info_span!(
+                "system",
+                name = "bevy_render::view::window::prepare_windows"
+            );
+            let _prepare = prepare.enter();
+            let pipeline = tracing::info_span!(
+                "system",
+                name = "bevy_render::render_resource::pipeline_cache::PipelineCache::process_pipeline_queue_system"
+            );
+            let _pipeline = pipeline.enter();
+            let ignored = tracing::info_span!("system", name = "unrelated_render_system");
+            let _ignored = ignored.enter();
+        });
+
+        let csv = recorder.take_repeat_csv("orbit-zoom", 1);
+        assert!(csv.contains("\"render-system:prepare_windows\""));
+        assert!(csv.contains("\"render-system:process_pipeline_queue_system\""));
+        assert!(!csv.contains("unrelated_render_system"));
     }
 }
