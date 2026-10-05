@@ -1,7 +1,7 @@
 # Planet view acceptance
 
 This records the production acceptance boundary for [#45](https://github.com/miran248/terra/issues/45)
-and [#57](https://github.com/miran248/terra/issues/57). Behavioral tests alone do
+[#57](https://github.com/miran248/terra/issues/57), and [#58](https://github.com/miran248/terra/issues/58). Behavioral tests alone do
 not establish rendered correctness or live performance.
 
 ## Reproduce
@@ -205,24 +205,72 @@ before the return route and is diagnostic evidence only. Entry stalls overlap bo
 window-acquire waits and broader render/fixed work, so the remaining cause is not
 settled. These checks complement but do not replace the unmet timing gate.
 
-## Camera follow regression check for #59
+## Planet navigation and sidebar verification for #58
 
-The shared camera-policy regression first measured 0.00301 radians of steady
-radial lag while the controlled body followed a constant 0.04 rad/s arc. The
-Bevy exploration fixture reproduced 0.00154 radians at 40 m/s. After the policy
-change, the tests verify same-update radial tracking after recentering, smooth
-reacquisition after a large body relocation, preserved requested zoom, and a
-minimum requested camera radius 400 m above the nominal planet radius. The shared
-camera-policy suite passed 9 tests; the main follow suite passed 8 tests,
-including plane heading, vehicle handoff, and recovery.
+The final camera diagnostic at `/tmp/terra-spec58/registration-bb77636` was
+captured from `bb776360f317d3a74c0234a8ae77f16488786c88` using a hidden offscreen
+2560×1440 target (1280×720 logical, scale factor 2):
 
-The short rendered transition diagnostic is retained at
-`/tmp/terra-spec58/diagnostic-59-fixed`. It completed with a 15.37 m moving-body
-path and a -0.977 drag-direction dot product. The `entry-1400ms.png` still was
-inspected; road and place labels were registered to the rendered scene in that
-frame. The diagnostic's seven-second movement starts after the drag detaches
-follow, so it does not render moving active follow or closest zoom. Its still
-capture cannot establish that the reported dynamic tearing is fixed or exclude a
-marker-registration/rendering defect. Final visual verification at closest zoom
-while following the explorer, car, and plane remains required; the numerical
-regression does establish and remove the steady camera-follow lag.
+```sh
+CARGO_TARGET_DIR=/tmp/terra-spec-45/target-57 \
+TERRA_PLANET_ASSET_ROOT=/Users/miran/projects/miran248/terra/crates/main \
+  scripts/capture_planet.sh --diagnostic --background /tmp/terra-spec58/registration-fresh
+```
+
+It reports `diagnostic-complete`, 20 captures, no missing captures or errors,
+live moving physics, and weather hidden during Planet view and restored on return.
+The initial drag reached the opposite hemisphere (direction dot product -0.99980).
+Additional real-pointer drags reached far-oblique, middle-distance, and near-polar
+poses, with final target errors of 0.00179, 0.00913, and 0.00981 radians. The
+before/after images and moving-follow images were inspected for scene, marker,
+sidebar, and compass registration. Compass labels remain outside the sidebar;
+near-pole directions fade as designed.
+
+The closest requested radius is 2400 m, 400 m above the nominal surface. Follow
+measurements use the final steady second of each moving route after zoom and
+recenter settle, sampled after camera, UI layout, and transform propagation:
+
+| Moving body | Steady samples | Window (s) | Maximum marker error (physical px) |
+| --- | ---: | ---: | ---: |
+| Explorer on foot | 166 | 0.994 | 0.337 |
+| Car | 128 | 0.997 | 0.408 |
+| Plane | 146 | 0.993 | 0.485 |
+
+All three windows measured zero radial lag at the report's six-decimal precision
+and zero marker-anchor/body separation. Attained radius stayed within 0.002 m of
+2400 m. Gates require radial lag at most 0.00001 radians and marker error at most
+1 physical pixel; nearest-pixel layout rounding remains expected. Raw samples,
+pose events, capture metadata, source hashes, and build provenance are retained.
+
+Two defects were reproduced before fixing them. Follow reacquisition previously
+waited for a smoothing error threshold that a continuously moving target could
+keep from reaching; recenter now decays the initial angular offset over one second
+relative to the current body direction, then tracks exactly. Occupied-vehicle
+markers previously projected the Explorer's stale physics transform; they now
+use its synchronized position. The earlier rendered trace showed car and plane
+registration errors of 2.618 and 2.112 physical pixels. Regression tests fail with
+the old behavior and pass with the fixes. Additional tests cover entry, zoom,
+handoffs, recovery, dragging, pointer capture, compass, and sidebar actions.
+
+The short-window sidebar diagnostic can be reproduced from the checkout root:
+
+```sh
+TERRA_PLANET_CAPTURE_BACKGROUND=1 \
+TERRA_PLANET_SIDEBAR_DIAGNOSTIC=/tmp/terra-spec58/sidebar-fresh \
+  cargo run --locked -p main --features asset-review
+```
+
+The rendered sidebar route uses 2560×840 physical pixels (1280×420 logical,
+scale factor 2), exercising overflow and scrolling. Evidence at
+`/tmp/terra-spec58/sidebar-acceptance-63e` reports eight captures and passing
+selector pause/Cancel/Car, mouse view close, Follow, wheel isolation, early
+recovery cancellation, and completed on-foot recovery checks. Inline selection,
+recovery progress and completion, Context, and scrolling captures were directly
+inspected. Production fixture tests complement this route for Plane selection,
+enter/exit, keyboard recovery, occupied recovery, and capture loss.
+
+Final automated verification passed 209 runtime tests and 157 shared tests.
+These background renders establish the recorded camera, overlay, and UI behavior;
+they do not establish normal-window performance or absence of display scanout
+tearing. The previously deferred #57 timing gate above remains unchanged. Earlier
+rejected diagnostic attempts are retained separately and are not acceptance evidence.
