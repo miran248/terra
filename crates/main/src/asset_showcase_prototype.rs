@@ -67,9 +67,10 @@ fn setup(
     };
     // The game's PlanetMesh resource indexes unit-sphere faces, not surface heights.
     // Review placement must sample the same displaced triangles used by rendering/physics.
-    let level =
-        shared::level::LevelData::from_artifact_bytes(include_bytes!("../assets/level_1337.bin"))
-            .unwrap();
+    let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
+        "../assets/level_1337.bin"
+    ))
+    .unwrap();
     let planet = PlanetMesh::new(
         level
             .terrain_tris

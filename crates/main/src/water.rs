@@ -11,7 +11,7 @@ use bevy::render::mesh::PrimitiveTopology;
 use bevy::render::render_resource::{AsBindGroup, ShaderType};
 use bevy::render::storage::ShaderBuffer;
 use bevy::shader::ShaderRef;
-use shared::level::WaterPhase;
+use terra_world::level::WaterPhase;
 
 pub type WaterMaterial = ExtendedMaterial<StandardMaterial, WaterExt>;
 
@@ -300,8 +300,8 @@ impl Plugin for WaterPlugin {
 mod tests {
     use super::*;
     use bevy::render::mesh::VertexAttributeValues;
-    use shared::terrain::Terrain;
     use std::collections::HashMap;
+    use terra_world::terrain::Terrain;
 
     /// A hexagonal lake — 6 fan faces around a centre, ringed by 6 LakeShore
     /// faces. The centre bed is deeper (smaller radius) than the shore, so the

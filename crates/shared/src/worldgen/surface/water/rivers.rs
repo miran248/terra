@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 
 use bevy::prelude::Vec3;
 
-use crate::terrain::Terrain;
-use terra_geometry::topology::FaceId;
 use crate::worldgen::{Grid, elevation};
+use terra_geometry::topology::FaceId;
+use terra_world::terrain::Terrain;
 
 pub(in crate::worldgen) const RIVER_SURFACE_CLEARANCE: f32 = 0.02;
 pub(in crate::worldgen) const RIVER_TERRAIN_CLIP: f32 = 0.25;

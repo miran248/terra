@@ -8,9 +8,10 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
     window::PrimaryWindow,
 };
-use shared::{level::LevelData, state::AppState, terrain::Terrain};
-use terra_geometry::sphere::SpherePos;
+use shared::state::AppState;
 use std::path::PathBuf;
+use terra_geometry::sphere::SpherePos;
+use terra_world::{level::LevelData, terrain::Terrain};
 
 mod diagnostic_drag;
 mod planet_acceptance;
@@ -335,9 +336,10 @@ fn capture(
             "production acceptance stop"
         );
     }
-    let surface_radius = ground
-        .0
-        .facet_radius(position.0.normalize(), terra_geometry::sphere::PLANET_RADIUS);
+    let surface_radius = ground.0.facet_radius(
+        position.0.normalize(),
+        terra_geometry::sphere::PLANET_RADIUS,
+    );
     state.min_clearance = state
         .min_clearance
         .min(position.0.length() - surface_radius);

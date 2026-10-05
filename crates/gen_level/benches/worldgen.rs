@@ -1,5 +1,6 @@
 use std::hint::black_box;
 use std::time::Instant;
+use terra_world::level::LevelData;
 
 fn main() {
     let seed = std::env::var("PLANET_SEED")
@@ -15,7 +16,8 @@ fn main() {
     for _ in 0..runs {
         let started = Instant::now();
         let world = shared::worldgen::run(black_box(seed), |_| {});
-        black_box(world.level_data());
+        let level: &LevelData = world.level_data();
+        black_box(level);
         samples.push(started.elapsed());
     }
     let mean = samples

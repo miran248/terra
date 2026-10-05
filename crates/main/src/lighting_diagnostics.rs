@@ -7,12 +7,10 @@ use bevy::{
     transform::TransformSystems,
     window::PrimaryWindow,
 };
-use shared::{
-    level::{LevelData, RoadKind, StructureKind, WaterPhase},
-    state::AppState,
-};
-use terra_geometry::sphere::SpherePos;
+use shared::state::AppState;
 use std::{io::Write, path::PathBuf};
+use terra_geometry::sphere::SpherePos;
+use terra_world::level::{LevelData, RoadKind, StructureKind, WaterPhase};
 
 pub struct LightingDiagnosticsPlugin;
 impl Plugin for LightingDiagnosticsPlugin {

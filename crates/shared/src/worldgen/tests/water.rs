@@ -1,6 +1,6 @@
 use super::*;
-use crate::level::{SurfaceCondition, WaterPhase};
 use bevy::prelude::Vec3;
+use terra_world::level::{SurfaceCondition, WaterPhase};
 
 #[test]
 fn freezing_is_local_across_lakes_and_rivers() {

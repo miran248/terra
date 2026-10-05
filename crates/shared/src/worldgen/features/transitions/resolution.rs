@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::CellId;
+use crate::terrain::TerrainGen;
 use crate::wfc;
 use crate::worldgen::{Grid, link_tile_pinches};
+use terra_geometry::topology::CellId;
+use terra_world::terrain::Terrain;
 
 use super::clusters::{absorb_small_patches, smooth_coast_band, water_distance};
 

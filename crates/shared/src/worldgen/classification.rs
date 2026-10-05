@@ -1,4 +1,4 @@
-use crate::terrain::Terrain;
+use terra_world::terrain::Terrain;
 
 pub(super) const fn terrain_rank(terrain: Terrain) -> u8 {
     match terrain {

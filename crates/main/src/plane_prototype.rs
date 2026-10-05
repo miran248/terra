@@ -89,15 +89,16 @@ fn setup(
     let Ok((entity, transform, player, children)) = players.single() else {
         return;
     };
-    let level =
-        shared::level::LevelData::from_artifact_bytes(include_bytes!("../assets/level_1337.bin"))
-            .expect("embedded level");
+    let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
+        "../assets/level_1337.bin"
+    ))
+    .expect("embedded level");
     let water = level
         .terrain_tris
         .iter()
         .enumerate()
         .filter_map(|(face, triangle)| {
-            if level.water_phase[face] == Some(shared::level::WaterPhase::Frozen) {
+            if level.water_phase[face] == Some(terra_world::level::WaterPhase::Frozen) {
                 return None;
             }
             let radii = level.face_river_r[face]

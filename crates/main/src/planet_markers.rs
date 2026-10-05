@@ -7,16 +7,16 @@ use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
-use shared::level::RegionKind;
 use shared::planet_markers::{
     PlanetMarkerKind, PlanetMarkerShape, cursor_hits_planet_marker,
     marker_clears_spherical_horizon, planet_marker_label_priority, planet_marker_label_visible,
     planet_marker_presentation, project_ndc_to_logical_viewport, same_surface_location,
 };
 use shared::planet_view::{planet_compass_color, planet_compass_orientation};
-use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
+use terra_world::level::RegionKind;
 
 use crate::exploration::{
     Exploration, PlanetDestination, PlanetDestinationCollection, PlanetDestinationId,
@@ -1419,7 +1419,7 @@ mod tests {
     use bevy::prelude::*;
     use bevy::state::app::{AppExtStates, StatesPlugin};
     use bevy::window::PrimaryWindow;
-    use shared::level::{RegionData, RegionKind, RegionMemberships, SettlementKind};
+    use terra_world::level::{RegionData, RegionKind, RegionMemberships, SettlementKind};
 
     use super::{
         BridgeMarkerAnchor, CameraUpdateSystems, HoveredPlanetMarker, NamedMarkerDot,
@@ -1712,7 +1712,8 @@ mod tests {
                 .is_planet_view_active()
         );
 
-        let body_position = Vec3::new(0.25, 0.968_245_8, 0.0) * terra_geometry::sphere::PLANET_RADIUS;
+        let body_position =
+            Vec3::new(0.25, 0.968_245_8, 0.0) * terra_geometry::sphere::PLANET_RADIUS;
         let stale_player_transform = Vec3::Y * terra_geometry::sphere::PLANET_RADIUS;
         app.world_mut()
             .entity_mut(car)
@@ -2101,8 +2102,9 @@ mod tests {
             scale_factor,
         });
         camera.computed.clip_from_view = perspective.get_clip_from_view();
-        let camera_pose = Transform::from_xyz(0.0, 0.0, terra_geometry::sphere::PLANET_RADIUS + 400.0)
-            .looking_at(Vec3::ZERO, Vec3::Y);
+        let camera_pose =
+            Transform::from_xyz(0.0, 0.0, terra_geometry::sphere::PLANET_RADIUS + 400.0)
+                .looking_at(Vec3::ZERO, Vec3::Y);
         let camera_entity = app
             .world_mut()
             .spawn((

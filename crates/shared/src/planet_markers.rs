@@ -1,6 +1,7 @@
 use bevy::prelude::{Color, Rect, Vec2, Vec3};
 
-use crate::{level::RegionKind, theme};
+use crate::theme;
+use terra_world::level::RegionKind;
 
 /// Marker types shared by the minimap and Planet view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,8 +205,9 @@ pub fn marker_clears_spherical_horizon(
 
 #[cfg(test)]
 mod tests {
-    use crate::{level::RegionKind, theme};
+    use crate::theme;
     use bevy::prelude::{Rect, Vec2, Vec3};
+    use terra_world::level::RegionKind;
 
     use super::{
         PlanetMarkerKind, PlanetMarkerShape, cursor_hits_planet_marker,

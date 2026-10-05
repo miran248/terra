@@ -1,7 +1,7 @@
 use super::{CellSet, Grid};
-use crate::level::SlopeClass;
-use crate::terrain::Terrain;
 use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::SlopeClass;
+use terra_world::terrain::Terrain;
 
 mod bridges;
 mod transitions;

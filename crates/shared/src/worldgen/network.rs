@@ -1,13 +1,14 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use crate::level::{
+use crate::terrain::TerrainGen;
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos, ring_point};
+use terra_geometry::topology::CellId;
+use terra_world::level::{
     RoadData, RoadEndpointData, RoadEndpointRole, RoadKind, SettlementConfig, SettlementKind,
     SlopeClass, StructureKind,
 };
-use terra_geometry::sphere::{PLANET_RADIUS, SpherePos, ring_point};
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::CellId;
+use terra_world::terrain::Terrain;
 
 use super::{
     CellSet, Grid, Painted, RoadPath, RoadPathPurpose, StructureSite, features,

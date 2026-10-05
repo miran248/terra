@@ -13,12 +13,10 @@ use bevy::{
     transform::TransformSystems,
     window::{PrimaryWindow, WindowResolution},
 };
-use shared::{
-    flight_showcase::{pilot_at_speed, pilot_input},
-    level::LevelData,
-};
-use terra_geometry::sphere::PLANET_RADIUS;
+use shared::flight_showcase::{pilot_at_speed, pilot_input};
 use std::{path::PathBuf, time::Duration};
+use terra_geometry::sphere::PLANET_RADIUS;
+use terra_world::level::LevelData;
 
 #[derive(Resource, Default)]
 pub(super) struct PilotControls {
@@ -135,7 +133,10 @@ impl Movie {
         // visible doorstep without navigating the settlement's internal streets.
         let outward = road(20);
         let house = level.structures[6];
-        assert!(matches!(house.kind, shared::level::StructureKind::House));
+        assert!(matches!(
+            house.kind,
+            terra_world::level::StructureKind::House
+        ));
         let house_position = Vec3::from_array(house.pos);
         let front = Quat::from_rotation_arc(Vec3::Y, house_position.normalize())
             * Quat::from_rotation_y(house.yaw)

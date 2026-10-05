@@ -1,8 +1,9 @@
 use bevy::prelude::Vec3;
 
-use crate::level::{Landform, RegionData, RegionKind, RegionMemberships};
-use crate::terrain::{Terrain, TerrainGen};
+use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, regions, size_range};
+use terra_world::level::{Landform, RegionData, RegionKind, RegionMemberships};
+use terra_world::terrain::Terrain;
 
 use super::super::network::RoadGraph;
 

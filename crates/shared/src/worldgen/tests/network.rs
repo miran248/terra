@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use bevy::prelude::Vec3;
 
 use super::*;
-use crate::level::{RoadEndpointRole, RoadKind, SlopeClass};
 use terra_geometry::sphere::{SpherePos, ring_point};
-use crate::terrain::Terrain;
+use terra_world::level::{RoadEndpointRole, RoadKind, SlopeClass};
+use terra_world::terrain::Terrain;
 
 fn distance_to_segment(point: [f32; 3], start: [f32; 3], end: [f32; 3]) -> f32 {
     let point = Vec3::from_array(point);
@@ -30,11 +30,11 @@ fn settlement_site_selection_reports_when_a_zone_has_no_roadable_site() {
 
 #[test]
 fn settlement_site_selection_relocates_an_infeasible_anchor_within_its_zone() {
-    let config = crate::level::SettlementConfig {
+    let config = terra_world::level::SettlementConfig {
         towns: 1,
         villages: 1,
         outposts: 1,
-        ..crate::level::SettlementConfig::default()
+        ..terra_world::level::SettlementConfig::default()
     };
     let terrain = TerrainGen::new_with_settlement_config(1337, config);
     let grid = Grid::new(1337);
@@ -67,7 +67,7 @@ fn settlement_site_selection_relocates_an_infeasible_anchor_within_its_zone() {
         &cells,
         &slopes,
         &[original, relocated],
-        crate::level::SettlementKind::Town,
+        terra_world::level::SettlementKind::Town,
         config.town_radius_m,
         1,
         &BTreeSet::new(),
@@ -81,7 +81,7 @@ fn settlement_site_selection_relocates_an_infeasible_anchor_within_its_zone() {
         &cells,
         &slopes,
         &[original, relocated],
-        crate::level::SettlementKind::Town,
+        terra_world::level::SettlementKind::Town,
         config.town_radius_m,
         2,
         &BTreeSet::new(),
@@ -171,7 +171,7 @@ fn internal_street_endpoints_are_not_external_settlement_entrances() {
         &[],
         &[None],
         &[settlement],
-        crate::level::SettlementConfig::default(),
+        terra_world::level::SettlementConfig::default(),
     );
 
     assert!(graph.endpoints.iter().all(|endpoint| {
@@ -193,7 +193,7 @@ fn internal_street_endpoints_are_not_external_settlement_entrances() {
 fn bridge_approach_paths_create_settlement_entrances() {
     let grid = super::super::grid::Grid::new(42);
     let settlement = SpherePos(Vec3::Y);
-    let radius = crate::level::SettlementConfig::default().town_radius_m;
+    let radius = terra_world::level::SettlementConfig::default().town_radius_m;
     let (inside, outside) = grid
         .topology
         .cells()
@@ -221,7 +221,7 @@ fn bridge_approach_paths_create_settlement_entrances() {
         &[],
         &[None],
         &[settlement],
-        crate::level::SettlementConfig::default(),
+        terra_world::level::SettlementConfig::default(),
     );
 
     let entrance = graph
@@ -268,7 +268,7 @@ fn bridge_banks_do_not_connect_through_internal_streets_alone() {
         &cells,
         &slopes,
         &[],
-        crate::level::SettlementConfig::default(),
+        terra_world::level::SettlementConfig::default(),
         &[],
         &[],
         vec![span],
@@ -289,7 +289,7 @@ fn bridge_banks_do_not_connect_through_internal_streets_alone() {
 fn bridge_approach_uses_a_distinct_entrance_when_its_bank_meets_a_used_one() {
     let grid = super::super::grid::Grid::new(42);
     let settlement = SpherePos(Vec3::Y);
-    let config = crate::level::SettlementConfig::default();
+    let config = terra_world::level::SettlementConfig::default();
     let radius = config.town_radius_m;
     let (used_entrance, route_outside, bridge_bank) = grid
         .topology
@@ -694,7 +694,7 @@ fn generated_network_contract_holds_for_locked_seeds() {
         let region_names = level
             .regions
             .iter()
-            .filter(|region| region.kind == crate::level::RegionKind::Road)
+            .filter(|region| region.kind == terra_world::level::RegionKind::Road)
             .map(|region| region.name.as_str())
             .collect::<BTreeSet<_>>();
         assert_eq!(road_names, region_names, "seed {seed}");
@@ -706,7 +706,7 @@ fn generated_network_contract_holds_for_locked_seeds() {
 
 fn road_endpoint_cell(
     world: &GenState,
-    level: &crate::level::LevelData,
+    level: &terra_world::level::LevelData,
     endpoint: usize,
 ) -> Option<CellId> {
     world

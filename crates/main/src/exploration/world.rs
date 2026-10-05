@@ -125,7 +125,7 @@ impl CollisionWorld {
 }
 
 pub(super) fn setup(mut commands: Commands) {
-    let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+    let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
         "../../assets/level_1337.bin"
     ))
     .expect("embedded level");
@@ -134,7 +134,7 @@ pub(super) fn setup(mut commands: Commands) {
         .iter()
         .enumerate()
         .filter_map(|(face, triangle)| {
-            if level.water_phase[face] == Some(shared::level::WaterPhase::Frozen) {
+            if level.water_phase[face] == Some(terra_world::level::WaterPhase::Frozen) {
                 return None;
             }
             let radii = level.face_river_r[face]
@@ -351,7 +351,8 @@ mod tests {
         );
         assert!(
             (camera_altitude
-                - (shared::planet_view::PLANET_VIEW_NEAR_RADIUS - terra_geometry::sphere::PLANET_RADIUS))
+                - (shared::planet_view::PLANET_VIEW_NEAR_RADIUS
+                    - terra_geometry::sphere::PLANET_RADIUS))
                 .abs()
                 < 3.0,
             "nearest Planet view zoom should attain the documented overview altitude, got {camera_altitude} m"

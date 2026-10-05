@@ -1,0 +1,10 @@
+[package]
+name = "terra-world"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bevy_color = "0.19.1"
+postcard = { version = "1", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+terra-geometry = { path = "../geometry" }

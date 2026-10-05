@@ -209,7 +209,9 @@ fn commit_bridge(
 fn crosses_only_ocean_between(
     grid: &Grid,
     cells: &[Terrain],
-    components: &terra_geometry::topology::ComponentLabels<terra_geometry::topology::CellComponentId>,
+    components: &terra_geometry::topology::ComponentLabels<
+        terra_geometry::topology::CellComponentId,
+    >,
     a_component: usize,
     b_component: usize,
     a: CellId,
@@ -633,8 +635,9 @@ pub(in crate::worldgen) fn build_bridges(
 }
 use bevy::prelude::Vec3;
 
-use crate::level::SlopeClass;
-use terra_geometry::sphere::SpherePos;
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::{CellId, FaceId};
+use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, cell_chain, features};
+use terra_geometry::sphere::SpherePos;
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::SlopeClass;
+use terra_world::terrain::Terrain;

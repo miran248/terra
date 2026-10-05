@@ -1,19 +1,20 @@
 # World-generation architecture and contracts
 
-## Shared ownership
+## Extracted domain ownership
+
+- `terra-geometry`: spherical operations, planet mesh queries, typed topology, and geometric road helpers. `CellId` is authoritative terrain identity; `FaceId` is derived query/presentation identity.
+- `terra-world`: terrain classifications, settlement configuration, regions and placement records, `LevelData`, and versioned artifact encoding and validation. It depends on `terra-geometry` for geometry identities.
+
+## Remaining shared ownership
 
 - `art.rs`: canonical procedural-art names, catalog paths, deterministic variants, and collider specifications shared by generator and runtime.
 - `items.rs`: `Material`, `WeaponKind` statistics/durability, and `Recipe`.
 - `theme.rs`: shared UI palette and bundled Monaspace Neon `FONT_PATH`.
-- `sphere.rs`: meter unit, 2000 m `PLANET_RADIUS`, `SpherePos`, geodesic stepping/distance/ring/random/slerp, and tangent bases.
-- `terrain.rs`: deterministic `TerrainGen`; six-octave FBM, domain warp, moisture/temperature, lake beds/containment, water identity, flow accumulation, erosion, barycentric sampling, and ground-contact `RiverSpring`.
+- `terrain.rs`: deterministic `TerrainGen`; six-octave FBM, domain warp, moisture/temperature, lake beds/containment, water identity, flow accumulation, erosion, barycentric sampling, and ground-contact `RiverSpring`. Terrain classifications and settlement configuration come from `terra-world`.
 - `zones.rs`: five separated medium continents, three offshore islands, approximately even land/water, five mountain ranges, three lakes, and six river routes.
 - `coarse_river.rs`: deterministic BFS routing with zone-adjacency tie order and avoidance of prior rivers/settlements.
-- `topology.rs`: sole owner of canonical cells/faces, adjacency, incidence, component traversal, bounded distance, predicate paths, and unweighted shortest paths. `CellId` is authoritative terrain identity; `FaceId` is derived query/presentation identity.
-- `roads.rs`: deterministic 12-settlement network, shore-routed bridges, `PathKind::Bridge`, wobbled slerp, and straight fallback.
-- `planet.rs`: icosphere triangles plus grid-indexed ray intersection and `face_at` queries.
-- `level.rs`: typed `LevelData` schema encoded as versioned Postcard artifacts. It stores triangles, face/corner terrain identities, blends, orthogonal water depth/phase and surface condition, tags/regions, settlements, roads, scenery, and structures; runtime validates it at startup.
-- `worldgen.rs`: deterministic cell-first facade. Mutable generation state stays private; public `CompletedWorld` exposes finalized `LevelData` and statistics.
+- `roads.rs` and `worldgen/`: deterministic settlement road planning, shore-routed bridges, and the private generation pipeline.
+- `worldgen.rs`: deterministic cell-first facade. Mutable generation state stays private; public `CompletedWorld` exposes finalized `terra_world::level::LevelData` and statistics.
 
 ## Private module map
 
@@ -80,7 +81,7 @@ and 20 m respectively.
 
 ## Verification
 
-Run the focused shared test, all `cargo test -p shared` tests, locked-seed fingerprints, workspace `cargo clippy --workspace --all-targets -- -D warnings`, and direct seed-1337 asset comparison. Run `cargo bench -p gen_level --bench worldgen` when performance-sensitive generation changes.
+Run the focused model or generation test, `cargo test -p terra-world`, all `cargo test -p shared` tests, locked-seed fingerprints, workspace `cargo clippy --workspace --all-targets -- -D warnings`, and direct seed-1337 asset comparison. Run `cargo bench -p gen_level --bench worldgen` when performance-sensitive generation changes.
 
 For level regeneration and comparison, follow the [level pipeline](level-pipeline.md). Regenerate only artifacts affected by the change.
 

@@ -1,6 +1,6 @@
 use super::*;
-use crate::level::{RoadEndpointRole, SettlementKind, StructureKind};
 use bevy::prelude::Vec3;
+use terra_world::level::{RoadEndpointRole, SettlementKind, StructureKind};
 
 #[test]
 fn default_world_has_configured_settlement_kinds() {

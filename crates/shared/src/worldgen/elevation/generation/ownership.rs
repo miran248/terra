@@ -87,7 +87,8 @@ pub(in crate::worldgen) fn owner_landform(
 }
 use std::collections::BTreeMap;
 
-use crate::level::Landform;
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::{CellId, FaceId};
+use crate::terrain::TerrainGen;
 use crate::worldgen::Grid;
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::Landform;
+use terra_world::terrain::Terrain;

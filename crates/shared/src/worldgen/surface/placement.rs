@@ -540,10 +540,11 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
 }
 use bevy::prelude::Vec3;
 
-use crate::level::{
+use crate::terrain::TerrainGen;
+use crate::worldgen::{Grid, Painted, StructureSite, face_solid, painted_corners};
+use terra_geometry::sphere::SpherePos;
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::{
     FaceTag, FloraKind, SceneryData, SceneryKind, SlopeClass, StructureData, StructureKind,
 };
-use terra_geometry::sphere::SpherePos;
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::{CellId, FaceId};
-use crate::worldgen::{Grid, Painted, StructureSite, face_solid, painted_corners};
+use terra_world::terrain::Terrain;

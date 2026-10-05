@@ -6,7 +6,7 @@
 //! rules are local and symmetric. On contradiction a cell falls back to its base
 //! classification; there is never a global retry.
 
-use crate::terrain::Terrain;
+use terra_world::terrain::Terrain;
 
 const T: usize = Terrain::ALL.len();
 

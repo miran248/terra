@@ -75,7 +75,8 @@ impl RegionMemberships {
         }
     }
 
-    pub(crate) fn from_pairs(location_count: usize, mut memberships: Vec<(usize, u32)>) -> Self {
+    /// Packs location/region pairs into deterministic, duplicate-free rows.
+    pub fn from_pairs(location_count: usize, mut memberships: Vec<(usize, u32)>) -> Self {
         memberships.sort_unstable();
         memberships.dedup();
         let mut offsets = vec![0u32; location_count + 1];
@@ -829,16 +830,83 @@ pub enum RoadKind {
 mod tests {
     use terra_geometry::topology::FaceId;
 
-    use super::{
-        FloraKind, Landform, LevelArtifactError, LevelData, RegionMemberships, RoadEndpointRole,
-        RoadKind, RoadMaterial, SlopeClass, StructureKind, SurfaceCondition, WaterDepth,
-        WaterPhase,
-    };
+    use super::*;
     use serde::{Serialize, de::DeserializeOwned};
 
-    fn tracked_level() -> LevelData {
-        LevelData::from_artifact_bytes(include_bytes!("../../main/assets/level_1337.bin"))
-            .expect("generated level asset must deserialize")
+    fn fixture_level() -> LevelData {
+        LevelData {
+            seed: 1337,
+            settlement_config: SettlementConfig {
+                towns: 1,
+                villages: 1,
+                outposts: 1,
+                town_radius_m: 55.0,
+                village_radius_m: 35.0,
+                outpost_radius_m: 20.0,
+            },
+            vert_elev: vec![0.0],
+            terrain_tris: vec![[[2000.0, 0.0, 0.0], [0.0, 2000.0, 0.0], [0.0, 0.0, 2000.0]]],
+            terrain_colors: vec![[[0.3, 0.5, 0.2, 1.0]; 3]],
+            unit_tris: vec![[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]],
+            face_types: vec![Terrain::Plains],
+            face_corner_types: vec![[Terrain::Plains; 3]],
+            face_water_r: vec![0.0],
+            face_river_r: vec![[0.0; 3]],
+            face_tags: vec![vec![]],
+            face_blend: vec![],
+            settlements: vec![
+                SettlementData {
+                    name: "Town".into(),
+                    pos: [1.0, 0.0, 0.0],
+                    kind: SettlementKind::Town,
+                },
+                SettlementData {
+                    name: "Village".into(),
+                    pos: [0.0, 1.0, 0.0],
+                    kind: SettlementKind::Village,
+                },
+                SettlementData {
+                    name: "Outpost".into(),
+                    pos: [0.0, 0.0, 1.0],
+                    kind: SettlementKind::Outpost,
+                },
+            ],
+            roads: vec![RoadData {
+                name: "Fixture Road".into(),
+                points: vec![[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+                kind: RoadKind::Road,
+                from_endpoint: 0,
+                to_endpoint: 1,
+            }],
+            road_endpoints: vec![
+                RoadEndpointData {
+                    pos: [1.0, 0.0, 0.0],
+                    roles: vec![RoadEndpointRole::SettlementEntrance {
+                        settlement_index: 0,
+                    }],
+                },
+                RoadEndpointData {
+                    pos: [0.0, 1.0, 0.0],
+                    roles: vec![RoadEndpointRole::SettlementEntrance {
+                        settlement_index: 1,
+                    }],
+                },
+            ],
+            regions: vec![RegionData {
+                name: "Fixture Plains".into(),
+                pos: [0.0, 0.0, 1.0],
+                kind: RegionKind::Plains,
+            }],
+            face_regions: RegionMemberships::from_memberships(vec![vec![0]]),
+            scenery: vec![],
+            structures: vec![],
+            slope_class: vec![SlopeClass::Flat],
+            water_depth: vec![None],
+            water_phase: vec![None],
+            surface_condition: vec![SurfaceCondition::Normal],
+            landform: vec![Landform::Lowland],
+            road_material: vec![None],
+        }
     }
 
     #[test]
@@ -888,7 +956,7 @@ mod tests {
 
     #[test]
     fn level_artifact_round_trip_preserves_bytes() {
-        let level = tracked_level();
+        let level = fixture_level();
         let encoded = level.to_artifact_bytes().unwrap();
         let decoded = LevelData::from_artifact_bytes(&encoded).unwrap();
 
@@ -898,27 +966,27 @@ mod tests {
     }
 
     #[test]
-    fn tracked_level_is_valid() {
-        tracked_level().validate().unwrap();
+    fn fixture_level_is_valid() {
+        fixture_level().validate().unwrap();
     }
 
     #[test]
     fn validation_rejects_inconsistent_face_arrays() {
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         level.slope_class.pop();
         assert!(level.validate().unwrap_err().contains("slope_class"));
     }
 
     #[test]
     fn validation_rejects_inconsistent_face_tags() {
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         level.face_tags.pop();
         assert!(level.validate().unwrap_err().contains("face_tags"));
     }
 
     #[test]
     fn validation_rejects_invalid_region_references() {
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         let mut memberships = (0..level.face_regions.location_count())
             .map(|face| level.region_ids_at_face(FaceId::new(face)).to_vec())
             .collect::<Vec<_>>();
@@ -929,18 +997,18 @@ mod tests {
 
     #[test]
     fn validation_rejects_invalid_road_endpoint_references() {
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         level.roads[0].from_endpoint = level.road_endpoints.len() as u32;
         assert!(level.validate().unwrap_err().contains("road endpoint"));
 
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         level.roads[0].to_endpoint = level.road_endpoints.len() as u32;
         assert!(level.validate().unwrap_err().contains("road endpoint"));
     }
 
     #[test]
     fn validation_rejects_invalid_settlement_entrance_references() {
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         let endpoint = level
             .road_endpoints
             .iter_mut()
@@ -970,7 +1038,7 @@ mod tests {
 
     #[test]
     fn level_validation_requires_one_membership_list_per_face() {
-        let mut level = tracked_level();
+        let mut level = fixture_level();
         level.face_regions = RegionMemberships::from_memberships(vec![]);
 
         assert!(level.validate().unwrap_err().contains("face_regions"));
@@ -999,8 +1067,8 @@ mod tests {
     }
 
     #[test]
-    fn tracked_level_uses_none_for_dry_and_non_road_faces() {
-        let level = tracked_level();
+    fn fixture_level_uses_none_for_dry_and_non_road_faces() {
+        let level = fixture_level();
         for face in 0..level.face_types.len() {
             assert_eq!(
                 level.water_depth[face].is_some(),

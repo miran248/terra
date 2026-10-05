@@ -72,9 +72,10 @@ pub(in crate::worldgen) fn paint_features(
     link_feature_pinches(grid, &mut painted.settlements, |_| true);
     (painted, kept)
 }
-use crate::level::SlopeClass;
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::CellId;
+use crate::terrain::TerrainGen;
 use crate::worldgen::{
     Grid, Painted, RoadPath, features, link_feature_pinches, nearest_cell, router,
 };
+use terra_geometry::topology::CellId;
+use terra_world::level::SlopeClass;
+use terra_world::terrain::Terrain;

@@ -38,8 +38,9 @@ pub(crate) fn opposite_side_drag(
     let x = width - DRAG_MARGIN;
     let normalized_x = x / width * 2.0 - 1.0;
     let ray_angle = (normalized_x * (width / height) * (fov_y * 0.5).tan()).atan();
-    let globe_angle =
-        (terra_geometry::sphere::PLANET_RADIUS / shared::planet_view::PLANET_VIEW_FAR_RADIUS).asin();
+    let globe_angle = (terra_geometry::sphere::PLANET_RADIUS
+        / shared::planet_view::PLANET_VIEW_FAR_RADIUS)
+        .asin();
     if ray_angle <= globe_angle {
         return None;
     }

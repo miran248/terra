@@ -1,6 +1,7 @@
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::{CellId, FaceId};
+use crate::terrain::TerrainGen;
 use crate::worldgen::Grid;
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::terrain::Terrain;
 
 use super::components::cluster_cell_types;
 

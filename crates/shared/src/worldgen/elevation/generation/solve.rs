@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::level::{BlendTarget, FaceBlend, Landform};
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::CellId;
+use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, elevation};
+use terra_geometry::topology::CellId;
+use terra_world::level::{BlendTarget, FaceBlend, Landform};
+use terra_world::terrain::Terrain;
 
 use super::{
     ROAD_EDGE_GRADIENT, SOLVER_EPS, SOLVER_MAX_ITERS, bank_clearance, bank_water, elev_range,

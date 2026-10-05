@@ -2966,8 +2966,8 @@ version = "0.1.0"
 dependencies = [
  "bevy_color",
  "bevy_math",
- "postcard",
  "shared",
+ "terra-world",
 ]
 
 [[package]]
@@ -3822,10 +3822,10 @@ version = "0.1.0"
 dependencies = [
  "avian3d",
  "bevy",
- "postcard",
  "rand 0.10.3",
  "shared",
  "terra-geometry",
+ "terra-world",
 ]
 
 [[package]]
@@ -5375,10 +5375,10 @@ dependencies = [
  "criterion 0.8.2",
  "fastrand",
  "noise",
- "postcard",
  "serde",
  "serde_json",
  "terra-geometry",
+ "terra-world",
 ]
 
 [[package]]
@@ -5666,6 +5666,16 @@ dependencies = [
  "bevy_math",
  "bevy_transform",
  "criterion 0.8.2",
+]
+
+[[package]]
+name = "terra-world"
+version = "0.1.0"
+dependencies = [
+ "bevy_color",
+ "postcard",
+ "serde",
+ "terra-geometry",
 ]
 
 [[package]]

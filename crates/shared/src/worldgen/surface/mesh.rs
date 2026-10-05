@@ -184,7 +184,8 @@ pub(in crate::worldgen) fn build_mesh(
 }
 use bevy::color::ColorToComponents;
 
-use crate::level::{Landform, RoadMaterial, SlopeClass, WaterDepth};
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::{CellId, FaceId};
+use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, face_solid};
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::{Landform, RoadMaterial, SlopeClass, WaterDepth};
+use terra_world::terrain::Terrain;

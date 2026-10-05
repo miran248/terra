@@ -141,6 +141,6 @@ pub(in crate::worldgen) fn water_distance(
 }
 use std::collections::BTreeMap;
 
-use crate::terrain::Terrain;
-use terra_geometry::topology::CellId;
 use crate::worldgen::{Grid, classification, size_range};
+use terra_geometry::topology::CellId;
+use terra_world::terrain::Terrain;

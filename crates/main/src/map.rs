@@ -3,14 +3,14 @@ use crate::physics::RadialGravity;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
-use shared::level::{
+use shared::terrain::TerrainGen;
+use std::time::Instant;
+use terra_geometry::planet::PlanetMesh;
+use terra_geometry::sphere::PLANET_RADIUS;
+use terra_world::level::{
     BlendTarget, FaceTag, Landform, LevelData, RoadKind, RoadMaterial, SceneryKind, SettlementKind,
     SlopeClass, WaterDepth, WaterPhase,
 };
-use terra_geometry::planet::PlanetMesh;
-use terra_geometry::sphere::PLANET_RADIUS;
-use shared::terrain::TerrainGen;
-use std::time::Instant;
 
 /// Small speculative skin; swept CCD protects fast motion without a half-meter visual offset.
 const TERRAIN_MARGIN: f32 = 0.02;
@@ -87,10 +87,10 @@ pub struct MapPlugin;
 pub struct LevelTags(pub Vec<Vec<FaceTag>>);
 
 #[derive(Resource)]
-pub struct LevelFaceTypes(pub Vec<shared::terrain::Terrain>);
+pub struct LevelFaceTypes(pub Vec<terra_world::terrain::Terrain>);
 
 #[derive(Resource)]
-pub struct LevelFaceCornerTypes(pub Vec<[shared::terrain::Terrain; 3]>);
+pub struct LevelFaceCornerTypes(pub Vec<[terra_world::terrain::Terrain; 3]>);
 
 #[derive(Resource)]
 pub struct LevelSlope(pub Vec<SlopeClass>);
@@ -131,7 +131,7 @@ const PROP_CULL_PER_UPDATE: usize = 2_048;
 /// Per-scenery-kind cull distance (metres) — the smaller the prop, the sooner it
 /// stops being drawn in the distance.
 pub fn scenery_cull(kind: SceneryKind) -> f32 {
-    use shared::level::*;
+    use terra_world::level::*;
     // ~1.6x the original ranges so props stay visible further out; the camera
     // fog visibility (main.rs) is set beyond the largest of these so props fade
     // into haze before this hard cull edge rather than popping.
@@ -241,8 +241,8 @@ fn cull_props(
 /// Face-based region memberships and named bridge surfaces for the HUD.
 #[derive(Resource)]
 pub struct LevelRegions {
-    pub regions: Vec<shared::level::RegionData>,
-    pub face_regions: shared::level::RegionMemberships,
+    pub regions: Vec<terra_world::level::RegionData>,
+    pub face_regions: terra_world::level::RegionMemberships,
     pub settlements: Vec<(String, SettlementKind)>,
     /// Top surfaces from the same deck geometry used for rendering and collision.
     pub bridge_top_surfaces_by_name: std::collections::BTreeMap<String, Vec<[[f32; 3]; 3]>>,
@@ -293,7 +293,7 @@ impl LevelRegions {
 /// Blend-marked boundary faces: the pair of terrain kinds each links.
 #[derive(Resource)]
 pub struct LevelBlends(
-    pub std::collections::BTreeMap<u32, (shared::terrain::Terrain, BlendTarget)>,
+    pub std::collections::BTreeMap<u32, (terra_world::terrain::Terrain, BlendTarget)>,
 );
 
 /// Drives the world sun (see `drive_daynight`). The sun orbits the planet's Y
@@ -417,9 +417,9 @@ pub(crate) fn setup_map(
         }),
     });
 
-    let spawn_surface_r = terrain.surface_radius(terra_geometry::sphere::SpherePos::new(Vec3::from_array(
-        level.settlements.first().expect("no settlements").pos,
-    )));
+    let spawn_surface_r = terrain.surface_radius(terra_geometry::sphere::SpherePos::new(
+        Vec3::from_array(level.settlements.first().expect("no settlements").pos),
+    ));
 
     // Terrain visuals are chunked (see crate::chunks) — only the whole-planet
     // collider is global. Physics never streams: no fall-through at chunk
@@ -761,7 +761,7 @@ pub(crate) fn player_physics_bundle(spawn_pos: Vec3, heading: Vec3) -> impl Bund
 #[cfg(test)]
 mod region_identity_tests {
     use super::*;
-    use shared::level::{RoadData, RoadKind};
+    use terra_world::level::{RoadData, RoadKind};
 
     #[test]
     fn production_player_has_a_one_meter_radial_capsule() {
@@ -794,7 +794,8 @@ mod region_identity_tests {
 
     #[test]
     fn bridge_hud_name_requires_the_player_to_be_on_the_deck_surface() {
-        let ground = terra_geometry::planet::PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
+        let ground =
+            terra_geometry::planet::PlanetMesh::new(terra_geometry::planet::unit_icosphere_tris(3));
         let road = bridge("Test Bridge");
         let points = road
             .points
@@ -814,7 +815,7 @@ mod region_identity_tests {
             .expect("deck top should cross its centerline");
         let regions = LevelRegions {
             regions: vec![],
-            face_regions: shared::level::RegionMemberships::from_memberships(vec![vec![]]),
+            face_regions: terra_world::level::RegionMemberships::from_memberships(vec![vec![]]),
             settlements: vec![],
             bridge_top_surfaces_by_name: std::collections::BTreeMap::from([(
                 "Test Bridge".into(),
@@ -833,7 +834,7 @@ mod region_identity_tests {
 
     #[test]
     fn generated_bridge_deck_surface_reports_its_name_across_width_and_length() {
-        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+        let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
             "../assets/level_1337.bin"
         ))
         .expect("load generated level");
@@ -863,7 +864,7 @@ mod region_identity_tests {
         }
         let regions = LevelRegions {
             regions: vec![],
-            face_regions: shared::level::RegionMemberships::from_memberships(vec![]),
+            face_regions: terra_world::level::RegionMemberships::from_memberships(vec![]),
             settlements: vec![],
             bridge_top_surfaces_by_name,
         };

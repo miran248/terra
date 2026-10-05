@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 
 use super::Grid;
-use crate::level::RegionKind;
 use terra_geometry::topology::CellId;
+use terra_world::level::RegionKind;
 
 pub(super) mod generation;
 

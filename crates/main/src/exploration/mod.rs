@@ -5195,7 +5195,7 @@ pub(crate) mod tests {
             .single(app.world())
             .unwrap();
         app.world_mut().despawn(ground);
-        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+        let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
             "../../assets/level_1337.bin"
         ))
         .unwrap();
@@ -5276,7 +5276,7 @@ pub(crate) mod tests {
             .single(app.world())
             .unwrap();
         app.world_mut().despawn(ground);
-        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+        let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
             "../../assets/level_1337.bin"
         ))
         .unwrap();

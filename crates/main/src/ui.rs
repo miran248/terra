@@ -10,11 +10,11 @@ use bevy::prelude::*;
 use bevy::ui::FocusPolicy;
 use bevy::window::PrimaryWindow;
 use shared::items::Recipe;
-use shared::level::RegionKind;
-use terra_geometry::planet::PlanetMesh;
-use shared::terrain::Terrain;
 use shared::theme;
 use shared::upgrades::Upgrade;
+use terra_geometry::planet::PlanetMesh;
+use terra_world::level::RegionKind;
+use terra_world::terrain::Terrain;
 
 const MAX_REGION_ROW_CHARS: usize = 56;
 const SIDEBAR_WIDTH: f32 = 280.0;
@@ -848,7 +848,7 @@ fn update_sidebar_world_readout(
                     if water_phase
                         .as_ref()
                         .and_then(|phase| phase.0.get(fi).copied().flatten())
-                        == Some(shared::level::WaterPhase::Frozen)
+                        == Some(terra_world::level::WaterPhase::Frozen)
                     {
                         format!("Frozen {depth}")
                     } else {
@@ -858,12 +858,12 @@ fn update_sidebar_world_readout(
                     let lf = landform_r
                         .as_ref()
                         .and_then(|l| l.0.get(fi).copied())
-                        .map(shared::level::Landform::name)
+                        .map(terra_world::level::Landform::name)
                         .unwrap_or("");
                     let sl = slope_class
                         .as_ref()
                         .and_then(|sc| sc.0.get(fi).copied())
-                        .map(shared::level::SlopeClass::name)
+                        .map(terra_world::level::SlopeClass::name)
                         .unwrap_or("");
                     format!("{lf} ({sl})")
                 }
@@ -892,8 +892,8 @@ fn update_sidebar_world_readout(
             && let Some(&(base, target)) = blends.0.get(&(fi as u32))
         {
             let other = match target {
-                shared::level::BlendTarget::Terrain(other) if other == tile => base,
-                shared::level::BlendTarget::Terrain(other) => other,
+                terra_world::level::BlendTarget::Terrain(other) if other == tile => base,
+                terra_world::level::BlendTarget::Terrain(other) => other,
                 _ => base,
             };
             tile_line = match target.name() {
@@ -907,7 +907,7 @@ fn update_sidebar_world_readout(
             for &tag in face_tags {
                 tile_line.push_str("  ");
                 tile_line.push_str(tag.name());
-                if tag == shared::level::FaceTag::Road
+                if tag == terra_world::level::FaceTag::Road
                     && let Some(m) = road_mat
                         .as_ref()
                         .and_then(|r| r.0.get(fi).copied().flatten())
@@ -1101,36 +1101,36 @@ fn weather_label(weather: Option<&crate::weather::Weather>, temp: f32) -> String
     format!("{sev}{kind}")
 }
 
-fn hud_tile_color(tile: shared::terrain::Terrain) -> Color {
+fn hud_tile_color(tile: terra_world::terrain::Terrain) -> Color {
     match tile {
-        shared::terrain::Terrain::Ocean
-        | shared::terrain::Terrain::Lake
-        | shared::terrain::Terrain::SaltLake
-        | shared::terrain::Terrain::River
-        | shared::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
-        shared::terrain::Terrain::Beach
-        | shared::terrain::Terrain::Cliff
-        | shared::terrain::Terrain::LakeShore
-        | shared::terrain::Terrain::RiverBank => Color::srgb(0.9, 0.85, 0.6),
-        shared::terrain::Terrain::Desert => Color::srgb(0.85, 0.75, 0.5),
-        shared::terrain::Terrain::Plains | shared::terrain::Terrain::Forest => {
+        terra_world::terrain::Terrain::Ocean
+        | terra_world::terrain::Terrain::Lake
+        | terra_world::terrain::Terrain::SaltLake
+        | terra_world::terrain::Terrain::River
+        | terra_world::terrain::Terrain::RiverSpring => Color::srgb(0.2, 0.5, 1.0),
+        terra_world::terrain::Terrain::Beach
+        | terra_world::terrain::Terrain::Cliff
+        | terra_world::terrain::Terrain::LakeShore
+        | terra_world::terrain::Terrain::RiverBank => Color::srgb(0.9, 0.85, 0.6),
+        terra_world::terrain::Terrain::Desert => Color::srgb(0.85, 0.75, 0.5),
+        terra_world::terrain::Terrain::Plains | terra_world::terrain::Terrain::Forest => {
             Color::srgb(0.3, 0.7, 0.3)
         }
-        shared::terrain::Terrain::Tundra => Color::srgb(0.6, 0.65, 0.6),
-        shared::terrain::Terrain::Mountain => Color::srgb(0.5, 0.45, 0.4),
-        shared::terrain::Terrain::Snow => Color::srgb(0.95, 0.97, 1.0),
-        shared::terrain::Terrain::Swamp => Color::srgb(0.45, 0.55, 0.35),
-        shared::terrain::Terrain::Jungle => Color::srgb(0.2, 0.65, 0.25),
-        shared::terrain::Terrain::Savanna => Color::srgb(0.8, 0.75, 0.4),
-        shared::terrain::Terrain::Volcanic => Color::srgb(0.6, 0.4, 0.35),
-        shared::terrain::Terrain::Glacier => Color::srgb(0.85, 0.92, 1.0),
+        terra_world::terrain::Terrain::Tundra => Color::srgb(0.6, 0.65, 0.6),
+        terra_world::terrain::Terrain::Mountain => Color::srgb(0.5, 0.45, 0.4),
+        terra_world::terrain::Terrain::Snow => Color::srgb(0.95, 0.97, 1.0),
+        terra_world::terrain::Terrain::Swamp => Color::srgb(0.45, 0.55, 0.35),
+        terra_world::terrain::Terrain::Jungle => Color::srgb(0.2, 0.65, 0.25),
+        terra_world::terrain::Terrain::Savanna => Color::srgb(0.8, 0.75, 0.4),
+        terra_world::terrain::Terrain::Volcanic => Color::srgb(0.6, 0.4, 0.35),
+        terra_world::terrain::Terrain::Glacier => Color::srgb(0.85, 0.92, 1.0),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::level::{RegionData, RegionMemberships, SettlementKind};
+    use terra_world::level::{RegionData, RegionMemberships, SettlementKind};
 
     #[test]
     fn region_hud_groups_all_memberships_and_names_settlement_kind() {

@@ -1,6 +1,6 @@
 # Level precomputation
 
-- Owns the thin CLI that reports, serializes, and writes `shared::worldgen::CompletedWorld` as Postcard `LevelData`.
+- Owns the thin CLI that reports `shared::worldgen::CompletedWorld` and writes its `terra_world::level::LevelData` artifact with the model-owned codec.
 - Output is `crates/main/assets/level_{seed}.bin`, deterministic for `PLANET_SEED` (default 1337).
 - Terrain rendering and physics share the generated displaced triangles. `terra_geometry` owns topology and mesh queries; projection, assembly, and statistics remain in `shared::worldgen` during this extraction step.
 

@@ -11,16 +11,16 @@ use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::text::LineHeight;
-use shared::level::RegionKind;
 use shared::planet_markers::{
     PlanetMarkerKind, PlanetMarkerShape, planet_marker_label_visible, planet_marker_presentation,
 };
 use shared::planet_view::planet_compass_color;
 use shared::planet_view_interface::GameplayHudElement;
-use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
 use shared::state::AppState;
 use shared::terrain::TerrainGen;
 use shared::theme;
+use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
+use terra_world::level::RegionKind;
 
 const MINIMAP_SIZE: f32 = 160.0;
 /// Render-target resolution (square, downscaled into the circular UI node).
@@ -309,8 +309,9 @@ fn map_click_surface_hit(
         .flat_map(|triangles| triangles.iter())
         .filter_map(|triangle| {
             let triangle = triangle.map(Vec3::from_array);
-            let distance =
-                terra_geometry::planet::ray_triangle_intersection_distance(origin, direction, &triangle)?;
+            let distance = terra_geometry::planet::ray_triangle_intersection_distance(
+                origin, direction, &triangle,
+            )?;
             let position = origin + direction.normalize_or_zero() * distance;
             let mut normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
             if normal.length_squared() < 1e-8 {
@@ -851,7 +852,7 @@ fn draw_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::level::{LevelData, RegionKind, RoadKind};
+    use terra_world::level::{LevelData, RegionKind, RoadKind};
 
     #[test]
     fn map_labels_stay_right_of_and_vertically_centered_on_their_markers() {
@@ -1023,7 +1024,8 @@ mod tests {
                     .iter()
                     .map(|point| SpherePos::new(Vec3::from_array(*point)))
                     .collect::<Vec<_>>();
-                let geometry = terra_geometry::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
+                let geometry =
+                    terra_geometry::roads::build_bridge_deck_geometry(&span, &ground, 4.0);
                 (road.name.clone(), geometry.top_surface)
             })
             .collect();
@@ -1133,7 +1135,7 @@ mod tests {
         app.world_mut().insert_resource(WorldEpoch::new(44));
         app.world_mut().insert_resource(LevelRegions {
             regions: level.regions.clone(),
-            face_regions: shared::level::RegionMemberships::from_memberships(vec![]),
+            face_regions: terra_world::level::RegionMemberships::from_memberships(vec![]),
             settlements: level
                 .settlements
                 .iter()

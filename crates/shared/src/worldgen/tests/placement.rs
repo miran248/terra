@@ -13,15 +13,15 @@ fn scenery_stays_off_water_and_features() {
         let is_land = state.tiles.as_slice()[face_index].is_land();
         let is_aquatic = matches!(
             f.kind,
-            crate::level::SceneryKind::Flora(crate::level::FloraKind::Seaweed)
-                | crate::level::SceneryKind::Flora(crate::level::FloraKind::Lilypad)
-                | crate::level::SceneryKind::Coral
-                | crate::level::SceneryKind::Anemone
-                | crate::level::SceneryKind::Starfish
-                | crate::level::SceneryKind::Flora(crate::level::FloraKind::Kelp)
+            terra_world::level::SceneryKind::Flora(terra_world::level::FloraKind::Seaweed)
+                | terra_world::level::SceneryKind::Flora(terra_world::level::FloraKind::Lilypad)
+                | terra_world::level::SceneryKind::Coral
+                | terra_world::level::SceneryKind::Anemone
+                | terra_world::level::SceneryKind::Starfish
+                | terra_world::level::SceneryKind::Flora(terra_world::level::FloraKind::Kelp)
         );
         // Shell appears on both beach and ocean — skip ambiguous domain check
-        if matches!(f.kind, crate::level::SceneryKind::Shell) {
+        if matches!(f.kind, terra_world::level::SceneryKind::Shell) {
             continue;
         }
         assert_eq!(

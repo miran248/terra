@@ -56,7 +56,7 @@ fn wheel_contact_moves_against_forward_and_reverse_travel() {
 
 #[test]
 fn baked_bridge_entry_deck_and_exit_in_both_directions() {
-    let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+    let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
         "../../assets/level_1337.bin"
     ))
     .unwrap();
@@ -71,7 +71,7 @@ fn baked_bridge_entry_deck_and_exit_in_both_directions() {
     let bridges: Vec<_> = level
         .roads
         .iter()
-        .filter(|r| r.kind == shared::level::RoadKind::Bridge)
+        .filter(|r| r.kind == terra_world::level::RoadKind::Bridge)
         .collect();
     assert!(!bridges.is_empty(), "seed 1337 must contain bridges");
     for road in bridges {
@@ -98,7 +98,10 @@ fn baked_bridge_entry_deck_and_exit_in_both_directions() {
             deck.top_surface
                 .iter()
                 .filter_map(|tri| {
-                    terra_geometry::planet::ray_triangle_radius(direction, &tri.map(Vec3::from_array))
+                    terra_geometry::planet::ray_triangle_radius(
+                        direction,
+                        &tri.map(Vec3::from_array),
+                    )
                 })
                 .max_by(f32::total_cmp)
         };

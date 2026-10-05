@@ -1,6 +1,7 @@
 use shared::worldgen::{CompletedWorld, run};
 use std::fs;
 use std::path::PathBuf;
+use terra_world::level::LevelData;
 
 /// The pipeline itself lives in `shared::worldgen` as a command/event state machine;
 /// this binary just runs it for a seed, prints the event log + stats, and packs
@@ -22,10 +23,8 @@ fn main() {
 
 fn serialize(world: CompletedWorld, out: &PathBuf) {
     let face_count = world.stats().face_count;
-    let bytes = world
-        .level_data()
-        .to_artifact_bytes()
-        .expect("serialize level artifact");
+    let level: &LevelData = world.level_data();
+    let bytes = level.to_artifact_bytes().expect("serialize level artifact");
     let _ = fs::create_dir_all(out.parent().unwrap());
     fs::write(out, &bytes).expect("write");
     println!("Wrote {face_count} faces → {}", out.display());

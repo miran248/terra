@@ -40,6 +40,7 @@ Use a single-context glossary and ADR layout. Read
 ## Child context index
 
 - `crates/geometry/`: [AGENTS.md](crates/geometry/AGENTS.md)
+- `crates/world/`: [AGENTS.md](crates/world/AGENTS.md)
 - `crates/main/`: [AGENTS.md](crates/main/AGENTS.md)
 - `crates/gen_assets/`: [AGENTS.md](crates/gen_assets/AGENTS.md)
 - `crates/gen_level/`: [AGENTS.md](crates/gen_level/AGENTS.md)

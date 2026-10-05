@@ -1,10 +1,10 @@
 use super::*;
-use crate::level::BlendTarget;
 use crate::worldgen::elevation::generation::{
     SOLVER_EPS, bank_clearance, bank_water, elev_range, is_cover, landform_range, owner_cells,
     owner_landform,
 };
 use crate::worldgen::water::cell_zone;
+use terra_world::level::BlendTarget;
 
 #[test]
 fn solved_field_invariants() {

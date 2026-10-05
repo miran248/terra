@@ -1,6 +1,7 @@
+use crate::terrain::TerrainGen;
 use terra_geometry::sphere::SpherePos;
-use crate::terrain::{Terrain, TerrainGen};
 use terra_geometry::topology::{CellId, FaceId};
+use terra_world::terrain::Terrain;
 
 use super::super::{Grid, classification};
 

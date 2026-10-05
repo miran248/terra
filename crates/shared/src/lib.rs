@@ -6,7 +6,6 @@ pub mod asset_contract;
 pub mod car_prototype;
 pub mod flight_showcase;
 pub mod items;
-pub mod level;
 pub mod on_foot_prototype;
 pub mod placement;
 pub mod plane_prototype;

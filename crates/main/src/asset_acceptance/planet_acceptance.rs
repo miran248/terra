@@ -17,14 +17,15 @@ use bevy::{
     render::view::screenshot::{Screenshot, save_to_disk},
     window::PrimaryWindow,
 };
-use shared::{level::LevelData, planet_view::PLANET_VIEW_FAR_RADIUS, state::AppState};
-use terra_geometry::sphere::PLANET_RADIUS;
+use shared::{planet_view::PLANET_VIEW_FAR_RADIUS, state::AppState};
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     num::NonZeroU8,
     path::{Path, PathBuf},
 };
+use terra_geometry::sphere::PLANET_RADIUS;
+use terra_world::level::LevelData;
 
 const CAPTURE_VIEWS: [CaptureView; 4] = [
     CaptureView::Ground,

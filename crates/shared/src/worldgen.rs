@@ -10,16 +10,16 @@
 
 use std::collections::BTreeMap;
 
-use crate::level::{
-    FaceBlend, FaceTag, Landform, LevelData, RegionData, RegionMemberships, RoadMaterial,
-    SceneryData, SettlementData, SlopeClass, StructureData, StructureKind, SurfaceCondition,
-    WaterDepth, WaterPhase,
-};
-pub use crate::level::{SettlementConfig, SettlementKind};
-use terra_geometry::sphere::SpherePos;
-use crate::terrain::{Terrain, TerrainGen};
-use terra_geometry::topology::{CellId, FaceId};
+use crate::terrain::TerrainGen;
 use bevy::prelude::Vec3;
+use terra_geometry::sphere::SpherePos;
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::{
+    FaceBlend, FaceTag, Landform, LevelData, RegionData, RegionMemberships, RoadMaterial,
+    SceneryData, SettlementConfig, SettlementData, SlopeClass, StructureData, StructureKind,
+    SurfaceCondition, WaterDepth, WaterPhase,
+};
+use terra_world::terrain::Terrain;
 
 mod classification;
 mod domain;

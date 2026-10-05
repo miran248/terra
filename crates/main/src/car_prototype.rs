@@ -43,7 +43,7 @@ mod tests {
         let mut app = physics_app();
         let up = position.normalize();
         let rotation = Quat::from_mat3(&Mat3::from_cols(heading.cross(up), up, -heading));
-        let level = shared::level::LevelData::from_artifact_bytes(include_bytes!(
+        let level = terra_world::level::LevelData::from_artifact_bytes(include_bytes!(
             "../assets/level_1337.bin"
         ))
         .unwrap();

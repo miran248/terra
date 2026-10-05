@@ -34,13 +34,13 @@ use crate::map::{CullRange, Ground, MainCamera, scenery_cull};
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
-#[cfg(test)]
-use shared::level::SceneryKind;
-use shared::level::{SceneryData, StructureData, WaterPhase};
 use shared::planet_detail::{self, SceneryTier};
-use terra_geometry::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
 use std::time::Instant;
+use terra_geometry::sphere::PLANET_RADIUS;
+#[cfg(test)]
+use terra_world::level::SceneryKind;
+use terra_world::level::{SceneryData, StructureData, WaterPhase};
 
 /// Optional per-stage measurements aligned with the acceptance frame trace.
 #[derive(Resource, Default)]
@@ -1016,8 +1016,8 @@ fn spawn_scenery(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::level::{FloraKind, StructureKind};
     use terra_geometry::planet::{PlanetMesh, unit_icosphere_tris};
+    use terra_world::level::{FloraKind, StructureKind};
 
     const DETAIL_BUDGET_TEST_ROOTS: usize = 700;
 

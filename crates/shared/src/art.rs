@@ -1,7 +1,7 @@
 //! Canonical contracts shared by the procedural asset generator and runtime.
 
-use crate::{
-    items::{Material, WeaponKind},
+use crate::items::{Material, WeaponKind};
+use terra_world::{
     level::{FloraKind, SceneryKind, StructureKind},
     terrain::Terrain,
 };

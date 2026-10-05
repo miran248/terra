@@ -62,7 +62,7 @@ pub(in crate::worldgen) fn mark_blends(
 }
 use std::collections::BTreeMap;
 
-use crate::level::{BlendTarget, FaceBlend};
-use crate::terrain::Terrain;
-use terra_geometry::topology::{CellId, FaceId};
 use crate::worldgen::{Grid, Painted, face_solid, painted_corners};
+use terra_geometry::topology::{CellId, FaceId};
+use terra_world::level::{BlendTarget, FaceBlend};
+use terra_world::terrain::Terrain;
