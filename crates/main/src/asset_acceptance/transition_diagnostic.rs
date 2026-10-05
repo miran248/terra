@@ -6,7 +6,7 @@ use super::planet_acceptance::{
     main_camera_pose, player_motion, player_pose, primary_window, set_key,
 };
 use crate::{
-    exploration::{Action, Exploration, Kind},
+    exploration::{Action, CameraFollowMode, Exploration, Kind},
     map::MainCamera,
     weather::{Precip, Weather},
 };
@@ -46,6 +46,7 @@ const FOLLOW_PROBE_SECOND_CAPTURE_DELAY_SECONDS: f64 = 1.0;
 const FOLLOW_PROBE_STEADY_WINDOW_SECONDS: f64 = 1.0;
 const FOLLOW_PROBE_MIN_STEADY_SAMPLE_COUNT: usize = 10;
 const FOLLOW_PROBE_MIN_STEADY_SPAN_SECONDS: f64 = 0.75;
+const CAMERA_MOTION_DURATION_SECONDS: f64 = 10.0;
 const FOLLOW_PROBE_RADIUS_TOLERANCE_M: f32 = 1.0;
 const FOLLOW_PROBE_MAX_RADIAL_LAG_RAD: f32 = 0.000_01;
 const FOLLOW_PROBE_MAX_MARKER_REGISTRATION_ERROR_PHYSICAL_PX: f32 = 1.0;
@@ -54,7 +55,7 @@ const DIAGNOSTIC_PARTIAL_VIEW_MIN_RADIUS_M: f32 = 2_050.0;
 const DIAGNOSTIC_EXTERIOR_READY_RADIUS_M: f32 = 5_800.0;
 const DIAGNOSTIC_RETURN_MIDPOINT_SECONDS: f64 = 1.2;
 const DIAGNOSTIC_RETURN_END_SECONDS: f64 = 2.6;
-const DIAGNOSTIC_CAPTURE_NAMES: [&str; 20] = [
+const DIAGNOSTIC_CAPTURE_NAMES: [&str; 23] = [
     "entry-0400ms.png",
     "entry-0800ms.png",
     "entry-1400ms.png",
@@ -69,6 +70,9 @@ const DIAGNOSTIC_CAPTURE_NAMES: [&str; 20] = [
     "near-follow-car-02.png",
     "near-follow-plane-01.png",
     "near-follow-plane-02.png",
+    "camera-mode-facing.png",
+    "camera-mode-movement.png",
+    "camera-mode-orientation.png",
     "drag-far-oblique-before.png",
     "drag-far-oblique-after.png",
     "drag-mid-heading-before.png",
@@ -172,6 +176,9 @@ enum FollowProbeStage {
     EnterVehicle,
     Vehicle,
     ExitVehicle,
+    CameraMotionClose,
+    CameraMotion,
+    CameraMotionReopen,
     Complete,
     Failed,
 }
@@ -218,6 +225,9 @@ struct PlanetTransitionDiagnostic {
     follow_probe_zoom_requested: bool,
     follow_probe_action_sent: bool,
     follow_probe_samples: Vec<FollowProbeSample>,
+    camera_motion_selection_phase: u8,
+    camera_motion_samples: Vec<CameraMotionSample>,
+    camera_motion_modes_seen: [bool; 3],
     storm_started: bool,
     route_timed_out: bool,
     requested_captures: HashSet<String>,
@@ -360,6 +370,64 @@ struct FollowProbeSample {
     registration_error_physical_px: f32,
 }
 
+#[derive(Clone, Copy, Default)]
+struct CameraMotionSample {
+    elapsed: f64,
+    motion_elapsed_s: f64,
+    mode: CameraFollowMode,
+    plane_position: Vec3,
+    plane_velocity: Vec3,
+    plane_heading: Vec3,
+    plane_pitch: f32,
+    plane_bank: f32,
+    camera: Transform,
+}
+
+impl CameraMotionSample {
+    fn csv_row(self) -> String {
+        format!(
+            "{:.5},{:.5},{},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5},{:.5}\n",
+            self.elapsed,
+            self.motion_elapsed_s,
+            camera_follow_mode_name(self.mode),
+            self.plane_position.x,
+            self.plane_position.y,
+            self.plane_position.z,
+            self.plane_velocity.x,
+            self.plane_velocity.y,
+            self.plane_velocity.z,
+            self.plane_heading.x,
+            self.plane_heading.y,
+            self.plane_heading.z,
+            self.plane_pitch,
+            self.plane_bank,
+            self.camera.translation.x,
+            self.camera.translation.y,
+            self.camera.translation.z,
+            self.camera.rotation.x,
+            self.camera.rotation.y,
+            self.camera.rotation.z,
+            self.camera.rotation.w,
+        )
+    }
+}
+
+fn camera_follow_mode_name(mode: CameraFollowMode) -> &'static str {
+    match mode {
+        CameraFollowMode::Facing => "facing",
+        CameraFollowMode::Movement => "movement",
+        CameraFollowMode::Orientation => "orientation",
+    }
+}
+
+fn camera_follow_mode_index(mode: CameraFollowMode) -> usize {
+    match mode {
+        CameraFollowMode::Facing => 0,
+        CameraFollowMode::Movement => 1,
+        CameraFollowMode::Orientation => 2,
+    }
+}
+
 impl FollowProbeSample {
     fn csv_row(self) -> String {
         format!(
@@ -450,7 +518,8 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
             && !directory.join("events.csv").exists()
             && !directory.join("diagnostic-status.txt").exists()
             && !directory.join("diagnostic-configuration.txt").exists()
-            && !directory.join("follow-probe.csv").exists(),
+            && !directory.join("follow-probe.csv").exists()
+            && !directory.join("camera-follow-motion.csv").exists(),
         "Planet transition diagnostic outputs must not be reused"
     );
     fs::create_dir_all(directory.join("captures"))
@@ -472,6 +541,11 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         "elapsed_s,motion_elapsed_s,mode,view_active,follow,requested_radius_m,attained_radius_m,body_speed_m_s,radial_lag_rad,projected_x_logical,projected_y_logical,marker_x_physical,marker_y_physical,marker_width_physical,marker_height_physical,marker_anchor_body_separation_m,marker_anchor_registration_error_physical_px,registration_error_physical_px,marker_visible\n",
     )
     .expect("write Planet near-follow diagnostic header");
+    fs::write(
+        directory.join("camera-follow-motion.csv"),
+        "elapsed_s,motion_elapsed_s,mode,plane_x,plane_y,plane_z,velocity_x,velocity_y,velocity_z,heading_x,heading_y,heading_z,pitch,bank,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw\n",
+    )
+    .expect("write camera-follow motion diagnostic header");
     app.insert_resource(PlanetTransitionDiagnostic {
         directory,
         started_at: None,
@@ -513,6 +587,9 @@ pub(super) fn register_transition_diagnostic(app: &mut App, directory: PathBuf) 
         follow_probe_zoom_requested: false,
         follow_probe_action_sent: false,
         follow_probe_samples: Vec::with_capacity(1_000),
+        camera_motion_selection_phase: 0,
+        camera_motion_samples: Vec::with_capacity(600),
+        camera_motion_modes_seen: [false; 3],
         storm_started: false,
         route_timed_out: false,
         requested_captures: HashSet::new(),
@@ -1304,16 +1381,24 @@ fn drive_near_follow_probe(
                 .follow_probe_mode
                 .expect("moving follow-probe stages have a mode");
             if drive_follow_probe_view(world, diagnostic, mode, elapsed) {
-                stop_movement_keys(world);
                 if mode == FollowProbeMode::Plane {
-                    enter_follow_probe_stage(diagnostic, FollowProbeStage::Complete, None, elapsed);
+                    world
+                        .resource_mut::<Exploration>()
+                        .set_planet_view_open(false);
+                    enter_follow_probe_stage(
+                        diagnostic,
+                        FollowProbeStage::CameraMotionClose,
+                        None,
+                        elapsed,
+                    );
                     write_diagnostic_event(
                         diagnostic,
                         elapsed,
                         "near-follow-probe",
-                        "Plane capture saved; follow probes complete",
+                        "Plane near-follow captures saved; closing Planet view for camera motion trace",
                     );
                 } else {
+                    stop_movement_keys(world);
                     world
                         .resource_mut::<Exploration>()
                         .set_planet_view_open(false);
@@ -1517,8 +1602,158 @@ fn drive_near_follow_probe(
                 }
             }
         }
+        FollowProbeStage::CameraMotionClose => {
+            drive_camera_motion_controls(world, 0.0);
+            world
+                .resource_mut::<Exploration>()
+                .set_planet_view_open(false);
+            if !world.resource::<Exploration>().is_planet_view_active() {
+                enter_follow_probe_stage(diagnostic, FollowProbeStage::CameraMotion, None, elapsed);
+                diagnostic.camera_motion_selection_phase = 0;
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "camera-follow-motion",
+                    "closed Planet view and began continuous aircraft pitch, bank, and camera-mode trace",
+                );
+            }
+        }
+        FollowProbeStage::CameraMotion => {
+            let motion_elapsed = elapsed - stage_started_at;
+            drive_camera_motion_controls(world, motion_elapsed);
+            drive_camera_motion_mode_selection(
+                world,
+                diagnostic,
+                camera_motion_mode_at(motion_elapsed),
+            );
+            if motion_elapsed >= CAMERA_MOTION_DURATION_SECONDS {
+                stop_movement_keys(world);
+                set_camera_choice_keys(world, None);
+                world
+                    .resource_mut::<Exploration>()
+                    .set_planet_view_open(true);
+                enter_follow_probe_stage(
+                    diagnostic,
+                    FollowProbeStage::CameraMotionReopen,
+                    None,
+                    elapsed,
+                );
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "camera-follow-motion",
+                    "finished aircraft camera-mode trace and reopened Planet view",
+                );
+            }
+        }
+        FollowProbeStage::CameraMotionReopen => {
+            stop_movement_keys(world);
+            set_camera_choice_keys(world, None);
+            world
+                .resource_mut::<Exploration>()
+                .set_planet_view_open(true);
+            if world.resource::<Exploration>().is_planet_view_active() {
+                enter_follow_probe_stage(diagnostic, FollowProbeStage::Complete, None, elapsed);
+                write_diagnostic_event(
+                    diagnostic,
+                    elapsed,
+                    "camera-follow-motion",
+                    "Planet view returned after the camera-mode motion trace",
+                );
+            }
+        }
         FollowProbeStage::Complete | FollowProbeStage::Failed => {
             stop_movement_keys(world);
+        }
+    }
+}
+
+fn camera_motion_mode_at(elapsed: f64) -> CameraFollowMode {
+    if elapsed < 2.5 {
+        CameraFollowMode::Facing
+    } else if elapsed < 5.2 {
+        CameraFollowMode::Movement
+    } else if elapsed < 8.0 {
+        CameraFollowMode::Orientation
+    } else {
+        CameraFollowMode::Movement
+    }
+}
+
+fn camera_motion_capture_target(mode: CameraFollowMode) -> f64 {
+    match mode {
+        CameraFollowMode::Facing => 1.0,
+        CameraFollowMode::Movement => 3.5,
+        CameraFollowMode::Orientation => 6.5,
+    }
+}
+
+fn drive_camera_motion_controls(world: &mut World, elapsed: f64) {
+    let cycle = elapsed.rem_euclid(4.0);
+    set_key(world, KeyCode::ShiftLeft, true);
+    set_key(world, KeyCode::ShiftRight, false);
+    set_key(world, KeyCode::ControlLeft, false);
+    set_key(world, KeyCode::ControlRight, false);
+    set_key(world, KeyCode::Space, false);
+    set_key(world, KeyCode::KeyW, (0.4..1.0).contains(&cycle));
+    set_key(world, KeyCode::KeyS, (1.4..2.0).contains(&cycle));
+    set_key(world, KeyCode::KeyA, (2.2..2.8).contains(&cycle));
+    set_key(world, KeyCode::KeyD, (3.2..3.8).contains(&cycle));
+}
+
+fn set_camera_choice_keys(world: &mut World, mode: Option<CameraFollowMode>) {
+    set_key(
+        world,
+        KeyCode::Digit1,
+        mode == Some(CameraFollowMode::Facing),
+    );
+    set_key(
+        world,
+        KeyCode::Digit2,
+        mode == Some(CameraFollowMode::Movement),
+    );
+    set_key(
+        world,
+        KeyCode::Digit3,
+        mode == Some(CameraFollowMode::Orientation),
+    );
+    if mode.is_none() {
+        set_key(world, KeyCode::KeyC, false);
+    }
+}
+
+fn drive_camera_motion_mode_selection(
+    world: &mut World,
+    diagnostic: &mut PlanetTransitionDiagnostic,
+    target: CameraFollowMode,
+) {
+    let (selector_open, current_mode) = {
+        let state = world.resource::<Exploration>();
+        (state.is_camera_selector_open(), state.camera_follow_mode())
+    };
+    if !selector_open && current_mode == target {
+        set_camera_choice_keys(world, None);
+        diagnostic.camera_motion_selection_phase = 0;
+        return;
+    }
+    match diagnostic.camera_motion_selection_phase {
+        0 => {
+            set_camera_choice_keys(world, None);
+            set_key(world, KeyCode::KeyC, true);
+            diagnostic.camera_motion_selection_phase = 1;
+        }
+        1 if selector_open => {
+            set_key(world, KeyCode::KeyC, false);
+            set_camera_choice_keys(world, Some(target));
+            diagnostic.camera_motion_selection_phase = 2;
+        }
+        1 => {
+            set_key(world, KeyCode::KeyC, false);
+            diagnostic.camera_motion_selection_phase = 0;
+        }
+        _ => {
+            set_camera_choice_keys(world, None);
+            diagnostic.camera_motion_selection_phase = 0;
         }
     }
 }
@@ -1762,6 +1997,13 @@ fn capture_transition_diagnostic(world: &mut World) {
             mode,
         ));
     }
+    if diagnostic.follow_probe_stage == FollowProbeStage::CameraMotion
+        && let Some(motion_started_at) = diagnostic.follow_probe_stage_started_at
+        && let Some(sample) = camera_motion_sample(world, elapsed, elapsed - motion_started_at)
+    {
+        diagnostic.camera_motion_modes_seen[camera_follow_mode_index(sample.mode)] = true;
+        diagnostic.camera_motion_samples.push(sample);
+    }
     if diagnostic.drag_finished
         && !diagnostic.opposite_pose_confirmed
         && diagnostic.drag_failed_at.is_none()
@@ -1916,6 +2158,26 @@ fn capture_transition_diagnostic(world: &mut World) {
             |_| true,
         );
     }
+    if !screenshot_requested
+        && diagnostic.follow_probe_stage == FollowProbeStage::CameraMotion
+        && let Some(motion_started_at) = diagnostic.follow_probe_stage_started_at
+        && let Some(camera_sample) = diagnostic.camera_motion_samples.last().copied()
+        && camera_sample.mode == camera_motion_mode_at(camera_sample.motion_elapsed_s)
+        && elapsed - motion_started_at >= camera_motion_capture_target(camera_sample.mode)
+    {
+        let name = match camera_sample.mode {
+            CameraFollowMode::Facing => "camera-mode-facing.png",
+            CameraFollowMode::Movement => "camera-mode-movement.png",
+            CameraFollowMode::Orientation => "camera-mode-orientation.png",
+        };
+        let target = motion_started_at + camera_motion_capture_target(camera_sample.mode);
+        screenshot_requested = capture_once(world, &mut diagnostic, name, target, |diag| {
+            diag.camera_motion_samples.iter().any(|sample| {
+                sample.mode == camera_sample.mode
+                    && sample.motion_elapsed_s >= camera_motion_capture_target(camera_sample.mode)
+            })
+        });
+    }
     if !screenshot_requested && let Some(opened_at) = diagnostic.m_event_times[4] {
         let target = opened_at + 0.8;
         if elapsed >= target && sample.planet_active {
@@ -1977,6 +2239,32 @@ fn capture_transition_diagnostic(world: &mut World) {
         return;
     }
     world.insert_resource(diagnostic);
+}
+
+fn camera_motion_sample(
+    world: &mut World,
+    elapsed: f64,
+    motion_elapsed_s: f64,
+) -> Option<CameraMotionSample> {
+    let (mode, plane) = {
+        let state = world.resource::<Exploration>();
+        (
+            state.camera_follow_mode(),
+            state.plane_motion_snapshot(world),
+        )
+    };
+    let (plane_position, plane_velocity, plane_heading, plane_pitch, plane_bank) = plane?;
+    Some(CameraMotionSample {
+        elapsed,
+        motion_elapsed_s,
+        mode,
+        plane_position,
+        plane_velocity,
+        plane_heading,
+        plane_pitch,
+        plane_bank,
+        camera: main_camera_pose(world)?,
+    })
 }
 
 fn diagnostic_sample(world: &mut World, elapsed: f64, movement_window: bool) -> DiagnosticSample {
@@ -2235,6 +2523,22 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
             .errors
             .push(format!("write near-follow diagnostic trace: {error}"));
     }
+    let camera_motion_trace = format!(
+        "elapsed_s,motion_elapsed_s,mode,plane_x,plane_y,plane_z,velocity_x,velocity_y,velocity_z,heading_x,heading_y,heading_z,pitch,bank,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw\n{}",
+        diagnostic
+            .camera_motion_samples
+            .iter()
+            .map(|sample| sample.csv_row())
+            .collect::<String>()
+    );
+    if let Err(error) = fs::write(
+        diagnostic.directory.join("camera-follow-motion.csv"),
+        camera_motion_trace,
+    ) {
+        diagnostic
+            .errors
+            .push(format!("write camera-follow motion trace: {error}"));
+    }
     let capture_metadata = format!(
         "capture,nominal_elapsed_s,request_elapsed_s,late_by_s,camera_radius_m,camera_x,camera_y,camera_z\n{}",
         diagnostic.capture_metadata.concat()
@@ -2323,6 +2627,48 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     let car_follow_passed = follow_probe_window_passed(&car_steady_samples);
     let plane_follow_passed = follow_probe_window_passed(&plane_steady_samples);
     let follow_probes_passed = on_foot_follow_passed && car_follow_passed && plane_follow_passed;
+    let camera_motion_sample_count = diagnostic.camera_motion_samples.len();
+    let camera_motion_finite = !diagnostic.camera_motion_samples.is_empty()
+        && diagnostic.camera_motion_samples.iter().all(|sample| {
+            sample.elapsed.is_finite()
+                && sample.motion_elapsed_s.is_finite()
+                && sample.plane_position.is_finite()
+                && sample.plane_velocity.is_finite()
+                && sample.plane_heading.is_finite()
+                && sample.plane_pitch.is_finite()
+                && sample.plane_bank.is_finite()
+                && sample.camera.translation.is_finite()
+                && sample.camera.rotation.is_finite()
+        });
+    let (camera_pitch_min, camera_pitch_max, camera_bank_min, camera_bank_max) =
+        diagnostic.camera_motion_samples.iter().fold(
+            (
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ),
+            |(pitch_min, pitch_max, bank_min, bank_max), sample| {
+                (
+                    pitch_min.min(sample.plane_pitch),
+                    pitch_max.max(sample.plane_pitch),
+                    bank_min.min(sample.plane_bank),
+                    bank_max.max(sample.plane_bank),
+                )
+            },
+        );
+    let camera_pitch_span = camera_pitch_max - camera_pitch_min;
+    let camera_bank_span = camera_bank_max - camera_bank_min;
+    let camera_motion_modes_seen = diagnostic.camera_motion_modes_seen.iter().all(|seen| *seen);
+    let camera_motion_passed = camera_motion_sample_count >= 100
+        && camera_motion_finite
+        && camera_motion_modes_seen
+        && camera_pitch_span >= 0.05
+        && camera_bank_span >= 0.05
+        && diagnostic
+            .camera_motion_samples
+            .iter()
+            .any(|sample| sample.plane_velocity.length() >= 1.0);
     let rendered_pose_cases_passed = rendered_pose_cases_passed(diagnostic);
     let steady_samples = on_foot_steady_samples
         .iter()
@@ -2363,6 +2709,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
         && movement_passed
         && diagnostic.follow_probe_stage == FollowProbeStage::Complete
         && follow_probes_passed
+        && camera_motion_passed
         && rendered_pose_cases_passed
         && diagnostic.samples.iter().any(|sample| sample.planet_active)
         && diagnostic
@@ -2379,6 +2726,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
         && rendered_pose_cases_passed
         && movement_passed
         && follow_probes_passed
+        && camera_motion_passed
         && weather_hidden
         && weather_restored;
     let status = if passed {
@@ -2457,6 +2805,11 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     let rendered_pose_case_index = diagnostic.rendered_pose_case_index;
     let rendered_pose_failed_cases = diagnostic.rendered_pose_failed_cases;
     let rendered_pose_stage = format!("{:?}", diagnostic.rendered_pose_stage);
+    let camera_motion_modes_seen = diagnostic
+        .camera_motion_modes_seen
+        .iter()
+        .filter(|seen| **seen)
+        .count();
     let weather_kind_at_player = diagnostic
         .samples
         .iter()
@@ -2465,7 +2818,7 @@ fn finish_transition_diagnostic(diagnostic: &mut PlanetTransitionDiagnostic) {
     let missing_captures = missing_captures.join(";");
     let errors = diagnostic.errors.join(";");
     let report = format!(
-        "mode=visual-diagnostic\nacceptance_claim=none\nstatus={status}\nroute_timed_out={route_timed_out}\nm_events_sent={m_events_sent}\nm_event_elapsed_s={m_event_elapsed_s}\nroute_complete={route_complete}\ndrag_started_s={drag_started_s}\ndrag_released_s={drag_released_s}\ndrag_failed_s={drag_failed_s}\nopposite_pose_s={opposite_pose_s}\ndrag_input_frames={drag_input_frames}\ndrag_planned_frames={drag_planned_frames}\ndrag_opposite_dot={drag_opposite_dot:.5}\ndrag_start_camera_position={drag_start_camera_position}\ndrag_failure_camera_position={drag_failure_camera_position}\ndrag_start_cursor={drag_start_cursor}\ndrag_end_cursor={drag_end_cursor}\nrendered_pose_cases_passed={rendered_pose_cases_passed}\nrendered_pose_case_index={rendered_pose_case_index}\nrendered_pose_failed_cases={rendered_pose_failed_cases}\nrendered_pose_stage={rendered_pose_stage}\nbody_path_m={body_path_m:.4}\nmax_body_excursion_m={max_body_excursion_m:.4}\nmovement_started_s={movement_started_s}\nmovement_finished_s={movement_finished_s}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={collision_world_live_during_movement}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nnear_follow_on_foot_passed={on_foot_follow_passed}\nnear_follow_car_passed={car_follow_passed}\nnear_follow_plane_passed={plane_follow_passed}\nnear_follow_sample_count={near_follow_sample_count}\nnear_follow_steady_sample_count={near_follow_steady_sample_count}\nnear_follow_on_foot_steady_sample_count={on_foot_steady_sample_count}\nnear_follow_on_foot_steady_window_s={on_foot_steady_window_s:.3}\nnear_follow_car_steady_sample_count={car_steady_sample_count}\nnear_follow_car_steady_window_s={car_steady_window_s:.3}\nnear_follow_plane_steady_sample_count={plane_steady_sample_count}\nnear_follow_plane_steady_window_s={plane_steady_window_s:.3}\nmax_follow_radial_lag_rad={max_follow_radial_lag_rad:.6}\nmax_marker_registration_error_physical_px={max_registration_error_physical_px:.3}\nmax_marker_anchor_registration_error_physical_px={max_marker_anchor_registration_error_physical_px:.3}\nentry_capture_lateness_s={entry_capture_lateness_s}\nentry_captures_timely={entry_captures_timely}\ncapture_metadata_rows={capture_metadata_rows}\ncapture_metadata_valid={capture_metadata_valid}\nweather_kind_at_player={weather_kind_at_player}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={missing_captures}\nerrors={errors}\n",
+        "mode=visual-diagnostic\nacceptance_claim=none\nstatus={status}\nroute_timed_out={route_timed_out}\nm_events_sent={m_events_sent}\nm_event_elapsed_s={m_event_elapsed_s}\nroute_complete={route_complete}\ndrag_started_s={drag_started_s}\ndrag_released_s={drag_released_s}\ndrag_failed_s={drag_failed_s}\nopposite_pose_s={opposite_pose_s}\ndrag_input_frames={drag_input_frames}\ndrag_planned_frames={drag_planned_frames}\ndrag_opposite_dot={drag_opposite_dot:.5}\ndrag_start_camera_position={drag_start_camera_position}\ndrag_failure_camera_position={drag_failure_camera_position}\ndrag_start_cursor={drag_start_cursor}\ndrag_end_cursor={drag_end_cursor}\nrendered_pose_cases_passed={rendered_pose_cases_passed}\nrendered_pose_case_index={rendered_pose_case_index}\nrendered_pose_failed_cases={rendered_pose_failed_cases}\nrendered_pose_stage={rendered_pose_stage}\nbody_path_m={body_path_m:.4}\nmax_body_excursion_m={max_body_excursion_m:.4}\nmovement_started_s={movement_started_s}\nmovement_finished_s={movement_finished_s}\nfixed_time_advanced_during_movement={fixed_advanced}\nphysics_live_during_movement={physics_live}\ncollision_world_live_during_movement={collision_world_live_during_movement}\nphysics_advanced_while_moving={physics_advanced_while_moving}\nmovement_passed={movement_passed}\nnear_follow_on_foot_passed={on_foot_follow_passed}\nnear_follow_car_passed={car_follow_passed}\nnear_follow_plane_passed={plane_follow_passed}\nnear_follow_sample_count={near_follow_sample_count}\nnear_follow_steady_sample_count={near_follow_steady_sample_count}\nnear_follow_on_foot_steady_sample_count={on_foot_steady_sample_count}\nnear_follow_on_foot_steady_window_s={on_foot_steady_window_s:.3}\nnear_follow_car_steady_sample_count={car_steady_sample_count}\nnear_follow_car_steady_window_s={car_steady_window_s:.3}\nnear_follow_plane_steady_sample_count={plane_steady_sample_count}\nnear_follow_plane_steady_window_s={plane_steady_window_s:.3}\nmax_follow_radial_lag_rad={max_follow_radial_lag_rad:.6}\nmax_marker_registration_error_physical_px={max_registration_error_physical_px:.3}\nmax_marker_anchor_registration_error_physical_px={max_marker_anchor_registration_error_physical_px:.3}\ncamera_follow_motion_sample_count={camera_motion_sample_count}\ncamera_follow_motion_modes_seen={camera_motion_modes_seen}\ncamera_follow_motion_finite={camera_motion_finite}\ncamera_follow_motion_pitch_span={camera_pitch_span:.5}\ncamera_follow_motion_bank_span={camera_bank_span:.5}\ncamera_follow_motion_passed={camera_motion_passed}\nentry_capture_lateness_s={entry_capture_lateness_s}\nentry_captures_timely={entry_captures_timely}\ncapture_metadata_rows={capture_metadata_rows}\ncapture_metadata_valid={capture_metadata_valid}\nweather_kind_at_player={weather_kind_at_player}\nweather_hidden_while_planet_active={weather_hidden}\nweather_restored_after_return={weather_restored}\nmissing_captures={missing_captures}\nerrors={errors}\n",
     );
     if let Err(error) = fs::write(diagnostic.directory.join("diagnostic-status.txt"), report) {
         diagnostic
@@ -2574,9 +2927,10 @@ fn capture_metadata_is_exactly_once(rows: &[String]) -> bool {
 #[cfg(test)]
 mod transition_diagnostic_tests {
     use super::{
-        DIAGNOSTIC_CAPTURE_NAMES, DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES,
-        DiagnosticWorldWarmup, FollowProbeSample, PlanetTransitionDiagnostic,
-        finish_transition_diagnostic, radius_motion_flags, transition_action_due,
+        CameraMotionSample, DIAGNOSTIC_CAPTURE_NAMES, DIAGNOSTIC_MINIMUM_COLLIDERS,
+        DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup, FollowProbeSample,
+        PlanetTransitionDiagnostic, camera_motion_mode_at, finish_transition_diagnostic,
+        radius_motion_flags, transition_action_due,
     };
     use bevy::{
         input::InputSystems,
@@ -3116,6 +3470,40 @@ mod transition_diagnostic_tests {
         ] {
             assert!(super::DIAGNOSTIC_CAPTURE_NAMES.contains(&capture));
         }
+    }
+
+    #[test]
+    fn diagnostic_capture_set_includes_all_camera_follow_modes() {
+        for capture in [
+            "camera-mode-facing.png",
+            "camera-mode-movement.png",
+            "camera-mode-orientation.png",
+        ] {
+            assert!(super::DIAGNOSTIC_CAPTURE_NAMES.contains(&capture));
+        }
+    }
+
+    #[test]
+    fn camera_motion_schedule_samples_all_modes_and_returns_to_movement() {
+        assert_eq!(camera_motion_mode_at(1.0), super::CameraFollowMode::Facing);
+        assert_eq!(
+            camera_motion_mode_at(3.5),
+            super::CameraFollowMode::Movement
+        );
+        assert_eq!(
+            camera_motion_mode_at(6.5),
+            super::CameraFollowMode::Orientation
+        );
+        assert_eq!(
+            camera_motion_mode_at(8.5),
+            super::CameraFollowMode::Movement
+        );
+    }
+
+    #[test]
+    fn camera_motion_trace_rows_match_the_csv_header_width() {
+        let row = CameraMotionSample::default().csv_row();
+        assert_eq!(row.trim_end().split(',').count(), 21);
     }
 
     #[test]
