@@ -21,6 +21,7 @@ mod physics;
 mod planet_markers;
 mod planet_roads;
 mod planet_time;
+mod surface_labels;
 // mod prestige;
 // mod turret;
 mod foliage;
