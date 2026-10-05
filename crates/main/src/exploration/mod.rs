@@ -572,6 +572,21 @@ impl Exploration {
         self.vehicles[kind.index()]
     }
 
+    /// A successful current summon result for this vehicle kind.
+    #[cfg(feature = "asset-review")]
+    pub(crate) fn vehicle_summon_ready(&self, kind: Kind) -> bool {
+        !self
+            .actions
+            .iter()
+            .any(|action| matches!(action, Action::Summon(pending) if *pending == kind))
+            && self.message == format!("{} ready — approach and press E", kind.name())
+    }
+
+    #[cfg(feature = "asset-review")]
+    pub(crate) fn action_pending(&self, action: Action) -> bool {
+        self.actions.contains(&action)
+    }
+
     /// Whether the explorer currently controls a vehicle.
     pub fn is_in_vehicle(&self) -> bool {
         self.occupied.is_some()

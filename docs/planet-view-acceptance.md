@@ -88,6 +88,11 @@ an image taken during a reversal cannot be mistaken for uninterrupted opening.
 - Four live routes: entry/reversal, orbit/zoom, follow/vehicle/recovery, and
   return/reversal. Each has a warmup and three measured 60-second repeats with
   moving bodies, physics, streaming, and world animation active.
+- The vehicle route validates one live grounded player pose at startup. Before
+  its warmup and each measured repeat, it restores that pose through the normal
+  safe Teleport action, waits for grounded settling, and completes a normal V/C
+  summon within the local search radius. This setup is outside the route clocks;
+  each measured 60-second repeat still runs its ordinary timed V/C handoff.
 - Unfiltered real-time frame intervals in a raw CSV per repeat, plus median,
   p95, p99, maximum, and counts over 33.33 ms. Screenshots are outside measured
   windows. Cross-feature events and the final acceptance status remain alongside
