@@ -186,3 +186,25 @@ intervals and native spans for entry, orbit, and vehicle-follow routes; it stopp
 before the return route and is diagnostic evidence only. Entry stalls overlap both
 window-acquire waits and broader render/fixed work, so the remaining cause is not
 settled. These checks complement but do not replace the unmet timing gate.
+
+## Camera follow regression check for #59
+
+The shared camera-policy regression first measured 0.00301 radians of steady
+radial lag while the controlled body followed a constant 0.04 rad/s arc. The
+Bevy exploration fixture reproduced 0.00154 radians at 40 m/s. After the policy
+change, the tests verify same-update radial tracking after recentering, smooth
+reacquisition after a large body relocation, preserved requested zoom, and a
+minimum requested camera radius 400 m above the nominal planet radius. The shared
+camera-policy suite passed 9 tests; the main follow suite passed 8 tests,
+including plane heading, vehicle handoff, and recovery.
+
+The short rendered transition diagnostic is retained at
+`/tmp/terra-spec58/diagnostic-59-fixed`. It completed with a 15.37 m moving-body
+path and a -0.977 drag-direction dot product. The `entry-1400ms.png` still was
+inspected; road and place labels were registered to the rendered scene in that
+frame. The diagnostic's seven-second movement starts after the drag detaches
+follow, so it does not render moving active follow or closest zoom. Its still
+capture cannot establish that the reported dynamic tearing is fixed or exclude a
+marker-registration/rendering defect. Final visual verification at closest zoom
+while following the explorer, car, and plane remains required; the numerical
+regression does establish and remove the steady camera-follow lag.
