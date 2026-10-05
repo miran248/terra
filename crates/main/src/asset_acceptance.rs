@@ -13,7 +13,10 @@ use std::path::PathBuf;
 
 mod diagnostic_drag;
 mod planet_acceptance;
+mod sidebar_diagnostic;
 mod transition_diagnostic;
+
+const SIDEBAR_DIAGNOSTIC_ENV: &str = "TERRA_PLANET_SIDEBAR_DIAGNOSTIC";
 
 #[cfg(feature = "asset-review-schedule-trace")]
 mod phase_trace;
@@ -34,11 +37,28 @@ impl Plugin for AssetAcceptancePlugin {
     fn build(&self, app: &mut App) {
         if background_capture_enabled() {
             assert!(
-                std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC").is_some()
+                (std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC").is_some()
+                    || std::env::var_os(SIDEBAR_DIAGNOSTIC_ENV).is_some())
                     && std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE").is_none(),
-                "background capture is restricted to the transition diagnostic"
+                "background capture is restricted to the transition or sidebar diagnostic"
             );
             app.add_systems(PreUpdate, configure_background_capture_target);
+        }
+        if let Some(directory) = std::env::var_os(SIDEBAR_DIAGNOSTIC_ENV) {
+            assert!(
+                [
+                    "TERRA_PLANET_TRANSITION_DIAGNOSTIC",
+                    "TERRA_PLANET_ACCEPTANCE_CAPTURE",
+                    "TERRA_PRODUCTION_CAPTURE",
+                    "TERRA_LIGHTING_CAPTURE",
+                    "TERRA_FLIGHT_CAPTURE",
+                ]
+                .into_iter()
+                .all(|name| std::env::var_os(name).is_none()),
+                "TERRA_PLANET_SIDEBAR_DIAGNOSTIC cannot run beside another capture mode"
+            );
+            sidebar_diagnostic::register_sidebar_diagnostic(app, PathBuf::from(directory));
+            return;
         }
         if let Some(directory) = std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC") {
             assert!(
