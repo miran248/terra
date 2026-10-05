@@ -3576,20 +3576,20 @@ pub(crate) mod tests {
 
         app.world_mut()
             .entity_mut(explorer)
-            .insert(LinearVelocity(Vec3::X * 4.0));
+            .insert(LinearVelocity(Vec3::X * 40.0));
         for _ in 0..60 {
             app.update();
         }
         let moving_position = app.world().get::<Position>(explorer).unwrap().0;
         assert!(moving_position.distance(starting_position) > 1.0);
         let following_pose = app.world().get::<Transform>(camera).unwrap();
+        let follow_trailing_angle = following_pose
+            .translation
+            .normalize()
+            .angle_between(moving_position.normalize());
         assert!(
-            following_pose
-                .translation
-                .normalize()
-                .dot(moving_position.normalize())
-                > 0.9999,
-            "follow should track the physics-synchronized explorer position"
+            follow_trailing_angle < 0.0001,
+            "follow should track the physics-synchronized explorer position without trailing, got {follow_trailing_angle} radians"
         );
 
         let heading = tangent(Vec3::Z, moving_position.normalize());
