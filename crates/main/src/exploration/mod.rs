@@ -35,6 +35,17 @@ impl Kind {
     fn height(self) -> f32 {
         if self == Self::Car { 0.4 } else { 0.5 }
     }
+    fn summon_radius(self) -> f32 {
+        if self == Self::Car { 30.0 } else { 100.0 }
+    }
+    fn summon_search_radius(self) -> f32 {
+        self.summon_radius() - 8.0
+    }
+    fn summon_search_restart_distance(self) -> f32 {
+        // Keep placements local to the request while allowing several search
+        // slices of ordinary walking before rebuilding candidate order.
+        (self.summon_search_radius() * 0.125).min(3.0)
+    }
     fn name(self) -> &'static str {
         if self == Self::Car { "Car" } else { "Plane" }
     }
@@ -268,6 +279,7 @@ pub struct Exploration {
     pending_planet_teleport: Option<PlanetTeleportRequest>,
     planet_teleport_status: Option<PlanetTeleportStatus>,
     planet_teleport_outcomes: std::collections::VecDeque<PlanetTeleportOutcome>,
+    pending_summon: Option<PendingSummonSearch>,
 }
 #[derive(Clone, Copy, PartialEq)]
 pub enum Action {
@@ -277,9 +289,40 @@ pub enum Action {
     Teleport(Vec3),
     PlanetTeleport(PlanetTeleportRequestId),
 }
+
+struct PendingSummonSearch {
+    kind: Kind,
+    body_origin: Vec3,
+    world_epoch: Option<u64>,
+    existing: Option<Entity>,
+    excluded: Vec<Entity>,
+    shape: Collider,
+    candidates: shared::placement::PlacementCandidateSearch,
+    locate_ms: Option<f64>,
+    dispatch_ms: Option<f64>,
+    old_position: Option<Vec3>,
+    fixed_elapsed_s_before: f64,
+    resident_obstacles_before: usize,
+    world_ready_before: bool,
+    #[cfg(test)]
+    poses_tested_last_update: usize,
+    #[cfg(test)]
+    poses_tested_total: usize,
+}
+
+const SUMMON_POSE_BUDGET_PER_UPDATE: usize = 32;
+
 impl Exploration {
     pub fn request(&mut self, action: Action) {
+        if self.actions.is_empty() {
+            self.pending_summon = None;
+        }
         self.actions.push_back(action);
+    }
+
+    fn clear_actions(&mut self) {
+        self.actions.clear();
+        self.pending_summon = None;
     }
 
     pub fn set_planet_view_open(&mut self, open: bool) {
@@ -949,6 +992,242 @@ fn physics_reset() -> impl Bundle {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn process_summon_action(
+    commands: &mut Commands,
+    state: &mut Exploration,
+    placement: &Placement,
+    origin: Vec3,
+    heading: Vec3,
+    vehicles: &mut Query<(Entity, &Position, &Rotation, &Collider, &mut Vehicle)>,
+    catalog: Option<&crate::asset_catalog::AssetCatalog>,
+    world: Option<&world::CollisionWorld>,
+    world_epoch: Option<crate::map::WorldEpoch>,
+    real_elapsed_s: f64,
+    fixed_elapsed_s: f64,
+    mut work_trace: Option<&mut crate::chunks::PlanetWorkTrace>,
+) {
+    let Some(Action::Summon(kind)) = state.actions.front().copied() else {
+        state.pending_summon = None;
+        return;
+    };
+
+    let tracing = work_trace.as_ref().is_some_and(|trace| trace.active());
+    let dispatch_started = tracing.then(std::time::Instant::now);
+    let current_epoch = world_epoch.map(crate::map::WorldEpoch::value);
+    let existing = state.vehicles[kind.index()];
+    let current_obstacles = world.map_or(0, world::CollisionWorld::resident_obstacle_count);
+    let current_world_ready = world.is_none_or(|collision_world| collision_world.ready);
+
+    if state.occupied.is_some() {
+        state.actions.pop_front();
+        state.pending_summon = None;
+        state.message = "Exit before summoning".into();
+        if tracing && let Some(trace) = work_trace.as_deref_mut() {
+            trace.record_vehicle_summon(
+                real_elapsed_s,
+                real_elapsed_s,
+                crate::chunks::PlanetVehicleActionSample {
+                    kind: match kind {
+                        Kind::Car => "car",
+                        Kind::Plane => "plane",
+                    },
+                    existing_entity: existing.is_some(),
+                    old_position: None,
+                    new_position: None,
+                    locate_ms: None,
+                    dispatch_ms: dispatch_started
+                        .map_or(0.0, |started| started.elapsed().as_secs_f64() * 1000.0),
+                    scene_child_spawned: false,
+                    fixed_elapsed_s_before: fixed_elapsed_s,
+                    fixed_elapsed_s_after: fixed_elapsed_s,
+                    resident_obstacles_before: current_obstacles,
+                    world_ready_before: current_world_ready,
+                },
+            );
+        }
+        return;
+    }
+
+    let restart = state.pending_summon.as_ref().is_none_or(|pending| {
+        pending.kind != kind
+            || pending.existing != existing
+            || pending.world_epoch != current_epoch
+            || origin.distance(pending.body_origin) > kind.summon_search_restart_distance()
+    });
+    if restart {
+        let prior = state.pending_summon.take();
+        let same_request = prior
+            .as_ref()
+            .is_some_and(|pending| pending.kind == kind && pending.existing == existing);
+        let excluded = existing.into_iter().collect::<Vec<_>>();
+        let preferred = origin + tangent(heading, origin.normalize()) * 8.0;
+        let radius = kind.summon_search_radius();
+        let mut locate_ms = prior
+            .as_ref()
+            .filter(|_| same_request)
+            .and_then(|pending| pending.locate_ms);
+        let shape_started = tracing.then(std::time::Instant::now);
+        let shape = kind.collider();
+        if let Some(started) = shape_started {
+            *locate_ms.get_or_insert(0.0) += started.elapsed().as_secs_f64() * 1000.0;
+        }
+        state.pending_summon = Some(PendingSummonSearch {
+            kind,
+            body_origin: origin,
+            world_epoch: current_epoch,
+            existing,
+            excluded,
+            shape,
+            candidates: shared::placement::PlacementCandidateSearch::vehicle(
+                preferred, heading, radius,
+            ),
+            locate_ms,
+            dispatch_ms: prior
+                .as_ref()
+                .filter(|_| same_request)
+                .and_then(|pending| pending.dispatch_ms),
+            old_position: prior
+                .as_ref()
+                .filter(|_| same_request)
+                .and_then(|pending| pending.old_position)
+                .or_else(|| {
+                    tracing
+                        .then(|| {
+                            existing.and_then(|entity| {
+                                vehicles.get(entity).ok().map(|(_, p, _, _, _)| p.0)
+                            })
+                        })
+                        .flatten()
+                }),
+            fixed_elapsed_s_before: prior
+                .as_ref()
+                .filter(|_| same_request)
+                .map_or(fixed_elapsed_s, |pending| pending.fixed_elapsed_s_before),
+            resident_obstacles_before: prior
+                .as_ref()
+                .filter(|_| same_request)
+                .map_or(current_obstacles, |pending| {
+                    pending.resident_obstacles_before
+                }),
+            world_ready_before: prior
+                .as_ref()
+                .filter(|_| same_request)
+                .map_or(current_world_ready, |pending| pending.world_ready_before),
+            #[cfg(test)]
+            poses_tested_last_update: 0,
+            #[cfg(test)]
+            poses_tested_total: prior
+                .filter(|_| same_request)
+                .map_or(0, |pending| pending.poses_tested_total),
+        });
+    }
+
+    let pending = state
+        .pending_summon
+        .as_mut()
+        .expect("summon search initialized");
+    #[cfg(test)]
+    {
+        pending.poses_tested_last_update = 0;
+    }
+    let locate_started = tracing.then(std::time::Instant::now);
+    let mut found = None;
+    for _ in 0..SUMMON_POSE_BUDGET_PER_UPDATE {
+        let Some((candidate, candidate_heading)) = pending.candidates.next() else {
+            break;
+        };
+        #[cfg(test)]
+        {
+            pending.poses_tested_last_update += 1;
+            pending.poses_tested_total += 1;
+        }
+        if let Some(position) = placement.at_with_shape(
+            candidate,
+            candidate_heading,
+            Some(kind),
+            &pending.excluded,
+            &pending.shape,
+        ) {
+            found = Some((position, tangent(candidate_heading, position.normalize())));
+            break;
+        }
+    }
+    if let Some(started) = locate_started {
+        *pending.locate_ms.get_or_insert(0.0) += started.elapsed().as_secs_f64() * 1000.0;
+    }
+    let dispatch_ms = pending.dispatch_ms.get_or_insert(0.0);
+    if let Some(started) = dispatch_started {
+        *dispatch_ms += started.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    let exhausted = found.is_none() && pending.candidates.len() == 0;
+    if found.is_none() && !exhausted {
+        return;
+    }
+
+    let pending = state
+        .pending_summon
+        .take()
+        .expect("completed summon search exists");
+    state.actions.pop_front();
+    let mut new_position = None;
+    let mut scene_child_spawned = false;
+    if let Some((position, found_heading)) = found {
+        let entity = existing.unwrap_or_else(|| commands.spawn_empty().id());
+        let rotation = facing(found_heading, position.normalize());
+        commands.entity(entity).insert((
+            Vehicle::new(kind, found_heading),
+            RigidBody::Static,
+            pending.shape.clone(),
+            Mass(if kind == Kind::Car { 800.0 } else { 900.0 }),
+            Position(position),
+            Rotation(rotation),
+            Transform::from_translation(position).with_rotation(rotation),
+            Visibility::default(),
+            SweptCcd::default(),
+            CollidingEntities::default(),
+            physics_reset(),
+        ));
+        scene_child_spawned = existing.is_none() && catalog.is_some();
+        if scene_child_spawned && let Some(catalog) = catalog {
+            commands.entity(entity).with_child((
+                WorldAssetRoot(catalog.scene(kind.asset())),
+                Transform::from_translation(Vec3::NEG_Y * kind.height()),
+                view::VehicleVisual,
+            ));
+        }
+        state.vehicles[kind.index()] = Some(entity);
+        state.message = format!("{} ready — approach and press E", kind.name());
+        new_position = Some(position);
+    } else {
+        state.message = "No clear dry ground with enough room / takeoff run nearby".into();
+    }
+
+    if tracing && let Some(trace) = work_trace.as_deref_mut() {
+        trace.record_vehicle_summon(
+            real_elapsed_s,
+            real_elapsed_s,
+            crate::chunks::PlanetVehicleActionSample {
+                kind: match kind {
+                    Kind::Car => "car",
+                    Kind::Plane => "plane",
+                },
+                existing_entity: existing.is_some(),
+                old_position: pending.old_position,
+                new_position,
+                locate_ms: pending.locate_ms,
+                dispatch_ms: pending.dispatch_ms.unwrap_or_default(),
+                scene_child_spawned,
+                fixed_elapsed_s_before: pending.fixed_elapsed_s_before,
+                fixed_elapsed_s_after: fixed_elapsed_s,
+                resident_obstacles_before: pending.resident_obstacles_before,
+                world_ready_before: pending.world_ready_before,
+            },
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn actions(
     mut commands: Commands,
     mut state: ResMut<Exploration>,
@@ -1002,107 +1281,31 @@ fn actions(
     {
         return;
     }
+    let heading = state
+        .occupied
+        .and_then(|e| vehicles.get(e).ok().map(|(_, _, _, _, v)| v.flight.heading))
+        .unwrap_or(player.heading);
+    if matches!(state.actions.front(), Some(Action::Summon(_))) {
+        process_summon_action(
+            &mut commands,
+            &mut state,
+            &placement,
+            origin,
+            heading,
+            &mut vehicles,
+            catalog.as_deref(),
+            world.as_deref(),
+            world_epoch.as_deref().copied(),
+            real_time.elapsed_secs_f64(),
+            fixed_time.elapsed_secs_f64(),
+            work_trace.as_deref_mut(),
+        );
+        return;
+    }
     // Process only the destination prepared by this frame's residency pass.
     for action in state.actions.pop_front().into_iter() {
-        let heading = state
-            .occupied
-            .and_then(|e| vehicles.get(e).ok().map(|(_, _, _, _, v)| v.flight.heading))
-            .unwrap_or(player.heading);
         match action {
-            Action::Summon(kind) => {
-                let tracing = work_trace.as_ref().is_some_and(|trace| trace.active());
-                let dispatch_started = tracing.then(std::time::Instant::now);
-                let fixed_elapsed_s_before = tracing
-                    .then(|| fixed_time.elapsed_secs_f64())
-                    .unwrap_or_default();
-                let resident_obstacles_before = if tracing {
-                    world.as_ref().map_or(0, |collision_world| {
-                        collision_world.resident_obstacle_count()
-                    })
-                } else {
-                    0
-                };
-                let world_ready_before = !tracing
-                    || world
-                        .as_ref()
-                        .is_none_or(|collision_world| collision_world.ready);
-                let existing = state.vehicles[kind.index()];
-                let old_position = tracing
-                    .then(|| {
-                        existing.and_then(|entity| {
-                            vehicles.get(entity).ok().map(|(_, old, _, _, _)| old.0)
-                        })
-                    })
-                    .flatten();
-                let mut locate_ms = None;
-                let mut new_position = None;
-                let mut scene_child_spawned = false;
-                if state.occupied.is_some() {
-                    state.message = "Exit before summoning".into();
-                } else {
-                    let excluded = existing.into_iter().collect::<Vec<_>>();
-                    let preferred = origin + tangent(heading, origin.normalize()) * 8.0;
-                    let radius = if kind == Kind::Car { 30.0 } else { 100.0 };
-                    let locate_started = tracing.then(std::time::Instant::now);
-                    let located =
-                        placement.locate(preferred, heading, Some(kind), &excluded, radius - 8.0);
-                    locate_ms =
-                        locate_started.map(|started| started.elapsed().as_secs_f64() * 1000.0);
-                    if let Some((p, h)) = located {
-                        let e = existing.unwrap_or_else(|| commands.spawn_empty().id());
-                        commands.entity(e).insert((
-                            Vehicle::new(kind, h),
-                            RigidBody::Static,
-                            kind.collider(),
-                            Mass(if kind == Kind::Car { 800.0 } else { 900.0 }),
-                            Position(p),
-                            Rotation(facing(h, p.normalize())),
-                            Transform::from_translation(p).with_rotation(facing(h, p.normalize())),
-                            Visibility::default(),
-                            SweptCcd::default(),
-                            CollidingEntities::default(),
-                            physics_reset(),
-                        ));
-                        scene_child_spawned = existing.is_none() && catalog.is_some();
-                        if scene_child_spawned && let Some(catalog) = catalog.as_ref() {
-                            commands.entity(e).with_child((
-                                WorldAssetRoot(catalog.scene(kind.asset())),
-                                Transform::from_translation(Vec3::NEG_Y * kind.height()),
-                                view::VehicleVisual,
-                            ));
-                        }
-                        state.vehicles[kind.index()] = Some(e);
-                        state.message = format!("{} ready — approach and press E", kind.name());
-                        new_position = Some(p);
-                    } else {
-                        state.message =
-                            "No clear dry ground with enough room / takeoff run nearby".into();
-                    }
-                }
-                if tracing && let Some(trace) = work_trace.as_mut() {
-                    trace.record_vehicle_summon(
-                        real_time.elapsed_secs_f64(),
-                        real_time.elapsed_secs_f64(),
-                        crate::chunks::PlanetVehicleActionSample {
-                            kind: match kind {
-                                Kind::Car => "car",
-                                Kind::Plane => "plane",
-                            },
-                            existing_entity: existing.is_some(),
-                            old_position,
-                            new_position,
-                            locate_ms,
-                            dispatch_ms: dispatch_started
-                                .map_or(0.0, |started| started.elapsed().as_secs_f64() * 1000.0),
-                            scene_child_spawned,
-                            fixed_elapsed_s_before,
-                            fixed_elapsed_s_after: fixed_time.elapsed_secs_f64(),
-                            resident_obstacles_before,
-                            world_ready_before,
-                        },
-                    );
-                }
-            }
+            Action::Summon(_) => unreachable!("summons are processed incrementally"),
             Action::Interact => {
                 if let Some(e) = state.occupied {
                     let Ok((_, p, _, _, mut v)) = vehicles.get_mut(e) else {
@@ -2500,6 +2703,47 @@ pub(crate) mod tests {
             .resource_mut::<Exploration>()
             .request(action);
         app.update();
+    }
+    fn block_initial_summon_poses(app: &mut App) {
+        // Blocks the center and first three sectors of the first ring, while
+        // leaving the next ordered anchor available.
+        app.world_mut().spawn((
+            RigidBody::Static,
+            Collider::cuboid(32.0, 3.0, 12.0),
+            Transform::from_xyz(-13.0, 2000.0, -10.0),
+        ));
+        app.update();
+    }
+    fn synchronous_vehicle_placement_oracle(
+        placement: &Placement,
+        origin: Vec3,
+        heading: Vec3,
+        kind: Kind,
+        excluded: &[Entity],
+    ) -> Vec3 {
+        let up = origin.normalize();
+        let forward = tangent(heading, up);
+        let side = forward.cross(up);
+        let radius = kind.summon_search_radius();
+        for ring in 0..=6 {
+            let distance = radius * ring as f32 / 6.0;
+            for sector in 0..if ring == 0 { 1 } else { 16 } {
+                let angle = sector as f32 * std::f32::consts::TAU / 16.0;
+                let candidate = origin + (forward * angle.cos() + side * angle.sin()) * distance;
+                for yaw in 0..8 {
+                    let candidate_heading = Quat::from_axis_angle(
+                        candidate.normalize(),
+                        yaw as f32 * std::f32::consts::TAU / 8.0,
+                    ) * forward;
+                    if let Some(position) =
+                        placement.at(candidate, candidate_heading, Some(kind), excluded)
+                    {
+                        return position;
+                    }
+                }
+            }
+        }
+        panic!("synchronous placement oracle found no safe candidate");
     }
     fn spawn_planet_view_camera(app: &mut App) -> Entity {
         app.world_mut()
@@ -4713,6 +4957,256 @@ pub(crate) mod tests {
             app.update();
         }
         assert!(app.world().get::<Vehicle>(plane).unwrap().crashed);
+    }
+
+    #[test]
+    fn summon_search_pause_and_requeue_do_not_reuse_a_partial_cursor() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        let original_position = app.world().get::<Position>(car).unwrap().0;
+        block_initial_summon_poses(&mut app);
+
+        act(&mut app, Action::Summon(Kind::Car));
+
+        let state = app.world().resource::<Exploration>();
+        assert!(matches!(
+            state.actions.front(),
+            Some(Action::Summon(Kind::Car))
+        ));
+        assert_eq!(
+            app.world().get::<Position>(car).unwrap().0,
+            original_position
+        );
+        assert!(!state.message.contains("No clear dry ground"));
+        assert_eq!(
+            state
+                .pending_summon
+                .as_ref()
+                .map(|pending| pending.poses_tested_last_update),
+            Some(SUMMON_POSE_BUDGET_PER_UPDATE)
+        );
+        assert_eq!(
+            state
+                .pending_summon
+                .as_ref()
+                .map(|pending| pending.poses_tested_total),
+            Some(SUMMON_POSE_BUDGET_PER_UPDATE)
+        );
+        let request_origin = state.pending_summon.as_ref().unwrap().body_origin;
+
+        // While world preparation is paused, movement does not consume or
+        // replace the existing cursor.
+        let player_position = app.world().get::<Position>(explorer).unwrap().0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(player_position + Vec3::X));
+        app.world_mut()
+            .insert_resource(world::CollisionWorld::default());
+        app.update();
+
+        assert!(matches!(
+            app.world().resource::<Exploration>().actions.front(),
+            Some(Action::Summon(Kind::Car))
+        ));
+        assert_eq!(
+            app.world().get::<Position>(car).unwrap().0,
+            original_position
+        );
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_summon
+                .as_ref()
+                .map(|pending| pending.poses_tested_total),
+            Some(SUMMON_POSE_BUDGET_PER_UPDATE),
+            "an unready collision world must pause the search without consuming poses"
+        );
+        assert_eq!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_summon
+                .as_ref()
+                .unwrap()
+                .body_origin,
+            request_origin,
+            "a small walk should retain the request-time candidate basis"
+        );
+
+        // A cancelled request followed by the same action gets a fresh cursor;
+        // it must not resume at the later pose from the old request.
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .clear_actions();
+        assert!(
+            app.world()
+                .resource::<Exploration>()
+                .pending_summon
+                .is_none()
+        );
+        act(&mut app, Action::Summon(Kind::Car));
+        for _ in 0..4 {
+            if app
+                .world()
+                .resource::<Exploration>()
+                .pending_summon
+                .is_some()
+                || app.world().resource::<Exploration>().actions.is_empty()
+            {
+                break;
+            }
+            app.update();
+        }
+        let state = app.world().resource::<Exploration>();
+        assert!(matches!(
+            state.actions.front(),
+            Some(Action::Summon(Kind::Car))
+        ));
+        assert_eq!(
+            state
+                .pending_summon
+                .as_ref()
+                .map(|pending| pending.poses_tested_last_update),
+            Some(SUMMON_POSE_BUDGET_PER_UPDATE),
+            "a same-kind request starts at the origin candidates again"
+        );
+        app.world_mut()
+            .resource_mut::<Exploration>()
+            .request(Action::Interact);
+        app.update();
+        assert!(matches!(
+            app.world().resource::<Exploration>().actions.front(),
+            Some(Action::Interact)
+        ));
+
+        for _ in 0..4 {
+            if app.world().resource::<Exploration>().actions.is_empty() {
+                break;
+            }
+            app.update();
+        }
+
+        assert!(app.world().resource::<Exploration>().actions.is_empty());
+        assert_eq!(app.world().resource::<Exploration>().vehicles[0], Some(car));
+        let repositioned = app.world().get::<Position>(car).unwrap().0;
+        let moved = repositioned.distance(original_position);
+        assert!(
+            (3.0..5.0).contains(&moved),
+            "the search should continue from its next ordered anchor, moved {moved:.2} m"
+        );
+    }
+
+    #[test]
+    fn summon_search_keeps_its_candidate_order_during_ordinary_walking() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        block_initial_summon_poses(&mut app);
+
+        act(&mut app, Action::Summon(Kind::Car));
+        let request_origin = {
+            let state = app.world().resource::<Exploration>();
+            assert_eq!(
+                state
+                    .pending_summon
+                    .as_ref()
+                    .map(|pending| pending.poses_tested_last_update),
+                Some(SUMMON_POSE_BUDGET_PER_UPDATE)
+            );
+            state.pending_summon.as_ref().unwrap().body_origin
+        };
+
+        let player_position = app.world().get::<Position>(explorer).unwrap().0;
+        let walked_position = player_position + Vec3::X;
+        let player_heading = app.world().get::<Player>(explorer).unwrap().heading;
+        let (original_basis_candidate, walked_basis_candidate) = {
+            let mut system = bevy::ecs::system::SystemState::<Placement>::new(app.world_mut());
+            let placement = system.get(app.world()).unwrap();
+            let preferred =
+                request_origin + tangent(player_heading, request_origin.normalize()) * 8.0;
+            let walked_preferred =
+                walked_position + tangent(player_heading, walked_position.normalize()) * 8.0;
+            let original = synchronous_vehicle_placement_oracle(
+                &placement,
+                preferred,
+                player_heading,
+                Kind::Car,
+                &[car],
+            );
+            let walked = synchronous_vehicle_placement_oracle(
+                &placement,
+                walked_preferred,
+                player_heading,
+                Kind::Car,
+                &[car],
+            );
+            (original, walked)
+        };
+        assert!(
+            original_basis_candidate.distance(walked_basis_candidate) > 1.0,
+            "fixture must distinguish retaining the request cursor from restarting"
+        );
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(walked_position));
+        app.update();
+        if let Some(pending) = app
+            .world()
+            .resource::<Exploration>()
+            .pending_summon
+            .as_ref()
+        {
+            assert_eq!(
+                pending.body_origin, request_origin,
+                "a small walk should continue the request-time candidate basis"
+            );
+        }
+        for _ in 0..4 {
+            if app.world().resource::<Exploration>().actions.is_empty() {
+                break;
+            }
+            app.update();
+        }
+
+        assert!(app.world().resource::<Exploration>().actions.is_empty());
+        let actual = app.world().get::<Position>(car).unwrap().0;
+        assert!(
+            actual.distance(original_basis_candidate) < 0.01,
+            "a one-metre walk should continue the exact request-time candidate order; expected {original_basis_candidate:?}, got {actual:?}"
+        );
+    }
+
+    #[test]
+    fn summon_search_restarts_near_the_body_after_a_material_relocation() {
+        let (mut app, explorer) = fixture();
+        act(&mut app, Action::Summon(Kind::Car));
+        let car = app.world().resource::<Exploration>().vehicles[0].unwrap();
+        block_initial_summon_poses(&mut app);
+
+        act(&mut app, Action::Summon(Kind::Car));
+        assert!(matches!(
+            app.world().resource::<Exploration>().actions.front(),
+            Some(Action::Summon(Kind::Car))
+        ));
+
+        let relocated = app.world().get::<Position>(explorer).unwrap().0 + Vec3::X * 50.0;
+        app.world_mut()
+            .entity_mut(explorer)
+            .insert(Position(relocated));
+        for _ in 0..4 {
+            if app.world().resource::<Exploration>().actions.is_empty() {
+                break;
+            }
+            app.update();
+        }
+
+        assert!(app.world().resource::<Exploration>().actions.is_empty());
+        assert_eq!(app.world().resource::<Exploration>().vehicles[0], Some(car));
+        let car_position = app.world().get::<Position>(car).unwrap().0;
+        assert!(
+            car_position.distance(relocated) < Kind::Car.summon_radius(),
+            "material movement should restart locally instead of parking the vehicle at an old candidate"
+        );
     }
 
     #[test]

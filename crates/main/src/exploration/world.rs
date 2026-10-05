@@ -1,6 +1,9 @@
 //! Collision residency follows physics bodies and pending destinations, never render LOD.
 use super::*;
 use shared::art::AssetName;
+
+pub(super) const BODY_RESIDENCY_RADIUS: f32 = 200.0;
+
 #[derive(Clone, Copy)]
 struct Bounds {
     min: Vec3,
@@ -200,7 +203,7 @@ pub(super) fn residency(
     });
     let mut centers: Vec<(Vec3, f32)> = bodies
         .iter()
-        .map(|(p, v)| (p.0, 200.0 + v.length() * 2.0))
+        .map(|(p, v)| (p.0, BODY_RESIDENCY_RADIUS + v.length() * 2.0))
         .collect();
     if let Some(p) = request {
         centers.push((p, 200.0));
