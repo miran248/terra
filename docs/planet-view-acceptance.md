@@ -89,6 +89,21 @@ and camera pose at each post-camera-update sample; the three
 reports sample validity, mode coverage, and observed pitch/bank spans. This trace
 is motion evidence, while the captures still need visual inspection.
 
+To capture a review sequence from the same production camera during that existing
+10-second flight segment, set `TERRA_CAMERA_MOTION_FRAMES=1`:
+
+```sh
+TERRA_CAMERA_MOTION_FRAMES=1 \
+TERRA_PLANET_TRANSITION_DIAGNOSTIC=/tmp/terra-spec-72/camera-motion-frames \
+  cargo run --locked -p main --features asset-review
+```
+
+The route saves up to 100 primary-window stills at 0.1-second intervals as
+`captures/camera-motion-frame-0000.png` through
+`captures/camera-motion-frame-0099.png`; `camera-motion-frame-trace.csv` records
+the requested time and selected mode for each. These optional images are outside
+the fixed still-capture validator and add no performance claim.
+
 For a visual diagnostic that must not show or focus an application window, add
 `--background`:
 
@@ -284,3 +299,35 @@ These background renders establish the recorded camera, overlay, and UI behavior
 they do not establish normal-window performance or absence of display scanout
 tearing. The previously deferred #57 timing gate above remains unchanged. Earlier
 rejected diagnostic attempts are retained separately and are not acceptance evidence.
+
+## Surface-label captures for #70 and #75
+
+The focused label mode reuses the production `PlanetAcceptance` driver and primary
+window renderer. It substitutes a long accented settlement name before production
+marker setup, then saves five stills: near Planet view, oblique orbit, steep
+polar-orbit view, minimap with the starting heading, and minimap with a quarter
+turn and a settlement 380 m from the explorer near the circular rim. It records a
+capture manifest and reports `performance_gate=not-run`.
+
+Reproduce it from a checkout with the generated level artifact present:
+
+```sh
+mkdir -p /tmp/terra-spec-70/label-captures
+TERRA_PLANET_LABEL_ACCEPTANCE_CAPTURE=/tmp/terra-spec-70/label-captures \
+  cargo run --locked -p main --features asset-review
+```
+
+Expected files are `captures/surface-label-near.png`,
+`captures/surface-label-oblique.png`, `captures/surface-label-polar.png`,
+`captures/surface-label-minimap-heading.png`, and
+`captures/surface-label-minimap-rim.png`, plus `capture-manifest.csv`,
+`run-configuration.txt`, and `acceptance-status.txt`. The mode checks that all
+five screenshots were written; it does not make a pixel-based claim about text
+legibility or rendering performance.
+
+Inspect the captures for complete diacritics and geographic wording, correct
+surface alignment in the oblique and polar views, and minimap rim clipping after
+the heading turn. Hover-only eligibility/overlap, labels on rugged terrain, and
+horizon or viewport-edge masking still need direct visual inspection in the
+interactive production build; this compact fixture does not simulate pointer
+hover or inject terrain geometry.

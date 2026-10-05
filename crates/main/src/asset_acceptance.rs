@@ -19,6 +19,7 @@ mod sidebar_diagnostic;
 mod transition_diagnostic;
 
 const SIDEBAR_DIAGNOSTIC_ENV: &str = "TERRA_PLANET_SIDEBAR_DIAGNOSTIC";
+const SURFACE_LABEL_ACCEPTANCE_ENV: &str = "TERRA_PLANET_LABEL_ACCEPTANCE_CAPTURE";
 
 #[cfg(feature = "asset-review-schedule-trace")]
 mod phase_trace;
@@ -51,6 +52,7 @@ impl Plugin for AssetAcceptancePlugin {
                 [
                     "TERRA_PLANET_TRANSITION_DIAGNOSTIC",
                     "TERRA_PLANET_ACCEPTANCE_CAPTURE",
+                    SURFACE_LABEL_ACCEPTANCE_ENV,
                     "TERRA_PRODUCTION_CAPTURE",
                     "TERRA_LIGHTING_CAPTURE",
                     "TERRA_FLIGHT_CAPTURE",
@@ -66,6 +68,7 @@ impl Plugin for AssetAcceptancePlugin {
             assert!(
                 [
                     "TERRA_PLANET_ACCEPTANCE_CAPTURE",
+                    SURFACE_LABEL_ACCEPTANCE_ENV,
                     "TERRA_PRODUCTION_CAPTURE",
                     "TERRA_LIGHTING_CAPTURE",
                     "TERRA_FLIGHT_CAPTURE",
@@ -77,9 +80,25 @@ impl Plugin for AssetAcceptancePlugin {
             transition_diagnostic::register_transition_diagnostic(app, PathBuf::from(directory));
             return;
         }
+        if let Some(directory) = std::env::var_os(SURFACE_LABEL_ACCEPTANCE_ENV) {
+            assert!(
+                [
+                    "TERRA_PLANET_ACCEPTANCE_CAPTURE",
+                    "TERRA_PRODUCTION_CAPTURE",
+                    "TERRA_LIGHTING_CAPTURE",
+                    "TERRA_FLIGHT_CAPTURE",
+                ]
+                .into_iter()
+                .all(|name| std::env::var_os(name).is_none()),
+                "TERRA_PLANET_LABEL_ACCEPTANCE_CAPTURE cannot run beside another capture mode"
+            );
+            planet_acceptance::register_surface_labels(app, PathBuf::from(directory));
+            return;
+        }
         if let Some(directory) = std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE") {
             assert!(
                 [
+                    SURFACE_LABEL_ACCEPTANCE_ENV,
                     "TERRA_PRODUCTION_CAPTURE",
                     "TERRA_LIGHTING_CAPTURE",
                     "TERRA_FLIGHT_CAPTURE",

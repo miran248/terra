@@ -34,6 +34,18 @@ const CAPTURE_VIEWS: [CaptureView; 4] = [
     CaptureView::Opposite,
 ];
 const SOLAR_PHASES: [SolarPhase; 3] = [SolarPhase::Noon, SolarPhase::Sunset, SolarPhase::Night];
+const SURFACE_LABEL_CAPTURE_NAMES: [&str; 5] = [
+    "surface-label-near",
+    "surface-label-oblique",
+    "surface-label-polar",
+    "surface-label-minimap-heading",
+    "surface-label-minimap-rim",
+];
+const SURFACE_LABEL_CAPTURE_START: usize = CAPTURE_VIEWS.len() * SOLAR_PHASES.len();
+const SURFACE_LABEL_NAME: &str = "Étoile des montagnes enneigées — Łódź";
+const SURFACE_LABEL_RIM_NAME: &str = "Rim — Łódź et vallée enneigée";
+const SURFACE_LABEL_RIM_DISTANCE_M: f32 = 380.0;
+const SURFACE_LABEL_CAPTURE_READY_TIMEOUT_SECONDS: f64 = 30.0;
 const ROUTES: [Route; 4] = [
     Route::EntryReversal,
     Route::OrbitZoom,
@@ -69,6 +81,11 @@ enum CaptureView {
     Settlement,
     Globe,
     Opposite,
+    SurfaceLabelNear,
+    SurfaceLabelOblique,
+    SurfaceLabelPolar,
+    SurfaceLabelMinimapHeading,
+    SurfaceLabelMinimapRim,
 }
 
 impl CaptureView {
@@ -78,14 +95,23 @@ impl CaptureView {
             Self::Settlement => "settlement",
             Self::Globe => "globe",
             Self::Opposite => "opposite",
+            Self::SurfaceLabelNear => SURFACE_LABEL_CAPTURE_NAMES[0],
+            Self::SurfaceLabelOblique => SURFACE_LABEL_CAPTURE_NAMES[1],
+            Self::SurfaceLabelPolar => SURFACE_LABEL_CAPTURE_NAMES[2],
+            Self::SurfaceLabelMinimapHeading => SURFACE_LABEL_CAPTURE_NAMES[3],
+            Self::SurfaceLabelMinimapRim => SURFACE_LABEL_CAPTURE_NAMES[4],
         }
     }
 
     fn radius(self) -> f32 {
         match self {
             Self::Ground => 0.0,
-            Self::Settlement => 2_250.0,
+            Self::Settlement
+            | Self::SurfaceLabelNear
+            | Self::SurfaceLabelOblique
+            | Self::SurfaceLabelPolar => 2_250.0,
             Self::Globe | Self::Opposite => PLANET_VIEW_FAR_RADIUS,
+            Self::SurfaceLabelMinimapHeading | Self::SurfaceLabelMinimapRim => 0.0,
         }
     }
 }
@@ -137,6 +163,7 @@ impl Route {
 #[derive(Resource)]
 struct PlanetAcceptance {
     directory: PathBuf,
+    surface_labels: bool,
     phase: Phase,
     vehicle_anchor: Option<PlayerAnchor>,
     errors: Vec<String>,
@@ -393,6 +420,14 @@ fn physics_advanced_while_moving(samples: &[FrameSample], only_while_view_active
 }
 
 pub(super) fn register(app: &mut App, directory: PathBuf) {
+    register_mode(app, directory, false);
+}
+
+pub(super) fn register_surface_labels(app: &mut App, directory: PathBuf) {
+    register_mode(app, directory, true);
+}
+
+fn register_mode(app: &mut App, directory: PathBuf, surface_labels: bool) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .nth(2)
@@ -423,6 +458,7 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
     }
     app.insert_resource(PlanetAcceptance {
         directory,
+        surface_labels,
         phase: Phase::WaitingForWorld,
         vehicle_anchor: None,
         errors: Vec::new(),
@@ -447,6 +483,61 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
             .after(CameraUpdateSystems)
             .run_if(in_state(AppState::Playing)),
     );
+    if surface_labels {
+        app.add_systems(
+            OnEnter(AppState::Playing),
+            setup_surface_label_capture_fixture
+                .after(crate::map::setup_map)
+                .before(crate::planet_markers::setup_planet_markers),
+        );
+    }
+}
+
+fn setup_surface_label_capture_fixture(world: &mut World) {
+    let (player_position, heading) = {
+        let mut player_query = world.query::<(&Position, &Player)>();
+        let Some((position, player)) = player_query.iter(world).next() else {
+            return;
+        };
+        (position.0, player.heading)
+    };
+    let first_anchor = world
+        .get_resource::<crate::planet_markers::PlanetMarkerAnchors>()
+        .and_then(|anchors| anchors.settlements.first().copied());
+    let Some(mut regions) = world.get_resource_mut::<crate::map::LevelRegions>() else {
+        return;
+    };
+    let Some((first_name, _)) = regions.settlements.first_mut() else {
+        return;
+    };
+    let original_name = std::mem::replace(first_name, SURFACE_LABEL_NAME.to_owned());
+    let mut center_region_updated = false;
+    for region in &mut regions.regions {
+        if region.kind == terra_world::level::RegionKind::Settlement && region.name == original_name
+        {
+            region.name = SURFACE_LABEL_NAME.to_owned();
+            center_region_updated = true;
+        }
+    }
+    if !center_region_updated {
+        let position = first_anchor.unwrap_or(player_position).normalize_or_zero();
+        regions.regions.push(terra_world::level::RegionData {
+            name: SURFACE_LABEL_NAME.to_owned(),
+            pos: position.to_array(),
+            kind: terra_world::level::RegionKind::Settlement,
+        });
+    }
+
+    let up = player_position.normalize_or(Vec3::Y);
+    let north = (heading - up * heading.dot(up)).normalize_or(Vec3::Z);
+    let rim_direction = (up * (SURFACE_LABEL_RIM_DISTANCE_M / PLANET_RADIUS).cos()
+        + north * (SURFACE_LABEL_RIM_DISTANCE_M / PLANET_RADIUS).sin())
+    .normalize_or(up);
+    regions.regions.push(terra_world::level::RegionData {
+        name: SURFACE_LABEL_RIM_NAME.to_owned(),
+        pos: rim_direction.to_array(),
+        kind: terra_world::level::RegionKind::Settlement,
+    });
 }
 
 fn work_trace_enabled() -> bool {
@@ -505,9 +596,20 @@ fn drive_planet_acceptance(world: &mut World) {
             if let Some(anchor) = validated_player_anchor(world) {
                 run.vehicle_anchor = Some(anchor);
                 initialize_output(world, &mut run);
-                info!("Planet acceptance primary-window run started");
+                info!(
+                    mode = if run.surface_labels {
+                        "surface-label-captures"
+                    } else {
+                        "full-acceptance"
+                    },
+                    "Planet acceptance primary-window run started"
+                );
                 Phase::Capturing {
-                    index: 0,
+                    index: if run.surface_labels {
+                        SURFACE_LABEL_CAPTURE_START
+                    } else {
+                        0
+                    },
                     prepared: false,
                     prepared_at: now,
                     screenshot_at: None,
@@ -522,7 +624,7 @@ fn drive_planet_acceptance(world: &mut World) {
             mut prepared_at,
             screenshot_at,
         } => {
-            if index < CAPTURE_VIEWS.len() * SOLAR_PHASES.len() {
+            if index < capture_limit(&run) {
                 if !prepared {
                     prepare_capture(world, index);
                     prepared = true;
@@ -540,17 +642,21 @@ fn drive_planet_acceptance(world: &mut World) {
                     screenshot_at,
                 }
             } else {
-                info!(
-                    route = ROUTES[0].name(),
-                    "Planet acceptance warm-up started"
-                );
-                if ROUTES[0] == Route::FollowVehicleRecovery {
-                    begin_vehicle_preparation(VehiclePreparationNext::Warmup, now)
+                if run.surface_labels {
+                    Phase::Finishing { started_at: now }
                 } else {
-                    Phase::Warmup {
-                        route: ROUTES[0],
-                        started_at: now,
-                        actions: RouteActions::default(),
+                    info!(
+                        route = ROUTES[0].name(),
+                        "Planet acceptance warm-up started"
+                    );
+                    if ROUTES[0] == Route::FollowVehicleRecovery {
+                        begin_vehicle_preparation(VehiclePreparationNext::Warmup, now)
+                    } else {
+                        Phase::Warmup {
+                            route: ROUTES[0],
+                            started_at: now,
+                            actions: RouteActions::default(),
+                        }
                     }
                 }
             }
@@ -870,7 +976,7 @@ fn capture_and_measure_planet_acceptance(world: &mut World) {
             prepared,
             prepared_at,
             mut screenshot_at,
-        } if index < CAPTURE_VIEWS.len() * SOLAR_PHASES.len() => {
+        } if index < capture_limit(&run) => {
             let spec = capture_spec(index);
             if !prepared {
                 Phase::Capturing {
@@ -925,6 +1031,22 @@ fn capture_and_measure_planet_acceptance(world: &mut World) {
                     prepared_at,
                     screenshot_at,
                 }
+            } else if run.surface_labels
+                && now - prepared_at > SURFACE_LABEL_CAPTURE_READY_TIMEOUT_SECONDS
+            {
+                record_error(
+                    &mut run,
+                    format!(
+                        "surface-label capture never became visible: {}",
+                        capture_name(index)
+                    ),
+                );
+                Phase::Capturing {
+                    index: index + 1,
+                    prepared: false,
+                    prepared_at: now,
+                    screenshot_at: None,
+                }
             } else {
                 Phase::Capturing {
                     index,
@@ -935,14 +1057,18 @@ fn capture_and_measure_planet_acceptance(world: &mut World) {
             }
         }
         Phase::Capturing { .. } => {
-            info!(
-                route = ROUTES[0].name(),
-                "Planet acceptance warm-up started"
-            );
-            Phase::Warmup {
-                route: ROUTES[0],
-                started_at: now,
-                actions: RouteActions::default(),
+            if run.surface_labels {
+                Phase::Finishing { started_at: now }
+            } else {
+                info!(
+                    route = ROUTES[0].name(),
+                    "Planet acceptance warm-up started"
+                );
+                Phase::Warmup {
+                    route: ROUTES[0],
+                    started_at: now,
+                    actions: RouteActions::default(),
+                }
             }
         }
         Phase::Measuring {
@@ -1006,6 +1132,25 @@ pub(super) fn count_collision_colliders(world: &mut World) -> usize {
 }
 
 fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
+    if run.surface_labels {
+        if let Err(error) = fs::create_dir_all(run.directory.join("captures")) {
+            record_error(run, format!("create captures directory: {error}"));
+        }
+        if let Err(error) = fs::write(
+            run.directory.join("capture-manifest.csv"),
+            "file,view,solar_phase,anchor,seed,physical_width,physical_height,logical_width,logical_height,scale_factor,present_mode,camera_x,camera_y,camera_z,camera_qx,camera_qy,camera_qz,camera_qw,camera_radius_m,requested_radius_m,attained_radius_m,body_x,body_y,body_z,sun_x,sun_y,sun_z,local_sun_elevation_deg,ambient_brightness,visible_meshes,resident_meshes,resident_colliders,light_illuminance,shadows_enabled,fog\n",
+        ) {
+            record_error(run, format!("initialize capture-manifest.csv: {error}"));
+        }
+        let configuration = format!(
+            "mode=surface-label-captures\ncaptures={}\nplanet_views=near,oblique,polar-orbit\nminimap_views=default-heading,rim-mask-at-{SURFACE_LABEL_RIM_DISTANCE_M:.0}m-with-quarter-turn\nfixture_planet_label={SURFACE_LABEL_NAME}\nfixture_minimap_rim_label={SURFACE_LABEL_RIM_NAME}\nperformance_gate=not-run\nanchor=first-settlement-player-spawn\n",
+            SURFACE_LABEL_CAPTURE_NAMES.join(",")
+        );
+        if let Err(error) = fs::write(run.directory.join("run-configuration.txt"), configuration) {
+            record_error(run, format!("write run configuration: {error}"));
+        }
+        return;
+    }
     for directory in ["captures", "performance"] {
         if let Err(error) = fs::create_dir_all(run.directory.join(directory)) {
             record_error(run, format!("create {directory} directory: {error}"));
@@ -1078,6 +1223,18 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
 
 fn prepare_capture(world: &mut World, index: usize) {
     let spec = capture_spec(index);
+    if matches!(
+        spec.view,
+        CaptureView::SurfaceLabelMinimapHeading | CaptureView::SurfaceLabelMinimapRim
+    ) {
+        world
+            .resource_mut::<Exploration>()
+            .set_planet_view_open(false);
+        if spec.view == CaptureView::SurfaceLabelMinimapRim {
+            set_surface_label_minimap_heading(world, std::f32::consts::FRAC_PI_2);
+        }
+        return;
+    }
     let Some((body_position, _)) = player_pose(world) else {
         return;
     };
@@ -1100,6 +1257,14 @@ fn prepare_capture(world: &mut World, index: usize) {
     if (requested_radius - target_radius).abs() > 2.0 {
         let _ = state.request_planet_view_zoom((requested_radius / target_radius).ln());
     }
+    let orbit = match spec.view {
+        CaptureView::SurfaceLabelOblique => Some(Vec2::new(110.0, 0.0)),
+        CaptureView::SurfaceLabelPolar => Some(Vec2::new(0.0, 350.0)),
+        _ => None,
+    };
+    if let Some(orbit) = orbit {
+        let _ = state.request_planet_view_orbit(orbit);
+    }
     if spec.view == CaptureView::Opposite && index == 9 {
         let _ = state.request_planet_view_orbit(Vec2::new(
             std::f32::consts::PI / ORBIT_RADIANS_PER_LOGICAL_PIXEL,
@@ -1107,6 +1272,16 @@ fn prepare_capture(world: &mut World, index: usize) {
         ));
     }
     let _ = body_position;
+}
+
+fn set_surface_label_minimap_heading(world: &mut World, angle: f32) {
+    let mut players = world.query::<(&Position, &mut Player)>();
+    let Some((position, mut player)) = players.iter_mut(world).next() else {
+        return;
+    };
+    let up = position.0.normalize_or(Vec3::Y);
+    let heading = (player.heading - up * player.heading.dot(up)).normalize_or(Vec3::Z);
+    player.heading = Quat::from_axis_angle(up, angle) * heading;
 }
 
 fn hold_capture_sun(world: &mut World, index: usize) {
@@ -1127,6 +1302,14 @@ fn capture_ready(world: &mut World, spec: CaptureSpec) -> bool {
     if spec.view == CaptureView::Ground {
         return !state.is_planet_view_active();
     }
+    if matches!(
+        spec.view,
+        CaptureView::SurfaceLabelMinimapHeading | CaptureView::SurfaceLabelMinimapRim
+    ) {
+        return !state.is_planet_view_active()
+            && required_surface_label(spec)
+                .is_none_or(|(view, label)| surface_label_is_visible(world, view, label));
+    }
     if !state.planet_view_ready() {
         return false;
     }
@@ -1144,7 +1327,39 @@ fn capture_ready(world: &mut World, spec: CaptureSpec) -> bool {
         };
         return camera.translation.normalize().dot(body.normalize()) < -0.65;
     }
-    true
+    required_surface_label(spec)
+        .is_none_or(|(view, label)| surface_label_is_visible(world, view, label))
+}
+
+fn required_surface_label(
+    spec: CaptureSpec,
+) -> Option<(crate::surface_labels::SurfaceLabelView, &'static str)> {
+    use crate::surface_labels::SurfaceLabelView;
+    match spec.view {
+        CaptureView::SurfaceLabelNear
+        | CaptureView::SurfaceLabelOblique
+        | CaptureView::SurfaceLabelPolar => Some((SurfaceLabelView::Planet, SURFACE_LABEL_NAME)),
+        CaptureView::SurfaceLabelMinimapHeading => {
+            Some((SurfaceLabelView::Minimap, SURFACE_LABEL_NAME))
+        }
+        CaptureView::SurfaceLabelMinimapRim => {
+            Some((SurfaceLabelView::Minimap, SURFACE_LABEL_RIM_NAME))
+        }
+        _ => None,
+    }
+}
+
+fn surface_label_is_visible(
+    world: &mut World,
+    view: crate::surface_labels::SurfaceLabelView,
+    expected_text: &str,
+) -> bool {
+    let mut ribbons = world.query::<(&crate::surface_labels::SurfaceLabelRibbon, &Visibility)>();
+    ribbons.iter(world).any(|(ribbon, visibility)| {
+        ribbon.view == view
+            && ribbon.label.contains(expected_text)
+            && *visibility == Visibility::Visible
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1154,14 +1369,38 @@ struct CaptureSpec {
 }
 
 fn capture_spec(index: usize) -> CaptureSpec {
+    if index >= SURFACE_LABEL_CAPTURE_START {
+        let view = [
+            CaptureView::SurfaceLabelNear,
+            CaptureView::SurfaceLabelOblique,
+            CaptureView::SurfaceLabelPolar,
+            CaptureView::SurfaceLabelMinimapHeading,
+            CaptureView::SurfaceLabelMinimapRim,
+        ][index - SURFACE_LABEL_CAPTURE_START];
+        return CaptureSpec {
+            view,
+            phase: SolarPhase::Noon,
+        };
+    }
     CaptureSpec {
         view: CAPTURE_VIEWS[index / SOLAR_PHASES.len()],
         phase: SOLAR_PHASES[index % SOLAR_PHASES.len()],
     }
 }
 
+fn capture_limit(run: &PlanetAcceptance) -> usize {
+    if run.surface_labels {
+        SURFACE_LABEL_CAPTURE_START + SURFACE_LABEL_CAPTURE_NAMES.len()
+    } else {
+        SURFACE_LABEL_CAPTURE_START
+    }
+}
+
 fn capture_name(index: usize) -> String {
     let spec = capture_spec(index);
+    if index >= SURFACE_LABEL_CAPTURE_START {
+        return spec.view.name().to_owned();
+    }
     format!("{}-{}", spec.view.name(), spec.phase.name())
 }
 
@@ -2400,6 +2639,10 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
     {
         record_error(run, format!("write planet work trace: {error}"));
     }
+    if run.surface_labels {
+        finish_surface_label_run(world, run);
+        return;
+    }
     let mut missing = Vec::new();
     for index in 0..CAPTURE_VIEWS.len() * SOLAR_PHASES.len() {
         let path = run.directory.join("captures").join(capture_file(index));
@@ -2538,20 +2781,69 @@ fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
     }
 }
 
+fn finish_surface_label_run(world: &mut World, run: &mut PlanetAcceptance) {
+    let mut missing = Vec::new();
+    for index in SURFACE_LABEL_CAPTURE_START..capture_limit(run) {
+        let path = run.directory.join("captures").join(capture_file(index));
+        if !file_is_nonempty(&path) {
+            missing.push(path.display().to_string());
+        }
+    }
+    for path in missing {
+        record_error(
+            run,
+            format!("required surface-label capture is absent or empty: {path}"),
+        );
+    }
+    let status = if run.errors.is_empty() {
+        "complete"
+    } else {
+        "incomplete"
+    };
+    let report = format!(
+        "status={status}\nmode=surface-label-captures\nrequested_captures={}\nperformance_gate=not-run\nerrors={}\n{}",
+        SURFACE_LABEL_CAPTURE_NAMES.len(),
+        run.errors.len(),
+        run.errors.join("\n")
+    );
+    if let Err(error) = fs::write(run.directory.join("acceptance-status.txt"), &report) {
+        error!("Surface-label capture report write failed: {error}");
+        run.errors.push(format!("write final status: {error}"));
+    }
+    if run.errors.is_empty() {
+        info!(
+            captures = SURFACE_LABEL_CAPTURE_NAMES.len(),
+            "Surface-label captures completed"
+        );
+        world.write_message(AppExit::Success);
+    } else {
+        error!(
+            errors = run.errors.len(),
+            "Surface-label captures incomplete"
+        );
+        world.write_message(AppExit::Error(NonZeroU8::new(1).unwrap()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         CaptureView, CrossFeatureCoverage, FrameSample, Motion, Phase, PlanetAcceptance,
-        ResidentCounts, Route, RouteActions, SUN_TILT, SolarPhase, VehiclePreparationNext,
-        begin_vehicle_preparation, continuous_body_path, drive_planet_acceptance,
-        drive_vehicle_route, due_orbit_inputs, maximum_sun_elevation_degrees,
-        physics_advanced_while_moving, sun_angle_for_elevation, validated_player_anchor,
+        ResidentCounts, Route, RouteActions, SUN_TILT, SURFACE_LABEL_CAPTURE_START,
+        SURFACE_LABEL_NAME, SURFACE_LABEL_RIM_DISTANCE_M, SURFACE_LABEL_RIM_NAME, SolarPhase,
+        VehiclePreparationNext, begin_vehicle_preparation, capture_name, capture_spec,
+        continuous_body_path, drive_planet_acceptance, drive_vehicle_route, due_orbit_inputs,
+        maximum_sun_elevation_degrees, physics_advanced_while_moving,
+        setup_surface_label_capture_fixture, sun_angle_for_elevation, surface_label_is_visible,
+        validated_player_anchor,
     };
     use crate::exploration::{Action, Exploration, Kind};
     use avian3d::prelude::Position;
     use bevy::{
         ecs::schedule::IntoScheduleConfigs,
-        prelude::{App, PreUpdate, Time, Transform, Vec3, With},
+        prelude::{
+            App, PreUpdate, Time, Timer, TimerMode, Transform, Vec3, Visibility, With, World,
+        },
         time::Real,
         window::PrimaryWindow,
     };
@@ -2575,6 +2867,7 @@ mod tests {
     fn test_acceptance(directory: PathBuf) -> PlanetAcceptance {
         PlanetAcceptance {
             directory,
+            surface_labels: false,
             phase: super::Phase::Done,
             vehicle_anchor: None,
             errors: Vec::new(),
@@ -2586,6 +2879,117 @@ mod tests {
             trace_flush_route: None,
             coverage: CrossFeatureCoverage::default(),
         }
+    }
+
+    #[test]
+    fn surface_label_capture_set_covers_planet_and_minimap_views() {
+        let names = (SURFACE_LABEL_CAPTURE_START..SURFACE_LABEL_CAPTURE_START + 5)
+            .map(capture_name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            [
+                "surface-label-near",
+                "surface-label-oblique",
+                "surface-label-polar",
+                "surface-label-minimap-heading",
+                "surface-label-minimap-rim",
+            ]
+        );
+        assert_eq!(
+            capture_spec(SURFACE_LABEL_CAPTURE_START).view,
+            CaptureView::SurfaceLabelNear
+        );
+        assert_eq!(
+            capture_spec(SURFACE_LABEL_CAPTURE_START + 3).view,
+            CaptureView::SurfaceLabelMinimapHeading
+        );
+        assert_eq!(
+            capture_spec(SURFACE_LABEL_CAPTURE_START + 4).view,
+            CaptureView::SurfaceLabelMinimapRim
+        );
+    }
+
+    #[test]
+    fn surface_label_fixture_uses_full_unicode_name_and_places_a_rim_case_near_the_edge() {
+        let mut world = World::new();
+        world.insert_resource(crate::map::LevelRegions {
+            regions: vec![terra_world::level::RegionData {
+                name: "Old settlement".into(),
+                pos: Vec3::X.to_array(),
+                kind: terra_world::level::RegionKind::Settlement,
+            }],
+            face_regions: terra_world::level::RegionMemberships::default(),
+            settlements: vec![(
+                "Old settlement".into(),
+                terra_world::level::SettlementKind::Town,
+            )],
+            bridge_top_surfaces_by_name: std::collections::BTreeMap::new(),
+        });
+        world.insert_resource(crate::planet_markers::PlanetMarkerAnchors {
+            settlements: vec![Vec3::X],
+            bridges: Vec::new(),
+        });
+        world.spawn((
+            Position(Vec3::X * terra_geometry::sphere::PLANET_RADIUS),
+            crate::map::Player {
+                fire_timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+                damage: 0.0,
+                range: 0.0,
+                heading: Vec3::Y,
+            },
+        ));
+
+        setup_surface_label_capture_fixture(&mut world);
+
+        let regions = world.resource::<crate::map::LevelRegions>();
+        assert_eq!(regions.settlements[0].0, SURFACE_LABEL_NAME);
+        assert!(
+            regions
+                .regions
+                .iter()
+                .any(|region| region.name == SURFACE_LABEL_NAME)
+        );
+        let rim = regions
+            .regions
+            .iter()
+            .find(|region| region.name == SURFACE_LABEL_RIM_NAME)
+            .expect("rim fixture region");
+        let theta = SURFACE_LABEL_RIM_DISTANCE_M / terra_geometry::sphere::PLANET_RADIUS;
+        let expected = Vec3::X * theta.cos() + Vec3::Y * theta.sin();
+        assert!(Vec3::from_array(rim.pos).distance(expected) < 1e-4);
+    }
+
+    #[test]
+    fn surface_label_capture_readiness_matches_view_text_and_visibility() {
+        let mut world = World::new();
+        world.spawn((
+            crate::surface_labels::SurfaceLabelRibbon {
+                marker_index: 0,
+                view: crate::surface_labels::SurfaceLabelView::Planet,
+                label: format!("Town · {SURFACE_LABEL_NAME}"),
+            },
+            Visibility::Visible,
+        ));
+        world.spawn((
+            crate::surface_labels::SurfaceLabelRibbon {
+                marker_index: 1,
+                view: crate::surface_labels::SurfaceLabelView::Minimap,
+                label: SURFACE_LABEL_RIM_NAME.to_owned(),
+            },
+            Visibility::Hidden,
+        ));
+
+        assert!(surface_label_is_visible(
+            &mut world,
+            crate::surface_labels::SurfaceLabelView::Planet,
+            SURFACE_LABEL_NAME,
+        ));
+        assert!(!surface_label_is_visible(
+            &mut world,
+            crate::surface_labels::SurfaceLabelView::Minimap,
+            SURFACE_LABEL_RIM_NAME,
+        ));
     }
 
     fn summon_car(app: &mut App) -> bevy::prelude::Entity {
