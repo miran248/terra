@@ -48,12 +48,13 @@ pub const CHUNK_COUNT: usize = 320;
 /// green = 3) so LOD rings are visually inspectable. Flip off to ship.
 const DEBUG_CHUNK_BORDERS: bool = false;
 
-/// LOD transitions applied per frame (water rebuilds + structure batches).
+/// LOD transitions applied per frame (static/water geometry work).
 const TRANSITIONS_PER_FRAME: usize = 8;
-/// Scenery entities spawned per frame across all chunks. A dense forest chunk
-/// (~6.7k props) fills in a few frames — imperceptible next to the distance
-/// fog — instead of one hitchy burst.
-const SCENERY_PER_FRAME: usize = 1500;
+/// Total structure and scenery roots spawned or despawned per update.
+const SCENE_ROOT_WORK_PER_UPDATE: usize = 512;
+/// Reserve half the shared budget for removals so a continuing stream of
+/// nearby promotions cannot keep distant detail resident indefinitely.
+const SCENE_ROOT_REMOVALS_PER_UPDATE: usize = SCENE_ROOT_WORK_PER_UPDATE / 2;
 
 /// Water mesh subdivision per LOD (see `water::build_water_surface`).
 /// Render faces are ~19 m; LOD 3 subdivides once (~9 m spacing) so the 40 m
@@ -218,7 +219,6 @@ impl ChunkManager {
 pub fn update_chunk_lods(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    catalog: Res<AssetCatalog>,
     camera: Query<&Transform, With<MainCamera>>,
     terrain: Option<Res<TerrainGen>>,
     mut mgr: ResMut<ChunkManager>,
@@ -234,7 +234,7 @@ pub fn update_chunk_lods(
     let initializing = mgr.chunks.iter().any(|state| state.lod == 0);
     for chunk in 0..CHUNK_COUNT {
         if mgr.chunks[chunk].lod == 0 {
-            set_chunk_lod(&mut commands, &mut meshes, &catalog, &mut mgr, chunk, 1);
+            set_chunk_lod(&mut commands, &mut meshes, &mut mgr, chunk, 1);
         }
     }
     if initializing {
@@ -257,7 +257,7 @@ pub fn update_chunk_lods(
         let cur = mgr.chunks[chunk].lod;
         let want = planet_detail::desired_chunk_lod(dist, camera_altitude, cur);
         if want != cur {
-            set_chunk_lod(&mut commands, &mut meshes, &catalog, &mut mgr, chunk, want);
+            set_chunk_lod(&mut commands, &mut meshes, &mut mgr, chunk, want);
             budget -= 1;
         }
     }
@@ -268,7 +268,6 @@ pub fn update_chunk_lods(
 fn set_chunk_lod(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,
-    catalog: &AssetCatalog,
     mgr: &mut ChunkManager,
     chunk: usize,
     lod: u8,
@@ -371,52 +370,15 @@ fn set_chunk_lod(
         }
     }
 
-    // Structures: join at LOD 2, leave below it.
-    if lod >= 2 && cur < 2 {
-        let ents: Vec<Entity> = mgr.data.structures[chunk]
-            .iter()
-            .map(|s| spawn_structure(commands, catalog, s))
-            .collect();
-        mgr.chunks[chunk].structures = ents;
-    } else if lod < 2 && cur >= 2 {
-        for e in mgr.chunks[chunk].structures.drain(..) {
-            commands.entity(e).try_despawn();
-        }
-    }
-
-    // Scenery: only despawn here; spawning streams via `stream_scenery`.
-    if lod < 2 && cur >= 2 {
-        let mut removed = Vec::new();
-        for e in mgr.chunks[chunk].scenery_large.drain(..) {
-            commands.entity(e).try_despawn();
-            removed.push(e);
-        }
-        mgr.chunks[chunk].large_cursor = 0;
-        if lod < 3 && cur >= 3 {
-            for e in mgr.chunks[chunk].scenery_small.drain(..) {
-                commands.entity(e).try_despawn();
-                removed.push(e);
-            }
-            mgr.chunks[chunk].small_cursor = 0;
-        }
-        let removed: std::collections::HashSet<_> = removed.into_iter().collect();
-        mgr.cull_order.retain(|entity| !removed.contains(entity));
-    } else if lod < 3 && cur >= 3 {
-        let removed: std::collections::HashSet<_> =
-            mgr.chunks[chunk].scenery_small.drain(..).collect();
-        for &entity in &removed {
-            commands.entity(entity).try_despawn();
-        }
-        mgr.cull_order.retain(|entity| !removed.contains(entity));
-        mgr.chunks[chunk].small_cursor = 0;
-    }
-
+    // Structures and scenery reconcile to this target in the bounded
+    // stream_scenery system. Keeping only the newest target here means a
+    // reversed camera request cancels any removals not already processed.
     mgr.chunks[chunk].lod = lod;
 }
 
-/// Spawn pending scenery for loaded chunks, a bounded number per frame. Nearest
-/// chunks first so the ground cover around the player fills before tree lines
-/// on the horizon.
+/// Reconcile structure and scenery roots to each chunk's current LOD target.
+/// One shared root budget bounds both scene construction and recursive despawn;
+/// additions prioritize nearest chunks, while removals start at the farthest.
 pub fn stream_scenery(
     mut commands: Commands,
     catalog: Res<AssetCatalog>,
@@ -428,12 +390,20 @@ pub fn stream_scenery(
         return;
     };
     let eye_dir = cam.translation.normalize_or(Vec3::Y);
-    let pending = |mgr: &ChunkManager, c: usize| {
-        let st = &mgr.chunks[c];
-        (st.lod >= 2 && st.large_cursor < mgr.data.scenery_large[c].len())
-            || (st.lod >= 3 && st.small_cursor < mgr.data.scenery_small[c].len())
+    let pending = |mgr: &ChunkManager, chunk: usize| {
+        let state = &mgr.chunks[chunk];
+        let structure_count = mgr.data.structures[chunk].len();
+        let large_count = mgr.data.scenery_large[chunk].len();
+        let small_count = mgr.data.scenery_small[chunk].len();
+        (state.lod < 2 && (!state.structures.is_empty() || state.large_cursor > 0))
+            || (state.lod >= 2
+                && (state.structures.len() < structure_count || state.large_cursor < large_count))
+            || (state.lod < 3 && state.small_cursor > 0)
+            || (state.lod >= 3 && state.small_cursor < small_count)
     };
-    let mut order: Vec<usize> = (0..CHUNK_COUNT).filter(|&c| pending(&mgr, c)).collect();
+    let mut order: Vec<usize> = (0..CHUNK_COUNT)
+        .filter(|&chunk| pending(&mgr, chunk))
+        .collect();
     if order.is_empty() {
         return;
     }
@@ -443,24 +413,82 @@ pub fn stream_scenery(
             .total_cmp(&mgr.centers[a].dot(eye_dir))
     });
 
-    let mut budget = SCENERY_PER_FRAME;
-    // Regional forms fill before local ground cover, so distant navigation
-    // landmarks are not held behind thousands of small props.
-    for &chunk in &order {
-        while budget > 0 && mgr.chunks[chunk].lod >= 2 {
-            let i = mgr.chunks[chunk].large_cursor;
-            let Some(f) = mgr.data.scenery_large[chunk].get(i).copied() else {
+    let mut budget = SCENE_ROOT_WORK_PER_UPDATE;
+    let mut removal_budget = SCENE_ROOT_REMOVALS_PER_UPDATE;
+    let mut removed_scenery = std::collections::HashSet::with_capacity(removal_budget);
+
+    // Remove detail farthest from the camera first. Pop from each resident
+    // prefix and move the cursors back so a later LOD reversal resumes at the
+    // first missing baked item without duplicates.
+    for &chunk in order.iter().rev() {
+        while budget > 0 && removal_budget > 0 {
+            let state = &mut mgr.chunks[chunk];
+            let removed = if state.lod < 3 && state.small_cursor > 0 {
+                state.small_cursor -= 1;
+                state.scenery_small.pop().map(|entity| (entity, true))
+            } else if state.lod < 2 && state.large_cursor > 0 {
+                state.large_cursor -= 1;
+                state.scenery_large.pop().map(|entity| (entity, true))
+            } else if state.lod < 2 {
+                state.structures.pop().map(|entity| (entity, false))
+            } else {
+                None
+            };
+            let Some((entity, is_scenery)) = removed else {
                 break;
             };
-            let e = spawn_scenery(
+            commands.entity(entity).try_despawn();
+            if is_scenery {
+                removed_scenery.insert(entity);
+            }
+            budget -= 1;
+            removal_budget -= 1;
+        }
+        if budget == 0 || removal_budget == 0 {
+            break;
+        }
+    }
+    // Compact once after the bounded batch instead of scanning the global
+    // culling worklist once per demoted chunk.
+    if !removed_scenery.is_empty() {
+        mgr.cull_order
+            .retain(|entity| !removed_scenery.contains(entity));
+    }
+
+    // Structures used to spawn synchronously inside each chunk transition.
+    // Stream them through the same work budget, nearest chunk first.
+    for &chunk in &order {
+        while budget > 0 && mgr.chunks[chunk].lod >= 2 {
+            let index = mgr.chunks[chunk].structures.len();
+            let Some(structure) = mgr.data.structures[chunk].get(index).cloned() else {
+                break;
+            };
+            let entity = spawn_structure(&mut commands, &catalog, &structure);
+            mgr.chunks[chunk].structures.push(entity);
+            budget -= 1;
+        }
+        if budget == 0 {
+            return;
+        }
+    }
+
+    // Regional scenery fills before local ground cover, retaining the prior
+    // nearest-chunk policy while sharing the structure/root budget.
+    for &chunk in &order {
+        while budget > 0 && mgr.chunks[chunk].lod >= 2 {
+            let index = mgr.chunks[chunk].large_cursor;
+            let Some(scenery) = mgr.data.scenery_large[chunk].get(index).copied() else {
+                break;
+            };
+            let entity = spawn_scenery(
                 &mut commands,
                 &catalog,
-                &f,
-                initial_scenery_visibility(f, cam.translation, terrain.as_deref()),
+                &scenery,
+                initial_scenery_visibility(scenery, cam.translation, terrain.as_deref()),
             );
-            mgr.chunks[chunk].scenery_large.push(e);
-            mgr.cull_order.push(e);
-            mgr.chunks[chunk].large_cursor = i + 1;
+            mgr.chunks[chunk].scenery_large.push(entity);
+            mgr.cull_order.push(entity);
+            mgr.chunks[chunk].large_cursor = index + 1;
             budget -= 1;
         }
         if budget == 0 {
@@ -469,19 +497,19 @@ pub fn stream_scenery(
     }
     for chunk in order {
         while budget > 0 && mgr.chunks[chunk].lod >= 3 {
-            let i = mgr.chunks[chunk].small_cursor;
-            let Some(f) = mgr.data.scenery_small[chunk].get(i).copied() else {
+            let index = mgr.chunks[chunk].small_cursor;
+            let Some(scenery) = mgr.data.scenery_small[chunk].get(index).copied() else {
                 break;
             };
-            let e = spawn_scenery(
+            let entity = spawn_scenery(
                 &mut commands,
                 &catalog,
-                &f,
-                initial_scenery_visibility(f, cam.translation, terrain.as_deref()),
+                &scenery,
+                initial_scenery_visibility(scenery, cam.translation, terrain.as_deref()),
             );
-            mgr.chunks[chunk].scenery_small.push(e);
-            mgr.cull_order.push(e);
-            mgr.chunks[chunk].small_cursor = i + 1;
+            mgr.chunks[chunk].scenery_small.push(entity);
+            mgr.cull_order.push(entity);
+            mgr.chunks[chunk].small_cursor = index + 1;
             budget -= 1;
         }
         if budget == 0 {
@@ -605,10 +633,259 @@ fn spawn_scenery(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use shared::level::{FloraKind, StructureKind};
+    use shared::planet::{PlanetMesh, unit_icosphere_tris};
+
+    const DETAIL_BUDGET_TEST_ROOTS: usize = 700;
+
+    fn scene_root_ids(app: &mut App) -> std::collections::HashSet<Entity> {
+        let mut roots = app.world_mut().query_filtered::<Entity, With<Ground>>();
+        roots.iter(app.world()).collect()
+    }
+
+    fn scene_root_change_count(
+        before: &std::collections::HashSet<Entity>,
+        after: &std::collections::HashSet<Entity>,
+    ) -> usize {
+        before.symmetric_difference(after).count()
+    }
+
+    fn detail_app() -> (App, Entity, Entity, Entity) {
+        let triangles = unit_icosphere_tris(2)
+            .into_iter()
+            .map(|triangle| triangle.map(|vertex| vertex.to_array()))
+            .collect::<Vec<_>>();
+        let face_zero_position =
+            Vec3::from_array(triangles[0][0]).normalize() * (PLANET_RADIUS + 1.0);
+        let structures = (0..DETAIL_BUDGET_TEST_ROOTS)
+            .map(|_| StructureData {
+                pos: face_zero_position.to_array(),
+                face: 0,
+                kind: StructureKind::House,
+                yaw: 0.0,
+            })
+            .collect();
+        let scenery = (0..DETAIL_BUDGET_TEST_ROOTS)
+            .map(|_| SceneryData {
+                pos: face_zero_position.to_array(),
+                face: 0,
+                kind: SceneryKind::Flora(FloraKind::Tree),
+                variant: 0,
+            })
+            .chain((0..DETAIL_BUDGET_TEST_ROOTS).map(|_| SceneryData {
+                pos: face_zero_position.to_array(),
+                face: 0,
+                kind: SceneryKind::Flora(FloraKind::Grass),
+                variant: 0,
+            }))
+            .collect();
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>();
+        app.insert_resource(AssetCatalog::fixture(&[
+            "structure.house",
+            "scenery.tree.0",
+            "scenery.grass",
+        ]));
+
+        let mut manager = ChunkManager::new(
+            triangles,
+            vec![[[0.0, 0.0, 0.0, 1.0]; 3]; CHUNK_COUNT],
+            vec![0.0; CHUNK_COUNT],
+            vec![[0.0; 3]; CHUNK_COUNT],
+            vec![None; CHUNK_COUNT],
+            scenery,
+            structures,
+            Handle::default(),
+            Handle::default(),
+            Handle::default(),
+            Handle::default(),
+            [Handle::default(), Handle::default(), Handle::default()],
+        );
+
+        let high_direction = -manager.centers[0];
+        let high_camera = high_direction * (PLANET_RADIUS + 1_300.0);
+        for (chunk, state) in manager.chunks.iter_mut().enumerate() {
+            let distance = (manager.centers[chunk]
+                .dot(high_direction)
+                .clamp(-1.0, 1.0)
+                .acos()
+                * PLANET_RADIUS
+                - manager.radii[chunk])
+                .max(0.0);
+            state.lod = planet_detail::desired_chunk_lod(distance, 1_300.0, 1);
+        }
+        manager.chunks[0].lod = 3;
+
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, Transform::from_translation(high_camera)))
+            .id();
+        let static_terrain = app.world_mut().spawn((Ground, Transform::default())).id();
+        let support = app
+            .world_mut()
+            .spawn((
+                RigidBody::Static,
+                Collider::cuboid(10.0, 1.0, 10.0),
+                Transform::from_translation(face_zero_position),
+                Ground,
+            ))
+            .id();
+        manager.chunks[0].static_ents.push(static_terrain);
+
+        let mut scenery_roots = Vec::with_capacity(DETAIL_BUDGET_TEST_ROOTS * 2);
+        for tier in [SceneryTier::Regional, SceneryTier::Local] {
+            for _ in 0..DETAIL_BUDGET_TEST_ROOTS {
+                let entity = app
+                    .world_mut()
+                    .spawn((
+                        CullRange {
+                            meters: 100.0,
+                            tier,
+                        },
+                        Transform::from_translation(face_zero_position),
+                        Visibility::Inherited,
+                        Ground,
+                    ))
+                    .id();
+                scenery_roots.push(entity);
+            }
+        }
+        let mut structure_roots = Vec::with_capacity(DETAIL_BUDGET_TEST_ROOTS);
+        for _ in 0..DETAIL_BUDGET_TEST_ROOTS {
+            structure_roots.push(
+                app.world_mut()
+                    .spawn((Transform::from_translation(face_zero_position), Ground))
+                    .id(),
+            );
+        }
+        manager.chunks[0].structures = structure_roots;
+        manager.chunks[0].scenery_large = scenery_roots[..DETAIL_BUDGET_TEST_ROOTS].to_vec();
+        manager.chunks[0].scenery_small = scenery_roots[DETAIL_BUDGET_TEST_ROOTS..].to_vec();
+        manager.chunks[0].large_cursor = DETAIL_BUDGET_TEST_ROOTS;
+        manager.chunks[0].small_cursor = DETAIL_BUDGET_TEST_ROOTS;
+        manager.cull_order = scenery_roots;
+        app.insert_resource(manager);
+        app.add_systems(Update, (update_chunk_lods, stream_scenery).chain());
+
+        (app, camera, static_terrain, support)
+    }
+
+    #[test]
+    fn scene_detail_work_is_bounded_and_reverses_without_losing_support() {
+        const MAX_ROOT_CHANGES_PER_UPDATE: usize = 512;
+        let (mut app, camera, static_terrain, support) = detail_app();
+        let initial_roots = scene_root_ids(&mut app);
+        for _ in 0..2 {
+            let before = scene_root_ids(&mut app);
+            app.update();
+            let after = scene_root_ids(&mut app);
+            let changed = scene_root_change_count(&before, &after);
+            assert!(
+                changed <= MAX_ROOT_CHANGES_PER_UPDATE,
+                "LOD demotion changed {changed} scene roots in one update"
+            );
+        }
+        let roots_after_first_demotion = scene_root_ids(&mut app).len();
+        assert!(roots_after_first_demotion < initial_roots.len());
+        let dense_roots_after_first_demotion = {
+            let chunk = &app.world().resource::<ChunkManager>().chunks[0];
+            chunk.structures.len() + chunk.scenery_large.len() + chunk.scenery_small.len()
+        };
+        assert!(
+            dense_roots_after_first_demotion > 0
+                && dense_roots_after_first_demotion < DETAIL_BUDGET_TEST_ROOTS * 3,
+            "the dense chunk should be partially demoted before reversal"
+        );
+
+        let close_direction = app.world().resource::<ChunkManager>().centers[0];
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = close_direction * (PLANET_RADIUS + 10.0);
+
+        let mut restored = false;
+        for _ in 0..32 {
+            let before = scene_root_ids(&mut app);
+            app.update();
+            let after = scene_root_ids(&mut app);
+            let changed = scene_root_change_count(&before, &after);
+            assert!(
+                changed <= MAX_ROOT_CHANGES_PER_UPDATE,
+                "LOD promotion changed {changed} scene roots in one update"
+            );
+            let manager = app.world().resource::<ChunkManager>();
+            let chunk = &manager.chunks[0];
+            if chunk.lod == 3
+                && chunk.structures.len() == DETAIL_BUDGET_TEST_ROOTS
+                && chunk.scenery_large.len() == DETAIL_BUDGET_TEST_ROOTS
+                && chunk.scenery_small.len() == DETAIL_BUDGET_TEST_ROOTS
+            {
+                restored = true;
+                break;
+            }
+        }
+
+        assert!(restored, "dense chunk did not restore its detailed LOD");
+        let manager = app.world().resource::<ChunkManager>();
+        let chunk = &manager.chunks[0];
+        let resident = chunk
+            .structures
+            .iter()
+            .chain(&chunk.scenery_large)
+            .chain(&chunk.scenery_small)
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(resident.len(), DETAIL_BUDGET_TEST_ROOTS * 3);
+        assert_eq!(manager.cull_order.len(), DETAIL_BUDGET_TEST_ROOTS * 2);
+        assert!(app.world().get::<Transform>(static_terrain).is_some());
+        assert!(app.world().get::<Collider>(support).is_some());
+
+        let high_direction = -close_direction;
+        app.world_mut()
+            .get_mut::<Transform>(camera)
+            .unwrap()
+            .translation = high_direction * (PLANET_RADIUS + 1_300.0);
+
+        let mut cleared = false;
+        for _ in 0..32 {
+            let before = scene_root_ids(&mut app);
+            app.update();
+            let after = scene_root_ids(&mut app);
+            let changed = scene_root_change_count(&before, &after);
+            assert!(
+                changed <= MAX_ROOT_CHANGES_PER_UPDATE,
+                "LOD demotion changed {changed} scene roots in one update"
+            );
+            let manager = app.world().resource::<ChunkManager>();
+            let chunk = &manager.chunks[0];
+            if chunk.lod == 1
+                && chunk.structures.is_empty()
+                && chunk.scenery_large.is_empty()
+                && chunk.scenery_small.is_empty()
+            {
+                cleared = true;
+                break;
+            }
+        }
+
+        assert!(
+            cleared,
+            "dense chunk did not converge to its requested coarse LOD"
+        );
+        assert_eq!(
+            scene_root_ids(&mut app).len(),
+            initial_roots.len() - DETAIL_BUDGET_TEST_ROOTS * 3
+        );
+        assert!(app.world().resource::<ChunkManager>().cull_order.is_empty());
+        assert!(app.world().get::<Transform>(static_terrain).is_some());
+        assert!(app.world().get::<Collider>(support).is_some());
+    }
+
     #[test]
     fn render_spawns_do_not_own_collision_residency() {
-        use super::*;
         use bevy::ecs::world::CommandQueue;
         let mut world = World::new();
         let mut queue = CommandQueue::default();
@@ -644,9 +921,6 @@ mod tests {
         let visual = world.get::<Children>(house).unwrap()[0];
         assert_eq!(world.get::<Transform>(visual).unwrap().scale, Vec3::ONE);
     }
-    use super::*;
-    use shared::planet::{PlanetMesh, unit_icosphere_tris};
-
     /// Fine faces (any subdiv ≥ 2) must map to their subdiv-2 chunk by
     /// fi / faces_per_chunk — the contiguous-slice assumption everything here
     /// rests on. Mirrors the zones.rs subdiv 3→7 proof at the chunk scale.
