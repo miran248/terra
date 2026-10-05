@@ -178,7 +178,7 @@ fn apply_precip(
     time: Res<Time>,
     mut w: ResMut<Weather>,
     exploration: Option<Res<crate::exploration::Exploration>>,
-    terrain: Option<Res<shared::terrain::TerrainGen>>,
+    terrain: Option<Res<terra_worldgen::terrain::TerrainGen>>,
     cam_q: Query<&Transform, With<MainCamera>>,
     player_q: Query<&Transform, With<Player>>,
     mut precip_q: Query<
@@ -438,7 +438,7 @@ mod tests {
             app.world().get::<Transform>(particle).unwrap().scale,
             Vec3::new(0.015, 0.5, 0.015)
         );
-        let terrain = shared::terrain::TerrainGen::init(1337);
+        let terrain = terra_worldgen::terrain::TerrainGen::init(1337);
         let player_position = app.world().get::<Transform>(player).unwrap().translation;
         assert!(is_snow(terrain.temperature_at(
             terra_geometry::sphere::SpherePos::new(player_position)

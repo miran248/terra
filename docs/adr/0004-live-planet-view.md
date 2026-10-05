@@ -4,7 +4,7 @@ status: accepted
 
 # Use the main camera for a live planet view
 
-Replace the separate full-screen map presentation with an animated pullback of the main camera to a live, rotatable planet view for navigation and teleportation. Sharing the actual scene keeps geography, lighting, and navigation information together; it requires one camera owner, explicit input and clock boundaries, and rendering that supports both ground and planet-scale views. Keep simulation/collision ownership independent of camera visibility, reusable policy in its owning domain crate as boundaries are established, remaining shared policy in `shared`, and runtime orchestration in `main`.
+Replace the separate full-screen map presentation with an animated pullback of the main camera to a live, rotatable planet view for navigation and teleportation. Sharing the actual scene keeps geography, lighting, and navigation information together; it requires one camera owner, explicit input and clock boundaries, and rendering that supports both ground and planet-scale views. Keep simulation/collision ownership independent of camera visibility, reusable policy in its owning domain crate, and runtime orchestration in `main`.
 
 The [planet-view decision map](https://github.com/miran248/terra/issues/37) indexes the specification. Detailed decisions and their acceptance cases live in the linked ticket resolutions:
 

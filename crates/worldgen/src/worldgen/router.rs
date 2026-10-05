@@ -1,7 +1,7 @@
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use super::Grid;
 use terra_geometry::topology::CellId;

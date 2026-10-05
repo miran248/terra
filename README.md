@@ -63,9 +63,11 @@ Different seed: `PLANET_SEED=42 cargo run -p gen_level -- crates/main/assets/lev
 cargo check                    # whole workspace
 cargo clippy                   # whole workspace
 cargo test -p shared           # shared crate tests
+cargo test -p terra-worldgen    # planetary generation and terrain tests
 just asset-candidates-test    # Blender export integration tests
 cargo test -p gen_assets       # retained baseline generator tests
 just assets-check             # production GLB determinism via Blender MCP
+cargo bench -p terra-worldgen --bench terrain_gen  # TerrainGen benchmark
 cargo bench -p gen_level --bench worldgen    # level gen benchmark
 ```
 

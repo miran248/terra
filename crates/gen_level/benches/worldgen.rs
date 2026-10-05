@@ -15,7 +15,7 @@ fn main() {
     let mut samples = Vec::with_capacity(runs);
     for _ in 0..runs {
         let started = Instant::now();
-        let world = shared::worldgen::run(black_box(seed), |_| {});
+        let world = terra_worldgen::worldgen::run(black_box(seed), |_| {});
         let level: &LevelData = world.level_data();
         black_box(level);
         samples.push(started.elapsed());

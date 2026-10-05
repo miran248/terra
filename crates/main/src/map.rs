@@ -3,7 +3,6 @@ use crate::physics::RadialGravity;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 use bevy::render::mesh::VertexAttributeValues;
-use shared::terrain::TerrainGen;
 use std::time::Instant;
 use terra_geometry::planet::PlanetMesh;
 use terra_geometry::sphere::PLANET_RADIUS;
@@ -11,6 +10,7 @@ use terra_world::level::{
     BlendTarget, FaceTag, Landform, LevelData, RoadKind, RoadMaterial, SceneryKind, SettlementKind,
     SlopeClass, WaterDepth, WaterPhase,
 };
+use terra_worldgen::terrain::TerrainGen;
 
 /// Small speculative skin; swept CCD protects fast motion without a half-meter visual offset.
 const TERRAIN_MARGIN: f32 = 0.02;

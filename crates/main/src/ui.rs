@@ -753,7 +753,7 @@ pub(crate) fn scroll_sidebar(
 )]
 fn update_sidebar_world_readout(
     player_q: Query<&Transform, With<Player>>,
-    terrain: Option<Res<shared::terrain::TerrainGen>>,
+    terrain: Option<Res<terra_worldgen::terrain::TerrainGen>>,
     planet: Option<Res<PlanetMesh>>,
     tags: Option<Res<LevelTags>>,
     regions: Option<Res<LevelRegions>>,

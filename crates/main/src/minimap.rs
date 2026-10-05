@@ -17,10 +17,10 @@ use shared::planet_markers::{
 use shared::planet_view::planet_compass_color;
 use shared::planet_view_interface::GameplayHudElement;
 use shared::state::AppState;
-use shared::terrain::TerrainGen;
 use shared::theme;
 use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
 use terra_world::level::RegionKind;
+use terra_worldgen::terrain::TerrainGen;
 
 const MINIMAP_SIZE: f32 = 160.0;
 /// Render-target resolution (square, downscaled into the circular UI node).

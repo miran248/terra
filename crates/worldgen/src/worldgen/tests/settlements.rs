@@ -1,5 +1,5 @@
 use super::*;
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 use terra_world::level::{RoadEndpointRole, SettlementKind, StructureKind};
 
 #[test]

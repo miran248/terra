@@ -1,7 +1,7 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use terra_geometry::sphere::SpherePos;
-use shared::terrain::TerrainGen;
 use std::hint::black_box;
+use terra_geometry::sphere::SpherePos;
+use terra_worldgen::terrain::TerrainGen;
 
 fn bench_terrain_gen(c: &mut Criterion) {
     let mut g = c.benchmark_group("terrain_gen");
@@ -17,11 +17,7 @@ fn bench_terrain_gen(c: &mut Criterion) {
                 let theta = u * std::f32::consts::TAU;
                 let z = v * 2.0 - 1.0;
                 let r = (1.0 - z * z).max(0.0).sqrt();
-                SpherePos::new(bevy::prelude::Vec3::new(
-                    r * theta.cos(),
-                    z,
-                    r * theta.sin(),
-                ))
+                SpherePos::new(bevy_math::Vec3::new(r * theta.cos(), z, r * theta.sin()))
             })
             .collect();
         b.iter(|| {
@@ -40,11 +36,7 @@ fn bench_terrain_gen(c: &mut Criterion) {
                 let theta = u * std::f32::consts::TAU;
                 let z = v * 2.0 - 1.0;
                 let r = (1.0 - z * z).max(0.0).sqrt();
-                SpherePos::new(bevy::prelude::Vec3::new(
-                    r * theta.cos(),
-                    z,
-                    r * theta.sin(),
-                ))
+                SpherePos::new(bevy_math::Vec3::new(r * theta.cos(), z, r * theta.sin()))
             })
             .collect();
         b.iter(|| {
@@ -63,11 +55,7 @@ fn bench_terrain_gen(c: &mut Criterion) {
                 let theta = u * std::f32::consts::TAU;
                 let z = v * 2.0 - 1.0;
                 let r = (1.0 - z * z).max(0.0).sqrt();
-                SpherePos::new(bevy::prelude::Vec3::new(
-                    r * theta.cos(),
-                    z,
-                    r * theta.sin(),
-                ))
+                SpherePos::new(bevy_math::Vec3::new(r * theta.cos(), z, r * theta.sin()))
             })
             .collect();
         b.iter(|| {
@@ -86,11 +74,7 @@ fn bench_terrain_gen(c: &mut Criterion) {
                 let theta = u * std::f32::consts::TAU;
                 let z = v * 2.0 - 1.0;
                 let r = (1.0 - z * z).max(0.0).sqrt();
-                SpherePos::new(bevy::prelude::Vec3::new(
-                    r * theta.cos(),
-                    z,
-                    r * theta.sin(),
-                ))
+                SpherePos::new(bevy_math::Vec3::new(r * theta.cos(), z, r * theta.sin()))
             })
             .collect();
         b.iter(|| {

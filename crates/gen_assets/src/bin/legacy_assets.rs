@@ -5,6 +5,7 @@ use shared::{
     items::{Material, WeaponKind},
 };
 use std::{borrow::Cow, env, fs, path::PathBuf};
+use terra_worldgen::scenery::scenery_variant_count;
 
 const CATALOGS: [&str; 4] = [
     "environment.glb",
@@ -52,7 +53,7 @@ fn main() {
 fn catalogs() -> Vec<(&'static str, Vec<u8>)> {
     let mut environment = Vec::new();
     for kind in SCENERY_KINDS {
-        let n = shared::art::scenery_variant_count(kind);
+        let n = scenery_variant_count(kind);
         for v in 0..n {
             environment.push(shared::art::scenery_variant_name(kind, v));
         }
@@ -1324,7 +1325,7 @@ mod tests {
         let generated = catalogs();
         let env_count: u32 = SCENERY_KINDS
             .iter()
-            .map(|&k| shared::art::scenery_variant_count(k))
+            .map(|&k| scenery_variant_count(k))
             .sum();
         let expected = [
             env_count as usize,

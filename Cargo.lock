@@ -2958,6 +2958,7 @@ dependencies = [
  "gltf-json",
  "serde_json",
  "shared",
+ "terra-worldgen",
 ]
 
 [[package]]
@@ -2966,8 +2967,8 @@ version = "0.1.0"
 dependencies = [
  "bevy_color",
  "bevy_math",
- "shared",
  "terra-world",
+ "terra-worldgen",
 ]
 
 [[package]]
@@ -3826,6 +3827,7 @@ dependencies = [
  "shared",
  "terra-geometry",
  "terra-world",
+ "terra-worldgen",
 ]
 
 [[package]]
@@ -5373,12 +5375,11 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "criterion 0.8.2",
- "fastrand",
- "noise",
  "serde",
  "serde_json",
  "terra-geometry",
  "terra-world",
+ "terra-worldgen",
 ]
 
 [[package]]
@@ -5676,6 +5677,20 @@ dependencies = [
  "postcard",
  "serde",
  "terra-geometry",
+]
+
+[[package]]
+name = "terra-worldgen"
+version = "0.1.0"
+dependencies = [
+ "bevy_color",
+ "bevy_ecs",
+ "bevy_math",
+ "criterion 0.8.2",
+ "fastrand",
+ "noise",
+ "terra-geometry",
+ "terra-world",
 ]
 
 [[package]]

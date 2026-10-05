@@ -80,8 +80,9 @@ mod tests {
 
     #[test]
     fn every_terrain_selected_scenery_variant_has_a_dimension_contract() {
-        use crate::art::*;
+        use crate::art::{SCENERY_KINDS, scenery_variant_name};
         use terra_world::terrain::Terrain;
+        use terra_worldgen::scenery::{scenery_variant_count, scenery_variant_for};
         let mut names = std::collections::BTreeSet::new();
         for kind in SCENERY_KINDS {
             for variant in 0..scenery_variant_count(kind) {

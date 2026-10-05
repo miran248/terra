@@ -5,7 +5,7 @@
 //! separation distances, containment — are guaranteed here by construction, so no
 //! later pass ever needs to clean up water bodies or merge fragments.
 
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use terra_geometry::planet::{build_face_adjacency, unit_icosphere_tris};
 use terra_geometry::sphere::PLANET_RADIUS;

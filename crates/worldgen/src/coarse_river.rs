@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 
-use terra_geometry::sphere::SpherePos;
 use crate::zones::{ZoneKind, Zones};
+use terra_geometry::sphere::SpherePos;
 
 /// Dedicated coarse-zone river router. Neighbor order and BFS tie-breaking are
 /// inherited directly from the serialized zone adjacency arrays.

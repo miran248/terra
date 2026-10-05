@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use crate::terrain::TerrainGen;
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 use terra_geometry::sphere::SpherePos;
 use terra_geometry::topology::{CellId, FaceId};
 use terra_world::level::{

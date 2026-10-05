@@ -1,4 +1,4 @@
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, regions, size_range};

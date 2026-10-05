@@ -1,4 +1,6 @@
-use bevy::prelude::{Color, Resource, Vec3};
+use bevy_color::Color;
+use bevy_ecs::prelude::Resource;
+use bevy_math::Vec3;
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin};
 use std::collections::BTreeMap;
 

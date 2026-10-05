@@ -61,21 +61,24 @@ pub(in crate::worldgen) fn build_mesh(
         .cells()
         .map(|cell| terrain.render_radius(grid.cell_position(cell)))
         .collect();
-    let road_color = bevy::prelude::Color::srgb(0.5, 0.42, 0.3)
+    let road_color = bevy_color::Color::srgb(0.5, 0.42, 0.3)
         .to_linear()
         .to_f32_array();
     let road_mat_color = |m: RoadMaterial| -> [f32; 4] {
         match m {
-            RoadMaterial::Dirt => bevy::prelude::Color::srgb(0.45, 0.33, 0.22),
-            RoadMaterial::Sand => bevy::prelude::Color::srgb(0.78, 0.70, 0.50),
-            RoadMaterial::Rock => bevy::prelude::Color::srgb(0.40, 0.38, 0.36),
-            _ => bevy::prelude::Color::srgb(0.52, 0.50, 0.47), // gravel
+            RoadMaterial::Dirt => bevy_color::Color::srgb(0.45, 0.33, 0.22),
+            RoadMaterial::Sand => bevy_color::Color::srgb(0.78, 0.70, 0.50),
+            RoadMaterial::Rock => bevy_color::Color::srgb(0.40, 0.38, 0.36),
+            _ => bevy_color::Color::srgb(0.52, 0.50, 0.47), // gravel
         }
         .to_linear()
         .to_f32_array()
     };
-    let town_color = crate::theme::WARNING.to_linear().to_f32_array();
-    let entry_color = bevy::prelude::Color::srgb(0.42, 0.33, 0.24)
+    // This color is baked into LevelData, so it cannot depend on the runtime UI palette.
+    let town_color = bevy_color::Color::srgb(0.925, 0.357, 0.169)
+        .to_linear()
+        .to_f32_array();
+    let entry_color = bevy_color::Color::srgb(0.42, 0.33, 0.24)
         .to_linear()
         .to_f32_array();
     let mut tris = Vec::with_capacity(grid.face_count());
@@ -182,7 +185,7 @@ pub(in crate::worldgen) fn build_mesh(
     }
     (tris, cols)
 }
-use bevy::color::ColorToComponents;
+use bevy_color::ColorToComponents;
 
 use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, face_solid};

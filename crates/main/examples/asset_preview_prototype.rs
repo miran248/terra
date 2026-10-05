@@ -17,9 +17,10 @@ use bevy::{
 use shared::actor_animation::{ActorAnimationPlugin, ActorPlayback};
 use shared::art::{
     ACTOR_ANIMATIONS, AssetName, ColliderSpec, SCENERY_KINDS, scenery_collider,
-    scenery_variant_count, scenery_variant_name,
+    scenery_variant_name,
 };
 use std::collections::HashMap;
+use terra_worldgen::scenery::scenery_variant_count;
 
 const PAGE: usize = 12;
 const INK: Color = Color::srgb(0.86, 0.90, 0.94);

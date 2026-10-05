@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::collections::VecDeque;
 
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use crate::worldgen::{Grid, elevation};
 use terra_geometry::topology::FaceId;

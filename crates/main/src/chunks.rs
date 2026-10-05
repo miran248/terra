@@ -35,12 +35,12 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use shared::art::AssetName;
 use shared::planet_detail::{self, SceneryTier};
-use shared::terrain::TerrainGen;
 use std::time::Instant;
 use terra_geometry::sphere::PLANET_RADIUS;
 #[cfg(test)]
 use terra_world::level::SceneryKind;
 use terra_world::level::{SceneryData, StructureData, WaterPhase};
+use terra_worldgen::terrain::TerrainGen;
 
 /// Optional per-stage measurements aligned with the acceptance frame trace.
 #[derive(Resource, Default)]

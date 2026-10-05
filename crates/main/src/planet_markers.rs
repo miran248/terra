@@ -14,9 +14,9 @@ use shared::planet_markers::{
 };
 use shared::planet_view::{planet_compass_color, planet_compass_orientation};
 use shared::state::AppState;
-use shared::terrain::TerrainGen;
 use terra_geometry::sphere::{PLANET_RADIUS, SpherePos};
 use terra_world::level::RegionKind;
+use terra_worldgen::terrain::TerrainGen;
 
 use crate::exploration::{
     Exploration, PlanetDestination, PlanetDestinationCollection, PlanetDestinationId,

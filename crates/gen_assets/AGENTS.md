@@ -1,7 +1,7 @@
 # Procedural asset generator
 
 - Owns deterministic procedural GLB construction, serialization, validation, and CLI behavior.
-- Consumes canonical names, dimensions, and collider contracts from `shared::art`.
+- Consumes canonical names, dimensions, and collider contracts from `shared::art`; generated scenery variant counts come from `terra_worldgen::scenery`.
 - Output remains texture-free glTF 2.0 binary in meters, Y-up, forward -Z, with ground pivots, flat normals, linear vertex colors, and high-roughness PBR materials.
 - Generation is byte-for-byte deterministic; `--check` validates without writing.
 

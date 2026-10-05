@@ -220,7 +220,7 @@ pub(in crate::worldgen) fn place_scenery(
                     pos: pos.to_array(),
                     face: face_index as u32,
                     kind,
-                    variant: crate::art::scenery_variant_for(kind, tiles[face_index], hash),
+                    variant: crate::scenery::scenery_variant_for(kind, tiles[face_index], hash),
                 });
             }
         }
@@ -538,7 +538,7 @@ pub(in crate::worldgen) fn build_face_tags(grid: &Grid, painted: &Painted) -> Ve
     }
     tags
 }
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, StructureSite, face_solid, painted_corners};

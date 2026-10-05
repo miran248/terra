@@ -2003,7 +2003,7 @@ fn diagnostic_sample(world: &mut World, elapsed: f64, movement_window: bool) -> 
     let weather = world.resource::<Weather>();
     let weather_intensity = weather.precip;
     let weather_kind = world
-        .get_resource::<shared::terrain::TerrainGen>()
+        .get_resource::<terra_worldgen::terrain::TerrainGen>()
         .map(|terrain| {
             if crate::weather::is_snow(
                 terrain.temperature_at(terra_geometry::sphere::SpherePos::new(player)),

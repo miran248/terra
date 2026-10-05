@@ -633,7 +633,7 @@ pub(in crate::worldgen) fn build_bridges(
 
     output.spans
 }
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use crate::terrain::TerrainGen;
 use crate::worldgen::{Grid, Painted, cell_chain, features};

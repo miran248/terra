@@ -1,9 +1,9 @@
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
+use crate::zones::FINE_SUB;
 use terra_geometry::planet::{PlanetMesh, unit_icosphere_tris};
 use terra_geometry::sphere::SpherePos;
 use terra_geometry::topology::{CellId, FaceId, TerrainTopology};
-use crate::zones::FINE_SUB;
 
 /// Fine generation lattice. Terrain identity lives on its vertices (`CellId`);
 /// triangles (`FaceId`) are derived query and presentation output.

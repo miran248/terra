@@ -75,7 +75,7 @@ pub(super) fn camera(
     mut state: ResMut<Exploration>,
     spatial: SpatialQuery,
     collision_world: Option<Res<world::CollisionWorld>>,
-    surface: Option<Res<shared::terrain::TerrainGen>>,
+    surface: Option<Res<terra_worldgen::terrain::TerrainGen>>,
     player: Query<(Entity, &Position, &Player), Without<MainCamera>>,
     vehicles: Query<(&Position, &Vehicle), Without<MainCamera>>,
     mut cameras: Query<(&mut Transform, Option<&mut Projection>), With<MainCamera>>,

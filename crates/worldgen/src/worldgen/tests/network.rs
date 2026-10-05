@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use bevy::prelude::Vec3;
+use bevy_math::Vec3;
 
 use super::*;
 use terra_geometry::sphere::{SpherePos, ring_point};

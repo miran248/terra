@@ -1,9 +1,10 @@
-use shared::worldgen::{CompletedWorld, run};
 use std::fs;
 use std::path::PathBuf;
 use terra_world::level::LevelData;
+use terra_worldgen::terrain::{MAX_DEPTH, MAX_MOUNTAIN};
+use terra_worldgen::worldgen::{CompletedWorld, run};
 
-/// The pipeline itself lives in `shared::worldgen` as a command/event state machine;
+/// The pipeline itself lives in `terra_worldgen::worldgen` as a command/event state machine;
 /// this binary just runs it for a seed, prints the event log + stats, and packs
 /// the result into the level binary.
 fn main() {
@@ -35,8 +36,8 @@ fn print_stats(world: &CompletedWorld) {
     let (min_e, max_e) = (stats.min_elevation, stats.max_elevation);
     println!(
         "altitude: {:.0}m .. {:.0}m (e {min_e:.2} .. {max_e:.2})",
-        -(-min_e).max(0.0) * shared::terrain::MAX_DEPTH,
-        max_e.max(0.0).powf(1.15) * shared::terrain::MAX_MOUNTAIN,
+        -(-min_e).max(0.0) * MAX_DEPTH,
+        max_e.max(0.0).powf(1.15) * MAX_MOUNTAIN,
     );
     println!(
         "water: {:.1}% ({} frozen faces)  breakdown: {:?}",

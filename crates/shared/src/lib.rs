@@ -1,5 +1,3 @@
-mod coarse_river;
-
 pub mod actor_animation;
 pub mod art;
 pub mod asset_contract;
@@ -15,9 +13,5 @@ pub mod planet_markers;
 pub mod planet_view;
 pub mod planet_view_interface;
 pub mod state;
-pub mod terrain;
 pub mod theme;
 pub mod upgrades;
-pub mod wfc;
-pub mod worldgen;
-pub mod zones;

@@ -1,10 +1,8 @@
 //! Canonical contracts shared by the procedural asset generator and runtime.
 
 use crate::items::{Material, WeaponKind};
-use terra_world::{
-    level::{FloraKind, SceneryKind, StructureKind},
-    terrain::Terrain,
-};
+use terra_world::level::{FloraKind, SceneryKind, StructureKind};
+use terra_worldgen::scenery::scenery_variant_count;
 
 pub const ENVIRONMENT_CATALOG: &str = "models/environment.glb";
 pub const STRUCTURES_CATALOG: &str = "models/structures.glb";
@@ -205,64 +203,12 @@ pub fn scenery_collider(kind: SceneryKind) -> ColliderSpec {
     }
 }
 
-/// How many mesh variants a scenery kind has (indexed 0..count).
-pub fn scenery_variant_count(kind: SceneryKind) -> u32 {
-    match kind {
-        SceneryKind::Flora(FloraKind::Tree) => 7,
-        SceneryKind::Flora(FloraKind::Bush)
-        | SceneryKind::Rock
-        | SceneryKind::Flora(FloraKind::Cactus)
-        | SceneryKind::DeadTree => 2,
-        _ => 1,
-    }
-}
-
 /// Stable scene name for a specific scenery kind + variant index.
 pub fn scenery_variant_name(kind: SceneryKind, variant: u32) -> String {
     if scenery_variant_count(kind) <= 1 {
         kind.asset_name().to_owned()
     } else {
         format!("{}.{variant}", kind.asset_name())
-    }
-}
-
-/// Pick the scenery variant index for a given terrain context, deterministically
-/// from position hash so nearby instances of the same kind on the same terrain
-/// vary.
-pub fn scenery_variant_for(kind: SceneryKind, terrain: Terrain, hash: u64) -> u8 {
-    let total = scenery_variant_count(kind);
-    if total <= 1 {
-        return 0;
-    }
-    // Trees use terrain to pick a plausible subset, then hash for variation.
-    // Other kinds use the simpler biome-key approach.
-    if kind == SceneryKind::Flora(FloraKind::Tree) {
-        let range: (u64, u64) = match terrain {
-            // Palm, sometimes oak on savanna
-            Terrain::Desert => (3, 4),
-            Terrain::Savanna => (0, 5),
-            // Complex deciduous, oak, autumn — temperate breadth
-            Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => (0, 6),
-            // Jungle canopy + occasional deciduous
-            Terrain::Jungle => (1, 3),
-            Terrain::Swamp => (1, 5),
-            // Pine + autumn for cold
-            Terrain::Tundra | Terrain::Snow => (2, 5),
-            Terrain::Glacier => (2, 3),
-            _ => (0, total as u64),
-        };
-        let span = range.1 - range.0;
-        (range.0 + (hash % span)) as u8
-    } else {
-        let biome_key: u8 = match terrain {
-            Terrain::Desert | Terrain::Savanna => 0,
-            Terrain::Forest | Terrain::Plains | Terrain::RiverBank | Terrain::LakeShore => 1,
-            Terrain::Jungle | Terrain::Swamp => 2,
-            Terrain::Tundra | Terrain::Snow | Terrain::Glacier => 3,
-            _ => 1,
-        };
-        let seed = (biome_key as u64).wrapping_mul(0x9e37_79b9) ^ hash;
-        (seed % total as u64) as u8
     }
 }
 
