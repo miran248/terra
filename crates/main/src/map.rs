@@ -10,7 +10,6 @@ use shared::level::{
 use shared::planet::PlanetMesh;
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
-use std::time::Instant;
 
 /// Small speculative skin; swept CCD protects fast motion without a half-meter visual offset.
 const TERRAIN_MARGIN: f32 = 0.02;
@@ -175,14 +174,12 @@ fn cull_props(
     mut props: Query<(&CullRange, &GlobalTransform, &mut Visibility)>,
     chunks: Res<crate::chunks::ChunkManager>,
     terrain: Option<Res<TerrainGen>>,
-    mut stage_probe: Option<ResMut<crate::chunks::ChunkStageProbe>>,
 ) {
     *timer += time.delta_secs();
     if *timer < 0.2 {
         return;
     }
     *timer = 0.0;
-    let started = stage_probe.is_some().then(Instant::now);
     let Ok(cam) = camera.single() else { return };
     let eye = cam.translation;
     let altitude = altitude_above_surface(eye, terrain.as_deref());
@@ -192,12 +189,9 @@ fn cull_props(
     }
     let count = PROP_CULL_PER_UPDATE.min(total);
     let start = *cursor % total;
-    let mut visibility_changes = 0;
-    let mut stale_entities = 0;
     for offset in 0..count {
         let entity = chunks.cull_order[(start + offset) % total];
         let Ok((range, tf, mut vis)) = props.get_mut(entity) else {
-            stale_entities += 1;
             continue;
         };
         let point = tf.translation();
@@ -217,20 +211,9 @@ fn cull_props(
         };
         if *vis != want {
             *vis = want;
-            visibility_changes += 1;
         }
     }
     *cursor = (start + count) % total;
-    if let (Some(probe), Some(started)) = (stage_probe.as_mut(), started) {
-        probe.cull(
-            time.elapsed_secs_f64(),
-            total,
-            count,
-            visibility_changes,
-            stale_entities,
-            started.elapsed().as_secs_f64() * 1_000.0,
-        );
-    }
 }
 
 /// Face-based region memberships and named bridge surfaces for the HUD.

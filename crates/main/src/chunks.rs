@@ -40,109 +40,6 @@ use shared::level::{SceneryData, StructureData, WaterPhase};
 use shared::planet_detail::{self, SceneryTier};
 use shared::sphere::PLANET_RADIUS;
 use shared::terrain::TerrainGen;
-use std::time::Instant;
-
-/// Temporary opt-in stream telemetry for the bounded-scene performance probe.
-#[derive(Resource, Default)]
-pub struct ChunkStageProbe {
-    rows: Vec<String>,
-    road_rows: Vec<String>,
-    cull_rows: Vec<String>,
-}
-
-impl ChunkStageProbe {
-    fn stream(
-        &mut self,
-        real_elapsed_s: f64,
-        pending_chunks: usize,
-        pending_roots: usize,
-        resident_roots: usize,
-        structures_resident: usize,
-        large_resident: usize,
-        small_resident: usize,
-        cull_order_before: usize,
-        structures_removed: usize,
-        large_removed: usize,
-        small_removed: usize,
-        structures_spawned: usize,
-        large_spawned: usize,
-        small_spawned: usize,
-        cull_order_after: usize,
-        duration_ms: f64,
-    ) {
-        self.rows.push(format!(
-            "{real_elapsed_s:.6},stream-scenery,{pending_chunks},{pending_roots},{resident_roots},{structures_resident},{large_resident},{small_resident},{cull_order_before},{structures_removed},{large_removed},{small_removed},{structures_spawned},{large_spawned},{small_spawned},{cull_order_after},{duration_ms:.6}\n"
-        ));
-    }
-
-    pub fn road(
-        &mut self,
-        real_elapsed_s: f64,
-        widths_ms: f64,
-        geometry_ms: f64,
-        mesh_build_ms: f64,
-        mesh_replace_ms: f64,
-        total_ms: f64,
-        cache_hit: bool,
-        epoch_changed: bool,
-        moved: bool,
-        paths_processed: usize,
-        paths_total: usize,
-        geometry_complete: bool,
-        mesh_committed: bool,
-        terrain_samples: usize,
-        bridge_samples: usize,
-        triangles: usize,
-    ) {
-        self.road_rows.push(format!(
-            "{real_elapsed_s:.6},{widths_ms:.6},{geometry_ms:.6},{mesh_build_ms:.6},{mesh_replace_ms:.6},{total_ms:.6},{cache_hit},{epoch_changed},{moved},{paths_processed},{paths_total},{geometry_complete},{mesh_committed},{terrain_samples},{bridge_samples},{triangles}\n"
-        ));
-    }
-
-    pub fn cull(
-        &mut self,
-        real_elapsed_s: f64,
-        resident_props: usize,
-        scanned_props: usize,
-        visibility_changes: usize,
-        stale_entities: usize,
-        duration_ms: f64,
-    ) {
-        self.cull_rows.push(format!(
-            "{real_elapsed_s:.6},{resident_props},{scanned_props},{visibility_changes},{stale_entities},{duration_ms:.6}\n"
-        ));
-    }
-
-    pub fn to_csv(&self) -> String {
-        let mut csv = String::from(
-            "real_elapsed_s,stage,pending_chunks,pending_roots,resident_roots,structures_resident,large_resident,small_resident,cull_order_before,structures_removed,large_removed,small_removed,structures_spawned,large_spawned,small_spawned,cull_order_after,duration_ms\n",
-        );
-        for row in &self.rows {
-            csv.push_str(row);
-        }
-        csv
-    }
-
-    pub fn road_csv(&self) -> String {
-        let mut csv = String::from(
-            "real_elapsed_s,widths_ms,geometry_ms,mesh_build_ms,mesh_replace_ms,total_ms,cache_hit,epoch_changed,moved,paths_processed,paths_total,geometry_complete,mesh_committed,terrain_samples,bridge_samples,triangles\n",
-        );
-        for row in &self.road_rows {
-            csv.push_str(row);
-        }
-        csv
-    }
-
-    pub fn cull_csv(&self) -> String {
-        let mut csv = String::from(
-            "real_elapsed_s,resident_props,scanned_props,visibility_changes,stale_entities,duration_ms\n",
-        );
-        for row in &self.cull_rows {
-            csv.push_str(row);
-        }
-        csv
-    }
-}
 
 /// Chunk count: the subdivision-2 icosphere faces (20 × 4²).
 pub const CHUNK_COUNT: usize = 320;
@@ -488,10 +385,7 @@ pub fn stream_scenery(
     camera: Query<&Transform, With<MainCamera>>,
     terrain: Option<Res<TerrainGen>>,
     mut mgr: ResMut<ChunkManager>,
-    mut stage_probe: Option<ResMut<ChunkStageProbe>>,
-    time: Res<Time<Real>>,
 ) {
-    let started = Instant::now();
     let Some(cam) = camera.iter().next() else {
         return;
     };
@@ -513,30 +407,6 @@ pub fn stream_scenery(
     if order.is_empty() {
         return;
     }
-    let mut pending_roots = 0;
-    let (mut structures_resident, mut large_resident, mut small_resident) = (0, 0, 0);
-    for chunk in 0..CHUNK_COUNT {
-        let state = &mgr.chunks[chunk];
-        let structure_count = mgr.data.structures[chunk].len();
-        let large_count = mgr.data.scenery_large[chunk].len();
-        let small_count = mgr.data.scenery_small[chunk].len();
-        structures_resident += state.structures.len();
-        large_resident += state.scenery_large.len();
-        small_resident += state.scenery_small.len();
-        if state.lod < 2 {
-            pending_roots += state.structures.len() + state.large_cursor;
-        } else {
-            pending_roots += structure_count.saturating_sub(state.structures.len())
-                + large_count.saturating_sub(state.large_cursor);
-        }
-        if state.lod < 3 {
-            pending_roots += state.small_cursor;
-        } else {
-            pending_roots += small_count.saturating_sub(state.small_cursor);
-        }
-    }
-    let resident_roots = structures_resident + large_resident + small_resident;
-    let cull_order_before = mgr.cull_order.len();
     order.sort_by(|&a, &b| {
         mgr.centers[b]
             .dot(eye_dir)
@@ -546,8 +416,6 @@ pub fn stream_scenery(
     let mut budget = SCENE_ROOT_WORK_PER_UPDATE;
     let mut removal_budget = SCENE_ROOT_REMOVALS_PER_UPDATE;
     let mut removed_scenery = std::collections::HashSet::with_capacity(removal_budget);
-    let (mut structures_removed, mut large_removed, mut small_removed) = (0, 0, 0);
-    let (mut structures_spawned, mut large_spawned, mut small_spawned) = (0, 0, 0);
 
     // Remove detail farthest from the camera first. Pop from each resident
     // prefix and move the cursors back so a later LOD reversal resumes at the
@@ -557,24 +425,19 @@ pub fn stream_scenery(
             let state = &mut mgr.chunks[chunk];
             let removed = if state.lod < 3 && state.small_cursor > 0 {
                 state.small_cursor -= 1;
-                state.scenery_small.pop().map(|entity| (entity, true, 2_u8))
+                state.scenery_small.pop().map(|entity| (entity, true))
             } else if state.lod < 2 && state.large_cursor > 0 {
                 state.large_cursor -= 1;
-                state.scenery_large.pop().map(|entity| (entity, true, 1_u8))
+                state.scenery_large.pop().map(|entity| (entity, true))
             } else if state.lod < 2 {
-                state.structures.pop().map(|entity| (entity, false, 0_u8))
+                state.structures.pop().map(|entity| (entity, false))
             } else {
                 None
             };
-            let Some((entity, is_scenery, kind)) = removed else {
+            let Some((entity, is_scenery)) = removed else {
                 break;
             };
             commands.entity(entity).try_despawn();
-            match kind {
-                0 => structures_removed += 1,
-                1 => large_removed += 1,
-                _ => small_removed += 1,
-            }
             if is_scenery {
                 removed_scenery.insert(entity);
             }
@@ -602,7 +465,6 @@ pub fn stream_scenery(
             };
             let entity = spawn_structure(&mut commands, &catalog, &structure);
             mgr.chunks[chunk].structures.push(entity);
-            structures_spawned += 1;
             budget -= 1;
         }
         if budget == 0 {
@@ -627,7 +489,6 @@ pub fn stream_scenery(
             mgr.chunks[chunk].scenery_large.push(entity);
             mgr.cull_order.push(entity);
             mgr.chunks[chunk].large_cursor = index + 1;
-            large_spawned += 1;
             budget -= 1;
         }
         if budget == 0 {
@@ -649,32 +510,11 @@ pub fn stream_scenery(
             mgr.chunks[chunk].scenery_small.push(entity);
             mgr.cull_order.push(entity);
             mgr.chunks[chunk].small_cursor = index + 1;
-            small_spawned += 1;
             budget -= 1;
         }
         if budget == 0 {
             break;
         }
-    }
-    if let Some(probe) = stage_probe.as_mut() {
-        probe.stream(
-            time.elapsed_secs_f64(),
-            order.len(),
-            pending_roots,
-            resident_roots,
-            structures_resident,
-            large_resident,
-            small_resident,
-            cull_order_before,
-            structures_removed,
-            large_removed,
-            small_removed,
-            structures_spawned,
-            large_spawned,
-            small_spawned,
-            mgr.cull_order.len(),
-            started.elapsed().as_secs_f64() * 1_000.0,
-        );
     }
 }
 

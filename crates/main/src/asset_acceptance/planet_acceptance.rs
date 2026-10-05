@@ -42,11 +42,9 @@ const ROUTES: [Route; 4] = [
     Route::FollowVehicleRecovery,
     Route::ReturnReversal,
 ];
-// TEMPORARY bounded-scene probe duration; restore 60/60/3 before acceptance.
-const WARMUP_SECONDS: f64 = 25.0;
-const MEASURE_SECONDS: f64 = 30.0;
-const REPEATS: u8 = 1;
-const CHUNK_STAGE_PROBE_ENV: &str = "TERRA_PLANET_CHUNK_STAGE_PROBE";
+const WARMUP_SECONDS: f64 = 60.0;
+const MEASURE_SECONDS: f64 = 60.0;
+const REPEATS: u8 = 3;
 const STALL_LIMIT_MS: f64 = 1000.0 / 30.0;
 const MIN_MEASURED_BODY_PATH_M: f64 = 10.0;
 const MIN_MEASURED_BODY_EXCURSION_M: f64 = 5.0;
@@ -1559,9 +1557,6 @@ pub(super) fn register(app: &mut App, directory: PathBuf) {
         "Planet acceptance output must be fresh"
     );
 
-    if std::env::var_os(CHUNK_STAGE_PROBE_ENV).is_some() {
-        app.insert_resource(crate::chunks::ChunkStageProbe::default());
-    }
     app.insert_resource(PlanetAcceptance {
         directory,
         phase: Phase::WaitingForWorld,
@@ -1687,9 +1682,6 @@ fn drive_planet_acceptance(world: &mut World) {
                         actions: RouteActions::default(),
                         samples: Vec::with_capacity(4_000),
                     }
-                } else if std::env::var_os(CHUNK_STAGE_PROBE_ENV).is_some() {
-                    info!(route = route.name(), "chunk-stage probe route complete");
-                    Phase::Finishing { started_at: now }
                 } else if let Some(next) = ROUTES.get(route_index(route) + 1).copied() {
                     info!(route = next.name(), "Planet acceptance warm-up started");
                     Phase::Warmup {
@@ -1913,20 +1905,8 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
     let noon_elevation = player_pose(world)
         .map(|(position, _)| maximum_sun_elevation_degrees(position))
         .unwrap_or(f32::NAN);
-    let probe_mode = std::env::var_os(CHUNK_STAGE_PROBE_ENV).is_some();
-    let (mode, routes) = if probe_mode {
-        (
-            "temporary-bounded-scene-probe-not-acceptance",
-            "entry-reversal-only",
-        )
-    } else {
-        (
-            "live-planet-acceptance",
-            "entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal",
-        )
-    };
     let configuration = format!(
-        "mode={mode}\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes={routes}\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\nchunk_stage_probe=true\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures=asset-review\nshadows=normal-production-settings\n",
+        "mode=live-planet-acceptance\nseed={seed}\nanchor=first-settlement-player-spawn\nviewport={}\nviews=ground,settlement,globe,opposite\nsolar_phases=noon(anchor-local-maximum:{noon_elevation:.4}deg),sunset(0deg),night(-18deg)\nroutes=entry-reversal,orbit-zoom,follow-vehicle-recovery,return-reversal\nwarmup_seconds={WARMUP_SECONDS}\nmeasured_seconds_per_repeat={MEASURE_SECONDS}\nrepeats={REPEATS}\ninterval_source=Time<Real>::delta_secs_f64\nstall_limit_ms={STALL_LIMIT_MS}\non_foot_motion=W-with-A-or-D-turns-every-6s-on-entry-orbit-and-return-routes\nminimum_continuous_body_path_m={MIN_MEASURED_BODY_PATH_M}\nminimum_body_excursion_m={MIN_MEASURED_BODY_EXCURSION_M}\nphysics_gate=non-sleeping-body-translation-with-advancing-Time<Fixed>-and-live-colliders\nfixed_physics_time_min_seconds={}\nsimulation_advancing_fraction_min=0.95\nday_night_angle_span_min_rad=0.01\nfeatures=asset-review\nshadows=normal-production-settings\n",
         window.unwrap_or_else(|| "not-yet-available".into()),
         MEASURE_SECONDS * 0.5,
     );
@@ -3512,21 +3492,6 @@ mod transition_diagnostic_tests {
 }
 
 fn finish_run(world: &mut World, run: &mut PlanetAcceptance) {
-    if let Some(probe) = world.get_resource::<crate::chunks::ChunkStageProbe>() {
-        if let Err(error) = fs::write(run.directory.join("chunk-stage-probe.csv"), probe.to_csv()) {
-            record_error(run, format!("write chunk-stage probe: {error}"));
-        }
-        if let Err(error) = fs::write(run.directory.join("road-stage-probe.csv"), probe.road_csv())
-        {
-            record_error(run, format!("write road-stage probe: {error}"));
-        }
-        if let Err(error) = fs::write(
-            run.directory.join("prop-cull-stage-probe.csv"),
-            probe.cull_csv(),
-        ) {
-            record_error(run, format!("write prop-cull stage probe: {error}"));
-        }
-    }
     let mut missing = Vec::new();
     for index in 0..CAPTURE_VIEWS.len() * SOLAR_PHASES.len() {
         let path = run.directory.join("captures").join(capture_file(index));
