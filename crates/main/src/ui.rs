@@ -58,8 +58,11 @@ pub(crate) enum SidebarReadoutSlot {
     View,
     Follow,
     VehicleAction,
+    SummonVehicleAction,
     TeleportAction,
-    Actions,
+    RecoveryContext,
+    RecoveryAction,
+    SelectorChoice,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,6 +71,10 @@ pub(crate) enum SidebarAction {
     ToggleFollow,
     Interact,
     Teleport,
+    ToggleVehicleSelector,
+    SelectVehicle(crate::exploration::Kind),
+    CancelVehicleSelector,
+    HoldRecovery,
 }
 
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
@@ -296,14 +303,21 @@ pub(crate) fn spawn_sidebar(commands: &mut Commands, font: &UiFont) {
                                 font,
                             ));
                             section.spawn(sidebar_action_row(
+                                "Summon vehicle · V",
+                                SidebarReadoutSlot::SummonVehicleAction,
+                                SidebarAction::ToggleVehicleSelector,
+                                font,
+                            ));
+                            section.spawn(sidebar_action_row(
                                 "Teleport to selected destination · T",
                                 SidebarReadoutSlot::TeleportAction,
                                 SidebarAction::Teleport,
                                 font,
                             ));
-                            section.spawn(sidebar_exploration_row(
-                                "Recover: Hold R · 0%",
-                                SidebarReadoutSlot::Actions,
+                            section.spawn(sidebar_action_row(
+                                "Recover · Hold 1s (R)",
+                                SidebarReadoutSlot::RecoveryAction,
+                                SidebarAction::HoldRecovery,
                                 font,
                             ));
                         });
@@ -352,7 +366,11 @@ fn sidebar_world_row(text: &str, slot: SidebarReadoutSlot, font: &UiFont) -> imp
     )
 }
 
-fn sidebar_exploration_row(text: &str, slot: SidebarReadoutSlot, font: &UiFont) -> impl Bundle {
+pub(crate) fn sidebar_exploration_row(
+    text: &str,
+    slot: SidebarReadoutSlot,
+    font: &UiFont,
+) -> impl Bundle {
     (
         Text::new(text),
         text_font(font, 12.0),
