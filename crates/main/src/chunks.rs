@@ -154,7 +154,7 @@ const DEBUG_CHUNK_BORDERS: bool = false;
 /// LOD transitions applied per frame (static/water geometry work).
 const TRANSITIONS_PER_FRAME: usize = 8;
 /// Total structure and scenery roots spawned or despawned per update.
-const SCENE_ROOT_WORK_PER_UPDATE: usize = 512;
+const SCENE_ROOT_WORK_PER_UPDATE: usize = 256;
 /// Reserve half the shared budget for removals so a continuing stream of
 /// nearby promotions cannot keep distant detail resident indefinitely.
 const SCENE_ROOT_REMOVALS_PER_UPDATE: usize = SCENE_ROOT_WORK_PER_UPDATE / 2;
@@ -935,7 +935,7 @@ mod tests {
 
     #[test]
     fn scene_detail_work_is_bounded_and_reverses_without_losing_support() {
-        const MAX_ROOT_CHANGES_PER_UPDATE: usize = 512;
+        const MAX_ROOT_CHANGES_PER_UPDATE: usize = 256;
         let (mut app, camera, static_terrain, support) = detail_app();
         let initial_roots = scene_root_ids(&mut app);
         for _ in 0..2 {
