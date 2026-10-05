@@ -1,46 +1,86 @@
-use bevy::prelude::{Rect, Vec2, Vec3};
+use bevy::prelude::{Color, Rect, Vec2, Vec3};
 
-/// Screen-label categories ordered from the most useful navigation context to
-/// the least useful one when labels compete for space.
+use crate::{level::RegionKind, theme};
+
+/// Marker types shared by the minimap and Planet view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PlanetMarkerLabelKind {
+pub enum PlanetMarkerKind {
     Explorer,
     SelectedDestination,
     Settlement,
-    Region,
+    Region(RegionKind),
     Bridge,
 }
 
-/// Whether a marker's name should be shown at the current zoom and hover state.
-pub fn planet_marker_label_visible(
-    kind: PlanetMarkerLabelKind,
-    hovered: bool,
-    camera_radius: f32,
-    planet_radius: f32,
-) -> bool {
-    match kind {
-        PlanetMarkerLabelKind::Explorer | PlanetMarkerLabelKind::SelectedDestination => true,
-        PlanetMarkerLabelKind::Settlement => true,
-        PlanetMarkerLabelKind::Region => {
-            hovered
-                || (camera_radius.is_finite()
-                    && planet_radius.is_finite()
-                    && planet_radius > 0.0
-                    && camera_radius <= planet_radius * 2.0)
+/// Marker geometry categories shared by the minimap and Planet view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanetMarkerShape {
+    Circle,
+    Square,
+}
+
+/// Style shared by both map presentations. Dot sizes and placement remain
+/// local to each view so each projection keeps its own scale.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlanetMarkerPresentation {
+    pub color: Color,
+    pub shape: PlanetMarkerShape,
+    pub outlined: bool,
+}
+
+pub fn planet_marker_presentation(kind: PlanetMarkerKind) -> PlanetMarkerPresentation {
+    let (color, shape, outlined) = match kind {
+        PlanetMarkerKind::Explorer => (theme::ACCENT, PlanetMarkerShape::Circle, false),
+        PlanetMarkerKind::SelectedDestination => (theme::PRIMARY, PlanetMarkerShape::Circle, true),
+        PlanetMarkerKind::Settlement | PlanetMarkerKind::Region(RegionKind::Settlement) => {
+            (theme::WARNING, PlanetMarkerShape::Square, true)
         }
-        PlanetMarkerLabelKind::Bridge => hovered,
+        PlanetMarkerKind::Region(kind) => {
+            (region_marker_color(kind), PlanetMarkerShape::Circle, false)
+        }
+        PlanetMarkerKind::Bridge => (theme::WARNING, PlanetMarkerShape::Circle, true),
+    };
+    PlanetMarkerPresentation {
+        color,
+        shape,
+        outlined,
+    }
+}
+
+fn region_marker_color(kind: RegionKind) -> Color {
+    match kind {
+        RegionKind::Ocean | RegionKind::Lake | RegionKind::SaltLake | RegionKind::River => {
+            theme::INFO
+        }
+        RegionKind::MountainRange | RegionKind::Volcano | RegionKind::Glacier => theme::ACCENT,
+        RegionKind::Settlement | RegionKind::Road => theme::WARNING,
+        RegionKind::Beach | RegionKind::Cliff => theme::PRIMARY,
+        _ => theme::INK,
+    }
+}
+
+/// Whether a marker's name should be shown at the current hover state.
+pub fn planet_marker_label_visible(kind: PlanetMarkerKind, hovered: bool) -> bool {
+    match kind {
+        PlanetMarkerKind::Explorer
+        | PlanetMarkerKind::SelectedDestination
+        | PlanetMarkerKind::Settlement
+        | PlanetMarkerKind::Region(RegionKind::Settlement) => true,
+        PlanetMarkerKind::Region(_) | PlanetMarkerKind::Bridge => hovered,
     }
 }
 
 /// Label priority for reducing collisions. Hovered places rise above the
 /// settlement layer, while bridges remain unnamed until hovered.
-pub fn planet_marker_label_priority(kind: PlanetMarkerLabelKind, hovered: bool) -> Option<u8> {
+pub fn planet_marker_label_priority(kind: PlanetMarkerKind, hovered: bool) -> Option<u8> {
     match kind {
-        PlanetMarkerLabelKind::Explorer => Some(0),
-        PlanetMarkerLabelKind::SelectedDestination => Some(1),
-        PlanetMarkerLabelKind::Settlement => Some(if hovered { 2 } else { 3 }),
-        PlanetMarkerLabelKind::Region => Some(if hovered { 2 } else { 4 }),
-        PlanetMarkerLabelKind::Bridge => hovered.then_some(2),
+        PlanetMarkerKind::Explorer => Some(0),
+        PlanetMarkerKind::SelectedDestination => Some(1),
+        PlanetMarkerKind::Settlement | PlanetMarkerKind::Region(RegionKind::Settlement) => {
+            Some(if hovered { 2 } else { 3 })
+        }
+        PlanetMarkerKind::Region(_) => Some(if hovered { 2 } else { 4 }),
+        PlanetMarkerKind::Bridge => hovered.then_some(2),
     }
 }
 
@@ -164,12 +204,14 @@ pub fn marker_clears_spherical_horizon(
 
 #[cfg(test)]
 mod tests {
+    use crate::{level::RegionKind, theme};
     use bevy::prelude::{Rect, Vec2, Vec3};
 
     use super::{
-        PlanetMarkerLabelKind, cursor_hits_planet_marker, marker_clears_spherical_horizon,
-        planet_marker_label_priority, planet_marker_label_visible, project_ndc_to_logical_viewport,
-        same_surface_location, triangle_area_weighted_centroid,
+        PlanetMarkerKind, PlanetMarkerShape, cursor_hits_planet_marker,
+        marker_clears_spherical_horizon, planet_marker_label_priority, planet_marker_label_visible,
+        planet_marker_presentation, project_ndc_to_logical_viewport, same_surface_location,
+        triangle_area_weighted_centroid,
     };
 
     #[test]
@@ -223,57 +265,100 @@ mod tests {
     }
 
     #[test]
-    fn marker_labels_follow_hover_zoom_and_priority_rules() {
+    fn marker_labels_follow_shared_hover_policy_and_priority() {
         assert!(planet_marker_label_visible(
-            PlanetMarkerLabelKind::Settlement,
-            false,
-            6_000.0,
-            2_000.0,
+            PlanetMarkerKind::Explorer,
+            false
+        ));
+        assert!(planet_marker_label_visible(
+            PlanetMarkerKind::SelectedDestination,
+            false
+        ));
+        assert!(planet_marker_label_visible(
+            PlanetMarkerKind::Settlement,
+            false
+        ));
+        assert!(planet_marker_label_visible(
+            PlanetMarkerKind::Region(RegionKind::Settlement),
+            false
         ));
         assert!(!planet_marker_label_visible(
-            PlanetMarkerLabelKind::Region,
+            PlanetMarkerKind::Region(RegionKind::Forest),
             false,
-            6_000.0,
-            2_000.0,
-        ));
-        assert!(planet_marker_label_visible(
-            PlanetMarkerLabelKind::Region,
-            false,
-            4_000.0,
-            2_000.0,
         ));
         assert!(!planet_marker_label_visible(
-            PlanetMarkerLabelKind::Bridge,
+            PlanetMarkerKind::Bridge,
             false,
-            2_024.0,
-            2_000.0,
         ));
         assert!(planet_marker_label_visible(
-            PlanetMarkerLabelKind::Bridge,
+            PlanetMarkerKind::Region(RegionKind::Forest),
             true,
-            6_000.0,
-            2_000.0,
         ));
+        assert!(planet_marker_label_visible(PlanetMarkerKind::Bridge, true));
         assert_eq!(
-            planet_marker_label_priority(PlanetMarkerLabelKind::Explorer, false),
+            planet_marker_label_priority(PlanetMarkerKind::Explorer, false),
             Some(0),
         );
         assert_eq!(
-            planet_marker_label_priority(PlanetMarkerLabelKind::SelectedDestination, false),
+            planet_marker_label_priority(PlanetMarkerKind::SelectedDestination, false),
             Some(1),
         );
         assert_eq!(
-            planet_marker_label_priority(PlanetMarkerLabelKind::Region, true),
+            planet_marker_label_priority(PlanetMarkerKind::Region(RegionKind::Forest), true),
             Some(2),
         );
         assert_eq!(
-            planet_marker_label_priority(PlanetMarkerLabelKind::Settlement, false),
+            planet_marker_label_priority(PlanetMarkerKind::Settlement, false),
             Some(3),
         );
         assert_eq!(
-            planet_marker_label_priority(PlanetMarkerLabelKind::Region, false),
+            planet_marker_label_priority(PlanetMarkerKind::Region(RegionKind::Forest), false),
             Some(4),
         );
+    }
+
+    #[test]
+    fn both_maps_share_marker_colors_shapes_and_outlines() {
+        let explorer = planet_marker_presentation(PlanetMarkerKind::Explorer);
+        assert_eq!(explorer.color, theme::ACCENT);
+        assert_eq!(explorer.shape, PlanetMarkerShape::Circle);
+        assert!(!explorer.outlined);
+
+        let settlement = planet_marker_presentation(PlanetMarkerKind::Settlement);
+        assert_eq!(settlement.color, theme::WARNING);
+        assert_eq!(settlement.shape, PlanetMarkerShape::Square);
+        assert!(settlement.outlined);
+        assert_eq!(
+            planet_marker_presentation(PlanetMarkerKind::Region(RegionKind::Settlement)),
+            settlement
+        );
+
+        let region = planet_marker_presentation(PlanetMarkerKind::Region(RegionKind::Ocean));
+        assert_eq!(region.color, theme::INFO);
+        assert_eq!(region.shape, PlanetMarkerShape::Circle);
+        assert!(!region.outlined);
+        assert_eq!(
+            planet_marker_presentation(PlanetMarkerKind::Region(RegionKind::MountainRange)).color,
+            theme::ACCENT
+        );
+        assert_eq!(
+            planet_marker_presentation(PlanetMarkerKind::Region(RegionKind::Beach)).color,
+            theme::PRIMARY
+        );
+        assert_eq!(
+            planet_marker_presentation(PlanetMarkerKind::Region(RegionKind::Forest)).color,
+            theme::INK
+        );
+
+        let bridge = planet_marker_presentation(PlanetMarkerKind::Bridge);
+        assert_eq!(bridge.color, theme::WARNING);
+        assert_eq!(bridge.shape, PlanetMarkerShape::Circle);
+        assert!(bridge.outlined);
+
+        let destination = planet_marker_presentation(PlanetMarkerKind::SelectedDestination);
+        assert_eq!(destination.color, theme::PRIMARY);
+        assert_eq!(destination.shape, PlanetMarkerShape::Circle);
+        assert!(destination.outlined);
     }
 
     #[test]
