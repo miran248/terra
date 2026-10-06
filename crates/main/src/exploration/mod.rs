@@ -3076,6 +3076,74 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn plane_camera_keeps_the_subject_in_frame_during_climbs_and_dives_in_every_mode() {
+        fn subject_ndc(mode: CameraFollowMode, pitch: f32, bank: f32) -> Vec3 {
+            let (mut app, _) = fixture();
+            let position = Vec3::new(0.0, terra_geometry::sphere::PLANET_RADIUS + 0.6, 0.0);
+            let heading = Vec3::NEG_Z;
+            let up = position.normalize();
+            let velocity = (heading * pitch.cos() + up * pitch.sin()) * 24.0;
+            let plane = app
+                .world_mut()
+                .spawn((
+                    Position(position),
+                    LinearVelocity(velocity),
+                    Vehicle::new(Kind::Plane, heading),
+                ))
+                .id();
+            {
+                let mut vehicle = app.world_mut().get_mut::<Vehicle>(plane).unwrap();
+                vehicle.flight.pitch = pitch;
+                vehicle.flight.bank = bank;
+            }
+            {
+                let mut state = app.world_mut().resource_mut::<Exploration>();
+                state.occupied = Some(plane);
+                state.camera_follow_mode = mode;
+            }
+
+            let mut projection = Projection::default();
+            projection.update(1600.0, 900.0);
+            let mut camera_view = Camera::default();
+            camera_view.computed.clip_from_view = projection.get_clip_from_view();
+            let camera = app
+                .world_mut()
+                .spawn((
+                    MainCamera,
+                    camera_view,
+                    Transform::from_xyz(0.0, position.y + 8.0, 20.0),
+                    projection,
+                ))
+                .id();
+            for _ in 0..4 {
+                app.update();
+            }
+
+            let transform = *app.world().get::<Transform>(camera).unwrap();
+            let body_position = app.world().get::<Position>(plane).unwrap().0;
+            app.world()
+                .get::<Camera>(camera)
+                .unwrap()
+                .world_to_ndc(&GlobalTransform::from(transform), body_position)
+                .expect("the occupied aircraft body projects through the gameplay camera")
+        }
+
+        for mode in [
+            CameraFollowMode::Facing,
+            CameraFollowMode::Movement,
+            CameraFollowMode::Orientation,
+        ] {
+            for pitch in [-0.5, 0.5] {
+                let ndc = subject_ndc(mode, pitch, 0.65);
+                assert!(
+                    ndc.z >= 0.0 && ndc.z <= 1.0 && ndc.y.abs() < 0.8,
+                    "the plane body must stay inside a comfortable gameplay frame: mode={mode:?}, pitch={pitch}, ndc={ndc:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn degenerate_plane_orientation_keeps_the_camera_finite() {
         let (mut app, _) = fixture();
         let plane = app
@@ -3112,7 +3180,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn camera_follow_mode_switch_blends_rotation_without_moving_the_boom() {
+    fn camera_follow_mode_switch_blends_aim_and_boom_without_snapping() {
         let (mut app, _) = fixture();
         let plane = app
             .world_mut()
@@ -3147,11 +3215,17 @@ pub(crate) mod tests {
 
         let first_rotation = before.rotation.angle_between(first_step.rotation);
         let total_rotation = before.rotation.angle_between(settled.rotation);
+        let first_boom_step = before.translation.distance(first_step.translation);
+        let total_boom_shift = before.translation.distance(settled.translation);
         assert!(first_rotation > 0.01, "the selected mode starts blending");
         assert!(first_rotation < total_rotation, "the camera does not snap");
         assert!(
-            before.translation.distance(settled.translation) < 0.01,
-            "the follow-mode change keeps the collision-protected boom in place"
+            first_boom_step < 1.0,
+            "the camera boom begins a smooth transition rather than snapping"
+        );
+        assert!(
+            total_boom_shift > 0.5,
+            "the boom follows the selected mode's banked camera-up axis"
         );
     }
 

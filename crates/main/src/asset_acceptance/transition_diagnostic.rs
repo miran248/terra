@@ -1708,15 +1708,27 @@ fn camera_motion_frame_target(index: usize) -> f64 {
     index as f64 * CAMERA_MOTION_FRAME_INTERVAL_SECONDS
 }
 
+fn camera_motion_pitch_input(elapsed: f64) -> f32 {
+    let cycle = elapsed.rem_euclid(4.0);
+    if (0.4..0.85).contains(&cycle) {
+        1.0
+    } else if (1.7..1.95).contains(&cycle) {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
 fn drive_camera_motion_controls(world: &mut World, elapsed: f64) {
     let cycle = elapsed.rem_euclid(4.0);
+    let pitch = camera_motion_pitch_input(elapsed);
     set_key(world, KeyCode::ShiftLeft, true);
     set_key(world, KeyCode::ShiftRight, false);
     set_key(world, KeyCode::ControlLeft, false);
     set_key(world, KeyCode::ControlRight, false);
     set_key(world, KeyCode::Space, false);
-    set_key(world, KeyCode::KeyW, (0.4..1.0).contains(&cycle));
-    set_key(world, KeyCode::KeyS, (1.4..2.0).contains(&cycle));
+    set_key(world, KeyCode::KeyW, pitch < 0.0);
+    set_key(world, KeyCode::KeyS, pitch > 0.0);
     set_key(world, KeyCode::KeyA, (2.2..2.8).contains(&cycle));
     set_key(world, KeyCode::KeyD, (3.2..3.8).contains(&cycle));
 }
@@ -2999,8 +3011,8 @@ mod transition_diagnostic_tests {
         CAMERA_MOTION_FRAME_CAPTURE_COUNT, CameraMotionSample, DIAGNOSTIC_CAPTURE_NAMES,
         DIAGNOSTIC_MINIMUM_COLLIDERS, DIAGNOSTIC_STABLE_WORLD_FRAMES, DiagnosticWorldWarmup,
         FollowProbeSample, PlanetTransitionDiagnostic, camera_motion_frame_name,
-        camera_motion_frame_target, camera_motion_mode_at, finish_transition_diagnostic,
-        radius_motion_flags, transition_action_due,
+        camera_motion_frame_target, camera_motion_mode_at, camera_motion_pitch_input,
+        finish_transition_diagnostic, radius_motion_flags, transition_action_due,
     };
     use bevy::{
         input::InputSystems,
@@ -3194,6 +3206,15 @@ mod transition_diagnostic_tests {
         assert_eq!(camera_motion_frame_name(99), "camera-motion-frame-0099.png");
         assert_eq!(camera_motion_frame_target(0), 0.0);
         assert!((camera_motion_frame_target(99) - 9.9).abs() < 1e-9);
+    }
+
+    #[test]
+    fn camera_motion_controls_use_short_climb_and_dive_inputs() {
+        assert_eq!(camera_motion_pitch_input(0.6), 1.0);
+        assert_eq!(camera_motion_pitch_input(1.8), -1.0);
+        assert_eq!(camera_motion_pitch_input(0.9), 0.0);
+        assert_eq!(camera_motion_pitch_input(1.6), 0.0);
+        assert_eq!(camera_motion_pitch_input(2.0), 0.0);
     }
 
     #[test]

@@ -226,12 +226,7 @@ pub(super) fn camera(
         ),
         CameraFollowMode::Orientation => (facing_rotation * Vec3::NEG_Z, up),
     };
-    let boom_heading = if state.camera_follow_mode == CameraFollowMode::Movement {
-        movement_heading
-    } else {
-        heading
-    };
-    let desired = up * height - boom_heading * back;
+    let desired = camera_up * height - camera_forward * back;
     let snap = !planet_view_active && (state.snap_camera || chase.target.is_none());
     if planet_view_active && state.snap_camera {
         state.snap_camera = false;

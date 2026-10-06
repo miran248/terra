@@ -40,10 +40,13 @@ impl Plugin for AssetAcceptancePlugin {
     fn build(&self, app: &mut App) {
         if background_capture_enabled() {
             assert!(
-                (std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC").is_some()
-                    || std::env::var_os(SIDEBAR_DIAGNOSTIC_ENV).is_some())
-                    && std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE").is_none(),
-                "background capture is restricted to the transition or sidebar diagnostic"
+                background_capture_mode_is_supported(
+                    std::env::var_os("TERRA_PLANET_TRANSITION_DIAGNOSTIC").is_some(),
+                    std::env::var_os(SIDEBAR_DIAGNOSTIC_ENV).is_some(),
+                    std::env::var_os(SURFACE_LABEL_ACCEPTANCE_ENV).is_some(),
+                    std::env::var_os("TERRA_PLANET_ACCEPTANCE_CAPTURE").is_some(),
+                ),
+                "background capture is restricted to transition, sidebar, or surface-label diagnostics"
             );
             app.add_systems(PreUpdate, configure_background_capture_target);
         }
@@ -118,6 +121,16 @@ impl Plugin for AssetAcceptancePlugin {
 
 pub(crate) fn background_capture_enabled() -> bool {
     std::env::var("TERRA_PLANET_CAPTURE_BACKGROUND").is_ok_and(|value| value == "1")
+}
+
+fn background_capture_mode_is_supported(
+    transition_diagnostic: bool,
+    sidebar_diagnostic: bool,
+    surface_label_diagnostic: bool,
+    full_planet_acceptance: bool,
+) -> bool {
+    (transition_diagnostic || sidebar_diagnostic || surface_label_diagnostic)
+        && !full_planet_acceptance
 }
 
 pub(crate) fn window_plugin(background_capture: bool) -> bevy::window::WindowPlugin {
@@ -268,6 +281,19 @@ mod background_capture_tests {
         let screenshot = super::background_screenshot(&target);
 
         assert_eq!(screenshot.0.normalize(None), camera_target.normalize(None));
+    }
+
+    #[test]
+    fn surface_label_diagnostic_can_use_background_capture_without_enabling_full_acceptance() {
+        assert!(super::background_capture_mode_is_supported(
+            false, false, true, false
+        ));
+        assert!(!super::background_capture_mode_is_supported(
+            false, false, false, false
+        ));
+        assert!(!super::background_capture_mode_is_supported(
+            false, false, true, true
+        ));
     }
 }
 struct Stop {
