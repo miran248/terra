@@ -300,34 +300,69 @@ they do not establish normal-window performance or absence of display scanout
 tearing. The previously deferred #57 timing gate above remains unchanged. Earlier
 rejected diagnostic attempts are retained separately and are not acceptance evidence.
 
+## Camera motion visual evidence for #70–#72
+
+The corrected production camera diagnostic is retained at
+`/tmp/terra-spec-70/camera-motion-corrected`. Its `diagnostic-status.txt`
+reports `status=diagnostic-complete`, `camera_motion_frame_count=100`, three
+follow modes, and no errors. I inspected `motion-contact-sheet.jpg` and
+`camera-modes.mp4`: the occupied aircraft remains inside the viewport through
+the recorded climb and dive after the boom follows the selected camera axes.
+This is rendered diagnostic evidence only; it does not establish a timing or
+performance pass.
+
 ## Surface-label captures for #70 and #75
 
-The focused label mode reuses the production `PlanetAcceptance` driver and primary
-window renderer. It substitutes a long accented settlement name before production
-marker setup, then saves five stills: near Planet view, oblique orbit, steep
-polar-orbit view, minimap with the starting heading, and minimap with a quarter
-turn and a settlement 380 m from the explorer near the circular rim. It records a
-capture manifest and reports `performance_gate=not-run`.
+The focused label mode reuses the production `PlanetAcceptance` driver and camera.
+It substitutes a long accented settlement name before production marker setup,
+places that marker 180 m opposite the rendered camera-right tangent to keep the
+full name in the Planet view while testing production label eligibility, and
+places a second name 380 m opposite the initial heading. It saves five stills:
+near Planet view, oblique orbit, steep vertical-orbit view at the normal spawn
+site, minimap with the starting heading, and a quarter-turn minimap view where
+the rim name extends inward from the left edge and is clipped by the circular
+mask. The orbit is polar; the fixture does not move the player to a geographic
+pole. Background mode captures the same offscreen image target as the main
+camera. A label that fails the production visibility policy gets a separate
+`debug/*-not-visible.png` scene capture; those rejected scenes never count as
+acceptance output.
 
 Reproduce it from a checkout with the generated level artifact present:
 
 ```sh
-mkdir -p /tmp/terra-spec-70/label-captures
-TERRA_PLANET_LABEL_ACCEPTANCE_CAPTURE=/tmp/terra-spec-70/label-captures \
+asset_root=${TERRA_PLANET_ASSET_ROOT:-/Users/miran/projects/miran248/terra/crates/main}
+output=/tmp/terra-spec-70/focused-labels-final2
+mkdir -p "$output"
+test -e crates/main/assets/level_1337.bin || \
+  ln -s "$asset_root/assets/level_1337.bin" crates/main/assets/level_1337.bin
+BEVY_ASSET_ROOT="$asset_root" \
+TERRA_PLANET_ASSET_ROOT="$asset_root" \
+TERRA_PLANET_CAPTURE_BACKGROUND=1 \
+TERRA_PLANET_LABEL_ACCEPTANCE_CAPTURE="$output" \
   cargo run --locked -p main --features asset-review
 ```
+
+Use a fresh output directory for each run. For a worktree, `asset_root` must
+contain the generated runtime models and the ignored `level_1337.bin` artifact;
+the symlink above supplies the compile-time embedded level when that artifact is
+missing from the worktree.
 
 Expected files are `captures/surface-label-near.png`,
 `captures/surface-label-oblique.png`, `captures/surface-label-polar.png`,
 `captures/surface-label-minimap-heading.png`, and
 `captures/surface-label-minimap-rim.png`, plus `capture-manifest.csv`,
 `run-configuration.txt`, and `acceptance-status.txt`. The mode checks that all
-five screenshots were written; it does not make a pixel-based claim about text
-legibility or rendering performance.
+five screenshots were written and that expected label components passed the
+production visibility gate. The five images below were also inspected visually;
+this is not an automated pixel test or a rendering performance claim.
 
-Inspect the captures for complete diacritics and geographic wording, correct
-surface alignment in the oblique and polar views, and minimap rim clipping after
-the heading turn. Hover-only eligibility/overlap, labels on rugged terrain, and
-horizon or viewport-edge masking still need direct visual inspection in the
-interactive production build; this compact fixture does not simulate pointer
-hover or inject terrain geometry.
+The rendered run at `/tmp/terra-spec-70/focused-labels-final2` completed all five
+captures with `status=complete`, `requested_captures=5`, and `errors=0`. The full
+Unicode name is visible in the near, oblique, and vertical-orbit Planet views;
+the minimap heading view clips the name at the circular rim, and the dedicated
+rim name is visibly cut by that mask. Its `acceptance-status.txt` reports
+`performance_gate=not-run`. Geographic near-pole placement, hover-only
+eligibility, overlap on rugged terrain, and horizon/viewport-edge behavior
+outside these five poses still need direct inspection in the interactive
+production build; this compact fixture does not simulate pointer hover or inject
+terrain geometry.

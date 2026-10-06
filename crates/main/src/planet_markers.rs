@@ -142,6 +142,79 @@ pub(crate) fn explorer_marker_layout(world: &mut World) -> Option<ExplorerMarker
 
 pub(crate) struct PlanetMarkersPlugin;
 
+#[cfg(feature = "asset-review")]
+pub(crate) fn surface_label_debug_state(world: &mut World, expected_label: &str) -> String {
+    let marker = world.get_resource::<PlanetMarkerData>().and_then(|data| {
+        data.named
+            .iter()
+            .enumerate()
+            .find(|(_, marker)| marker.label.contains(expected_label))
+            .map(|(index, marker)| {
+                (
+                    index,
+                    marker.label.clone(),
+                    marker.destination.position,
+                    marker.kind,
+                )
+            })
+    });
+    let anchor = world
+        .get_resource::<PlanetMarkerAnchors>()
+        .and_then(|anchors| anchors.settlements.first().copied());
+    let player = {
+        let mut players = world.query::<(&Position, &Player)>();
+        players
+            .iter(world)
+            .next()
+            .map(|(position, player)| (position.0, player.heading))
+    };
+    let camera = {
+        let mut cameras = world.query_filtered::<&Transform, With<MainCamera>>();
+        cameras.iter(world).next().map(|transform| {
+            (
+                transform.translation,
+                transform.rotation * Vec3::X,
+                transform.rotation * Vec3::Y,
+                transform.rotation * Vec3::Z,
+            )
+        })
+    };
+    let projection = marker.as_ref().map(|(index, _, _, _)| {
+        world
+            .get_resource::<PlanetMarkerProjection>()
+            .map(|projection| {
+                let screen = projection
+                    .screen_by_index
+                    .get(*index)
+                    .and_then(Option::as_ref);
+                let candidate = projection
+                    .label_candidates
+                    .iter()
+                    .find(|candidate| candidate.target == LabelTarget::Named(*index));
+                (
+                    screen.map(|screen| (screen.center, screen.dot_visible, screen.label_bounds)),
+                    candidate.map(|candidate| (candidate.bounds, candidate.priority)),
+                    projection
+                        .accepted_labels
+                        .contains(&LabelTarget::Named(*index)),
+                )
+            })
+    });
+    let ribbons = {
+        let mut query = world.query::<(&SurfaceLabelRibbon, &Visibility)>();
+        query
+            .iter(world)
+            .filter(|(ribbon, _)| {
+                ribbon.view == SurfaceLabelView::Planet && ribbon.label.contains(expected_label)
+            })
+            .map(|(ribbon, visibility)| format!("{:?}:{visibility:?}", ribbon.view))
+            .collect::<Vec<_>>()
+    };
+    format!(
+        "marker={marker:?}; anchor={anchor:?}; player={player:?}; camera=(pos,right,up,back)={camera:?}; projection={projection:?}; ribbons={ribbons:?}"
+    )
+}
+
 impl Plugin for PlanetMarkersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlanetMarkerProjection>()
