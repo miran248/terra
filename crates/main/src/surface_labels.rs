@@ -12,6 +12,8 @@ use bevy::{
 use terra_geometry::sphere::great_circle_point;
 
 pub(crate) const ATLAS_FONT_SIZE: f32 = 48.0;
+pub(crate) const PLANET_LABEL_LAYER: usize = 3;
+pub(crate) const MINIMAP_LABEL_LAYER: usize = 4;
 const ATLAS_WIDTH: u32 = 1024;
 const ATLAS_PADDING: u32 = 2;
 
@@ -50,6 +52,15 @@ pub(crate) struct SurfaceRibbonMesh {
     pub uvs: Vec<[f32; 2]>,
     pub glyph_centers: Vec<Vec3>,
     pub glyph_corners: Vec<[Vec3; 4]>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SurfaceRibbonLayout {
+    pub camera_right: Vec3,
+    pub camera_up: Vec3,
+    pub world_per_atlas_pixel: f32,
+    pub label_offset_atlas_pixels: Vec2,
+    pub clearance: f32,
 }
 
 struct RasterGlyph {
@@ -246,21 +257,17 @@ pub(crate) fn build_surface_ribbon(
     atlas: &SurfaceGlyphAtlas,
     text: &str,
     anchor: Vec3,
-    camera_right: Vec3,
-    camera_up: Vec3,
-    world_per_atlas_pixel: f32,
-    label_offset_atlas_pixels: Vec2,
+    layout: SurfaceRibbonLayout,
     mut surface_radius: impl FnMut(Vec3) -> f32,
-    clearance: f32,
 ) -> SurfaceRibbonMesh {
     let anchor_direction = anchor.normalize_or(Vec3::Y);
-    let camera_right = camera_right.normalize_or(Vec3::X);
+    let camera_right = layout.camera_right.normalize_or(Vec3::X);
     let tangent = (camera_right - anchor_direction * camera_right.dot(anchor_direction))
         .normalize_or(anchor_direction.any_orthonormal_vector());
     let path_radius = anchor.length().max(f32::EPSILON);
     let mut terrain_clearance_radius = anchor.length().max(surface_radius(anchor_direction));
     let mut glyphs = Vec::new();
-    let mut cursor = label_offset_atlas_pixels.x;
+    let mut cursor = layout.label_offset_atlas_pixels.x;
     for character in text.chars() {
         let Some(glyph) = atlas.glyphs.get(&character).copied() else {
             continue;
@@ -272,7 +279,7 @@ pub(crate) fn build_surface_ribbon(
                 let sample = great_circle_point(
                     anchor_direction,
                     tangent,
-                    (cursor + glyph_mid + local_x) * world_per_atlas_pixel,
+                    (cursor + glyph_mid + local_x) * layout.world_per_atlas_pixel,
                     path_radius,
                 )
                 .normalize_or(anchor_direction);
@@ -284,13 +291,13 @@ pub(crate) fn build_surface_ribbon(
     }
     // One radial envelope keeps the whole name a single smooth ribbon over
     // uneven terrain instead of stepping each character up and down.
-    let ribbon_radius = terrain_clearance_radius + clearance;
+    let ribbon_radius = terrain_clearance_radius + layout.clearance;
     let mut output = SurfaceRibbonMesh::default();
 
     for (glyph, cursor) in glyphs {
         if glyph.has_ink {
             let glyph_mid = glyph.bounds.center().x;
-            let center_distance = (cursor + glyph_mid) * world_per_atlas_pixel;
+            let center_distance = (cursor + glyph_mid) * layout.world_per_atlas_pixel;
             let center_on_base =
                 great_circle_point(anchor_direction, tangent, center_distance, ribbon_radius);
             let center_direction = center_on_base.normalize_or(anchor_direction);
@@ -299,32 +306,32 @@ pub(crate) fn build_surface_ribbon(
             .normalize_or(tangent);
             let mut glyph_up = center_direction
                 .cross(glyph_tangent)
-                .normalize_or(camera_up);
-            if glyph_up.dot(camera_up) < 0.0 {
+                .normalize_or(layout.camera_up);
+            if glyph_up.dot(layout.camera_up) < 0.0 {
                 glyph_up = -glyph_up;
             }
 
             let glyph_center = center_direction * ribbon_radius
                 + glyph_up
-                    * (glyph.bounds.center().y + label_offset_atlas_pixels.y)
-                    * world_per_atlas_pixel;
+                    * (glyph.bounds.center().y + layout.label_offset_atlas_pixels.y)
+                    * layout.world_per_atlas_pixel;
             let left = glyph.bounds.min.x - glyph_mid;
             let right = glyph.bounds.max.x - glyph_mid;
             let bottom = glyph.bounds.min.y - glyph.bounds.center().y;
             let top = glyph.bounds.max.y - glyph.bounds.center().y;
             let corners = [
                 glyph_center
-                    + glyph_tangent * (left * world_per_atlas_pixel)
-                    + glyph_up * (bottom * world_per_atlas_pixel),
+                    + glyph_tangent * (left * layout.world_per_atlas_pixel)
+                    + glyph_up * (bottom * layout.world_per_atlas_pixel),
                 glyph_center
-                    + glyph_tangent * (right * world_per_atlas_pixel)
-                    + glyph_up * (bottom * world_per_atlas_pixel),
+                    + glyph_tangent * (right * layout.world_per_atlas_pixel)
+                    + glyph_up * (bottom * layout.world_per_atlas_pixel),
                 glyph_center
-                    + glyph_tangent * (right * world_per_atlas_pixel)
-                    + glyph_up * (top * world_per_atlas_pixel),
+                    + glyph_tangent * (right * layout.world_per_atlas_pixel)
+                    + glyph_up * (top * layout.world_per_atlas_pixel),
                 glyph_center
-                    + glyph_tangent * (left * world_per_atlas_pixel)
-                    + glyph_up * (top * world_per_atlas_pixel),
+                    + glyph_tangent * (left * layout.world_per_atlas_pixel)
+                    + glyph_up * (top * layout.world_per_atlas_pixel),
             ];
             output.glyph_centers.push(glyph_center);
             output.glyph_corners.push(corners);
