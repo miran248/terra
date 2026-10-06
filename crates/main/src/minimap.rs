@@ -1,16 +1,19 @@
+use std::collections::HashMap;
+
 // use crate::loot::{LootMaterial, LootWeapon};
 use crate::ui::UiFont;
 use crate::{
     exploration::{Exploration, PlanetDestination, PlanetDestinationId, PlanetDestinationSurface},
     map::{LevelRegions, MainCamera, Player, Settlement, WorldEpoch},
+    surface_labels::{self, SurfaceGlyphAtlas, SurfaceLabelRibbon, SurfaceLabelView},
 };
 // use crate::zombie::Zombie;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
+use bevy::camera::visibility::RenderLayers;
 use bevy::image::Image;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::text::LineHeight;
 use shared::planet_markers::{
     PlanetMarkerKind, PlanetMarkerShape, planet_marker_label_visible, planet_marker_presentation,
 };
@@ -27,10 +30,14 @@ const MINIMAP_SIZE: f32 = 160.0;
 const TEX: u32 = 256;
 /// How high above the player the minimap camera sits, meters.
 const CAM_HEIGHT: f32 = 1400.0;
+const MINIMAP_FOV: f32 = 0.6;
 /// Ground radius covered by the flat minimap overlay, meters.
 const VIEW_RADIUS: f32 = 430.0;
 const DOT: f32 = 3.0;
-const MAX_MAP_LABEL_CHARS: usize = 24;
+const MAP_LABEL_FONT_SIZE: f32 = 8.0;
+const MAP_LABEL_OFFSET: Vec2 = Vec2::new(6.0, -2.0);
+const MAP_LABEL_CLEARANCE: f32 = 2.0;
+const MAP_LABEL_ROTATION_EPSILON: f32 = 0.004;
 const MAP_LABEL_HOVER_RADIUS: f32 = 12.0;
 /// Ray origins can be this high above the planet while still finding its surface.
 const SURFACE_PICKING_ALTITUDE: f32 = 3000.0;
@@ -43,27 +50,36 @@ struct Minimap;
 #[derive(Component)]
 struct CompassLabel;
 
-#[derive(Clone, Copy)]
-struct MapLabelLayout {
-    anchor: Vec2,
-    size: Vec2,
-}
-
-#[derive(Clone, Copy)]
-struct MapLabelBounds {
-    left: f32,
-    top: f32,
-    width: f32,
-    height: f32,
-}
-
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 struct MapLabel {
     anchor: Vec2,
+    world_anchor: Vec3,
+    marker_index: usize,
     text: String,
-    color: Color,
+    kind: PlanetMarkerKind,
     font_size: f32,
-    z_index: i32,
+}
+
+#[derive(Resource, Default)]
+struct MinimapSurfaceLabelState {
+    world_epoch: Option<WorldEpoch>,
+    labels: Vec<MapLabel>,
+}
+
+#[derive(Resource, Default)]
+struct MinimapSurfaceLabelAssets {
+    world_epoch: Option<WorldEpoch>,
+    atlas: Option<SurfaceGlyphAtlas>,
+    materials: Vec<(Color, Handle<StandardMaterial>)>,
+}
+
+#[derive(Component)]
+struct MinimapSurfaceLabelOwner {
+    marker_index: usize,
+    world_anchor: Vec3,
+    kind: PlanetMarkerKind,
+    font_size: f32,
+    camera_rotation: Quat,
 }
 
 #[derive(Clone, Copy)]
@@ -73,59 +89,38 @@ struct MapContentGeometry {
     inverse_scale_factor: f32,
 }
 
-impl MapLabel {
-    fn layout(&self) -> MapLabelLayout {
-        let text_width = self.text.chars().count() as f32 * self.font_size * 0.65;
-        MapLabelLayout {
-            anchor: self.anchor,
-            size: Vec2::new(text_width, self.font_size * 1.2),
-        }
-    }
-}
+fn build_minimap_surface_ribbon(
+    atlas: &SurfaceGlyphAtlas,
+    text: &str,
+    anchor: Vec3,
+    font_size: f32,
+    camera_transform: &Transform,
+    terrain: Option<&TerrainGen>,
+) -> surface_labels::SurfaceRibbonMesh {
+    let world_per_texture_pixel = 2.0 * CAM_HEIGHT * (MINIMAP_FOV * 0.5).tan() / TEX as f32;
+    let texture_per_ui_pixel = TEX as f32 / (MINIMAP_SIZE - 6.0);
+    let world_per_atlas_pixel = world_per_texture_pixel * texture_per_ui_pixel * font_size
+        / surface_labels::ATLAS_FONT_SIZE;
+    let label_offset_atlas_pixels =
+        MAP_LABEL_OFFSET * (texture_per_ui_pixel * surface_labels::ATLAS_FONT_SIZE / font_size);
 
-/// Keep each label beside its marker; truncate at the circular map boundary
-/// instead of moving it away from the entity it identifies.
-fn place_map_labels(labels: &[MapLabelLayout], size: Vec2) -> Vec<MapLabelBounds> {
-    let center = size / 2.0;
-    let radius = size.min_element() / 2.0 - 4.0;
-    labels
-        .iter()
-        .map(|label| {
-            let left = label.anchor.x + 6.0;
-            let top = label.anchor.y - label.size.y / 2.0;
-            let far_y = (label.anchor.y - center.y).abs() + label.size.y / 2.0;
-            let half_width = (radius * radius - far_y * far_y).max(0.0).sqrt();
-            let right = center.x + half_width;
-            MapLabelBounds {
-                left,
-                top,
-                width: if far_y < radius && left >= center.x - half_width {
-                    label.size.x.min((right - left).max(0.0))
-                } else {
-                    0.0
-                },
-                height: label.size.y,
-            }
-        })
-        .collect()
-}
-
-fn truncate_map_label(text: &str, max_chars: usize) -> String {
-    let max_chars = max_chars.min(MAX_MAP_LABEL_CHARS);
-    if max_chars == 0 {
-        return String::new();
-    }
-    if text.chars().count() <= max_chars {
-        return text.to_owned();
-    }
-    let mut truncated = text
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect::<String>()
-        .trim_end()
-        .to_owned();
-    truncated.push('…');
-    truncated
+    surface_labels::build_surface_ribbon(
+        atlas,
+        text,
+        anchor,
+        surface_labels::SurfaceRibbonLayout {
+            camera_right: camera_transform.rotation * Vec3::X,
+            camera_up: camera_transform.rotation * Vec3::Y,
+            world_per_atlas_pixel,
+            label_offset_atlas_pixels,
+            clearance: MAP_LABEL_CLEARANCE,
+        },
+        |direction| {
+            terrain.map_or(anchor.length(), |terrain| {
+                terrain.surface_radius(SpherePos::new(direction))
+            })
+        },
+    )
 }
 
 fn map_content_geometry(
@@ -266,10 +261,17 @@ impl Default for MinimapTimer {
 impl Plugin for MinimapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MinimapTimer>()
+            .init_resource::<MinimapSurfaceLabelState>()
+            .init_resource::<MinimapSurfaceLabelAssets>()
             .add_systems(Startup, setup_minimap)
             .add_systems(
                 Update,
-                (track_minimap_camera, draw_overlay, sync_minimap_visibility)
+                (
+                    track_minimap_camera,
+                    draw_overlay,
+                    update_minimap_surface_labels,
+                    sync_minimap_visibility,
+                )
                     .chain()
                     .run_if(in_state(AppState::Playing)),
             );
@@ -503,10 +505,11 @@ fn setup_minimap(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
         // Render target is single-sampled; matching MSAA avoids a blank/gray main view.
         Msaa::Off,
         Projection::from(PerspectiveProjection {
-            fov: 0.6,
+            fov: MINIMAP_FOV,
             ..default()
         }),
         Transform::from_xyz(0.0, PLANET_RADIUS + CAM_HEIGHT, 0.0).looking_at(Vec3::ZERO, Vec3::Z),
+        RenderLayers::from_layers(&[0, surface_labels::MINIMAP_LABEL_LAYER]),
         MinimapCamera,
     ));
 
@@ -594,6 +597,8 @@ fn draw_overlay(
     font: Res<UiFont>,
     time: Res<Time<Real>>,
     mut timer: ResMut<MinimapTimer>,
+    world_epoch: Res<WorldEpoch>,
+    mut label_state: ResMut<MinimapSurfaceLabelState>,
 ) {
     let timer_finished = timer.0.tick(time.delta()).just_finished();
     if !timer_finished {
@@ -696,7 +701,7 @@ fn draw_overlay(
     }
 
     if let Some(regions) = regions.as_deref() {
-        for region in &regions.regions {
+        for (region_index, region) in regions.regions.iter().enumerate() {
             if region.kind == RegionKind::Road
                 && regions
                     .bridge_top_surfaces_by_name
@@ -709,7 +714,6 @@ fn draw_overlay(
                 continue;
             };
             let marker_kind = map_region_marker_kind(region.kind);
-            let presentation = planet_marker_presentation(marker_kind);
             let display_name = if region.kind == RegionKind::Settlement {
                 settlements
                     .iter()
@@ -733,23 +737,22 @@ fn draw_overlay(
             ));
             let label = MapLabel {
                 anchor: pt,
+                world_anchor: world_pos,
+                marker_index: region_index,
                 text: display_name.to_owned(),
-                color: presentation.color,
-                font_size: 8.0 * marker_scale,
-                z_index: if map_label_default_visible(region.kind) {
-                    2
-                } else {
-                    3
-                },
+                kind: marker_kind,
+                font_size: MAP_LABEL_FONT_SIZE * marker_scale,
             };
-            if planet_marker_label_visible(marker_kind, false) {
+            if map_label_default_visible(region.kind) {
                 labels.push(label);
             } else if planet_marker_label_visible(marker_kind, true) {
                 hover_labels.push(label);
             }
         }
 
-        for (name, triangles) in &regions.bridge_top_surfaces_by_name {
+        for (bridge_index, (name, triangles)) in
+            regions.bridge_top_surfaces_by_name.iter().enumerate()
+        {
             let Some(world_pos) = bridge_surface_centroid(triangles) else {
                 continue;
             };
@@ -757,7 +760,6 @@ fn draw_overlay(
                 continue;
             };
             let s = 5.0 * marker_scale;
-            let presentation = planet_marker_presentation(PlanetMarkerKind::Bridge);
             let (node, color, border) = map_marker_components(pt, s, PlanetMarkerKind::Bridge);
             commands.spawn((
                 node,
@@ -773,10 +775,11 @@ fn draw_overlay(
             {
                 hover_labels.push(MapLabel {
                     anchor: pt,
+                    world_anchor: world_pos,
+                    marker_index: regions.regions.len() + bridge_index,
                     text: name.clone(),
-                    color: presentation.color,
-                    font_size: 8.0 * marker_scale,
-                    z_index: 3,
+                    kind: PlanetMarkerKind::Bridge,
+                    font_size: MAP_LABEL_FONT_SIZE * marker_scale,
                 });
             }
         }
@@ -785,39 +788,8 @@ fn draw_overlay(
     if let Some(index) = nearest_hovered_label(map_cursor, &hover_labels) {
         labels.push(hover_labels[index].clone());
     }
-
-    let label_layouts = labels.iter().map(MapLabel::layout).collect::<Vec<_>>();
-    let label_placements = place_map_labels(&label_layouts, Vec2::splat(size));
-    for (label, placement) in labels.iter().zip(label_placements) {
-        let max_chars = (placement.width / (label.font_size * 0.65) + 0.001).floor() as usize;
-        let text = truncate_map_label(&label.text, max_chars);
-        if text.is_empty() {
-            continue;
-        }
-        commands.spawn((
-            Text::new(text),
-            TextLayout::no_wrap(),
-            LineHeight::Px(placement.height),
-            TextFont {
-                font: font.0.clone().into(),
-                font_size: FontSize::Px(label.font_size),
-                ..default()
-            },
-            TextColor(label.color),
-            ZIndex(label.z_index),
-            GameplayHudElement::default(),
-            Node {
-                position_type: PositionType::Absolute,
-                left: Val::Px(placement.left),
-                top: Val::Px(placement.top),
-                width: Val::Px(placement.width),
-                height: Val::Px(placement.height),
-                ..default()
-            },
-            MinimapDot,
-            ChildOf(minimap_entity),
-        ));
-    }
+    label_state.world_epoch = Some(*world_epoch);
+    label_state.labels = labels;
 
     let world_north = (WORLD_NORTH - up * WORLD_NORTH.dot(up)).normalize_or(north);
     let base = world_north.dot(north).atan2(world_north.dot(east));
@@ -849,63 +821,456 @@ fn draw_overlay(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use terra_world::level::{LevelData, RegionKind, RoadKind};
+fn minimap_label_material(
+    cache: &mut MinimapSurfaceLabelAssets,
+    materials: &mut Assets<StandardMaterial>,
+    color: Color,
+) -> Option<Handle<StandardMaterial>> {
+    if let Some((_, handle)) = cache
+        .materials
+        .iter()
+        .find(|(cached_color, _)| *cached_color == color)
+    {
+        return Some(handle.clone());
+    }
+    let atlas = cache.atlas.as_ref()?;
+    let handle = surface_labels::surface_label_material(atlas, materials, color);
+    cache.materials.push((color, handle.clone()));
+    Some(handle)
+}
 
-    #[test]
-    fn map_labels_stay_right_of_and_vertically_centered_on_their_markers() {
-        let labels = [
-            MapLabelLayout {
-                anchor: Vec2::new(60.0, 60.0),
-                size: Vec2::new(70.0, 14.0),
-            },
-            MapLabelLayout {
-                anchor: Vec2::new(61.0, 60.0),
-                size: Vec2::new(60.0, 14.0),
-            },
-        ];
+#[allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    reason = "Bevy injects independent ECS assets and camera parameters"
+)]
+fn update_minimap_surface_labels(
+    mut commands: Commands,
+    state: Res<MinimapSurfaceLabelState>,
+    world_epoch: Res<WorldEpoch>,
+    regions: Option<Res<LevelRegions>>,
+    terrain: Option<Res<TerrainGen>>,
+    settlements: Query<&Settlement>,
+    camera: Query<&Transform, With<MinimapCamera>>,
+    mut cache: ResMut<MinimapSurfaceLabelAssets>,
+    image_assets: Option<ResMut<Assets<Image>>>,
+    material_assets: Option<ResMut<Assets<StandardMaterial>>>,
+    mesh_assets: Option<ResMut<Assets<Mesh>>>,
+    mut labels: Query<(
+        Entity,
+        &mut MinimapSurfaceLabelOwner,
+        &mut SurfaceLabelRibbon,
+        &Mesh3d,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Visibility,
+    )>,
+) {
+    let hide_all = |labels: &mut Query<(
+        Entity,
+        &mut MinimapSurfaceLabelOwner,
+        &mut SurfaceLabelRibbon,
+        &Mesh3d,
+        &mut MeshMaterial3d<StandardMaterial>,
+        &mut Visibility,
+    )>| {
+        for (_, _, _, _, _, mut visibility) in labels.iter_mut() {
+            *visibility = Visibility::Hidden;
+        }
+    };
 
-        let placed = place_map_labels(&labels, Vec2::splat(160.0));
+    let Ok(camera_transform) = camera.single() else {
+        hide_all(&mut labels);
+        return;
+    };
+    if state.world_epoch != Some(*world_epoch) {
+        hide_all(&mut labels);
+        return;
+    }
+    let Some(regions) = regions.as_deref() else {
+        hide_all(&mut labels);
+        return;
+    };
+    let (Some(mut image_assets), Some(mut material_assets), Some(mut mesh_assets)) =
+        (image_assets, material_assets, mesh_assets)
+    else {
+        hide_all(&mut labels);
+        return;
+    };
 
-        assert_eq!(placed.len(), labels.len());
-        for (label, placement) in labels.iter().zip(placed) {
-            assert_eq!(placement.left, label.anchor.x + 6.0);
-            assert_eq!(placement.top + placement.height / 2.0, label.anchor.y);
+    let epoch_changed = cache.world_epoch != Some(*world_epoch);
+    if epoch_changed {
+        let stale = labels
+            .iter_mut()
+            .map(|(entity, ..)| entity)
+            .collect::<Vec<_>>();
+        for entity in stale {
+            commands.entity(entity).despawn();
+        }
+        cache.world_epoch = Some(*world_epoch);
+        cache.atlas = None;
+        cache.materials.clear();
+    }
+    if cache.atlas.is_none() {
+        let names = regions
+            .regions
+            .iter()
+            .map(|region| region.name.clone())
+            .chain(regions.bridge_top_surfaces_by_name.keys().cloned())
+            .chain(settlements.iter().map(|settlement| settlement.name.clone()))
+            .collect::<Vec<_>>();
+        cache.atlas = surface_labels::build_glyph_atlas(names, &mut image_assets);
+    }
+    if cache.atlas.is_none() {
+        hide_all(&mut labels);
+        return;
+    }
+
+    let camera_rotation = camera_transform.rotation.normalize();
+    if !camera_rotation.is_finite() {
+        hide_all(&mut labels);
+        return;
+    }
+    let desired_indices = state
+        .labels
+        .iter()
+        .map(|label| label.marker_index)
+        .collect::<std::collections::HashSet<_>>();
+    let mut existing_by_index = HashMap::new();
+    if !epoch_changed {
+        for (entity, owner, _, _, _, mut visibility) in labels.iter_mut() {
+            existing_by_index.insert(owner.marker_index, entity);
+            if !desired_indices.contains(&owner.marker_index) {
+                *visibility = Visibility::Hidden;
+            }
         }
     }
 
-    #[test]
-    fn map_labels_shorten_at_the_circular_edge_without_shifting_the_anchor() {
-        let label = MapLabelLayout {
-            anchor: Vec2::new(110.0, 40.0),
-            size: Vec2::new(100.0, 12.0),
+    for label in &state.labels {
+        let color = planet_marker_presentation(label.kind).color;
+        let Some(material) = minimap_label_material(&mut cache, &mut material_assets, color) else {
+            continue;
         };
-        let placed = place_map_labels(&[label], Vec2::splat(160.0))[0];
-        assert_eq!(placed.left, 116.0);
-        assert_eq!(placed.top, 34.0);
-        assert!(placed.width > 0.0 && placed.width < 30.0);
-        assert!(Vec2::new(placed.left + placed.width - 80.0, placed.top - 80.0).length() <= 76.001);
-        assert_eq!(truncate_map_label("Road 123", 5), "Road…");
-        assert_eq!(truncate_map_label("Road 123", 0), "");
+        let Some(atlas) = cache.atlas.as_ref() else {
+            continue;
+        };
+        let Some(entity) = existing_by_index.remove(&label.marker_index) else {
+            let ribbon = build_minimap_surface_ribbon(
+                atlas,
+                &label.text,
+                label.world_anchor,
+                label.font_size,
+                camera_transform,
+                terrain.as_deref(),
+            );
+            let mesh = mesh_assets.add(surface_labels::ribbon_mesh(&ribbon, 1.0));
+            commands.spawn((
+                Mesh3d(mesh),
+                MeshMaterial3d(material),
+                Transform::default(),
+                Visibility::Visible,
+                RenderLayers::layer(surface_labels::MINIMAP_LABEL_LAYER),
+                SurfaceLabelRibbon {
+                    marker_index: label.marker_index,
+                    view: SurfaceLabelView::Minimap,
+                    label: label.text.clone(),
+                },
+                MinimapSurfaceLabelOwner {
+                    marker_index: label.marker_index,
+                    world_anchor: label.world_anchor,
+                    kind: label.kind,
+                    font_size: label.font_size,
+                    camera_rotation,
+                },
+            ));
+            continue;
+        };
+
+        let Ok((_, mut owner, mut ribbon, mesh, mut current_material, mut visibility)) =
+            labels.get_mut(entity)
+        else {
+            continue;
+        };
+        let text_changed = ribbon.label != label.text;
+        let anchor_changed = owner.world_anchor.distance_squared(label.world_anchor) > 1e-4;
+        let style_changed = owner.kind != label.kind || owner.font_size != label.font_size;
+        let heading_changed =
+            owner.camera_rotation.angle_between(camera_rotation) > MAP_LABEL_ROTATION_EPSILON;
+        if text_changed || anchor_changed || style_changed || heading_changed {
+            let rebuilt = build_minimap_surface_ribbon(
+                atlas,
+                &label.text,
+                label.world_anchor,
+                label.font_size,
+                camera_transform,
+                terrain.as_deref(),
+            );
+            if let Some(mut mesh) = mesh_assets.get_mut(&mesh.0) {
+                surface_labels::write_ribbon_mesh(&mut mesh, &rebuilt, 1.0);
+            }
+            owner.camera_rotation = camera_rotation;
+        }
+        if current_material.0 != material {
+            *current_material = MeshMaterial3d(material);
+        }
+        ribbon.marker_index = label.marker_index;
+        ribbon.view = SurfaceLabelView::Minimap;
+        ribbon.label.clone_from(&label.text);
+        owner.marker_index = label.marker_index;
+        owner.world_anchor = label.world_anchor;
+        owner.kind = label.kind;
+        owner.font_size = label.font_size;
+        *visibility = Visibility::Visible;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface_labels::{SurfaceLabelRibbon, SurfaceLabelView};
+    use terra_world::level::{LevelData, RegionKind, RoadKind};
+
+    #[test]
+    fn minimap_camera_sees_terrain_and_its_own_ribbons_only() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Image>::default())
+            .add_systems(Startup, setup_minimap);
+
+        app.update();
+
+        let world = app.world_mut();
+        let mut cameras = world.query_filtered::<&RenderLayers, With<MinimapCamera>>();
+        let layers = cameras.single(world).expect("minimap camera");
+        assert_eq!(
+            layers,
+            &RenderLayers::from_layers(&[0, surface_labels::MINIMAP_LABEL_LAYER])
+        );
+        assert!(layers.intersects(&RenderLayers::layer(0)));
+        assert!(layers.intersects(&RenderLayers::layer(surface_labels::MINIMAP_LABEL_LAYER)));
+        assert!(!layers.intersects(&RenderLayers::layer(surface_labels::PLANET_LABEL_LAYER)));
     }
 
     #[test]
-    fn long_map_labels_truncate_at_unicode_character_boundaries() {
-        let label = truncate_map_label("Étoile des montagnes enneigées", MAX_MAP_LABEL_CHARS);
+    fn minimap_draw_spawns_one_complete_visible_minimap_ribbon_for_a_long_name() {
+        use std::time::Duration;
 
-        assert_eq!(label.chars().count(), MAX_MAP_LABEL_CHARS);
-        assert!(label.ends_with('…'));
+        let name = "Étoile des montagnes enneigées — Łódź";
+        let mut app = App::new();
+        app.insert_resource(Time::<Real>::default())
+            .insert_resource(UiFont(Handle::default()))
+            .insert_resource(WorldEpoch::new(1))
+            .insert_resource(Assets::<Image>::default())
+            .insert_resource(Assets::<Mesh>::default())
+            .insert_resource(Assets::<StandardMaterial>::default())
+            .insert_resource(MinimapSurfaceLabelState::default())
+            .insert_resource(MinimapSurfaceLabelAssets::default())
+            .insert_resource(LevelRegions {
+                regions: vec![
+                    terra_world::level::RegionData {
+                        name: name.to_owned(),
+                        pos: Vec3::Y.to_array(),
+                        kind: RegionKind::Settlement,
+                    },
+                    terra_world::level::RegionData {
+                        name: "Pine forest".to_owned(),
+                        pos: (Vec3::Y + Vec3::Z * (40.0 / PLANET_RADIUS))
+                            .normalize()
+                            .to_array(),
+                        kind: RegionKind::Forest,
+                    },
+                ],
+                face_regions: terra_world::level::RegionMemberships::from_memberships(vec![]),
+                settlements: vec![(name.to_owned(), terra_world::level::SettlementKind::Town)],
+                bridge_top_surfaces_by_name: Default::default(),
+            })
+            .insert_resource(MinimapTimer(Timer::from_seconds(
+                0.001,
+                TimerMode::Repeating,
+            )))
+            .add_systems(
+                Update,
+                (
+                    track_minimap_camera,
+                    draw_overlay,
+                    update_minimap_surface_labels,
+                )
+                    .chain(),
+            );
+        let window_entity = app.world_mut().spawn(Window::default()).id();
+        app.world_mut().spawn((
+            Minimap,
+            ComputedNode {
+                size: Vec2::splat(MINIMAP_SIZE),
+                ..default()
+            },
+            UiGlobalTransform::default(),
+        ));
+        let player_position = Vec3::Y * PLANET_RADIUS;
+        let player_entity = app
+            .world_mut()
+            .spawn((
+                Transform::from_translation(player_position),
+                Player {
+                    fire_timer: Timer::default(),
+                    damage: 0.0,
+                    range: 0.0,
+                    heading: Vec3::X,
+                },
+            ))
+            .id();
+        let camera_entity = app
+            .world_mut()
+            .spawn((
+                Transform::from_xyz(0.0, PLANET_RADIUS + CAM_HEIGHT, 0.0),
+                RenderLayers::from_layers(&[0, surface_labels::MINIMAP_LABEL_LAYER]),
+                MinimapCamera,
+            ))
+            .id();
+
+        app.update();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(50));
+        app.world_mut().run_schedule(Update);
+        assert_eq!(
+            app.world()
+                .resource::<MinimapSurfaceLabelState>()
+                .labels
+                .len(),
+            1
+        );
+        let labels = minimap_ribbon_labels(app.world_mut());
+        assert_eq!(labels.len(), 1, "the minimap label is a single 3D ribbon");
+        assert_eq!(
+            labels[0].1, name,
+            "the complete Unicode name stays attached"
+        );
+        assert_eq!(labels[0].2, SurfaceLabelView::Minimap);
+        assert_eq!(labels[0].3, Visibility::Visible);
+        assert_eq!(
+            labels[0].5,
+            RenderLayers::layer(surface_labels::MINIMAP_LABEL_LAYER)
+        );
+        assert!(!labels.iter().any(|label| label.1 == "Pine forest"));
+        assert!(
+            !labels[0]
+                .5
+                .intersects(&RenderLayers::layer(surface_labels::PLANET_LABEL_LAYER))
+        );
+        let mut text_query = app.world_mut().query::<&Text>();
+        let flat_duplicate = text_query.iter(app.world()).any(|text| text.0 == name);
+        assert!(!flat_duplicate, "no flat UI label duplicates the ribbon");
+
+        app.world_mut()
+            .get_mut::<Window>(window_entity)
+            .expect("fixture window")
+            .set_cursor_position(Some(Vec2::new(8.0, 0.0)));
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(50));
+        app.world_mut().run_schedule(Update);
+        assert!(
+            minimap_ribbon_labels(app.world_mut())
+                .iter()
+                .any(|label| label.1 == "Pine forest")
+        );
+        app.world_mut()
+            .get_mut::<Window>(window_entity)
+            .expect("fixture window")
+            .set_cursor_position(None);
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(50));
+        app.world_mut().run_schedule(Update);
+        assert_eq!(minimap_ribbon_labels(app.world_mut()).len(), 1);
+
+        let original_camera_rotation = labels[0].4;
+        app.world_mut()
+            .get_mut::<Player>(player_entity)
+            .expect("fixture player")
+            .heading = Vec3::Z;
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .advance_by(Duration::from_millis(50));
+        app.world_mut().run_schedule(Update);
+
+        let after_turn = minimap_ribbon_labels(app.world_mut());
+        let camera_rotation = app
+            .world()
+            .get::<Transform>(camera_entity)
+            .expect("minimap camera")
+            .rotation;
+        assert!(original_camera_rotation.angle_between(camera_rotation) > 0.5);
+        assert!(after_turn[0].4.angle_between(camera_rotation) < 1e-4);
+
+        let last_rebuilt_rotation = after_turn[0].4;
+        for step in 1..=10 {
+            let angle = step as f32 * 0.001;
+            app.world_mut()
+                .get_mut::<Player>(player_entity)
+                .expect("fixture player")
+                .heading = Vec3::Z * angle.cos() + Vec3::X * angle.sin();
+            app.world_mut()
+                .resource_mut::<Time<Real>>()
+                .advance_by(Duration::from_millis(50));
+            app.world_mut().run_schedule(Update);
+            if step == 1 {
+                let first_small_turn = minimap_ribbon_labels(app.world_mut());
+                assert!(last_rebuilt_rotation.angle_between(first_small_turn[0].4) < 1e-5);
+            }
+        }
+        let after_slow_turn = minimap_ribbon_labels(app.world_mut());
+        let final_camera_rotation = app
+            .world()
+            .get::<Transform>(camera_entity)
+            .expect("minimap camera")
+            .rotation;
+        assert!(last_rebuilt_rotation.angle_between(after_slow_turn[0].4) > 0.004);
+        assert!(after_slow_turn[0].4.angle_between(final_camera_rotation) < 0.004);
+    }
+
+    fn minimap_ribbon_labels(
+        world: &mut World,
+    ) -> Vec<(
+        Entity,
+        String,
+        SurfaceLabelView,
+        Visibility,
+        Quat,
+        RenderLayers,
+    )> {
+        let mut query = world.query::<(
+            Entity,
+            &SurfaceLabelRibbon,
+            &MinimapSurfaceLabelOwner,
+            &Visibility,
+            &RenderLayers,
+        )>();
+        query
+            .iter(world)
+            .filter(|(_, ribbon, _, visibility, _)| {
+                ribbon.view == SurfaceLabelView::Minimap && **visibility == Visibility::Visible
+            })
+            .map(|(entity, ribbon, owner, visibility, layers)| {
+                (
+                    entity,
+                    ribbon.label.clone(),
+                    ribbon.view,
+                    *visibility,
+                    owner.camera_rotation,
+                    layers.clone(),
+                )
+            })
+            .collect()
     }
 
     fn region_label(kind: RegionKind, anchor: Vec2) -> MapLabel {
         MapLabel {
             anchor,
+            world_anchor: Vec3::Y * PLANET_RADIUS,
+            marker_index: 0,
             text: format!("{kind:?}"),
-            color: Color::WHITE,
-            font_size: 8.0,
-            z_index: if kind == RegionKind::Settlement { 2 } else { 3 },
+            kind: map_region_marker_kind(kind),
+            font_size: MAP_LABEL_FONT_SIZE,
         }
     }
 
