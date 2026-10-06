@@ -1364,7 +1364,15 @@ impl Default for SunLock {
     }
 }
 
-fn toggle_sun_lock(keys: Res<ButtonInput<KeyCode>>, mut lock: ResMut<SunLock>) {
+fn toggle_sun_lock(
+    keys: Res<ButtonInput<KeyCode>>,
+    exploration: Option<Res<crate::exploration::Exploration>>,
+    mut lock: ResMut<SunLock>,
+) {
+    // Closing a selector still owns this frame's input.
+    if exploration.is_some_and(|state| state.blocks_world_shortcuts()) {
+        return;
+    }
     if keys.just_pressed(KeyCode::Digit1) {
         lock.0 = !lock.0;
     }
@@ -1458,6 +1466,52 @@ fn drive_fog(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_number_keys_do_not_toggle_sun_lock() {
+        for menu in [KeyCode::KeyC, KeyCode::KeyV, KeyCode::KeyM] {
+            for initially_locked in [false, true] {
+                let (mut app, _) = crate::exploration::tests::fixture();
+                app.insert_resource(SunLock(initially_locked))
+                    .add_systems(Update, toggle_sun_lock);
+                app.world_mut()
+                    .resource_mut::<ButtonInput<KeyCode>>()
+                    .press(menu);
+                app.update();
+                {
+                    let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+                    keys.reset_all();
+                    keys.press(KeyCode::Digit1);
+                }
+                app.update();
+
+                assert_eq!(
+                    app.world().resource::<SunLock>().0,
+                    initially_locked,
+                    "{menu:?} must own number-key input"
+                );
+                if menu == KeyCode::KeyC {
+                    let state = app.world().resource::<crate::exploration::Exploration>();
+                    assert!(!state.is_camera_selector_open());
+                    assert_eq!(
+                        state.camera_follow_mode(),
+                        crate::exploration::CameraFollowMode::Facing
+                    );
+                    {
+                        let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+                        keys.reset_all();
+                        keys.press(KeyCode::Digit1);
+                    }
+                    app.update();
+                    assert_eq!(
+                        app.world().resource::<SunLock>().0,
+                        !initially_locked,
+                        "a fresh gameplay key press still toggles the sun lock"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn global_ambient_tracks_the_controlled_body_while_fog_tracks_the_camera() {

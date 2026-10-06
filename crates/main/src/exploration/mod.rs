@@ -373,6 +373,10 @@ impl Exploration {
         self.camera_selector
     }
 
+    pub(crate) fn blocks_world_shortcuts(&self) -> bool {
+        self.selector || self.camera_selector || self.suppress_input || self.is_planet_view_active()
+    }
+
     pub(crate) fn camera_follow_mode(&self) -> CameraFollowMode {
         self.camera_follow_mode
     }
