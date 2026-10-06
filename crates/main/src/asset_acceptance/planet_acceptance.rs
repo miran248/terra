@@ -4,6 +4,7 @@
 //! the ordinary real/virtual clocks, physics, streaming, animation and camera
 //! systems in charge. Only user intents are scripted here.
 
+use super::{background_capture_description, diagnostic_screenshot};
 use crate::{
     exploration::{Action, Exploration, Kind, PlanetTeleportOutcomeKind},
     map::{CollisionTerrain, MainCamera, Player, Sun, SunLock, TimeOfDay},
@@ -11,11 +12,8 @@ use crate::{
 };
 use avian3d::prelude::{Collider, LinearVelocity, Position, Sleeping};
 use bevy::{
-    camera::CameraUpdateSystems,
-    input::InputSystems,
-    prelude::*,
-    render::view::screenshot::{Screenshot, save_to_disk},
-    window::PrimaryWindow,
+    camera::CameraUpdateSystems, input::InputSystems, prelude::*,
+    render::view::screenshot::save_to_disk, window::PrimaryWindow,
 };
 use shared::{planet_view::PLANET_VIEW_FAR_RADIUS, state::AppState};
 use std::{
@@ -45,6 +43,7 @@ const SURFACE_LABEL_CAPTURE_START: usize = CAPTURE_VIEWS.len() * SOLAR_PHASES.le
 const SURFACE_LABEL_NAME: &str = "Étoile des montagnes enneigées — Łódź";
 const SURFACE_LABEL_RIM_NAME: &str = "Rim — Łódź et vallée enneigée";
 const SURFACE_LABEL_RIM_DISTANCE_M: f32 = 380.0;
+const SURFACE_LABEL_PLANET_OFFSET_M: f32 = 180.0;
 const SURFACE_LABEL_CAPTURE_READY_TIMEOUT_SECONDS: f64 = 30.0;
 const ROUTES: [Route; 4] = [
     Route::EntryReversal,
@@ -501,9 +500,13 @@ fn setup_surface_label_capture_fixture(world: &mut World) {
         };
         (position.0, player.heading)
     };
-    let first_anchor = world
-        .get_resource::<crate::planet_markers::PlanetMarkerAnchors>()
-        .and_then(|anchors| anchors.settlements.first().copied());
+    let up = player_position.normalize_or(Vec3::Y);
+    let heading_tangent =
+        (heading - up * heading.dot(up)).normalize_or(up.any_orthonormal_vector());
+    let label_tangent = (-heading.cross(up)).normalize_or(heading_tangent);
+    let offset_angle = SURFACE_LABEL_PLANET_OFFSET_M / PLANET_RADIUS;
+    let label_direction =
+        (up * offset_angle.cos() + label_tangent * offset_angle.sin()).normalize_or(up);
     let Some(mut regions) = world.get_resource_mut::<crate::map::LevelRegions>() else {
         return;
     };
@@ -516,28 +519,33 @@ fn setup_surface_label_capture_fixture(world: &mut World) {
         if region.kind == terra_world::level::RegionKind::Settlement && region.name == original_name
         {
             region.name = SURFACE_LABEL_NAME.to_owned();
+            region.pos = label_direction.to_array();
             center_region_updated = true;
         }
     }
     if !center_region_updated {
-        let position = first_anchor.unwrap_or(player_position).normalize_or_zero();
         regions.regions.push(terra_world::level::RegionData {
             name: SURFACE_LABEL_NAME.to_owned(),
-            pos: position.to_array(),
+            pos: label_direction.to_array(),
             kind: terra_world::level::RegionKind::Settlement,
         });
     }
-
-    let up = player_position.normalize_or(Vec3::Y);
     let north = (heading - up * heading.dot(up)).normalize_or(Vec3::Z);
     let rim_direction = (up * (SURFACE_LABEL_RIM_DISTANCE_M / PLANET_RADIUS).cos()
-        + north * (SURFACE_LABEL_RIM_DISTANCE_M / PLANET_RADIUS).sin())
+        - north * (SURFACE_LABEL_RIM_DISTANCE_M / PLANET_RADIUS).sin())
     .normalize_or(up);
     regions.regions.push(terra_world::level::RegionData {
         name: SURFACE_LABEL_RIM_NAME.to_owned(),
         pos: rim_direction.to_array(),
         kind: terra_world::level::RegionKind::Settlement,
     });
+    drop(regions);
+    if let Some(mut anchors) =
+        world.get_resource_mut::<crate::planet_markers::PlanetMarkerAnchors>()
+        && let Some(anchor) = anchors.settlements.first_mut()
+    {
+        *anchor = label_direction;
+    }
 }
 
 fn work_trace_enabled() -> bool {
@@ -1020,25 +1028,71 @@ fn capture_and_measure_planet_acceptance(world: &mut World) {
                 }
             } else if now - prepared_at >= 2.0 && capture_ready(world, spec) {
                 let path = run.directory.join("captures").join(capture_file(index));
-                world
-                    .spawn(Screenshot::primary_window())
-                    .observe(save_to_disk(path.clone()));
-                screenshot_at = Some(now);
-                info!(shot = capture_name(index), path = %path.display(), "capturing primary window");
-                Phase::Capturing {
-                    index,
-                    prepared,
-                    prepared_at,
-                    screenshot_at,
+                if let Some(screenshot) = diagnostic_screenshot(world) {
+                    world.spawn(screenshot).observe(save_to_disk(path.clone()));
+                    screenshot_at = Some(now);
+                    info!(
+                        shot = capture_name(index),
+                        path = %path.display(),
+                        target = %background_capture_description(world),
+                        "capturing Planet acceptance render target"
+                    );
+                    Phase::Capturing {
+                        index,
+                        prepared,
+                        prepared_at,
+                        screenshot_at,
+                    }
+                } else {
+                    record_error(
+                        &mut run,
+                        format!(
+                            "Planet acceptance render target was not ready for {}",
+                            capture_name(index)
+                        ),
+                    );
+                    Phase::Capturing {
+                        index: index + 1,
+                        prepared: false,
+                        prepared_at: now,
+                        screenshot_at: None,
+                    }
                 }
             } else if run.surface_labels
                 && now - prepared_at > SURFACE_LABEL_CAPTURE_READY_TIMEOUT_SECONDS
             {
+                let name = capture_name(index);
+                let label_state = required_surface_label(spec)
+                    .map(|(_, expected)| {
+                        crate::planet_markers::surface_label_debug_state(world, expected)
+                    })
+                    .unwrap_or_else(|| "no surface-label target".to_owned());
+                let debug_path = run
+                    .directory
+                    .join("debug")
+                    .join(format!("{name}-not-visible.png"));
+                let debug_result = match diagnostic_screenshot(world) {
+                    Some(screenshot) => {
+                        if let Err(error) = fs::create_dir_all(
+                            debug_path.parent().expect("debug capture has a parent"),
+                        ) {
+                            format!("debug capture directory could not be created: {error}")
+                        } else {
+                            world
+                                .spawn(screenshot)
+                                .observe(save_to_disk(debug_path.clone()));
+                            format!("rejected scene saved to {}", debug_path.display())
+                        }
+                    }
+                    None => {
+                        "rejected scene was not captured because the render target was not ready"
+                            .into()
+                    }
+                };
                 record_error(
                     &mut run,
                     format!(
-                        "surface-label capture never became visible: {}",
-                        capture_name(index)
+                        "surface-label capture never became visible: {name}; {debug_result}; {label_state}"
                     ),
                 );
                 Phase::Capturing {
@@ -1143,7 +1197,7 @@ fn initialize_output(world: &mut World, run: &mut PlanetAcceptance) {
             record_error(run, format!("initialize capture-manifest.csv: {error}"));
         }
         let configuration = format!(
-            "mode=surface-label-captures\ncaptures={}\nplanet_views=near,oblique,polar-orbit\nminimap_views=default-heading,rim-mask-at-{SURFACE_LABEL_RIM_DISTANCE_M:.0}m-with-quarter-turn\nfixture_planet_label={SURFACE_LABEL_NAME}\nfixture_minimap_rim_label={SURFACE_LABEL_RIM_NAME}\nperformance_gate=not-run\nanchor=first-settlement-player-spawn\n",
+            "mode=surface-label-captures\ncaptures={}\nplanet_views=near,oblique,polar-orbit\nminimap_views=default-heading,rim-mask-at-{SURFACE_LABEL_RIM_DISTANCE_M:.0}m-with-quarter-turn\nfixture_planet_label={SURFACE_LABEL_NAME}\nfixture_planet_label_offset_m={SURFACE_LABEL_PLANET_OFFSET_M:.0}-opposite-camera-right\nfixture_minimap_rim_label={SURFACE_LABEL_RIM_NAME}\nfixture_minimap_rim_position=opposite-initial-heading-before-quarter-turn\nperformance_gate=not-run\nanchor=first-settlement-player-spawn\n",
             SURFACE_LABEL_CAPTURE_NAMES.join(",")
         );
         if let Err(error) = fs::write(run.directory.join("run-configuration.txt"), configuration) {
@@ -2830,12 +2884,12 @@ mod tests {
     use super::{
         CaptureView, CrossFeatureCoverage, FrameSample, Motion, Phase, PlanetAcceptance,
         ResidentCounts, Route, RouteActions, SUN_TILT, SURFACE_LABEL_CAPTURE_START,
-        SURFACE_LABEL_NAME, SURFACE_LABEL_RIM_DISTANCE_M, SURFACE_LABEL_RIM_NAME, SolarPhase,
-        VehiclePreparationNext, begin_vehicle_preparation, capture_name, capture_spec,
-        continuous_body_path, drive_planet_acceptance, drive_vehicle_route, due_orbit_inputs,
-        maximum_sun_elevation_degrees, physics_advanced_while_moving,
-        setup_surface_label_capture_fixture, sun_angle_for_elevation, surface_label_is_visible,
-        validated_player_anchor,
+        SURFACE_LABEL_NAME, SURFACE_LABEL_PLANET_OFFSET_M, SURFACE_LABEL_RIM_DISTANCE_M,
+        SURFACE_LABEL_RIM_NAME, SolarPhase, VehiclePreparationNext, begin_vehicle_preparation,
+        capture_name, capture_spec, continuous_body_path, drive_planet_acceptance,
+        drive_vehicle_route, due_orbit_inputs, maximum_sun_elevation_degrees,
+        physics_advanced_while_moving, setup_surface_label_capture_fixture,
+        sun_angle_for_elevation, surface_label_is_visible, validated_player_anchor,
     };
     use crate::exploration::{Action, Exploration, Kind};
     use avian3d::prelude::Position;
@@ -2944,19 +2998,27 @@ mod tests {
 
         let regions = world.resource::<crate::map::LevelRegions>();
         assert_eq!(regions.settlements[0].0, SURFACE_LABEL_NAME);
+        let label_anchor = world
+            .resource::<crate::planet_markers::PlanetMarkerAnchors>()
+            .settlements[0]
+            .normalize_or_zero();
+        let offset_angle = SURFACE_LABEL_PLANET_OFFSET_M / terra_geometry::sphere::PLANET_RADIUS;
+        let expected_label_anchor = Vec3::X * offset_angle.cos() + Vec3::Z * offset_angle.sin();
         assert!(
-            regions
-                .regions
-                .iter()
-                .any(|region| region.name == SURFACE_LABEL_NAME)
+            label_anchor.distance(expected_label_anchor) < 1e-4,
+            "the Planet fixture label should sit beside the Explorer marker so it tests readable overlap suppression"
         );
+        assert!(regions.regions.iter().any(|region| {
+            region.name == SURFACE_LABEL_NAME
+                && Vec3::from_array(region.pos).distance(label_anchor) < 1e-4
+        }));
         let rim = regions
             .regions
             .iter()
             .find(|region| region.name == SURFACE_LABEL_RIM_NAME)
             .expect("rim fixture region");
         let theta = SURFACE_LABEL_RIM_DISTANCE_M / terra_geometry::sphere::PLANET_RADIUS;
-        let expected = Vec3::X * theta.cos() + Vec3::Y * theta.sin();
+        let expected = Vec3::X * theta.cos() - Vec3::Y * theta.sin();
         assert!(Vec3::from_array(rim.pos).distance(expected) < 1e-4);
     }
 
